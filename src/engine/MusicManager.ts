@@ -92,7 +92,6 @@ function startAudioNode(): void {
   }
 
   audioNode = audioContext.createScriptProcessor(frameSize, 0, 2);
-  let audioDbgCount = 0;
   audioNode.onaudioprocess = (e) => {
     _my_decode(bufPtr, lastSample * 2);
     const outputBuffer = e.outputBuffer;
@@ -108,14 +107,6 @@ function startAudioNode(): void {
         const highVal = HEAP16[chanOffset + bufPtr / 2 + (bufferOffset + 1) * 2] * high;
         outData[k] = (lowVal + highVal) / 32000;
       }
-    }
-    // Log first few callbacks to diagnose
-    if (audioDbgCount < 3) {
-      const L = outputBuffer.getChannelData(0);
-      let max = 0;
-      for (let i = 0; i < L.length; i++) { if (Math.abs(L[i]) > max) max = Math.abs(L[i]); }
-      console.log(`Audio callback #${audioDbgCount}: maxSample=${max.toFixed(6)}, ctxState=${audioContext?.state}, bufPtr=${bufPtr}`);
-      audioDbgCount++;
     }
   };
   audioNode.connect(gainNode);

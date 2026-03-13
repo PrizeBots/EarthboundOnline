@@ -75,6 +75,30 @@ export function isForegroundTile(tileX: number, tileY: number): boolean {
 }
 
 /**
+ * Check if a tile has ANY solid minitile.
+ * Used to determine if FG content is ground-level (depth-sorted) vs overhead (always on top).
+ */
+export function tileHasAnySolid(tileX: number, tileY: number): boolean {
+  if (tileX < 0 || tileY < 0) return false;
+  if (tileX >= MAP_WIDTH_TILES || tileY >= MAP_HEIGHT_TILES) return false;
+
+  const sector = getSectorForTile(tileX, tileY);
+  if (!sector) return false;
+
+  const drawTilesetId = getDrawTilesetId(sector.tilesetId);
+  const collisions = collisionData.get(drawTilesetId);
+  if (!collisions) return false;
+
+  const arrangementId = getTileAt(tileX, tileY);
+  if (arrangementId >= collisions.length) return false;
+
+  for (let i = 0; i < 16; i++) {
+    if ((collisions[arrangementId][i] & 0x80) !== 0) return true;
+  }
+  return false;
+}
+
+/**
  * Check if an entire tile (32x32) is fully solid (all 16 minitiles are collision).
  */
 export function checkCollisionTile(tileX: number, tileY: number): boolean {

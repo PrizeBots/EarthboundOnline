@@ -46,6 +46,13 @@ export function drawTile(
 }
 
 /**
+ * Check if a foreground atlas exists for this tileset/palette combo.
+ */
+export function hasForegroundTile(mapTilesetId: number, paletteId: number): boolean {
+  return fgAtlasCache.has(`${mapTilesetId}_${paletteId}`);
+}
+
+/**
  * Draw a single 32x32 tile from the foreground atlas (in front of sprites).
  */
 export function drawForegroundTile(
