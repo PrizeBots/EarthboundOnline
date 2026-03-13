@@ -3,7 +3,7 @@ const { WebSocketServer } = require('ws');
 const http = require('http');
 const path = require('path');
 
-const PORT = 3333;
+const PORT = process.env.PORT || 3333;
 
 const app = express();
 const server = http.createServer(app);

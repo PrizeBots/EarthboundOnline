@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "nodemon --watch vite.config.ts --watch server --ext ts,js --exec \"npx vite --port 4444\"",
     "build": "vite build",
+    "start": "node server/index.js",
     "extract": "python tools/convert_all.py"
   },
   "keywords": [],

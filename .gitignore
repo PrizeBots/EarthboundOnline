@@ -7,9 +7,11 @@ EarthBound.sfc
 # CoilSnake decompiled project (extracted from ROM)
 eb_project/
 
-# Extracted/generated assets
-public/assets/
+# Extraction output (intermediate)
 extracted/
+
+# Build output
+dist/
 
 # Python
 __pycache__/
