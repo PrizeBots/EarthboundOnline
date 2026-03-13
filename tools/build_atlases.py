@@ -181,11 +181,7 @@ def main():
                                 bg_pixels[dx + px, dy + py] = color
 
                     # --- Foreground minitile (paired at index + 512) ---
-                    # Only render FG when the SNES priority bit (bit 13) is set.
-                    # In Mode 1, BG1 priority=1 renders in front of sprites;
-                    # priority=0 renders behind sprites, so no foreground needed.
-                    priority = bool(cell_val & 0x2000)
-                    if priority and mt_index < 384:
+                    if mt_index < 384:
                         fg_index = mt_index + 512
                         if fg_index < len(tileset.minitiles.tiles) and tileset.minitiles.tiles[fg_index] is not None:
                             fg_minitile = tileset.minitiles.tiles[fg_index]

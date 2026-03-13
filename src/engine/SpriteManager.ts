@@ -59,7 +59,7 @@ export function drawSprite(
     meta.width,
     meta.height,
     Math.floor(x - meta.width / 2),
-    Math.floor(y - meta.height),
+    Math.floor(y - meta.height - 1),
     meta.width,
     meta.height
   );
