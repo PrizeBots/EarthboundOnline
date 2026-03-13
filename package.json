@@ -1,0 +1,26 @@
+{
+  "name": "eb_online",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "dev": "nodemon --watch vite.config.ts --watch server --ext ts,js --exec \"npx vite --port 4444\"",
+    "build": "vite build",
+    "extract": "python tools/convert_all.py"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/ws": "^8.18.1",
+    "nodemon": "^3.1.14",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1"
+  },
+  "dependencies": {
+    "@smwcentral/spc-player": "^2.0.2",
+    "express": "^5.2.1",
+    "ws": "^8.19.0"
+  }
+}

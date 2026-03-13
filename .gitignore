@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# ROM file (copyrighted — do not commit)
+EarthBound.sfc
+
+# CoilSnake decompiled project (extracted from ROM)
+eb_project/
+
+# Extracted/generated assets
+public/assets/
+extracted/
+
+# Python
+__pycache__/
+*.pyc
+
+# Test renders
+public/test_onett.png
+public/test_render.png
+
+# Blender
+*.blend
+*.blend1
+
+# OS files
+.DS_Store
+Thumbs.db
