@@ -1,5 +1,10 @@
 const keys = new Set<string>();
 
+/** Expose the live key set so other systems (e.g. MenuManager) can read it. */
+export function getKeySet(): Set<string> {
+  return keys;
+}
+
 export function initInput() {
   window.addEventListener('keydown', (e) => {
     keys.add(e.code);

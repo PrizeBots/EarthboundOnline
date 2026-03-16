@@ -4,7 +4,7 @@ import { getTileAt, getSectorForTile } from './MapManager';
 import { drawTile, drawForegroundTile, hasForegroundTile } from './TilesetManager';
 import { drawSprite } from './SpriteManager';
 import { getDoorsNear, DoorData } from './DoorManager';
-import { tileHasAnySolid } from './Collision';
+import { getSpritePriority, tileHasAnySolid } from './Collision';
 import { RemotePlayer, SCREEN_WIDTH, SCREEN_HEIGHT, TILE_SIZE } from '../types';
 
 export class Renderer {
@@ -48,66 +48,70 @@ export class Renderer {
       }
     }
 
-    // Pass 2: Collect sprites and FG tiles into a Y-sorted draw list
-    // FG tiles on solid ground (fences, walls, signs) → Y-sorted with sprites
-    // FG tiles on walkable ground (tree canopies, overhangs) → always on top (pass 3)
-    const drawList: { sortY: number; draw: () => void }[] = [];
-    const overheadFG: (() => void)[] = [];
+    // Hybrid depth system:
+    // - Sprites on PRI ground (collision bits 0-1 != 0) → behind ALL FG (SNES OAM priority)
+    // - Sprites on normal ground → Y-sorted with ALL FG tiles
 
-    // Add sprites
-    drawList.push({
+    const behindAll: { sortY: number; draw: () => void }[] = [];
+    const drawList: { sortY: number; draw: () => void }[] = [];
+
+    // Categorize sprites by ground priority
+    const playerPri = getSpritePriority(player.state.x, player.state.y);
+    const playerDraw = {
       sortY: player.state.y,
       draw: () => {
         const sx = Math.floor(player.state.x - camera.x);
         const sy = Math.floor(player.state.y - camera.y);
         drawSprite(this.ctx, player.spriteGroupId, player.state.direction, player.state.frame, sx, sy);
       },
-    });
+    };
+    if (playerPri !== 0) {
+      behindAll.push(playerDraw);
+    } else {
+      drawList.push(playerDraw);
+    }
 
     for (const [, rp] of remotePlayers) {
       const rpScreenX = Math.floor(rp.x - camera.x);
       const rpScreenY = Math.floor(rp.y - camera.y);
       if (rpScreenX < -32 || rpScreenX > SCREEN_WIDTH + 32) continue;
       if (rpScreenY < -48 || rpScreenY > SCREEN_HEIGHT + 48) continue;
-      drawList.push({
+      const rpPri = getSpritePriority(rp.x, rp.y);
+      const rpDraw = {
         sortY: rp.y,
         draw: () => drawSprite(this.ctx, rp.spriteGroupId, rp.direction, rp.frame, rpScreenX, rpScreenY),
-      });
+      };
+      if (rpPri !== 0) {
+        behindAll.push(rpDraw);
+      } else {
+        drawList.push(rpDraw);
+      }
     }
 
-    // Add FG tiles, categorized by collision
+    // Add ALL FG tiles to the Y-sorted draw list
     for (let row = startRow; row <= endRow; row++) {
       for (let col = startCol; col <= endCol; col++) {
         const sector = getSectorForTile(col, row);
         if (!sector) continue;
         if (!hasForegroundTile(sector.tilesetId, sector.paletteId)) continue;
-
         const arrangementId = getTileAt(col, row);
         const screenX = Math.floor(col * TILE_SIZE - camera.x);
         const screenY = Math.floor(row * TILE_SIZE - camera.y);
-        const drawFn = () =>
-          drawForegroundTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, screenX, screenY);
-
-        // If this tile or the tile below has any solid collision,
-        // it's a ground-level object (fence, wall, sign) → depth sort.
-        // Otherwise it's overhead (tree canopy, bridge) → always on top.
-        if (tileHasAnySolid(col, row) || tileHasAnySolid(col, row + 1)) {
-          drawList.push({
-            sortY: (row + 1) * TILE_SIZE, // bottom of tile = depth position
-            draw: drawFn,
-          });
-        } else {
-          overheadFG.push(drawFn);
-        }
+        drawList.push({
+          sortY: (row + 1) * TILE_SIZE, // bottom edge = depth position
+          draw: () =>
+            drawForegroundTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, screenX, screenY),
+        });
       }
     }
 
-    // Draw Y-sorted: sprites and depth-based FG interleaved
+    // Pass 2: Sprites behind ALL FG (on PRI ground — under trees, behind buildings)
+    behindAll.sort((a, b) => a.sortY - b.sortY);
+    for (const item of behindAll) item.draw();
+
+    // Pass 3: Y-sorted interleave of FG tiles + normal-ground sprites
     drawList.sort((a, b) => a.sortY - b.sortY);
     for (const item of drawList) item.draw();
-
-    // Pass 3: Overhead FG always on top (tree canopies, etc.)
-    for (const fn of overheadFG) fn();
 
     // Door indicators (UI overlay, always on top)
     const nearbyDoors = getDoorsNear(player.state.x, player.state.y);

@@ -101,6 +101,31 @@ export function tileHasAnySolid(tileX: number, tileY: number): boolean {
 /**
  * Check if an entire tile (32x32) is fully solid (all 16 minitiles are collision).
  */
+/**
+ * Get sprite priority bits (bits 0-1) at a world pixel position.
+ * Returns the max priority of the 4 minitiles under the sprite's feet.
+ * Non-zero = sprite renders behind FG layer (under trees, overhangs).
+ * Zero = sprite renders in front of FG layer (normal ground).
+ */
+export function getSpritePriority(worldX: number, worldY: number): number {
+  const tileX = Math.floor(worldX / TILE_SIZE);
+  const tileY = Math.floor(worldY / TILE_SIZE);
+
+  const sector = getSectorForTile(tileX, tileY);
+  if (!sector) return 0;
+
+  const drawTilesetId = getDrawTilesetId(sector.tilesetId);
+  const collisions = collisionData.get(drawTilesetId);
+  if (!collisions) return 0;
+
+  const arrangementId = getTileAt(tileX, tileY);
+  if (arrangementId >= collisions.length) return 0;
+
+  const localX = Math.floor((worldX % TILE_SIZE) / MINITILE_SIZE);
+  const localY = Math.floor((worldY % TILE_SIZE) / MINITILE_SIZE);
+  return collisions[arrangementId][localY * 4 + localX] & 0x03;
+}
+
 export function checkCollisionTile(tileX: number, tileY: number): boolean {
   if (tileX < 0 || tileY < 0) return true;
   if (tileX >= MAP_WIDTH_TILES || tileY >= MAP_HEIGHT_TILES) return true;

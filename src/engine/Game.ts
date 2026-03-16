@@ -1,7 +1,7 @@
 import { Camera } from './Camera';
 import { Player } from './Player';
 import { Renderer } from './Renderer';
-import { initInput, isActionPressed } from './Input';
+import { initInput, isActionPressed, getKeySet } from './Input';
 import { loadMapData, getSector, getDrawTilesetId } from './MapManager';
 import { loadDoors, getDoorAt, DoorData } from './DoorManager';
 import { loadAtlas } from './TilesetManager';
@@ -16,6 +16,9 @@ import {
   handleCharSelectInput,
   getSelectedSpriteGroupId,
 } from './CharacterSelect';
+import { loadFont }                             from './TextRenderer';
+import { loadWindowStyle }                      from './WindowRenderer';
+import { initMenu, updateMenu, isMenuOpen, renderMenu } from './MenuManager';
 import {
   RemotePlayer,
   Direction,
@@ -57,7 +60,12 @@ export class Game {
     await loadSpriteMetadata();
 
     console.log('Loading character select...');
-    await Promise.all([loadCharacterSelect(), loadMusicMap()]);
+    await Promise.all([
+      loadCharacterSelect(),
+      loadMusicMap(),
+      loadFont(1),
+      loadWindowStyle(0),
+    ]);
 
     // Set up character select input
     window.addEventListener('keydown', (e) => this.onKeyDown(e));
@@ -94,6 +102,7 @@ export class Game {
     await this.loadNearbySectors();
 
     initInput();
+    initMenu(getKeySet());
 
     // Connect to multiplayer server
     connect(spriteGroupId, `Player`, {
@@ -274,6 +283,10 @@ export class Game {
       return;
     }
 
+    // Update menu state — when open, suppress game movement
+    updateMenu();
+    if (isMenuOpen()) return;
+
     this.player.update();
     this.camera.follow(this.player.state.x, this.player.state.y);
 
@@ -338,5 +351,8 @@ export class Game {
       this.ctx.fillStyle = `rgba(0, 0, 0, ${this.transitionAlpha})`;
       this.ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
     }
+
+    // Draw menu on top of game world (including during transitions)
+    renderMenu(this.ctx);
   }
 }
