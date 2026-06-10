@@ -1,10 +1,11 @@
-import { RemotePlayer, Direction } from '../types';
+import { RemotePlayer, Direction, CharacterAppearance } from '../types';
 
 type NetworkCallback = {
   onWelcome: (playerId: string, players: RemotePlayer[]) => void;
   onPlayerJoin: (player: RemotePlayer) => void;
   onPlayerMove: (id: string, x: number, y: number, direction: Direction, frame: number) => void;
   onPlayerLeave: (id: string) => void;
+  onChat: (id: string, text: string) => void;
 };
 
 let ws: WebSocket | null = null;
@@ -14,6 +15,7 @@ let sendInterval: number | null = null;
 export function connect(
   spriteGroupId: number,
   name: string,
+  appearance: CharacterAppearance | null,
   cb: NetworkCallback
 ) {
   callbacks = cb;
@@ -27,6 +29,7 @@ export function connect(
       type: 'join',
       spriteGroupId,
       name,
+      appearance,
     }));
   };
 
@@ -44,6 +47,9 @@ export function connect(
         break;
       case 'player_leave':
         callbacks?.onPlayerLeave(msg.id);
+        break;
+      case 'chat':
+        callbacks?.onChat(msg.id, msg.text);
         break;
     }
   };
@@ -63,5 +69,11 @@ export function sendPosition(x: number, y: number, direction: Direction, frame: 
       direction,
       frame,
     }));
+  }
+}
+
+export function sendChat(text: string) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'chat', text }));
   }
 }

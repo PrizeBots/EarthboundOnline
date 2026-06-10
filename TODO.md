@@ -10,10 +10,12 @@
 - [x] Camera follow
 - [x] Sprite animation (walk cycle)
 - [x] Character select screen
+- [x] Character creator (mix head/body/shirt/pants/shoes/face/hair from ROM sprites, live 16-frame grid, synced in multiplayer)
 - [ ] Verify Onett spawn point is correct and walkable
 - [ ] Fix any rendering glitches (missing atlases, palette issues)
 - [ ] Add NPC sprites to Onett (static placement from ROM data)
 - [ ] Door/zone transitions between areas
+- [x] Crop interior rooms to a black background (camera roomBounds + render clip)
 - [ ] Debug overlay (collision boxes, sector grid, FPS counter)
 
 ## Phase 2: Multiplayer (Browser)
@@ -24,7 +26,7 @@
 - [x] Fix ghost sprite on join (broadcast excluded self)
 - [x] Nodemon auto-restart for server changes
 - [ ] Player name tags above sprites
-- [ ] Chat system (text bubbles or chat box)
+- [x] Chat system (text bubbles or chat box)
 - [ ] Server-side validation (speed, position bounds)
 - [ ] Interpolation/smoothing for remote player movement
 - [ ] Handle disconnects gracefully (timeout, reconnect)
@@ -80,6 +82,7 @@
 - [ ] Sound effects / music integration
 
 ## Backlog / Ideas
+- [ ] Player settings screen — selectable chat font (default: regular EB font; Mr. Saturn font as a fun option via ChatManager.setChatFont)
 - [ ] Build visual sprite catalog (HTML page showing all 463 groups with IDs)
 - [ ] Map editor in browser
 - [ ] Party system (follow the leader)

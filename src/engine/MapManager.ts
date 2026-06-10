@@ -45,3 +45,8 @@ export function getSectorForTile(tileX: number, tileY: number): SectorMeta | nul
   const sectorY = Math.floor(tileY / SECTOR_TILES_Y);
   return getSector(sectorX, sectorY);
 }
+
+/** True if the tile belongs to an interior ("indoors") sector. */
+export function isIndoorTile(tileX: number, tileY: number): boolean {
+  return getSectorForTile(tileX, tileY)?.indoor === true;
+}

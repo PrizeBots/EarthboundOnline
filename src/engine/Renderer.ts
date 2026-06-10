@@ -2,10 +2,10 @@ import { Camera } from './Camera';
 import { Player } from './Player';
 import { getTileAt, getSectorForTile } from './MapManager';
 import { drawTile, drawForegroundTile, hasForegroundTile } from './TilesetManager';
-import { drawSprite } from './SpriteManager';
+import { drawSprite, SpritePart } from './SpriteManager';
 import { getDoorsNear, DoorData } from './DoorManager';
-import { getSpritePriority, tileHasAnySolid } from './Collision';
-import { RemotePlayer, SCREEN_WIDTH, SCREEN_HEIGHT, TILE_SIZE } from '../types';
+import { getSpritePriority } from './Collision';
+import { RemotePlayer, SCREEN_WIDTH, SCREEN_HEIGHT, TILE_SIZE, MAP_WIDTH_TILES } from '../types';
 
 export class Renderer {
   private canvas: HTMLCanvasElement;
@@ -36,6 +36,23 @@ export class Renderer {
 
     const { startCol, startRow, endCol, endRow } = camera.getVisibleTileRange();
 
+    // In interiors, clip everything to the current room's tiles so adjacent
+    // rooms (packed next to each other on the map) stay hidden behind black.
+    const room = camera.roomBounds;
+    if (room) {
+      const camX = Math.floor(camera.x);
+      const camY = Math.floor(camera.y);
+      this.ctx.save();
+      this.ctx.beginPath();
+      for (let row = startRow; row <= endRow; row++) {
+        for (let col = startCol; col <= endCol; col++) {
+          if (!room.tiles.has(row * MAP_WIDTH_TILES + col)) continue;
+          this.ctx.rect(col * TILE_SIZE - camX, row * TILE_SIZE - camY, TILE_SIZE, TILE_SIZE);
+        }
+      }
+      this.ctx.clip();
+    }
+
     // Pass 1: Draw all tiles as background
     for (let row = startRow; row <= endRow; row++) {
       for (let col = startCol; col <= endCol; col++) {
@@ -48,47 +65,54 @@ export class Renderer {
       }
     }
 
-    // Hybrid depth system:
-    // - Sprites on PRI ground (collision bits 0-1 != 0) → behind ALL FG (SNES OAM priority)
-    // - Sprites on normal ground → Y-sorted with ALL FG tiles
+    // SNES layering model: sprites render ABOVE the whole FG layer unless the
+    // ground under their feet is flagged. Bit 0x01 drops the sprite's LOWER
+    // half behind FG (bed feet, sofa backs, counters); bit 0x02 drops the
+    // UPPER half (under tree canopies). The map data encodes all depth
+    // relationships through these flags — no Y-sorting against FG tiles.
 
-    const behindAll: { sortY: number; draw: () => void }[] = [];
-    const drawList: { sortY: number; draw: () => void }[] = [];
+    const behindFG: { sortY: number; draw: () => void }[] = [];
+    const aboveFG: { sortY: number; draw: () => void }[] = [];
 
-    // Categorize sprites by ground priority
-    const playerPri = getSpritePriority(player.state.x, player.state.y);
-    const playerDraw = {
-      sortY: player.state.y,
-      draw: () => {
-        const sx = Math.floor(player.state.x - camera.x);
-        const sy = Math.floor(player.state.y - camera.y);
-        drawSprite(this.ctx, player.spriteGroupId, player.state.direction, player.state.frame, sx, sy);
-      },
+    const enqueueSprite = (
+      worldX: number,
+      worldY: number,
+      drawPart: (part: SpritePart) => void
+    ) => {
+      const pri = getSpritePriority(worldX, worldY);
+      const lowerBehind = (pri & 0x01) !== 0;
+      const upperBehind = (pri & 0x02) !== 0;
+      if (lowerBehind && upperBehind) {
+        behindFG.push({ sortY: worldY, draw: () => drawPart('full') });
+      } else if (!lowerBehind && !upperBehind) {
+        aboveFG.push({ sortY: worldY, draw: () => drawPart('full') });
+      } else {
+        behindFG.push({ sortY: worldY, draw: () => drawPart(lowerBehind ? 'lower' : 'upper') });
+        aboveFG.push({ sortY: worldY, draw: () => drawPart(lowerBehind ? 'upper' : 'lower') });
+      }
     };
-    if (playerPri !== 0) {
-      behindAll.push(playerDraw);
-    } else {
-      drawList.push(playerDraw);
-    }
+
+    enqueueSprite(player.state.x, player.state.y, (part) => {
+      const sx = Math.floor(player.state.x - camera.x);
+      const sy = Math.floor(player.state.y - camera.y);
+      drawSprite(this.ctx, player.spriteGroupId, player.state.direction, player.state.frame, sx, sy, part);
+    });
 
     for (const [, rp] of remotePlayers) {
       const rpScreenX = Math.floor(rp.x - camera.x);
       const rpScreenY = Math.floor(rp.y - camera.y);
       if (rpScreenX < -32 || rpScreenX > SCREEN_WIDTH + 32) continue;
       if (rpScreenY < -48 || rpScreenY > SCREEN_HEIGHT + 48) continue;
-      const rpPri = getSpritePriority(rp.x, rp.y);
-      const rpDraw = {
-        sortY: rp.y,
-        draw: () => drawSprite(this.ctx, rp.spriteGroupId, rp.direction, rp.frame, rpScreenX, rpScreenY),
-      };
-      if (rpPri !== 0) {
-        behindAll.push(rpDraw);
-      } else {
-        drawList.push(rpDraw);
-      }
+      enqueueSprite(rp.x, rp.y, (part) =>
+        drawSprite(this.ctx, rp.spriteGroupId, rp.direction, rp.frame, rpScreenX, rpScreenY, part)
+      );
     }
 
-    // Add ALL FG tiles to the Y-sorted draw list
+    // Pass 2: sprite halves dropped behind the FG layer (Y-sorted among themselves)
+    behindFG.sort((a, b) => a.sortY - b.sortY);
+    for (const item of behindFG) item.draw();
+
+    // Pass 3: the FG layer (flat, like a high-priority SNES BG layer)
     for (let row = startRow; row <= endRow; row++) {
       for (let col = startCol; col <= endCol; col++) {
         const sector = getSectorForTile(col, row);
@@ -97,21 +121,25 @@ export class Renderer {
         const arrangementId = getTileAt(col, row);
         const screenX = Math.floor(col * TILE_SIZE - camera.x);
         const screenY = Math.floor(row * TILE_SIZE - camera.y);
-        drawList.push({
-          sortY: (row + 1) * TILE_SIZE, // bottom edge = depth position
-          draw: () =>
-            drawForegroundTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, screenX, screenY),
-        });
+        drawForegroundTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, screenX, screenY);
       }
     }
 
-    // Pass 2: Sprites behind ALL FG (on PRI ground — under trees, behind buildings)
-    behindAll.sort((a, b) => a.sortY - b.sortY);
-    for (const item of behindAll) item.draw();
+    // Pass 4: sprite halves above the FG layer (Y-sorted among themselves)
+    aboveFG.sort((a, b) => a.sortY - b.sortY);
+    for (const item of aboveFG) item.draw();
 
-    // Pass 3: Y-sorted interleave of FG tiles + normal-ground sprites
-    drawList.sort((a, b) => a.sortY - b.sortY);
-    for (const item of drawList) item.draw();
+    // Black out minitiles of neighboring rooms that share an edge tile with
+    // the current room (sub-tile leftovers of the room mask).
+    if (room && room.holes.length > 0) {
+      this.ctx.fillStyle = '#000';
+      for (const hole of room.holes) {
+        const hx = Math.floor(hole.x - camera.x);
+        const hy = Math.floor(hole.y - camera.y);
+        if (hx < -8 || hx > SCREEN_WIDTH || hy < -8 || hy > SCREEN_HEIGHT) continue;
+        this.ctx.fillRect(hx, hy, 8, 8);
+      }
+    }
 
     // Door indicators (UI overlay, always on top)
     const nearbyDoors = getDoorsNear(player.state.x, player.state.y);
@@ -130,6 +158,10 @@ export class Renderer {
       this.ctx.lineTo(ax, ay + 5);
       this.ctx.closePath();
       this.ctx.fill();
+    }
+
+    if (room) {
+      this.ctx.restore();
     }
   }
 }

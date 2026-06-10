@@ -20,6 +20,10 @@ export interface SectorMeta {
   tilesetId: number;
   paletteId: number;
   musicId: number;
+  // True for interior sectors (EarthBound "Setting: indoors"). Interiors are
+  // small rooms surrounded by black void tiles and must be camera-cropped to
+  // the current room (see MapManager.computeRoomBounds / Camera.roomBounds).
+  indoor?: boolean;
 }
 
 export interface SpriteGroupMeta {
@@ -44,10 +48,25 @@ export interface PlayerState {
   moving: boolean;
 }
 
+// Custom character appearance: one part id per category (index into the
+// charparts catalog). Composited into a sprite sheet at runtime.
+export const APPEARANCE_CATEGORIES = [
+  'head',
+  'body',
+  'shirt',
+  'pants',
+  'shoes',
+  'face',
+  'hair',
+] as const;
+export type AppearanceCategory = (typeof APPEARANCE_CATEGORIES)[number];
+export type CharacterAppearance = Record<AppearanceCategory, number>;
+
 export interface RemotePlayer {
   id: string;
   name: string;
   spriteGroupId: number;
+  appearance?: CharacterAppearance | null;
   x: number;
   y: number;
   direction: Direction;

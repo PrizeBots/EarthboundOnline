@@ -5,8 +5,8 @@ import { initInput, isActionPressed, getKeySet } from './Input';
 import { loadMapData, getSector, getDrawTilesetId } from './MapManager';
 import { loadDoors, getDoorAt, DoorData } from './DoorManager';
 import { loadAtlas } from './TilesetManager';
-import { loadCollision, checkCollision } from './Collision';
-import { loadSpriteMetadata, loadSpriteGroup } from './SpriteManager';
+import { loadCollision, checkCollision, computeRoomBounds } from './Collision';
+import { loadSpriteMetadata, loadSpriteGroup, CUSTOM_GROUP_BASE } from './SpriteManager';
 import { connect, sendPosition } from './Network';
 import { loadMusicMap, initMusic, updateMusic } from './MusicManager';
 import {
@@ -16,11 +16,29 @@ import {
   handleCharSelectInput,
   getSelectedSpriteGroupId,
 } from './CharacterSelect';
+import {
+  loadCharacterCreate,
+  updateCharacterCreate,
+  drawCharacterCreate,
+  handleCharCreateInput,
+  getCreatedAppearance,
+} from './CharacterCreate';
+import { registerCustomAppearance } from './CharacterComposite';
 import { loadFont }                             from './TextRenderer';
 import { loadWindowStyle }                      from './WindowRenderer';
 import { initMenu, updateMenu, isMenuOpen, renderMenu } from './MenuManager';
 import {
+  initChat,
+  handleChatKey,
+  isChatTyping,
+  updateChatBubbles,
+  renderChat,
+  addRemoteBubble,
+  removeBubble,
+} from './ChatManager';
+import {
   RemotePlayer,
+  CharacterAppearance,
   Direction,
   SCREEN_WIDTH,
   SCREEN_HEIGHT,
@@ -31,7 +49,7 @@ import {
   TILE_SIZE,
 } from '../types';
 
-type GamePhase = 'loading' | 'charselect' | 'playing';
+type GamePhase = 'loading' | 'charselect' | 'charcreate' | 'playing';
 
 export class Game {
   private camera = new Camera();
@@ -63,7 +81,9 @@ export class Game {
     await Promise.all([
       loadCharacterSelect(),
       loadMusicMap(),
-      loadFont(1),
+      loadFont(0), // regular EB dialogue font (chat input, command menu)
+      loadFont(1), // Mr. Saturn font (backlogged chat option)
+      loadFont(4), // small 8px battle font (speech bubbles)
       loadWindowStyle(0),
     ]);
 
@@ -80,43 +100,82 @@ export class Game {
       if (result === 'confirm') {
         initMusic(); // Must be called from user gesture for AudioContext
         this.startGame();
+      } else if (result === 'create') {
+        loadCharacterCreate().then(() => {
+          if (this.phase === 'charselect') this.phase = 'charcreate';
+        });
       }
+      return;
+    }
+
+    if (this.phase === 'charcreate') {
+      const result = handleCharCreateInput(e.key);
+      if (result === 'confirm') {
+        initMusic(); // Must be called from user gesture for AudioContext
+        this.startGame(getCreatedAppearance());
+      } else if (result === 'back') {
+        this.phase = 'charselect';
+      }
+      return;
+    }
+
+    if (this.phase === 'playing') {
+      // While typing, chat captures every key. Otherwise Enter opens chat,
+      // but not over the menu or during a door transition.
+      if (isChatTyping()) {
+        handleChatKey(e);
+        return;
+      }
+      if (isMenuOpen() || this.transitioning) return;
+      handleChatKey(e);
     }
   }
 
-  private async startGame() {
+  private async startGame(appearance?: CharacterAppearance) {
     this.phase = 'loading';
-    const spriteGroupId = getSelectedSpriteGroupId();
-    this.player.spriteGroupId = spriteGroupId;
 
-    console.log(`Selected character: sprite group ${spriteGroupId}`);
+    let spriteGroupId: number;
+    if (appearance) {
+      spriteGroupId = await registerCustomAppearance(appearance);
+      console.log(`Custom character: ${JSON.stringify(appearance)}`);
+    } else {
+      spriteGroupId = getSelectedSpriteGroupId();
+      console.log(`Selected character: sprite group ${spriteGroupId}`);
+    }
+    this.player.spriteGroupId = spriteGroupId;
 
     // Load map, player sprite, and tilesets
     console.log('Loading map data...');
     await Promise.all([loadMapData(), loadDoors()]);
 
-    console.log('Loading player sprite...');
-    await loadSpriteGroup(spriteGroupId);
+    if (!appearance) {
+      console.log('Loading player sprite...');
+      await loadSpriteGroup(spriteGroupId);
+    }
 
     console.log('Loading tilesets around spawn...');
     await this.loadNearbySectors();
 
+    // In case the spawn point is inside an interior, crop to that room.
+    this.updateRoomBounds(this.player.state.x, this.player.state.y);
+
     initInput();
     initMenu(getKeySet());
+    initChat(getKeySet());
 
     // Connect to multiplayer server
-    connect(spriteGroupId, `Player`, {
+    connect(spriteGroupId, `Player`, appearance ?? null, {
       onWelcome: (playerId, players) => {
         this.localPlayerId = playerId;
         for (const p of players) {
           this.remotePlayers.set(p.id, p);
-          loadSpriteGroup(p.spriteGroupId);
+          this.resolveRemoteSprite(p);
         }
         console.log(`Connected as ${playerId}, ${players.length} other players online`);
       },
       onPlayerJoin: (player) => {
         this.remotePlayers.set(player.id, player);
-        loadSpriteGroup(player.spriteGroupId);
+        this.resolveRemoteSprite(player);
         console.log(`${player.name} joined`);
       },
       onPlayerMove: (id, x, y, direction, frame) => {
@@ -130,12 +189,38 @@ export class Game {
       },
       onPlayerLeave: (id) => {
         this.remotePlayers.delete(id);
+        removeBubble(id);
         console.log(`Player ${id} left`);
+      },
+      onChat: (id, text) => {
+        addRemoteBubble(id, text);
       },
     });
 
     this.phase = 'playing';
     console.log('Ready! Use arrow keys or WASD to move');
+  }
+
+  /**
+   * Make a remote player's sprite drawable: composite their custom appearance
+   * or load their ROM sprite group. Falls back to Ness if neither resolves.
+   */
+  private resolveRemoteSprite(rp: RemotePlayer) {
+    const fallback = () => {
+      rp.spriteGroupId = 1;
+      loadSpriteGroup(1);
+    };
+    if (rp.appearance) {
+      registerCustomAppearance(rp.appearance as CharacterAppearance)
+        .then((id) => {
+          rp.spriteGroupId = id;
+        })
+        .catch(fallback);
+    } else if (rp.spriteGroupId >= CUSTOM_GROUP_BASE) {
+      fallback(); // custom id with no appearance data — can't render it
+    } else {
+      loadSpriteGroup(rp.spriteGroupId).catch(fallback);
+    }
   }
 
   private async loadNearbySectors() {
@@ -175,12 +260,21 @@ export class Game {
     }
   }
 
+  /**
+   * Recompute the camera's room crop for a world pixel position. Interiors get
+   * clamped/cropped to the current room; outdoor areas scroll freely (null).
+   */
+  private updateRoomBounds(worldX: number, worldY: number) {
+    this.camera.roomBounds = computeRoomBounds(worldX, worldY);
+  }
+
   private startTransition(door: DoorData) {
     console.log(`Door: (${door.worldX},${door.worldY}) -> (${door.destX},${door.destY}) player:(${Math.round(this.player.state.x)},${Math.round(this.player.state.y)})`);
     this.transitioning = true;
     this.transitionAlpha = 0;
     this.pendingDoor = door;
-    this.camera.roomBounds = null;
+    // Keep the current room crop while fading out — the destination's bounds
+    // are computed on arrival. Dropping it here would flash adjacent rooms.
   }
 
   private updateTransition() {
@@ -240,7 +334,8 @@ export class Game {
           this.player.state.moving = false;
           this.player.state.frame = 0;
 
-          this.camera.roomBounds = null;
+          // Crop the camera to the destination room if it's an interior.
+          this.updateRoomBounds(destX, destY);
 
           this.camera.follow(destX, destY);
           // Suppress doors until player walks out of all trigger zones
@@ -275,13 +370,24 @@ export class Game {
       return;
     }
 
+    if (this.phase === 'charcreate') {
+      updateCharacterCreate();
+      return;
+    }
+
     if (this.phase !== 'playing') return;
+
+    // Float/fade chat bubbles regardless of other state.
+    updateChatBubbles();
 
     // Handle door transition animation
     if (this.transitioning) {
       this.updateTransition();
       return;
     }
+
+    // While typing a chat message, freeze movement, menu, and door triggers.
+    if (isChatTyping()) return;
 
     // Update menu state — when open, suppress game movement
     updateMenu();
@@ -333,6 +439,11 @@ export class Game {
       return;
     }
 
+    if (this.phase === 'charcreate') {
+      drawCharacterCreate(this.ctx);
+      return;
+    }
+
     if (this.phase === 'loading') {
       this.ctx.fillStyle = '#000';
       this.ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
@@ -345,6 +456,10 @@ export class Game {
     }
 
     this.renderer.render(this.camera, this.player, this.remotePlayers);
+
+    // Chat bubbles (world) + typing box (screen), above the world but below
+    // the transition fade and menu.
+    renderChat(this.ctx, this.camera, this.player, this.remotePlayers);
 
     // Draw fade overlay during transitions
     if (this.transitionAlpha > 0) {

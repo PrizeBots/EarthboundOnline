@@ -1,8 +1,13 @@
 /**
  * WindowRenderer — Programmatic EarthBound-style window borders.
  *
- * Draws the classic EB window: dark fill with a multi-tone border.
- * The border pattern (from outside in): shadow → bright edge → medium → fill.
+ * Draws the classic EB window: dark fill with a multi-tone border and the
+ * rounded pixel corners of the real game's window tiles. Everything is
+ * 1px fillRect runs (no stroked paths), so edges stay crisp at integer
+ * scale — exactly how the corner tiles look on hardware.
+ *
+ * Border pattern from outside in: bright edge → medium → bright → fill,
+ * with a soft drop shadow under the whole window.
  */
 
 // EarthBound window flavors (outer, bright, medium, fill colors)
@@ -16,15 +21,62 @@ const FLAVORS: [string, string, string, string][] = [
   ['#000', '#c0c0f0', '#606090', '#101028'], // 6: Strawberry (blue-purple)
 ];
 
-const BORDER_W = 3; // total border thickness in pixels
-
 // "loaded" is always true since this is programmatic
 export async function loadWindowStyle(_styleId: number = 0): Promise<void> {
   // No-op — purely programmatic, no assets to load
 }
 
 /**
+ * Trace a 1px rounded outline along the inside of rect (x, y, w, h).
+ * `edge` is where the straight edges start; `corner` lists the quarter-arc
+ * pixels for the top-left, which get mirrored to the other three corners.
+ */
+function traceRoundOutline(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  edge: number,
+  corner: [number, number][],
+  color: string
+): void {
+  ctx.fillStyle = color;
+  ctx.fillRect(x + edge, y, w - edge * 2, 1);          // top
+  ctx.fillRect(x + edge, y + h - 1, w - edge * 2, 1);  // bottom
+  ctx.fillRect(x, y + edge, 1, h - edge * 2);          // left
+  ctx.fillRect(x + w - 1, y + edge, 1, h - edge * 2);  // right
+  for (const [cx, cy] of corner) {
+    ctx.fillRect(x + cx, y + cy, 1, 1);                // top-left
+    ctx.fillRect(x + w - 1 - cx, y + cy, 1, 1);        // top-right
+    ctx.fillRect(x + cx, y + h - 1 - cy, 1, 1);        // bottom-left
+    ctx.fillRect(x + w - 1 - cx, y + h - 1 - cy, 1, 1); // bottom-right
+  }
+}
+
+/** Fill the rounded (radius-4) interior of rect (x, y, w, h). */
+function fillRoundRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  color: string
+): void {
+  ctx.fillStyle = color;
+  ctx.fillRect(x + 1, y + 4, w - 2, h - 8);
+  ctx.fillRect(x + 4, y + 1, w - 8, h - 2);
+  ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
+}
+
+// Quarter-arc pixels (top-left corner) for each nested outline radius.
+const ARC_R4: [number, number][] = [[2, 1], [3, 1], [1, 2], [1, 3]];
+const ARC_R3: [number, number][] = [[1, 1], [2, 1], [1, 2]];
+const ARC_R2: [number, number][] = [[1, 1]];
+
+/**
  * Draw a bordered window at (x, y) with the given total dimensions.
+ * Minimum sensible size is about 12x12.
  */
 export function drawWindow(
   ctx: CanvasRenderingContext2D,
@@ -34,31 +86,20 @@ export function drawWindow(
   height: number,
   styleId: number = 0,
 ): void {
-  const [shadow, bright, medium, fill] = FLAVORS[styleId] ?? FLAVORS[0];
+  const [, bright, medium, fill] = FLAVORS[styleId] ?? FLAVORS[0];
 
   ctx.save();
 
-  // Shadow (offset by 2px)
-  ctx.fillStyle = 'rgba(0,0,0,0.5)';
-  ctx.fillRect(x + 2, y + 2, width, height);
+  // Drop shadow (offset by 2px), same rounded silhouette.
+  fillRoundRect(ctx, x + 2, y + 2, width, height, 'rgba(0,0,0,0.5)');
 
-  // Fill
-  ctx.fillStyle = fill;
-  ctx.fillRect(x, y, width, height);
+  fillRoundRect(ctx, x, y, width, height, fill);
 
-  // Outer border (bright)
-  ctx.strokeStyle = bright;
-  ctx.lineWidth = 1;
-  ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
-
-  // Inner border (medium)
-  ctx.strokeStyle = medium;
-  ctx.strokeRect(x + 1.5, y + 1.5, width - 3, height - 3);
-
-  // Second inner line (slightly brighter)
-  ctx.strokeStyle = bright;
-  ctx.lineWidth = 1;
-  ctx.strokeRect(x + 2.5, y + 2.5, width - 5, height - 5);
+  // Outer bright edge on the boundary, medium line inside it, then a second
+  // bright line — each one step in, with a one-smaller corner radius.
+  traceRoundOutline(ctx, x, y, width, height, 4, ARC_R4, bright);
+  traceRoundOutline(ctx, x + 1, y + 1, width - 2, height - 2, 3, ARC_R3, medium);
+  traceRoundOutline(ctx, x + 2, y + 2, width - 4, height - 4, 2, ARC_R2, bright);
 
   ctx.restore();
 }
@@ -71,7 +112,5 @@ export function drawWindowFill(
   height: number,
   styleId: number = 0,
 ): void {
-  const fill = (FLAVORS[styleId] ?? FLAVORS[0])[3];
-  ctx.fillStyle = fill;
-  ctx.fillRect(x, y, width, height);
+  fillRoundRect(ctx, x, y, width, height, (FLAVORS[styleId] ?? FLAVORS[0])[3]);
 }

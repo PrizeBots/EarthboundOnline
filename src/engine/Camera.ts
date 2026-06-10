@@ -11,6 +11,15 @@ export interface RoomBounds {
   minY: number;
   maxX: number;
   maxY: number;
+  // Tile keys (tileY * MAP_WIDTH_TILES + tileX) belonging to the room — its
+  // floor plus surrounding walls. The renderer clips to these tiles so that
+  // neighboring rooms inside the bounding rect (e.g. across a staircase
+  // complex) stay hidden behind black.
+  tiles: Set<number>;
+  // World-pixel positions of 8x8 minitiles inside the masked tiles that
+  // belong to a NEIGHBORING room's floor (walls aren't always tile-aligned).
+  // The renderer paints these black on top of the world.
+  holes: { x: number; y: number }[];
 }
 
 export class Camera {

@@ -42,6 +42,7 @@ function gameServerPlugin() {
                 id: playerId,
                 name: msg.name || `Player${playerId}`,
                 spriteGroupId: msg.spriteGroupId || 1,
+                appearance: msg.appearance || null,
                 x: 1296, y: 1168,
                 direction: 0, frame: 0,
               };
@@ -79,6 +80,20 @@ function gameServerPlugin() {
               for (const [id, p] of players) {
                 if (id !== playerId && p._ws.readyState === 1) {
                   p._ws.send(moveMsg);
+                }
+              }
+              break;
+            }
+            case 'chat': {
+              if (!players.has(playerId)) break;
+              const text = String(msg.text || '').slice(0, 100).trim();
+              if (!text) break;
+
+              // Broadcast to everyone else; the sender shows its own bubble locally.
+              const chatMsg = JSON.stringify({ type: 'chat', id: playerId, text });
+              for (const [id, p] of players) {
+                if (id !== playerId && p._ws.readyState === 1) {
+                  p._ws.send(chatMsg);
                 }
               }
               break;
