@@ -33,6 +33,7 @@ let audioContext: AudioContext | null = null;
 let audioNode: ScriptProcessorNode | null = null;
 let gainNode: GainNode | null = null;
 let volume = 0.5;
+let muted = false;
 
 // SPC decode state
 let bufPtr = 0;
@@ -64,7 +65,7 @@ export function initMusic(): void {
       audioContext.resume();
     }
     gainNode = audioContext.createGain();
-    gainNode.gain.value = volume;
+    gainNode.gain.value = muted ? 0 : volume;
     gainNode.connect(audioContext.destination);
 
     // Set up resampling params (SPC outputs at 32kHz)
@@ -175,7 +176,7 @@ export function playCustomTrack(url: string, loop = true): void {
     customAudioCache.set(url, audio);
   }
   audio.loop = loop;
-  audio.volume = volume;
+  audio.volume = muted ? 0 : volume;
   audio.currentTime = 0;
   audio.play().catch(() => {});
   currentCustomTrack = audio;
@@ -196,8 +197,29 @@ export function stopMusic(): void {
 
 export function setMusicVolume(v: number): void {
   volume = Math.max(0, Math.min(1, v));
-  if (gainNode) gainNode.gain.value = volume;
-  if (currentCustomTrack) currentCustomTrack.volume = volume;
+  applyVolume();
+}
+
+function applyVolume(): void {
+  const v = muted ? 0 : volume;
+  if (gainNode) gainNode.gain.value = v;
+  if (currentCustomTrack) currentCustomTrack.volume = v;
+}
+
+export function isMusicMuted(): boolean {
+  return muted;
+}
+
+export function setMusicMuted(m: boolean): void {
+  muted = m;
+  applyVolume();
+}
+
+/** Flip mute state and return the new value. */
+export function toggleMusicMuted(): boolean {
+  muted = !muted;
+  applyVolume();
+  return muted;
 }
 
 let lastLoggedMusicId = -1;

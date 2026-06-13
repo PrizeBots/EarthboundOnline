@@ -9,6 +9,22 @@ export async function loadJSON<T>(path: string): Promise<T> {
   return data as T;
 }
 
+/**
+ * Replace a cached JSON entry. Used by the editor save channel: override files
+ * are rewritten at runtime, so without this a later loadJSON() of an override
+ * (e.g. DoorManager re-applying after a save) would return the stale copy
+ * cached at game start and silently drop the edit. Seeding with the just-saved
+ * object also avoids re-fetching a file the dev server may not have flushed yet.
+ */
+export function primeJSONCache(path: string, data: unknown): void {
+  jsonCache.set(path, data);
+}
+
+/** Drop a cached JSON entry so the next loadJSON() re-fetches it. */
+export function invalidateJSON(path: string): void {
+  jsonCache.delete(path);
+}
+
 export async function loadImage(path: string): Promise<HTMLImageElement> {
   if (imageCache.has(path)) return imageCache.get(path)!;
   return new Promise((resolve, reject) => {

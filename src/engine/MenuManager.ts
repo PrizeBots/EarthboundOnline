@@ -19,9 +19,19 @@ const MENU_STYLE = 0;          // EB "Plain" dark-blue flavor
 const BORDER     = 6;
 const PADDING    = 4;
 const ITEM_H     = FONT_LINE_HEIGHT + 2;
-const CURSOR_STR = '>';
 const FONT_ID    = 0;          // regular EB dialogue font, as in the real menu
 const COL_GAP    = 6;          // horizontal gap between command columns
+const CURSOR_W   = 9;          // arrow (5px) + gap before the label
+
+// EarthBound's cursor is a solid right-pointing triangle, not a text glyph
+// (the EB font has curly quotes where ASCII '<'/'>' would be). Drawn as
+// pixel columns so it stays crisp: heights 9,7,5,3,1.
+function drawCursor(ctx: CanvasRenderingContext2D, x: number, y: number): void {
+  ctx.fillStyle = '#f0f0f0';
+  for (let col = 0; col < 5; col++) {
+    ctx.fillRect(x + col, y + col, 1, 9 - col * 2);
+  }
+}
 
 // EarthBound's command window: 2 rows x 3 columns, read left to right.
 const MENU_ITEMS = [
@@ -112,9 +122,8 @@ export function renderMenu(ctx: CanvasRenderingContext2D): void {
 
   // Every column is wide enough for the widest label plus the cursor slot,
   // so the grid stays aligned like EB's fixed-width command window.
-  const cursorW = measureText(CURSOR_STR, FONT_ID) + 3;
   const maxLabelW = Math.max(...MENU_ITEMS.map((i) => measureText(i.label, FONT_ID)));
-  const colW = cursorW + maxLabelW + COL_GAP;
+  const colW = CURSOR_W + maxLabelW + COL_GAP;
   const innerW = COLS * colW - COL_GAP + PADDING * 2;
   const innerH = ROWS * ITEM_H + PADDING * 2;
 
@@ -129,9 +138,9 @@ export function renderMenu(ctx: CanvasRenderingContext2D): void {
     const cellY = winY + BORDER + PADDING + row * ITEM_H;
 
     if (i === cursorIndex) {
-      drawText(ctx, CURSOR_STR, cellX, cellY, FONT_ID);
+      drawCursor(ctx, cellX, cellY + 3);
     }
-    drawText(ctx, MENU_ITEMS[i].label, cellX + cursorW, cellY, FONT_ID);
+    drawText(ctx, MENU_ITEMS[i].label, cellX + CURSOR_W, cellY, FONT_ID);
   }
 }
 

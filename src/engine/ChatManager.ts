@@ -164,7 +164,7 @@ export function renderChat(
 ): void {
   // World-space speech bubbles above each speaking player.
   if (localBubble) {
-    drawBubble(ctx, localBubble, player.state.x, player.state.y, player.spriteGroupId, camera);
+    drawBubble(ctx, localBubble, player.x, player.y, player.spriteGroupId, camera);
   }
   for (const [id, bubble] of remoteBubbles) {
     const rp = remotePlayers.get(id);
@@ -250,7 +250,7 @@ function drawInputBox(ctx: CanvasRenderingContext2D): void {
 }
 
 /** Word-wrap text to a pixel width, hard-breaking words longer than the line. */
-function wrapText(text: string, maxW: number, fontId: number): string[] {
+export function wrapText(text: string, maxW: number, fontId: number): string[] {
   const lines: string[] = [];
   let cur = '';
 

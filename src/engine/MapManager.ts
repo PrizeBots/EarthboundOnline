@@ -46,7 +46,18 @@ export function getSectorForTile(tileX: number, tileY: number): SectorMeta | nul
   return getSector(sectorX, sectorY);
 }
 
-/** True if the tile belongs to an interior ("indoors") sector. */
+/** True if the tile belongs to a building-interior ("indoors") sector. */
 export function isIndoorTile(tileX: number, tileY: number): boolean {
   return getSectorForTile(tileX, tileY)?.indoor === true;
+}
+
+/**
+ * True if the tile belongs to a sector that must be camera-cropped to the
+ * current room: interiors ("indoors") AND caves/dungeons ("exit mouse
+ * usable"). Both are packed adjacent to unrelated map chunks on the big
+ * stitched map; without the crop, neighboring areas are visible (bugs.md).
+ */
+export function isRoomCroppableTile(tileX: number, tileY: number): boolean {
+  const sector = getSectorForTile(tileX, tileY);
+  return sector?.indoor === true || sector?.dungeon === true;
 }

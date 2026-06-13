@@ -1,17 +1,166 @@
 import { loadJSON } from './AssetLoader';
-import { getSectorForTile, getTileAt, getDrawTilesetId, isIndoorTile } from './MapManager';
+import {
+  getSector,
+  getSectorForTile,
+  getTileAt,
+  getDrawTilesetId,
+  isIndoorTile,
+  isRoomCroppableTile,
+} from './MapManager';
 import { RoomBounds } from './Camera';
-import { MINITILE_SIZE, TILE_SIZE, MAP_WIDTH_TILES, MAP_HEIGHT_TILES } from '../types';
+import {
+  MINITILE_SIZE,
+  TILE_SIZE,
+  MAP_WIDTH_TILES,
+  MAP_HEIGHT_TILES,
+  MAP_WIDTH_SECTORS,
+  SECTOR_TILES_X,
+  SECTOR_TILES_Y,
+} from '../types';
 
 // collision[drawTilesetId][arrangementId] = 16 collision bytes (4x4 minitiles)
 const collisionData = new Map<number, number[][]>();
 
+/**
+ * Editor-authored collision overrides (public/overrides/collision.json — OUR
+ * data). Keyed by "drawTilesetId:arrangementId" -> { minitileIndex: byte }.
+ * Edits are PER-ARRANGEMENT — the SNES model, where collision is an attribute
+ * of the tile graphic — so one edit applies to EVERY map cell using that
+ * arrangement (the Collision Painter shows the use count / blast radius).
+ * Mirrored by server/npcSim.js and tools/debug_room_crop_check.py — keep all
+ * three appliers in sync.
+ */
+export interface CollisionOverrides {
+  version: number;
+  edits?: Record<string, Record<string, number>>;
+}
+
+let collisionOverrides: CollisionOverrides | null = null;
+let overridesLoading: Promise<void> | null = null;
+// Pristine extracted rows for every (ts,arr) that overrides or live painting
+// touched — the editor diffs against these so no-op edits drop out.
+const pristineRows = new Map<string, number[]>();
+
+function applyOverridesTo(drawTilesetId: number, data: number[][]): void {
+  const edits = collisionOverrides?.edits ?? {};
+  for (const [key, cells] of Object.entries(edits)) {
+    const [ts, arr] = key.split(':').map(Number);
+    if (ts !== drawTilesetId || arr >= data.length) continue;
+    if (!pristineRows.has(key)) pristineRows.set(key, [...data[arr]]);
+    const row = [...data[arr]];
+    for (const [idx, byte] of Object.entries(cells)) row[Number(idx)] = byte;
+    data[arr] = row;
+  }
+}
+
 export async function loadCollision(drawTilesetId: number): Promise<void> {
   if (collisionData.has(drawTilesetId)) return;
-  const data = await loadJSON<number[][]>(
-    `/assets/tilesets/${drawTilesetId}/collisions.json`
-  );
+  if (!overridesLoading) {
+    overridesLoading = loadJSON<CollisionOverrides>('/overrides/collision.json')
+      .then((ov) => {
+        collisionOverrides = ov;
+      })
+      .catch(() => {
+        collisionOverrides = null; // nothing authored yet
+      });
+  }
+  const [data] = await Promise.all([
+    loadJSON<number[][]>(`/assets/tilesets/${drawTilesetId}/collisions.json`),
+    overridesLoading,
+  ]);
+  applyOverridesTo(drawTilesetId, data);
   collisionData.set(drawTilesetId, data);
+}
+
+// --- Editor (dev) accessors -------------------------------------------------
+
+/** The map cell under a world pixel as (drawTs, arrangement, minitile idx). */
+export function getCollisionCellAt(
+  worldX: number,
+  worldY: number
+): { drawTs: number; arr: number; idx: number } | null {
+  const mtx = Math.floor(worldX / MINITILE_SIZE);
+  const mty = Math.floor(worldY / MINITILE_SIZE);
+  if (mtx < 0 || mty < 0 || mtx >= MAP_WIDTH_MT || mty >= MAP_HEIGHT_MT) return null;
+  const sector = getSectorForTile(mtx >> 2, mty >> 2);
+  if (!sector) return null;
+  const drawTs = getDrawTilesetId(sector.tilesetId);
+  const arr = getTileAt(mtx >> 2, mty >> 2);
+  const data = collisionData.get(drawTs);
+  if (!data || arr >= data.length) return null;
+  return { drawTs, arr, idx: (mty & 3) * 4 + (mtx & 3) };
+}
+
+/** Current (live) 16-byte row of an arrangement, or null if not loaded. */
+export function getCollisionRow(drawTs: number, arr: number): number[] | null {
+  const data = collisionData.get(drawTs);
+  if (!data || arr >= data.length) return null;
+  return data[arr];
+}
+
+/** Editor live paint: set one minitile byte on a loaded arrangement. */
+export function setCollisionByteLive(drawTs: number, arr: number, idx: number, byte: number): void {
+  const data = collisionData.get(drawTs);
+  if (!data || arr >= data.length) return;
+  const key = `${drawTs}:${arr}`;
+  if (!pristineRows.has(key)) pristineRows.set(key, [...data[arr]]);
+  data[arr] = [...data[arr]];
+  data[arr][idx] = byte;
+}
+
+/** The extracted (pre-override, pre-paint) byte, for editor diffing. */
+export function getPristineCollisionByte(drawTs: number, arr: number, idx: number): number | null {
+  const p = pristineRows.get(`${drawTs}:${arr}`);
+  if (p) return p[idx];
+  const data = collisionData.get(drawTs);
+  if (!data || arr >= data.length) return null;
+  return data[arr][idx];
+}
+
+// Door positions (warp mats AND destinations) as minitile keys, registered by
+// DoorManager at load time. Used by the room flood's pocket merge: a walkable
+// region with a door is a real neighboring room; one without is an enclosed
+// pocket of the current room (clerk areas behind counters).
+let doorCells: ReadonlySet<number> = new Set();
+
+export function setDoorCells(cells: ReadonlySet<number>): void {
+  doorCells = cells;
+}
+
+// The room the local player currently occupies. While set, walkable minitiles
+// OUTSIDE the room act as solid for the player — packed interiors share
+// walkable under-wall strips with their neighbors (see bugs.md, arcade/
+// Tracy's-room), so rooms are sealed and only doors move you between them.
+let activeRoomCells: ReadonlySet<number> | null = null;
+
+export function setActiveRoom(bounds: RoomBounds | null): void {
+  activeRoomCells = bounds?.cells ?? null;
+}
+
+/**
+ * Collision check for the LOCAL PLAYER: world collision plus the active-room
+ * constraint. Remote players and NPCs are positioned elsewhere and never use
+ * this.
+ */
+export function checkPlayerCollision(
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): boolean {
+  if (checkCollision(x, y, width, height)) return true;
+  if (!activeRoomCells) return false;
+
+  const minMTX = Math.floor(x / MINITILE_SIZE);
+  const minMTY = Math.floor(y / MINITILE_SIZE);
+  const maxMTX = Math.floor((x + width - 1) / MINITILE_SIZE);
+  const maxMTY = Math.floor((y + height - 1) / MINITILE_SIZE);
+  for (let mty = minMTY; mty <= maxMTY; mty++) {
+    for (let mtx = minMTX; mtx <= maxMTX; mtx++) {
+      if (!activeRoomCells.has(mty * MAP_WIDTH_MT + mtx)) return true;
+    }
+  }
+  return false;
 }
 
 export function checkCollision(
@@ -139,7 +288,13 @@ export function getSpritePriority(worldX: number, worldY: number): number {
       const arrangementId = getTileAt(tileX, tileY);
       if (arrangementId >= collisions.length) continue;
 
-      bits |= collisions[arrangementId][(mty & 3) * 4 + (mtx & 3)] & 0x03;
+      // Skip SOLID minitiles: counters/tables carry priority bits on their
+      // own solid front faces (e.g. burger-shop counter = 0x80|0x02), but
+      // feet can never stand there — sampling them sank the player's head
+      // behind the counter when pressed against it. Only flags on walkable
+      // ground (clerk strips, sofa cushions, canopy shade) apply to sprites.
+      const b = collisions[arrangementId][(mty & 3) * 4 + (mtx & 3)];
+      if ((b & 0x80) === 0) bits |= b & 0x03;
     }
   }
   return bits;
@@ -148,6 +303,26 @@ export function getSpritePriority(worldX: number, worldY: number): number {
 // Minitile dimensions of the whole map.
 const MAP_WIDTH_MT = MAP_WIDTH_TILES * 4;
 const MAP_HEIGHT_MT = MAP_HEIGHT_TILES * 4;
+
+/**
+ * Raw collision byte for the minitile under a world pixel, or null when the
+ * sector/collision data isn't loaded. Editor/debug readouts only — gameplay
+ * goes through checkCollision/getSpritePriority.
+ */
+export function getCollisionByteAt(worldX: number, worldY: number): number | null {
+  const mtx = Math.floor(worldX / MINITILE_SIZE);
+  const mty = Math.floor(worldY / MINITILE_SIZE);
+  if (mtx < 0 || mty < 0 || mtx >= MAP_WIDTH_MT || mty >= MAP_HEIGHT_MT) return null;
+  const tileX = mtx >> 2;
+  const tileY = mty >> 2;
+  const sector = getSectorForTile(tileX, tileY);
+  if (!sector) return null;
+  const collisions = collisionData.get(getDrawTilesetId(sector.tilesetId));
+  if (!collisions) return null;
+  const arrangementId = getTileAt(tileX, tileY);
+  if (arrangementId >= collisions.length) return null;
+  return collisions[arrangementId][(mty & 3) * 4 + (mtx & 3)];
+}
 
 /** True if the 8x8 minitile at (mtx, mty) is solid (or off-map). */
 function isMinitileSolid(mtx: number, mty: number): boolean {
@@ -190,7 +365,7 @@ const WALL_MARGIN_S = 0;
 export function computeRoomBounds(worldX: number, worldY: number): RoomBounds | null {
   const tileX = Math.floor(worldX / TILE_SIZE);
   const tileY = Math.floor(worldY / TILE_SIZE);
-  if (!isIndoorTile(tileX, tileY)) return null;
+  if (!isRoomCroppableTile(tileX, tileY)) return null;
 
   // Seed the flood-fill at the nearest open minitile to the player's feet.
   let seedX = Math.floor(worldX / MINITILE_SIZE);
@@ -221,6 +396,10 @@ export function computeRoomBounds(worldX: number, worldY: number): RoomBounds | 
     const mtx = key % MAP_WIDTH_MT;
     const mty = (key - mtx) / MAP_WIDTH_MT;
     if (isMinitileSolid(mtx, mty)) continue;
+    // Never leave indoor/dungeon sectors: house exits have walkable door
+    // thresholds that spill into the outdoor-flagged filler between interior
+    // clusters — following them merges dozens of unrelated rooms into one.
+    if (!isRoomCroppableTile(mtx >> 2, mty >> 2)) continue;
 
     visited.add(key);
     if (visited.size > MAX_ROOM_MT) return null; // too big — treat as open area
@@ -230,12 +409,94 @@ export function computeRoomBounds(worldX: number, worldY: number): RoomBounds | 
     if (mty < minMTY) minMTY = mty;
     if (mty > maxMTY) maxMTY = mty;
 
-    stack.push(
-      mty * MAP_WIDTH_MT + (mtx + 1),
-      mty * MAP_WIDTH_MT + (mtx - 1),
-      (mty + 1) * MAP_WIDTH_MT + mtx,
-      (mty - 1) * MAP_WIDTH_MT + mtx
-    );
+    stack.push((mty + 1) * MAP_WIDTH_MT + mtx, (mty - 1) * MAP_WIDTH_MT + mtx);
+    // Horizontal expansion: packed buildings share walkable 1-minitile-tall
+    // strips under their wall bottoms (the sector-row "doorway" rows), which
+    // would walkably merge unrelated rooms (arcade/Tracy's-room, bugs.md).
+    // Inside building interiors, don't slip horizontally under a wall.
+    // Dungeons keep free expansion — caves have legitimate 1-tall squeezes
+    // and cliff ledges.
+    for (const nx of [mtx + 1, mtx - 1]) {
+      if (
+        isIndoorTile(nx >> 2, mty >> 2) &&
+        isMinitileSolid(nx, mty - 1)
+      ) {
+        continue;
+      }
+      stack.push(mty * MAP_WIDTH_MT + nx);
+    }
+  }
+
+  // Sectors holding the room's floor, and their visual styles. EB interiors
+  // are authored within sector boundaries (tileset/palette are per-sector),
+  // so a solid tile in a differently-styled sector is another room's wall or
+  // furniture — claiming it paints visible pieces of that room. Same-styled
+  // foreign sectors stay claimable: tall walls of multi-sector rooms cross
+  // sector edges, but only into sectors with matching settings.
+  const SECTOR_MT_X = SECTOR_TILES_X * 4;
+  const SECTOR_MT_Y = SECTOR_TILES_Y * 4;
+  const floodSectors = new Set<number>();
+  const floodStyles = new Set<number>();
+  for (const key of visited) {
+    const mtx = key % MAP_WIDTH_MT;
+    const mty = (key - mtx) / MAP_WIDTH_MT;
+    const sx = Math.floor(mtx / SECTOR_MT_X);
+    const sy = Math.floor(mty / SECTOR_MT_Y);
+    const sIdx = sy * MAP_WIDTH_SECTORS + sx;
+    if (!floodSectors.has(sIdx)) {
+      floodSectors.add(sIdx);
+      const sec = getSector(sx, sy);
+      if (sec) floodStyles.add((sec.tilesetId << 8) | sec.paletteId);
+    }
+  }
+
+  // Merge enclosed walkable pockets the player can't reach — clerk areas
+  // behind shop counters, fenced nooks. The flood never enters them, so
+  // without this they (and the tiles holding them) render as black bars over
+  // counters/registers. A pocket belongs to this room iff it stays wholly
+  // inside the room's own sectors AND contains no door: real neighboring
+  // rooms (which can share a sector with this room) always have a warp mat
+  // or door destination; clerk pockets never do.
+  const processed = new Set<number>();
+  for (const sIdx of floodSectors) {
+    const sy = Math.floor(sIdx / MAP_WIDTH_SECTORS);
+    const sx = sIdx % MAP_WIDTH_SECTORS;
+    for (let mty = sy * SECTOR_MT_Y; mty < (sy + 1) * SECTOR_MT_Y; mty++) {
+      for (let mtx = sx * SECTOR_MT_X; mtx < (sx + 1) * SECTOR_MT_X; mtx++) {
+        const seed = mty * MAP_WIDTH_MT + mtx;
+        if (visited.has(seed) || processed.has(seed) || isMinitileSolid(mtx, mty)) continue;
+
+        const region: number[] = [];
+        const stk = [seed];
+        let inside = true;
+        let hasDoor = false;
+        while (stk.length > 0) {
+          const k = stk.pop()!;
+          if (processed.has(k) || visited.has(k)) continue;
+          const x = k % MAP_WIDTH_MT;
+          const y = (k - x) / MAP_WIDTH_MT;
+          if (isMinitileSolid(x, y)) continue;
+          const kSec =
+            Math.floor(y / SECTOR_MT_Y) * MAP_WIDTH_SECTORS + Math.floor(x / SECTOR_MT_X);
+          if (!floodSectors.has(kSec)) {
+            inside = false; // leaks out of the room's sectors — foreign floor
+            continue; // don't expand outward; keeps the scan bounded
+          }
+          processed.add(k);
+          region.push(k);
+          if (doorCells.has(k)) hasDoor = true;
+          stk.push(
+            y * MAP_WIDTH_MT + (x + 1),
+            y * MAP_WIDTH_MT + (x - 1),
+            (y + 1) * MAP_WIDTH_MT + x,
+            (y - 1) * MAP_WIDTH_MT + x
+          );
+        }
+        if (inside && !hasDoor) {
+          for (const k of region) visited.add(k);
+        }
+      }
+    }
   }
 
   // Collect the room's tiles: every tile containing walkable floor of this
@@ -255,6 +516,14 @@ export function computeRoomBounds(worldX: number, worldY: number): RoomBounds | 
   const isOwnWallTile = (tx: number, ty: number): boolean => {
     if (tx < 0 || ty < 0 || tx >= MAP_WIDTH_TILES || ty >= MAP_HEIGHT_TILES) return false;
     if (getTileAt(tx, ty) === 0) return false; // black void filler
+    const sx = Math.floor(tx / SECTOR_TILES_X);
+    const sy = Math.floor(ty / SECTOR_TILES_Y);
+    if (!floodSectors.has(sy * MAP_WIDTH_SECTORS + sx)) {
+      const sec = getSector(sx, sy);
+      if (!sec || !floodStyles.has((sec.tilesetId << 8) | sec.paletteId)) {
+        return false; // differently-styled sector — another room's territory
+      }
+    }
     for (let my = 0; my < 4; my++) {
       for (let mx = 0; mx < 4; mx++) {
         const mtx = tx * 4 + mx;
@@ -316,6 +585,7 @@ export function computeRoomBounds(worldX: number, worldY: number): RoomBounds | 
     maxY: (maxTY + 1) * TILE_SIZE,
     tiles,
     holes,
+    cells: visited,
   };
 }
 

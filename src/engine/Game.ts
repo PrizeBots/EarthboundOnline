@@ -1,13 +1,42 @@
 import { Camera } from './Camera';
 import { Player } from './Player';
-import { Renderer } from './Renderer';
-import { initInput, isActionPressed, getKeySet } from './Input';
+import { Renderer, setDebugBoxes, debugBoxesOn } from './Renderer';
+import { loadJSON } from './AssetLoader';
+import {
+  initInput,
+  isActionPressed,
+  isTalkPressed,
+  isAttackPressed,
+  isCycleItemPressed,
+  isHurtPressed,
+  isToggleBoxesPressed,
+  getKeySet,
+} from './Input';
 import { loadMapData, getSector, getDrawTilesetId } from './MapManager';
 import { loadDoors, getDoorAt, DoorData } from './DoorManager';
+import { loadNPCs, getNearbyNPCs, applyNpcUpdates, applyNpcHp, getNpcDialogue } from './NPCManager';
+import { NPC } from './NPC';
 import { loadAtlas } from './TilesetManager';
-import { loadCollision, checkCollision, computeRoomBounds } from './Collision';
-import { loadSpriteMetadata, loadSpriteGroup, CUSTOM_GROUP_BASE } from './SpriteManager';
-import { connect, sendPosition } from './Network';
+import {
+  loadCollision,
+  checkPlayerCollision,
+  computeRoomBounds,
+  setActiveRoom,
+} from './Collision';
+import {
+  loadSpriteMetadata,
+  loadSpriteGroup,
+  registerCustomSheet,
+  CUSTOM_GROUP_BASE,
+} from './SpriteManager';
+import { connect, sendPosition, sendEquip, sendAttack } from './Network';
+import { loadNameOverrides } from './SpriteNames';
+import {
+  pushRemoteSnapshot,
+  dropRemoteBuffer,
+  interpolateRemotePlayer,
+} from './RemoteInterp';
+import { getItemName } from './Items';
 import { loadMusicMap, initMusic, updateMusic } from './MusicManager';
 import {
   loadCharacterSelect,
@@ -16,17 +45,17 @@ import {
   handleCharSelectInput,
   getSelectedSpriteGroupId,
 } from './CharacterSelect';
-import {
-  loadCharacterCreate,
-  updateCharacterCreate,
-  drawCharacterCreate,
-  handleCharCreateInput,
-  getCreatedAppearance,
-} from './CharacterCreate';
-import { registerCustomAppearance } from './CharacterComposite';
+import { openSpriteEditor, isSpriteEditorOpen } from './SpriteEditor';
 import { loadFont }                             from './TextRenderer';
 import { loadWindowStyle }                      from './WindowRenderer';
 import { initMenu, updateMenu, isMenuOpen, renderMenu } from './MenuManager';
+import {
+  initDialogue,
+  openDialogue,
+  isDialogueOpen,
+  updateDialogue,
+  renderDialogue,
+} from './DialogueManager';
 import {
   initChat,
   handleChatKey,
@@ -49,13 +78,29 @@ import {
   TILE_SIZE,
 } from '../types';
 
-type GamePhase = 'loading' | 'charselect' | 'charcreate' | 'playing';
+type GamePhase = 'loading' | 'charselect' | 'playing';
+
+// Unit facing vectors, indexed by Direction, for the talk/check probe.
+const DIAG = Math.SQRT1_2;
+const DIR_VECTORS: Record<Direction, [number, number]> = {
+  [Direction.S]: [0, 1],
+  [Direction.N]: [0, -1],
+  [Direction.W]: [-1, 0],
+  [Direction.E]: [1, 0],
+  [Direction.NW]: [-DIAG, -DIAG],
+  [Direction.SW]: [-DIAG, DIAG],
+  [Direction.SE]: [DIAG, DIAG],
+  [Direction.NE]: [DIAG, -DIAG],
+};
 
 export class Game {
   private camera = new Camera();
   private player = new Player();
   private renderer: Renderer;
   private ctx: CanvasRenderingContext2D;
+  private canvasEl: HTMLCanvasElement;
+  // Dev-only editor layer (EDITOR_TOOLS.md); null in production builds.
+  private editor: import('../editor').EditorHooks | null = null;
   private loadedAtlases = new Set<string>();
   private loadingPromise: Promise<void> | null = null;
   private phase: GamePhase = 'loading';
@@ -67,10 +112,12 @@ export class Game {
   private pendingDoor: DoorData | null = null;
   private waitingForSectors = false;
   private doorSuppressed = false;
+  private talkingNpc: NPC | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
     this.ctx = canvas.getContext('2d')!;
+    this.canvasEl = canvas;
   }
 
   async init() {
@@ -79,6 +126,7 @@ export class Game {
 
     console.log('Loading character select...');
     await Promise.all([
+      loadNameOverrides(), // admin renames win over baked sprite names
       loadCharacterSelect(),
       loadMusicMap(),
       loadFont(0), // regular EB dialogue font (chat input, command menu)
@@ -90,43 +138,62 @@ export class Game {
     // Set up character select input
     window.addEventListener('keydown', (e) => this.onKeyDown(e));
 
+    // Dev-only editor tools — the dynamic import inside a DEV guard compiles
+    // out of production builds entirely (EDITOR_TOOLS.md).
+    if (import.meta.env.DEV) {
+      void import('../editor').then((m) => {
+        this.editor = m.initEditorTools({
+          canvas: this.canvasEl,
+          ctx: this.ctx,
+          camera: this.camera,
+          player: this.player,
+          teleport: (x, y) => void this.debugTeleport(x, y),
+          canEnter: () =>
+            this.phase === 'playing' &&
+            !isChatTyping() &&
+            !isMenuOpen() &&
+            !isDialogueOpen() &&
+            !this.transitioning,
+        });
+      });
+    }
+
     this.phase = 'charselect';
     console.log('Character select ready!');
   }
 
   private onKeyDown(e: KeyboardEvent) {
     if (this.phase === 'charselect') {
+      if (isSpriteEditorOpen()) return; // editor overlay owns the keyboard
       const result = handleCharSelectInput(e.key);
       if (result === 'confirm') {
         initMusic(); // Must be called from user gesture for AudioContext
         this.startGame();
       } else if (result === 'create') {
-        loadCharacterCreate().then(() => {
-          if (this.phase === 'charselect') this.phase = 'charcreate';
+        // CREATE opens the pixel editor; confirming there starts the game
+        // with the edited sheet, Esc falls back to character select.
+        void openSpriteEditor({
+          onConfirm: (sheetDataUrl) => {
+            initMusic(); // confirm is a click/keypress — still a user gesture
+            void this.startGame(sheetDataUrl);
+          },
         });
       }
       return;
     }
 
-    if (this.phase === 'charcreate') {
-      const result = handleCharCreateInput(e.key);
-      if (result === 'confirm') {
-        initMusic(); // Must be called from user gesture for AudioContext
-        this.startGame(getCreatedAppearance());
-      } else if (result === 'back') {
-        this.phase = 'charselect';
-      }
-      return;
-    }
-
     if (this.phase === 'playing') {
+      // Editor mode owns the keyboard entirely (its listeners capture first;
+      // this is the belt-and-suspenders check).
+      if (this.editor?.isActive()) return;
       // While typing, chat captures every key. Otherwise Enter opens chat,
       // but not over the menu or during a door transition.
       if (isChatTyping()) {
         handleChatKey(e);
         return;
       }
-      if (isMenuOpen() || this.transitioning) return;
+      // Dialogue owns Enter while open (it advances pages, not chat).
+      if (isMenuOpen() || this.transitioning || isDialogueOpen()) return;
       handleChatKey(e);
     }
   }
@@ -136,8 +203,8 @@ export class Game {
 
     let spriteGroupId: number;
     if (appearance) {
-      spriteGroupId = await registerCustomAppearance(appearance);
-      console.log(`Custom character: ${JSON.stringify(appearance)}`);
+      spriteGroupId = await registerCustomSheet(appearance);
+      console.log(`Custom character sheet registered as group ${spriteGroupId}`);
     } else {
       spriteGroupId = getSelectedSpriteGroupId();
       console.log(`Selected character: sprite group ${spriteGroupId}`);
@@ -146,7 +213,18 @@ export class Game {
 
     // Load map, player sprite, and tilesets
     console.log('Loading map data...');
-    await Promise.all([loadMapData(), loadDoors()]);
+    await Promise.all([loadMapData(), loadDoors(), loadNPCs()]);
+
+    // Editor-authored spawn override (public/overrides/spawn.json) takes
+    // precedence over the src/spawn.json default baked into Player.
+    const spawnOv = await loadJSON<{ x: number; y: number; dir: number }>(
+      '/overrides/spawn.json'
+    ).catch(() => null);
+    if (spawnOv) {
+      this.player.x = spawnOv.x;
+      this.player.y = spawnOv.y;
+      this.player.direction = spawnOv.dir as Direction;
+    }
 
     if (!appearance) {
       console.log('Loading player sprite...');
@@ -157,11 +235,12 @@ export class Game {
     await this.loadNearbySectors();
 
     // In case the spawn point is inside an interior, crop to that room.
-    this.updateRoomBounds(this.player.state.x, this.player.state.y);
+    this.updateRoomBounds(this.player.x, this.player.y);
 
     initInput();
     initMenu(getKeySet());
     initChat(getKeySet());
+    initDialogue(getKeySet());
 
     // Connect to multiplayer server
     connect(spriteGroupId, `Player`, appearance ?? null, {
@@ -178,22 +257,32 @@ export class Game {
         this.resolveRemoteSprite(player);
         console.log(`${player.name} joined`);
       },
-      onPlayerMove: (id, x, y, direction, frame) => {
-        const rp = this.remotePlayers.get(id);
-        if (rp) {
-          rp.x = x;
-          rp.y = y;
-          rp.direction = direction;
-          rp.frame = frame;
+      onPlayerMove: (id, x, y, direction, frame, pose) => {
+        // Buffered, not applied directly: update() interpolates each frame
+        // (RemoteInterp) so remote players glide instead of stepping once
+        // per packet.
+        if (this.remotePlayers.has(id)) {
+          pushRemoteSnapshot(id, x, y, direction, frame, pose);
         }
       },
       onPlayerLeave: (id) => {
         this.remotePlayers.delete(id);
+        dropRemoteBuffer(id);
         removeBubble(id);
         console.log(`Player ${id} left`);
       },
       onChat: (id, text) => {
         addRemoteBubble(id, text);
+      },
+      onEquip: (id, itemId) => {
+        const rp = this.remotePlayers.get(id);
+        if (rp) rp.itemId = itemId;
+      },
+      onNpcUpdate: (rows) => {
+        applyNpcUpdates(rows);
+      },
+      onNpcHp: (rows) => {
+        applyNpcHp(rows);
       },
     });
 
@@ -202,8 +291,8 @@ export class Game {
   }
 
   /**
-   * Make a remote player's sprite drawable: composite their custom appearance
-   * or load their ROM sprite group. Falls back to Ness if neither resolves.
+   * Make a remote player's sprite drawable: register their custom pixel-edited
+   * sheet or load their ROM sprite group. Falls back to Ness if neither resolves.
    */
   private resolveRemoteSprite(rp: RemotePlayer) {
     const fallback = () => {
@@ -211,7 +300,7 @@ export class Game {
       loadSpriteGroup(1);
     };
     if (rp.appearance) {
-      registerCustomAppearance(rp.appearance as CharacterAppearance)
+      registerCustomSheet(rp.appearance)
         .then((id) => {
           rp.spriteGroupId = id;
         })
@@ -224,8 +313,8 @@ export class Game {
   }
 
   private async loadNearbySectors() {
-    const sectorX = Math.floor(this.player.state.x / (SECTOR_TILES_X * TILE_SIZE));
-    const sectorY = Math.floor(this.player.state.y / (SECTOR_TILES_Y * TILE_SIZE));
+    const sectorX = Math.floor(this.player.x / (SECTOR_TILES_X * TILE_SIZE));
+    const sectorY = Math.floor(this.player.y / (SECTOR_TILES_Y * TILE_SIZE));
 
     const rangeX = 4;
     const rangeY = 6;
@@ -266,10 +355,13 @@ export class Game {
    */
   private updateRoomBounds(worldX: number, worldY: number) {
     this.camera.roomBounds = computeRoomBounds(worldX, worldY);
+    // Seal the room for movement: packed interiors share walkable strips
+    // with their neighbors, so the player may only leave through a door.
+    setActiveRoom(this.camera.roomBounds);
   }
 
   private startTransition(door: DoorData) {
-    console.log(`Door: (${door.worldX},${door.worldY}) -> (${door.destX},${door.destY}) player:(${Math.round(this.player.state.x)},${Math.round(this.player.state.y)})`);
+    console.log(`Door: (${door.worldX},${door.worldY}) -> (${door.destX},${door.destY}) player:(${Math.round(this.player.x)},${Math.round(this.player.y)})`);
     this.transitioning = true;
     this.transitionAlpha = 0;
     this.pendingDoor = door;
@@ -290,20 +382,24 @@ export class Game {
         this.waitingForSectors = true;
 
         // Move player to destination area so loadNearbySectors loads the right tiles
-        this.player.state.x = door.destX;
-        this.player.state.y = door.destY;
+        this.player.x = door.destX;
+        this.player.y = door.destY;
 
         // Load sectors FIRST, then nudge and detect room
         this.loadNearbySectors().then(() => {
           const dirMap = [Direction.S, Direction.N, Direction.E, Direction.W];
           const dir = dirMap[door.destDir] ?? Direction.S;
 
+          // Crop to the destination room BEFORE nudging, so the nudge can't
+          // push the player out of the room (rooms are sealed; see bugs.md).
+          this.updateRoomBounds(door.destX, door.destY);
+
           // Now collision data is loaded — nudge out of walls
           let destX = door.destX;
           let destY = door.destY;
           const COL_W = 14, COL_H = 8, COL_OY = -8;
 
-          if (checkCollision(destX - COL_W/2, destY + COL_OY, COL_W, COL_H)) {
+          if (checkPlayerCollision(destX - COL_W/2, destY + COL_OY, COL_W, COL_H)) {
             // Try nudging in all directions, facing direction first
             const allNudges: [number, number][] = [];
             for (let dist = 8; dist <= 32; dist += 8) {
@@ -320,7 +416,7 @@ export class Game {
             for (const [nx, ny] of allNudges) {
               const tx = door.destX + nx;
               const ty = door.destY + ny;
-              if (!checkCollision(tx - COL_W/2, ty + COL_OY, COL_W, COL_H)) {
+              if (!checkPlayerCollision(tx - COL_W/2, ty + COL_OY, COL_W, COL_H)) {
                 destX = tx;
                 destY = ty;
                 break;
@@ -328,14 +424,11 @@ export class Game {
             }
           }
 
-          this.player.state.x = destX;
-          this.player.state.y = destY;
-          this.player.state.direction = dir;
-          this.player.state.moving = false;
-          this.player.state.frame = 0;
-
-          // Crop the camera to the destination room if it's an interior.
-          this.updateRoomBounds(destX, destY);
+          this.player.x = destX;
+          this.player.y = destY;
+          this.player.direction = dir;
+          this.player.moving = false;
+          this.player.frame = 0;
 
           this.camera.follow(destX, destY);
           // Suppress doors until player walks out of all trigger zones
@@ -364,14 +457,25 @@ export class Game {
     requestAnimationFrame(loop);
   }
 
+  /**
+   * Dev/debug: jump to a world pixel position as if arriving through a door
+   * (sector load + room crop + camera snap). Exposed via window.__eb for
+   * console use and verification scripts.
+   */
+  async debugTeleport(x: number, y: number): Promise<void> {
+    if (this.phase !== 'playing') return;
+    this.player.x = x;
+    this.player.y = y;
+    this.player.moving = false;
+    await this.loadNearbySectors();
+    this.updateRoomBounds(x, y);
+    this.camera.follow(x, y);
+    this.doorSuppressed = true;
+  }
+
   private update() {
     if (this.phase === 'charselect') {
       updateCharacterSelect();
-      return;
-    }
-
-    if (this.phase === 'charcreate') {
-      updateCharacterCreate();
       return;
     }
 
@@ -379,6 +483,18 @@ export class Game {
 
     // Float/fade chat bubbles regardless of other state.
     updateChatBubbles();
+
+    // Remote players keep gliding even while menus/dialogue/transitions
+    // freeze the local world — their senders haven't stopped.
+    for (const [, rp] of this.remotePlayers) interpolateRemotePlayer(rp);
+
+    // Editor mode (dev only): free camera replaces gameplay simulation; the
+    // world stays visible (remotes/NPCs keep updating above) but the player,
+    // doors, and music hold still.
+    if (this.editor?.isActive()) {
+      this.editor.update();
+      return;
+    }
 
     // Handle door transition animation
     if (this.transitioning) {
@@ -393,15 +509,47 @@ export class Game {
     updateMenu();
     if (isMenuOpen()) return;
 
+    // NPC dialogue — while open, freeze movement, doors, and music updates.
+    if (isDialogueOpen()) {
+      updateDialogue();
+      this.faceTalkingNpc();
+      if (!isDialogueOpen()) this.talkingNpc = null;
+      return;
+    }
+
+    // Q = Talk to / Check whatever is in front of the player.
+    if (isTalkPressed()) {
+      this.tryTalk();
+      return;
+    }
+
+    // F = attack swing, G = cycle held item, H = hurt flinch (debug hook).
+    // A swing that actually starts is sent to the server, which resolves the
+    // hit against enemies (server-authoritative damage).
+    if (isAttackPressed() && this.player.attack()) {
+      sendAttack(this.player.x, this.player.y, this.player.direction);
+    }
+    if (isHurtPressed()) this.player.hurt();
+    if (isToggleBoxesPressed()) setDebugBoxes(!debugBoxesOn());
+    if (isCycleItemPressed()) {
+      this.player.cycleHeldItem();
+      sendEquip(this.player.heldItemId);
+      console.log(
+        `Held item: ${this.player.heldItemId ? getItemName(this.player.heldItemId) : 'none'}`
+      );
+    }
+
     this.player.update();
-    this.camera.follow(this.player.state.x, this.player.state.y);
+    // NPC simulation is server-authoritative; getNearbyNPCs (in render) still
+    // triggers lazy sprite-sheet loads as NPCs come into range.
+    this.camera.follow(this.player.x, this.player.y);
 
     // Suppress doors until player has fully left all trigger zones
-    const door = getDoorAt(this.player.state.x, this.player.state.y);
+    const door = getDoorAt(this.player.x, this.player.y);
     if (this.doorSuppressed) {
       if (!door) this.doorSuppressed = false;
     } else if (door) {
-      if (this.player.state.moving) {
+      if (this.player.moving) {
         this.startTransition(door);
         return;
       }
@@ -412,17 +560,18 @@ export class Game {
     }
 
     // Update music based on current sector
-    updateMusic(this.player.state.x, this.player.state.y);
+    updateMusic(this.player.x, this.player.y);
 
     // Send position to server every 3 frames
     this.sendTimer++;
     if (this.sendTimer >= 3) {
       this.sendTimer = 0;
       sendPosition(
-        this.player.state.x,
-        this.player.state.y,
-        this.player.state.direction,
-        this.player.state.frame
+        this.player.x,
+        this.player.y,
+        this.player.direction,
+        this.player.frame,
+        this.player.pose
       );
     }
 
@@ -433,14 +582,83 @@ export class Game {
     }
   }
 
+  /**
+   * Q pressed: talk to / check the NPC or prop in front of the player.
+   * Mirrors EB's combined "Talk to"+"Check" command: a target with dialogue
+   * speaks; empty space gives the classic Check fallback.
+   */
+  private tryTalk(): void {
+    // Reach is measured along the facing direction, not as a radius around a
+    // single probe point. A shop clerk's anchor sits a full counter-depth
+    // behind the solid counter, so the player (whose foot box stops at the
+    // counter's front edge) is ~45-60px from the clerk's anchor — beyond a
+    // simple radius. Project each NPC onto the facing axis: allow a long FORWARD
+    // reach (clears a counter) but a tight LATERAL band (stays directional, so
+    // we don't grab someone standing off to the side).
+    const REACH_FORWARD = 52; // how far ahead an anchor may be (≈1.5 tiles)
+    const REACH_BACK = 8;     // tolerate an anchor slightly behind / overlapping
+    const REACH_LATERAL = 20; // must be roughly in line with the facing
+
+    const v = DIR_VECTORS[this.player.direction] ?? DIR_VECTORS[Direction.S];
+    const perpX = -v[1];
+    const perpY = v[0];
+
+    let best: NPC | null = null;
+    let bestScore = Infinity;
+    for (const npc of getNearbyNPCs(this.player.x, this.player.y)) {
+      const ox = npc.x - this.player.x;
+      const oy = npc.y - this.player.y;
+      const forward = ox * v[0] + oy * v[1];
+      const lateral = Math.abs(ox * perpX + oy * perpY);
+      if (forward < -REACH_BACK || forward > REACH_FORWARD) continue;
+      if (lateral > REACH_LATERAL) continue;
+      // Nearest target in line with the facing wins (forward distance first,
+      // lateral offset as a light tiebreak).
+      const score = Math.max(0, forward) + lateral;
+      if (score < bestScore) {
+        bestScore = score;
+        best = npc;
+      }
+    }
+
+    if (best) {
+      const pages = getNpcDialogue(best);
+      console.log(
+        `Talk: npc(${Math.round(best.x)},${Math.round(best.y)}) score=${Math.round(bestScore)} ${pages ? `"${pages[0].slice(0, 40)}..."` : 'no dialogue'}`,
+      );
+      openDialogue(pages ?? ['There was no problem here.']);
+      this.talkingNpc = best;
+      this.faceTalkingNpc();
+    } else {
+      console.log('Talk: nothing in reach');
+      openDialogue(['There was no problem here.']);
+      this.talkingNpc = null;
+    }
+  }
+
+  /**
+   * Keep the conversation partner turned toward the player. Re-applied every
+   * frame because server npc_update rows would otherwise restore the wander
+   * direction mid-conversation. Props (signs, trash cans) keep their pose.
+   */
+  private faceTalkingNpc(): void {
+    const npc = this.talkingNpc;
+    if (!npc || npc.kind !== 'person') return;
+    const dx = this.player.x - npc.x;
+    const dy = this.player.y - npc.y;
+    npc.direction =
+      Math.abs(dx) > Math.abs(dy)
+        ? dx < 0
+          ? Direction.W
+          : Direction.E
+        : dy < 0
+          ? Direction.N
+          : Direction.S;
+  }
+
   private render() {
     if (this.phase === 'charselect') {
       drawCharacterSelect(this.ctx);
-      return;
-    }
-
-    if (this.phase === 'charcreate') {
-      drawCharacterCreate(this.ctx);
       return;
     }
 
@@ -455,11 +673,27 @@ export class Game {
       return;
     }
 
-    this.renderer.render(this.camera, this.player, this.remotePlayers);
+    this.renderer.render(
+      this.camera,
+      this.player,
+      this.remotePlayers,
+      getNearbyNPCs(this.player.x, this.player.y)
+    );
 
     // Chat bubbles (world) + typing box (screen), above the world but below
-    // the transition fade and menu.
-    renderChat(this.ctx, this.camera, this.player, this.remotePlayers);
+    // the transition fade and menu. Bubbles anchor to world positions, so
+    // they ride the editor zoom transform when it's active.
+    if (this.camera.zoom !== 1) {
+      this.ctx.save();
+      this.ctx.scale(this.camera.zoom, this.camera.zoom);
+      renderChat(this.ctx, this.camera, this.player, this.remotePlayers);
+      this.ctx.restore();
+    } else {
+      renderChat(this.ctx, this.camera, this.player, this.remotePlayers);
+    }
+
+    // NPC dialogue window, above bubbles but below the fade and menu.
+    renderDialogue(this.ctx);
 
     // Draw fade overlay during transitions
     if (this.transitionAlpha > 0) {
@@ -469,5 +703,8 @@ export class Game {
 
     // Draw menu on top of game world (including during transitions)
     renderMenu(this.ctx);
+
+    // Editor overlays (dev only) — grids, readout highlights, tool overlays.
+    if (this.editor?.isActive()) this.editor.drawOverlay();
   }
 }

@@ -1,0 +1,18 @@
+{
+  "_comment": "OUR OWN content (NOT ROM-derived) — safe to commit. Defines which sprite groups are hostile and the enemy spawners. Each spawner owns a fixed pool of enemy slots, appended after the extracted NPCs on BOTH client and server so wire ids stay aligned. Slots start inactive (hp 0 = hidden); the server activates them at the spawn point over time, they roam town-wide, and on death they return to the pool to be re-activated.",
+  "enemySpriteGroups": [284],
+  "spawners": [
+    {
+      "name": "onett-arcade-sharks",
+      "sprite": 284,
+      "x": 1584,
+      "y": 1680,
+      "wanderRadius": 480,
+      "poolSize": 10,
+      "maxActive": 6,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "hp": 24
+    }
+  ]
+}

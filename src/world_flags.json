@@ -1,0 +1,21 @@
+{
+  "_doc": [
+    "Event flags considered SET in our open world (EarthBound post-intro,",
+    "morning-after state). Single source of truth shared by the engine",
+    "(DoorManager filters flag-gated doors) and tools/extract_npcs.py",
+    "(filters flag-conditional NPC placements). Must stay consistent with",
+    "the tile swaps in tools/apply_map_changes.py.",
+    "0x68  - meteor-night road/police state cleared (pairs with tile change 0x8068)",
+    "0x154 - intro night curfew over; kills the 35 'go home' teleport strips in Onett",
+    "0x177 - Onett daytime crowd out on the streets",
+    "0x1d4 - Ness's front door unlocked",
+    "0x1d5 - morning after the meteor: cops/sawhorses/cop car/onlookers gone",
+    "0x1a6 - morning: night window/curtain props (sprites 373-375) removed from",
+    "        houses; daytime sawhorses (sprite 203) appear at the crash-site path",
+    "0x278 - town house doors unlocked (20 doors, incl. the hilltop houses)",
+    "Deliberately NOT set: 0x1d3/0x1da (intro bedroom-window warp pair),",
+    "0x1dc (post-intro crash-site barricade props), 0xd3/0x135/0x15e/0x2f9",
+    "(unaudited far-region door batches)."
+  ],
+  "setFlags": ["0x68", "0x154", "0x177", "0x1a6", "0x1d4", "0x1d5", "0x278"]
+}

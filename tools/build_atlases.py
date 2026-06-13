@@ -72,15 +72,32 @@ def main():
             tilesets[draw_tileset].add_palette(map_ts_idx, pal_idx, palette)
             palette_offset += 0xc0
 
-    # Figure out which (mapTileset, palette) combos are actually used
-    sectors_data = []
+    # Figure out which (mapTileset, palette) combos are actually used.
+    # The game renders public/assets/map/sectors.json — our authored/expanded
+    # map, which is LARGER than the ROM's 32x40 base sector table and so
+    # references combos that table never lists. Drive the atlas set from that
+    # JSON (unioned with the ROM base as a safety net) or whole areas render
+    # blank in-game while NPCs still draw — the "missing maps" bug.
+    used_combos = set()
+
+    sectors_json = OUT_DIR / "map" / "sectors.json"
+    if sectors_json.exists():
+        with open(sectors_json) as f:
+            for s in json.load(f):
+                if s is None:
+                    continue
+                used_combos.add((s["tilesetId"], s["paletteId"]))
+        print(f"Found {len(used_combos)} combos referenced by sectors.json")
+    else:
+        print("WARNING: sectors.json not found — falling back to ROM base table")
+
+    # Union with the ROM's base 32x40 sector table so nothing regresses.
     for i in range(32 * 40):
         addr = from_snes_address(SECTOR_TILESETS_PALETTES) + i
         val = rom[addr]
-        sectors_data.append((val >> 3, val & 7))  # (mapTilesetId, paletteId)
+        used_combos.add((val >> 3, val & 7))  # (mapTilesetId, paletteId)
 
-    used_combos = set(sectors_data)
-    print(f"Found {len(used_combos)} unique (mapTileset, palette) combos in use")
+    print(f"Rendering {len(used_combos)} unique (mapTileset, palette) combos")
 
     # Build tileset mapping
     tileset_mapping = []

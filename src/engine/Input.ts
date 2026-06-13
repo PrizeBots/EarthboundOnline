@@ -29,6 +29,51 @@ export function isActionPressed(): boolean {
   return false;
 }
 
+/** Q — the contextual "Talk to / Check" button. */
+export function isTalkPressed(): boolean {
+  if (keys.has('KeyQ')) {
+    keys.delete('KeyQ');
+    return true;
+  }
+  return false;
+}
+
+/** F — swing the held item / attack. */
+export function isAttackPressed(): boolean {
+  if (keys.has('KeyF')) {
+    keys.delete('KeyF');
+    return true;
+  }
+  return false;
+}
+
+/** G — cycle the held item (placeholder until an inventory exists). */
+export function isCycleItemPressed(): boolean {
+  if (keys.has('KeyG')) {
+    keys.delete('KeyG');
+    return true;
+  }
+  return false;
+}
+
+/** H — play the hurt animation (debug hook until combat deals damage). */
+export function isHurtPressed(): boolean {
+  if (keys.has('KeyH')) {
+    keys.delete('KeyH');
+    return true;
+  }
+  return false;
+}
+
+/** B — toggle the debug hit/hurt box overlay. */
+export function isToggleBoxesPressed(): boolean {
+  if (keys.has('KeyB')) {
+    keys.delete('KeyB');
+    return true;
+  }
+  return false;
+}
+
 export function getDirection(): { dx: number; dy: number } {
   let dx = 0;
   let dy = 0;

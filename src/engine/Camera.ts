@@ -20,39 +20,58 @@ export interface RoomBounds {
   // belong to a NEIGHBORING room's floor (walls aren't always tile-aligned).
   // The renderer paints these black on top of the world.
   holes: { x: number; y: number }[];
+  // Every walkable minitile of the room (keys: mty * mapWidthMT + mtx).
+  // The local player's movement is constrained to these — packed rooms
+  // share walkable under-wall strips, so leaving a room takes a door.
+  cells: Set<number>;
 }
 
 export class Camera {
   x = 0;
   y = 0;
   roomBounds: RoomBounds | null = null;
+  /**
+   * View scale: 1 = native SNES view (always, during gameplay). The dev
+   * editor zooms OUT by lowering this (<1 renders more world into the same
+   * canvas) via mouse wheel; reset to 1 on editor exit.
+   */
+  zoom = 1;
+
+  /** Visible world width/height in pixels at the current zoom. */
+  get viewW(): number {
+    return SCREEN_WIDTH / this.zoom;
+  }
+
+  get viewH(): number {
+    return SCREEN_HEIGHT / this.zoom;
+  }
 
   follow(targetX: number, targetY: number) {
     // Center camera on target
-    this.x = targetX - SCREEN_WIDTH / 2;
-    this.y = targetY - SCREEN_HEIGHT / 2;
+    this.x = targetX - this.viewW / 2;
+    this.y = targetY - this.viewH / 2;
 
     if (this.roomBounds) {
       // Clamp to room bounds
       const roomW = this.roomBounds.maxX - this.roomBounds.minX;
       const roomH = this.roomBounds.maxY - this.roomBounds.minY;
 
-      if (roomW <= SCREEN_WIDTH) {
+      if (roomW <= this.viewW) {
         // Room fits on screen — center it
-        this.x = this.roomBounds.minX + (roomW - SCREEN_WIDTH) / 2;
+        this.x = this.roomBounds.minX + (roomW - this.viewW) / 2;
       } else {
-        this.x = Math.max(this.roomBounds.minX, Math.min(this.x, this.roomBounds.maxX - SCREEN_WIDTH));
+        this.x = Math.max(this.roomBounds.minX, Math.min(this.x, this.roomBounds.maxX - this.viewW));
       }
 
-      if (roomH <= SCREEN_HEIGHT) {
-        this.y = this.roomBounds.minY + (roomH - SCREEN_HEIGHT) / 2;
+      if (roomH <= this.viewH) {
+        this.y = this.roomBounds.minY + (roomH - this.viewH) / 2;
       } else {
-        this.y = Math.max(this.roomBounds.minY, Math.min(this.y, this.roomBounds.maxY - SCREEN_HEIGHT));
+        this.y = Math.max(this.roomBounds.minY, Math.min(this.y, this.roomBounds.maxY - this.viewH));
       }
     } else {
       // Clamp to map bounds
-      const maxX = MAP_WIDTH_TILES * TILE_SIZE - SCREEN_WIDTH;
-      const maxY = MAP_HEIGHT_TILES * TILE_SIZE - SCREEN_HEIGHT;
+      const maxX = MAP_WIDTH_TILES * TILE_SIZE - this.viewW;
+      const maxY = MAP_HEIGHT_TILES * TILE_SIZE - this.viewH;
       this.x = Math.max(0, Math.min(this.x, maxX));
       this.y = Math.max(0, Math.min(this.y, maxY));
     }
@@ -62,8 +81,8 @@ export class Camera {
   getVisibleTileRange() {
     const startCol = Math.floor(this.x / TILE_SIZE);
     const startRow = Math.floor(this.y / TILE_SIZE);
-    const endCol = Math.ceil((this.x + SCREEN_WIDTH) / TILE_SIZE);
-    const endRow = Math.ceil((this.y + SCREEN_HEIGHT) / TILE_SIZE);
+    const endCol = Math.ceil((this.x + this.viewW) / TILE_SIZE);
+    const endRow = Math.ceil((this.y + this.viewH) / TILE_SIZE);
     return { startCol, startRow, endCol, endRow };
   }
 }

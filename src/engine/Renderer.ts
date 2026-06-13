@@ -1,23 +1,101 @@
 import { Camera } from './Camera';
 import { Player } from './Player';
+import { NPC } from './NPC';
 import { getTileAt, getSectorForTile } from './MapManager';
 import { drawTile, drawForegroundTile, hasForegroundTile } from './TilesetManager';
-import { drawSprite, SpritePart } from './SpriteManager';
-import { getDoorsNear, DoorData } from './DoorManager';
+import { drawSprite, getSpriteGroupMeta, SpritePart } from './SpriteManager';
+import { drawHeldItem, isItemBehind } from './Items';
 import { getSpritePriority } from './Collision';
-import { RemotePlayer, SCREEN_WIDTH, SCREEN_HEIGHT, TILE_SIZE, MAP_WIDTH_TILES } from '../types';
+import {
+  Pose,
+  Direction,
+  RemotePlayer,
+  SCREEN_WIDTH,
+  SCREEN_HEIGHT,
+  TILE_SIZE,
+  MAP_WIDTH_TILES,
+} from '../types';
+
+// --- Debug hit/hurt boxes (toggle with B) --------------------------------
+// Geometry mirrors server/npcSim.js so what's drawn matches what the server
+// resolves. Hurtbox = the body box an attack must overlap; the attack hitbox
+// is shown in front of the player while a swing plays.
+let debugBoxes = false;
+export function setDebugBoxes(on: boolean): void {
+  debugBoxes = on;
+}
+export function debugBoxesOn(): boolean {
+  return debugBoxes;
+}
+const HURT_W = 14;
+const HURT_H = 18;
+const HURT_OY = -18;
+const ATTACK_REACH = 16;
+const ATTACK_HALF = 11;
+const DBG_DIAG = Math.SQRT1_2;
+// Indexed by Direction: S,N,W,E,NW,SW,SE,NE.
+const DBG_DIR_VEC: [number, number][] = [
+  [0, 1], [0, -1], [-1, 0], [1, 0],
+  [-DBG_DIAG, -DBG_DIAG], [-DBG_DIAG, DBG_DIAG], [DBG_DIAG, DBG_DIAG], [DBG_DIAG, -DBG_DIAG],
+];
+
+// --- Health bars -----------------------------------------------------------
+// Drawn above an entity's head: 1px black outline, fill green at full health,
+// blending to yellow at 50% and solid red at 30% or below.
+// Visibility: the local player always sees their OWN bar; everyone else's bar
+// (remote players, NPCs) is hidden at full HP and only appears once damaged
+// (ratio < 1). Props never carry one.
+
+const BAR_W = 16; // inner fill width
+const BAR_H = 2;  // inner fill height
+const BAR_GAP = 4; // px between sprite top and bar
+const DEFAULT_SPRITE_H = 24;
+
+function healthColor(ratio: number): string {
+  const lerp = (a: number, b: number, t: number) => Math.round(a + (b - a) * t);
+  if (ratio <= 0.3) return 'rgb(216,40,24)';
+  if (ratio >= 0.5) {
+    const t = (1 - ratio) / 0.5; // 0 at full -> 1 at half
+    return `rgb(${lerp(48, 232, t)},${lerp(192, 208, t)},${lerp(48, 32, t)})`;
+  }
+  const t = (0.5 - ratio) / 0.2; // yellow -> red across 50%..30%
+  return `rgb(${lerp(232, 216, t)},${lerp(208, 40, t)},${lerp(32, 24, t)})`;
+}
+
+function drawHealthBar(
+  ctx: CanvasRenderingContext2D,
+  centerX: number,
+  feetY: number,
+  spriteGroupId: number,
+  ratio: number
+): void {
+  const spriteH = getSpriteGroupMeta(spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
+  const x = centerX - BAR_W / 2 - 1;
+  const y = feetY - spriteH - BAR_GAP - BAR_H - 2;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(x, y, BAR_W + 2, BAR_H + 2);
+  const fill = Math.round(ratio * BAR_W);
+  if (fill > 0) {
+    ctx.fillStyle = healthColor(ratio);
+    ctx.fillRect(x + 1, y + 1, fill, BAR_H);
+  }
+}
 
 export class Renderer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
+  // Integer CSS upscale factor (256x224 -> on-screen size).
+  private scale = 1;
+  // True only while the editor zoom is active. Then the backbuffer renders at
+  // full display resolution so zoom-out stays crisp; gameplay (zoom 1) keeps
+  // the native 256x224 buffer + CSS pixelated upscale, which is what gives
+  // sprites AND text their chunky look. Scoped here so the editor fix never
+  // touches how the game proper renders.
+  private highRes = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
-    this.canvas.width = SCREEN_WIDTH;
-    this.canvas.height = SCREEN_HEIGHT;
     this.ctx = canvas.getContext('2d')!;
-    this.ctx.imageSmoothingEnabled = false;
-
     this.resizeToFit();
     window.addEventListener('resize', () => this.resizeToFit());
   }
@@ -25,23 +103,65 @@ export class Renderer {
   private resizeToFit() {
     const scaleX = window.innerWidth / SCREEN_WIDTH;
     const scaleY = window.innerHeight / SCREEN_HEIGHT;
-    const scale = Math.max(1, Math.floor(Math.min(scaleX, scaleY)));
-    this.canvas.style.width = `${SCREEN_WIDTH * scale}px`;
-    this.canvas.style.height = `${SCREEN_HEIGHT * scale}px`;
+    this.scale = Math.max(1, Math.floor(Math.min(scaleX, scaleY)));
+    this.applyBackbuffer();
   }
 
-  render(camera: Camera, player: Player, remotePlayers: Map<string, RemotePlayer>) {
+  /**
+   * Size the backbuffer. Gameplay uses a native 256x224 buffer (CSS magnifies
+   * it with image-rendering: pixelated — chunky pixels, chunky text). Editor
+   * zoom uses a full-resolution buffer so shrinking the world stays sharp
+   * instead of blurring a tiny buffer. On-screen CSS size is identical either
+   * way. Resizing the canvas clears context state, so re-assert smoothing.
+   */
+  private applyBackbuffer() {
+    const res = this.highRes ? this.scale : 1;
+    this.canvas.width = SCREEN_WIDTH * res;
+    this.canvas.height = SCREEN_HEIGHT * res;
+    this.canvas.style.width = `${SCREEN_WIDTH * this.scale}px`;
+    this.canvas.style.height = `${SCREEN_HEIGHT * this.scale}px`;
+    this.ctx.imageSmoothingEnabled = false;
+  }
+
+  render(camera: Camera, player: Player, remotePlayers: Map<string, RemotePlayer>, npcs: NPC[] = []) {
+    // Switch backbuffer resolution only when entering/leaving editor zoom, so
+    // gameplay rendering (and text) is byte-for-byte the same as before.
+    const wantHighRes = camera.zoom !== 1;
+    if (wantHighRes !== this.highRes) {
+      this.highRes = wantHighRes;
+      this.applyBackbuffer();
+    }
+    // Base transform: scale logical 256x224 coords onto the (possibly larger)
+    // backbuffer. Identity for gameplay; the integer display scale in editor.
+    const baseScale = this.highRes ? this.scale : 1;
+    this.ctx.setTransform(baseScale, 0, 0, baseScale, 0, 0);
+    this.ctx.imageSmoothingEnabled = false;
+
     this.ctx.fillStyle = '#000';
     this.ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
 
+    // Editor zoom: scale the whole world pass so zoom<1 shows more map in
+    // the same canvas. Gameplay always renders at zoom 1 (identity scale).
+    const vw = camera.viewW;
+    const vh = camera.viewH;
+    this.ctx.save();
+    this.ctx.scale(camera.zoom, camera.zoom);
+
     const { startCol, startRow, endCol, endRow } = camera.getVisibleTileRange();
+
+    // Snap the camera to whole pixels ONCE, and position the world, the player,
+    // and every other entity relative to this same integer. The camera tracks
+    // the player exactly, so on diagonals (player moves a non-integer ~1.414
+    // px/frame) the world and the player must round against a shared origin —
+    // otherwise the world shimmers 1px/2px under a pinned player. With a single
+    // camX/camY everything scrolls in lockstep and the jitter disappears.
+    const camX = Math.round(camera.x);
+    const camY = Math.round(camera.y);
 
     // In interiors, clip everything to the current room's tiles so adjacent
     // rooms (packed next to each other on the map) stay hidden behind black.
     const room = camera.roomBounds;
     if (room) {
-      const camX = Math.floor(camera.x);
-      const camY = Math.floor(camera.y);
       this.ctx.save();
       this.ctx.beginPath();
       for (let row = startRow; row <= endRow; row++) {
@@ -59,52 +179,128 @@ export class Renderer {
         const sector = getSectorForTile(col, row);
         if (!sector) continue;
         const arrangementId = getTileAt(col, row);
-        const screenX = Math.floor(col * TILE_SIZE - camera.x);
-        const screenY = Math.floor(row * TILE_SIZE - camera.y);
+        const screenX = col * TILE_SIZE - camX;
+        const screenY = row * TILE_SIZE - camY;
         drawTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, screenX, screenY);
       }
     }
 
     // SNES layering model: sprites render ABOVE the whole FG layer unless the
     // ground under their feet is flagged. Bit 0x01 drops the sprite's LOWER
-    // half behind FG (bed feet, sofa backs, counters); bit 0x02 drops the
-    // UPPER half (under tree canopies). The map data encodes all depth
-    // relationships through these flags — no Y-sorting against FG tiles.
+    // half behind FG (tall grass, bed feet, counters); bit 0x02 drops the
+    // WHOLE sprite (tree canopies, directly behind signs). The map data
+    // encodes all depth relationships through these flags — no Y-sorting
+    // against FG tiles.
 
     const behindFG: { sortY: number; draw: () => void }[] = [];
     const aboveFG: { sortY: number; draw: () => void }[] = [];
 
+    // Enqueues a sprite (and its optional health bar) into the FG-relative
+    // layers. The bar sits above the head, so it follows the UPPER half: when
+    // the upper half is dropped behind the FG (e.g. under a tree canopy), the
+    // bar hides behind it too. Pushed after the sprite with the same sortY so
+    // the stable sort keeps it drawing directly on top of its own entity.
     const enqueueSprite = (
       worldX: number,
       worldY: number,
-      drawPart: (part: SpritePart) => void
+      drawPart: (part: SpritePart) => void,
+      drawBar?: () => void
     ) => {
       const pri = getSpritePriority(worldX, worldY);
-      const lowerBehind = (pri & 0x01) !== 0;
-      const upperBehind = (pri & 0x02) !== 0;
-      if (lowerBehind && upperBehind) {
+      // ROM semantics (EB tile-attribute docs, verified against extracted
+      // data at the Onett stop sign — see bugs.md): 0x01 = LOWER BODY hidden
+      // behind FG (tall grass, hedges, one row back from a sign); 0x02 =
+      // WHOLE BODY hidden (tree canopies, pressed directly behind signs —
+      // those rows are 0x03 in the ROM: whole wins over lower). There is NO
+      // "upper half" bit; an earlier reading invented one and a later fix
+      // split 0x03 as lower-only, which floated heads in front of every
+      // sign/pole on the map.
+      const wholeBehind = (pri & 0x02) !== 0;
+      const lowerHalfBehind = (pri & 0x01) !== 0;
+      if (wholeBehind) {
         behindFG.push({ sortY: worldY, draw: () => drawPart('full') });
-      } else if (!lowerBehind && !upperBehind) {
-        aboveFG.push({ sortY: worldY, draw: () => drawPart('full') });
+      } else if (lowerHalfBehind) {
+        behindFG.push({ sortY: worldY, draw: () => drawPart('lower') });
+        aboveFG.push({ sortY: worldY, draw: () => drawPart('upper') });
       } else {
-        behindFG.push({ sortY: worldY, draw: () => drawPart(lowerBehind ? 'lower' : 'upper') });
-        aboveFG.push({ sortY: worldY, draw: () => drawPart(lowerBehind ? 'upper' : 'lower') });
+        aboveFG.push({ sortY: worldY, draw: () => drawPart('full') });
+      }
+      if (drawBar) {
+        // Bar rides with the head — hidden only when the whole body is.
+        (wholeBehind ? behindFG : aboveFG).push({ sortY: worldY, draw: drawBar });
       }
     };
 
-    enqueueSprite(player.state.x, player.state.y, (part) => {
-      const sx = Math.floor(player.state.x - camera.x);
-      const sy = Math.floor(player.state.y - camera.y);
-      drawSprite(this.ctx, player.spriteGroupId, player.state.direction, player.state.frame, sx, sy, part);
-    });
+    // Draws a player (local or remote) plus their held-item overlay. The item
+    // sits at hand height (the sprite's lower half), so when priority flags
+    // split the sprite it rides along with the 'lower'/'full' part. Facing
+    // away puts the item in the far hand — drawn under the body.
+    const drawPlayerPart = (
+      groupId: number,
+      direction: number,
+      frame: number,
+      pose: Pose,
+      itemId: string | null,
+      sx: number,
+      sy: number,
+      part: SpritePart
+    ) => {
+      const itemHere = itemId !== null && part !== 'upper';
+      if (itemHere && isItemBehind(direction)) {
+        drawHeldItem(this.ctx, itemId!, direction, frame, pose, sx, sy);
+      }
+      drawSprite(this.ctx, groupId, direction, frame, sx, sy, part, pose);
+      if (itemHere && !isItemBehind(direction)) {
+        drawHeldItem(this.ctx, itemId!, direction, frame, pose, sx, sy);
+      }
+    };
+
+    const playerSx = Math.round(player.x) - camX;
+    const playerSy = Math.round(player.y) - camY;
+    enqueueSprite(
+      player.x, player.y,
+      (part) =>
+        drawPlayerPart(
+          player.spriteGroupId, player.direction, player.frame,
+          player.pose, player.heldItemId, playerSx, playerSy, part
+        ),
+      () => drawHealthBar(this.ctx, playerSx, playerSy, player.spriteGroupId, player.healthRatio)
+    );
 
     for (const [, rp] of remotePlayers) {
-      const rpScreenX = Math.floor(rp.x - camera.x);
-      const rpScreenY = Math.floor(rp.y - camera.y);
-      if (rpScreenX < -32 || rpScreenX > SCREEN_WIDTH + 32) continue;
-      if (rpScreenY < -48 || rpScreenY > SCREEN_HEIGHT + 48) continue;
-      enqueueSprite(rp.x, rp.y, (part) =>
-        drawSprite(this.ctx, rp.spriteGroupId, rp.direction, rp.frame, rpScreenX, rpScreenY, part)
+      const rpScreenX = Math.round(rp.x) - camX;
+      const rpScreenY = Math.round(rp.y) - camY;
+      if (rpScreenX < -32 || rpScreenX > vw + 32) continue;
+      if (rpScreenY < -48 || rpScreenY > vh + 48) continue;
+      const ratio = rp.maxHp ? Math.max(0, Math.min(1, (rp.hp ?? rp.maxHp) / rp.maxHp)) : 1;
+      enqueueSprite(
+        rp.x, rp.y,
+        (part) =>
+          drawPlayerPart(
+            rp.spriteGroupId, rp.direction, rp.frame,
+            rp.pose ?? 'walk', rp.itemId ?? null, rpScreenX, rpScreenY, part
+          ),
+        // Other players' bars are hidden at full HP — only show when damaged.
+        ratio < 1
+          ? () => drawHealthBar(this.ctx, rpScreenX, rpScreenY, rp.spriteGroupId, ratio)
+          : undefined
+      );
+    }
+
+    for (const npc of npcs) {
+      const nScreenX = Math.round(npc.x) - camX;
+      const nScreenY = Math.round(npc.y) - camY;
+      if (nScreenX < -32 || nScreenX > vw + 32) continue;
+      if (nScreenY < -48 || nScreenY > vh + 48) continue;
+      // Props are scenery — only people/enemies carry health bars, and a bar is
+      // hidden at full HP (shown to everyone only once it drops below 100%).
+      const drawBar = (npc.kind === 'person' || npc.kind === 'enemy') && npc.healthRatio < 1
+        ? () => drawHealthBar(this.ctx, nScreenX, nScreenY, npc.spriteGroupId, npc.healthRatio)
+        : undefined;
+      enqueueSprite(
+        npc.x, npc.y,
+        (part) => drawSprite(this.ctx, npc.spriteGroupId, npc.direction, npc.frame, nScreenX, nScreenY, part),
+        drawBar
       );
     }
 
@@ -119,13 +315,15 @@ export class Renderer {
         if (!sector) continue;
         if (!hasForegroundTile(sector.tilesetId, sector.paletteId)) continue;
         const arrangementId = getTileAt(col, row);
-        const screenX = Math.floor(col * TILE_SIZE - camera.x);
-        const screenY = Math.floor(row * TILE_SIZE - camera.y);
+        const screenX = col * TILE_SIZE - camX;
+        const screenY = row * TILE_SIZE - camY;
         drawForegroundTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, screenX, screenY);
       }
     }
 
-    // Pass 4: sprite halves above the FG layer (Y-sorted among themselves)
+    // Pass 4: sprite halves above the FG layer (Y-sorted among themselves).
+    // Each entity's health bar rides in whichever layer its upper half landed
+    // (enqueued just after the sprite), so it shares the entity's depth.
     aboveFG.sort((a, b) => a.sortY - b.sortY);
     for (const item of aboveFG) item.draw();
 
@@ -134,34 +332,62 @@ export class Renderer {
     if (room && room.holes.length > 0) {
       this.ctx.fillStyle = '#000';
       for (const hole of room.holes) {
-        const hx = Math.floor(hole.x - camera.x);
-        const hy = Math.floor(hole.y - camera.y);
-        if (hx < -8 || hx > SCREEN_WIDTH || hy < -8 || hy > SCREEN_HEIGHT) continue;
+        const hx = Math.round(hole.x) - camX;
+        const hy = Math.round(hole.y) - camY;
+        if (hx < -8 || hx > vw || hy < -8 || hy > vh) continue;
         this.ctx.fillRect(hx, hy, 8, 8);
       }
     }
 
-    // Door indicators (UI overlay, always on top)
-    const nearbyDoors = getDoorsNear(player.state.x, player.state.y);
-    for (const door of nearbyDoors) {
-      const doorScreenX = Math.floor(door.worldX - camera.x);
-      const doorScreenY = Math.floor(door.worldY - camera.y);
-      if (doorScreenX < -16 || doorScreenX > SCREEN_WIDTH + 16) continue;
-      if (doorScreenY < -16 || doorScreenY > SCREEN_HEIGHT + 16) continue;
-
-      this.ctx.fillStyle = 'rgba(255, 255, 100, 0.7)';
-      const ax = doorScreenX;
-      const ay = doorScreenY - 18;
-      this.ctx.beginPath();
-      this.ctx.moveTo(ax - 4, ay);
-      this.ctx.lineTo(ax + 4, ay);
-      this.ctx.lineTo(ax, ay + 5);
-      this.ctx.closePath();
-      this.ctx.fill();
-    }
-
     if (room) {
       this.ctx.restore();
+    }
+
+    if (debugBoxes) {
+      this.drawDebugBoxes(camX, camY, player, remotePlayers, npcs);
+    }
+
+    this.ctx.restore(); // zoom scale
+  }
+
+  /** Draw entity hurtboxes (cyan) + the player's attack hitbox (red) when set. */
+  private drawDebugBoxes(
+    camX: number,
+    camY: number,
+    player: Player,
+    remotePlayers: Map<string, RemotePlayer>,
+    npcs: NPC[]
+  ) {
+    const ctx = this.ctx;
+    ctx.lineWidth = 1;
+    const hurt = (x: number, y: number) => {
+      ctx.strokeStyle = 'rgba(0,224,255,0.9)';
+      ctx.strokeRect(
+        Math.round(x - HURT_W / 2) - camX + 0.5,
+        Math.round(y + HURT_OY) - camY + 0.5,
+        HURT_W,
+        HURT_H
+      );
+    };
+
+    hurt(player.x, player.y);
+    for (const [, rp] of remotePlayers) hurt(rp.x, rp.y);
+    for (const npc of npcs) {
+      if (npc.kind === 'person' || npc.kind === 'enemy') hurt(npc.x, npc.y);
+    }
+
+    // Player attack hitbox during a swing (same math as npcSim.handleAttack).
+    if (player.pose === 'attack') {
+      const v = DBG_DIR_VEC[player.direction] ?? DBG_DIR_VEC[Direction.S];
+      const cx = player.x + v[0] * ATTACK_REACH;
+      const cy = player.y - 10 + v[1] * ATTACK_REACH;
+      ctx.strokeStyle = 'rgba(255,48,48,0.95)';
+      ctx.strokeRect(
+        Math.round(cx - ATTACK_HALF) - camX + 0.5,
+        Math.round(cy - ATTACK_HALF) - camY + 0.5,
+        ATTACK_HALF * 2,
+        ATTACK_HALF * 2
+      );
     }
   }
 }

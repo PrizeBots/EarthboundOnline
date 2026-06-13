@@ -1,12 +1,15 @@
 import { loadImage, loadJSON } from './AssetLoader';
 import { sheetHasDiagonals } from './SpriteManager';
+import { getSpriteName } from './SpriteNames';
 import { SpriteGroupMeta, Direction, SCREEN_WIDTH, SCREEN_HEIGHT } from '../types';
 
-const COLS = 10;
+const COLS = 9;
 const CELL_W = 24;
 const CELL_H = 32;
 const PADDING = 2;
-const GRID_X = 8;
+// Center the grid so it always fits the 256px screen (10 cols at 24px would
+// run off the right edge). Derived so it stays correct if the sizes change.
+const GRID_X = Math.round((SCREEN_WIDTH - (COLS * CELL_W + (COLS - 1) * PADDING)) / 2);
 const GRID_Y = 32;
 const SCALE = 2;
 
@@ -210,7 +213,7 @@ export function drawCharacterSelect(ctx: CanvasRenderingContext2D) {
     ctx.fillText('Create your own character', 16, previewY + 14);
     ctx.fillStyle = '#888';
     ctx.font = '8px monospace';
-    ctx.fillText('Mix heads, hair, faces & clothes from Onett and beyond', 16, previewY + 26);
+    ctx.fillText('Pixel-edit your own sprite, starting from Ness', 16, previewY + 26);
   }
   const sel = characters[selectedIndex - 1];
   if (sel && selectedIndex !== CREATE_CELL) {
@@ -232,14 +235,14 @@ export function drawCharacterSelect(ctx: CanvasRenderingContext2D) {
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(img, srcX, srcY, meta.width, meta.height, px, py, pw, ph);
 
-    // Character ID label
+    // Character name (authored sprite-group names) + id details
     ctx.fillStyle = '#fff';
     ctx.font = '10px monospace';
     ctx.textAlign = 'left';
-    ctx.fillText(`Character #${meta.id}`, px + pw + 8, previewY + 14);
+    ctx.fillText(getSpriteName(meta.id) ?? `Character #${meta.id}`, px + pw + 8, previewY + 14);
     ctx.fillStyle = '#888';
     ctx.font = '8px monospace';
-    ctx.fillText(`${meta.width}x${meta.height}`, px + pw + 8, previewY + 26);
+    ctx.fillText(`#${meta.id} · ${meta.width}x${meta.height}`, px + pw + 8, previewY + 26);
   }
 
   ctx.textAlign = 'left';

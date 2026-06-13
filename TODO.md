@@ -10,12 +10,15 @@
 - [x] Camera follow
 - [x] Sprite animation (walk cycle)
 - [x] Character select screen
-- [x] Character creator (mix head/body/shirt/pants/shoes/face/hair from ROM sprites, live 16-frame grid, synced in multiplayer)
+- [x] Character creator — pixel editor over the Ness template (SpriteEditor; sheet synced in multiplayer as a PNG data URL). The old mix-and-match parts creator was removed — it never lined up.
+- [x] Attack + hurt frames in the character sheet (v2 = 10 rows; editor rows F-J procedurally posed from the standing frames — wind-up/lunge/recoil band shears; F = attack, H = hurt-test in-game; pose synced via move messages)
+- [x] Held item overlays (Items.ts — our own 16x16 pixel art; G cycles bat/pan/yo-yo; synced via `equip` message so everyone sees carried items)
 - [ ] Verify Onett spawn point is correct and walkable
-- [ ] Fix any rendering glitches (missing atlases, palette issues)
-- [ ] Add NPC sprites to Onett (static placement from ROM data)
-- [ ] Door/zone transitions between areas
-- [x] Crop interior rooms to a black background (camera roomBounds + render clip)
+- [ ] Fix any rendering glitches (missing atlases, palette issues) — track in bugs.md
+- [x] Add NPC sprites to Onett (ROM placement extraction with fresh-start flag filter; Entity/NPC/NPCManager)
+- [x] NPC dialogue — ccscript text decoding (eb_dialogue.py → npc_text.json) + Q-key talk/check (DialogueManager)
+- [x] Door/zone transitions between areas (flag-gated doors, zone-door + scripted-door dest overrides; full-map crop sweep clean)
+- [x] Crop interior rooms to a black background (camera roomBounds + render clip; caves/dungeons too)
 - [ ] Debug overlay (collision boxes, sector grid, FPS counter)
 
 ## Phase 2: Multiplayer (Browser)
@@ -25,12 +28,27 @@
 - [x] Character select synced with server
 - [x] Fix ghost sprite on join (broadcast excluded self)
 - [x] Nodemon auto-restart for server changes
+- [x] Server-side NPC simulation (wander/glance movement, server/npcSim.js, synced to clients)
 - [ ] Player name tags above sprites
 - [x] Chat system (text bubbles or chat box)
 - [ ] Server-side validation (speed, position bounds)
-- [ ] Interpolation/smoothing for remote player movement
+- [x] Interpolation/smoothing for remote player movement (RemoteInterp.ts — 100ms snapshot interpolation; teleport gaps >64px snap instead of glide)
+- [ ] Interpolation for NPC movement (npc_update is 10Hz, so NPCs still step ~3px; reuse RemoteInterp with a ~150ms delay)
 - [ ] Handle disconnects gracefully (timeout, reconnect)
 - [ ] Stress test with 10+ simultaneous clients
+
+## Pre-Launch: User-Supplied ROM Architecture (PokeMMO model — REQUIRED before going live)
+Goal: we distribute zero ROM-derived data; every player supplies their own
+EarthBound ROM and all assets are extracted in their browser. See CLAUDE.md
+"ROM & Asset Distribution" for the architecture.
+- [ ] ROM intake screen before character select (file picker, checksum-verify known dumps, ROM never uploaded)
+- [ ] Port extraction pipeline to TypeScript in a Web Worker (order: fonts/sprites → map/atlases/collision → roster)
+- [ ] Asset cache in IndexedDB/OPFS; AssetLoader reads cache instead of HTTP
+- [ ] Exclude `public/assets/` from production build (dev keeps local pre-extracted assets for speed)
+- [ ] Scrub `public/assets/` from ALL git history (`git filter-repo`), force-push
+- [ ] Redeploy Render with code only; verify nothing ROM-derived is served
+- [ ] SPC700 music sources sample/song data from the player's ROM (was the plan anyway)
+- [ ] Consider renaming the project (trademark exposure is separate from copyright)
 
 ## Phase 3: Game Server (Production)
 - [ ] Move game server to standalone Node process (separate from Vite)
@@ -40,38 +58,10 @@
 - [ ] Server tick rate control (fixed 20Hz or 30Hz update loop)
 - [ ] Authentication (simple token or account system)
 
-## Phase 4: ROM Build Pipeline (PVSnesLib)
-- [ ] Install PVSnesLib toolchain (65816 cross-compiler)
-- [ ] Hello world ROM that boots on real SNES hardware
-- [ ] Asset converter: PNG sprites → SNES 4bpp tile format
-- [ ] Asset converter: map data → SNES-compatible format
-- [ ] Basic tile renderer on SNES (Mode 1 BG layers)
-- [ ] Player movement on SNES (joypad input → sprite position)
-- [ ] Camera/scrolling system on SNES
-- [ ] Collision detection on SNES
-- [ ] `npm run build:rom` script to compile ROM from assets
-
-## Phase 5: ESP32 Co-Processor
-- [ ] ESP32 firmware skeleton (Arduino or ESP-IDF)
-- [ ] SPI/UART communication protocol design
-- [ ] Hardware bridge: TXS0108E level shifter wiring
-- [ ] 3D print controller port housing
-- [ ] ESP32 ↔ SNES data transfer (player input, game state)
-- [ ] ESP32 WiFi → game server connection
-- [ ] Sync multiplayer state: server → ESP32 → SNES
-- [ ] `npm run flash:esp` script to compile and flash firmware
-
-## Phase 6: Real Hardware Integration
-- [ ] ROM boots on real SNES with Ness walking in Onett
-- [ ] ESP32 receives multiplayer data and passes to SNES
-- [ ] See other players on real SNES hardware
-- [ ] Latency testing (WiFi → ESP32 → SNES pipeline)
-- [ ] Stress test with multiple SNES consoles
-
-## Phase 7: Build the Game
+## Phase 4: Build the Game
 - [ ] Real-time action combat system design doc
 - [ ] Hitbox/hurtbox system
-- [ ] Basic melee attack (bat swing)
+- [ ] Basic melee attack (bat swing) — attack pose/frames + held-item swing already render; needs hit detection and damage, then replace the H hurt-test key with real damage triggers
 - [ ] PSI/magic system (projectiles, AoE)
 - [ ] Enemy AI (overworld encounters, aggro range)
 - [ ] Health/damage system
@@ -80,6 +70,13 @@
 - [ ] Save system (server-side persistence)
 - [ ] Custom sprites for new combat animations
 - [ ] Sound effects / music integration
+
+## Backlog: Hardware Track (out of scope for now)
+The SNES ROM + ESP32 port is a long-term ambition, not part of the current project.
+Engine code should still be written to port cleanly (see CLAUDE.md Architecture).
+- [ ] ROM build pipeline (PVSnesLib): toolchain, hello-world boot, asset converters (4bpp tiles, map), Mode 1 tile renderer, movement/camera/collision on SNES, `npm run build:rom`
+- [ ] ESP32 co-processor: firmware, SPI/UART protocol, TXS0108E level-shifter bridge, 3D-printed controller-port housing, WiFi → game server link, `npm run flash:esp`
+- [ ] Real hardware integration: boot on real SNES, multiplayer state via ESP32, latency testing, multi-console stress test
 
 ## Backlog / Ideas
 - [ ] Player settings screen — selectable chat font (default: regular EB font; Mr. Saturn font as a fun option via ChatManager.setChatFont)

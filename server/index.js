@@ -2,6 +2,7 @@ const express = require('express');
 const { WebSocketServer } = require('ws');
 const http = require('http');
 const path = require('path');
+const { createNpcSim } = require('./npcSim');
 
 const PORT = process.env.PORT || 3333;
 
@@ -13,8 +14,33 @@ const wss = new WebSocketServer({ server });
 app.use(express.static(path.join(__dirname, '..', 'dist')));
 
 // --- Game State ---
-const players = new Map(); // id -> { id, name, spriteGroupId, x, y, direction, frame }
+const players = new Map(); // id -> { id, name, spriteGroupId, x, y, direction, frame, pose, itemId }
 let nextId = 1;
+
+const POSES = ['walk', 'climb', 'attack', 'hurt'];
+
+// Spawn point: editor override (public/overrides/spawn.json) wins over the
+// src/spawn.json default the client also uses. Read once at startup (nodemon
+// restarts on server-code changes; a moved spawn only matters for new joins).
+function readSpawn() {
+  const fs = require('fs');
+  for (const rel of ['../public/overrides/spawn.json', '../src/spawn.json']) {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(__dirname, rel), 'utf8'));
+    } catch {
+      /* try next */
+    }
+  }
+  return { x: 1296, y: 1168, dir: 0 };
+}
+const SPAWN = readSpawn();
+
+// Server-authoritative NPC simulation: same world for every client.
+const npcSim = createNpcSim(path.join(__dirname, '..', 'public', 'assets'));
+npcSim.start(
+  () => [...players.values()].map((p) => ({ x: p.x, y: p.y })),
+  (data) => broadcastAll(data)
+);
 
 function broadcast(data, excludeId) {
   const msg = JSON.stringify(data);
@@ -52,11 +78,18 @@ wss.on('connection', (ws) => {
           id: playerId,
           name: msg.name || `Player${playerId}`,
           spriteGroupId: msg.spriteGroupId || 1,
-          appearance: msg.appearance || null,
-          x: 1296,
-          y: 1168,
-          direction: 0, // Direction.S
+          // Pixel-edited sheet as a PNG data URL (~1-3KB); cap so a hostile
+          // client can't make every join broadcast megabytes.
+          appearance:
+            typeof msg.appearance === 'string' && msg.appearance.length <= 65536
+              ? msg.appearance
+              : null,
+          x: SPAWN.x,
+          y: SPAWN.y,
+          direction: SPAWN.dir || 0,
           frame: 0,
+          pose: 'walk',
+          itemId: null, // held item, set by 'equip' messages
         };
         players.set(playerId, { ...playerData, _ws: ws });
 
@@ -72,6 +105,8 @@ wss.on('connection', (ws) => {
           type: 'welcome',
           playerId,
           players: otherPlayers,
+          npcs: npcSim.snapshot(),
+          npcHps: npcSim.hpSnapshot(),
         }));
 
         // Tell everyone else about the new player
@@ -90,6 +125,7 @@ wss.on('connection', (ws) => {
         entry.y = msg.y;
         entry.direction = msg.direction;
         entry.frame = msg.frame;
+        entry.pose = POSES.includes(msg.pose) ? msg.pose : 'walk';
 
         // Broadcast to all OTHER players
         const moveMsg = JSON.stringify({
@@ -99,10 +135,35 @@ wss.on('connection', (ws) => {
           y: msg.y,
           direction: msg.direction,
           frame: msg.frame,
+          pose: entry.pose,
         });
         for (const [id, p] of players) {
           if (id !== playerId && p._ws.readyState === 1) {
             p._ws.send(moveMsg);
+          }
+        }
+        break;
+      }
+
+      case 'attack': {
+        const entry = players.get(playerId);
+        if (!entry) break;
+        // Server-authoritative: resolve the swing from the player's tracked
+        // position (not client-sent coords) so reach can't be spoofed.
+        npcSim.handleAttack(entry.x, entry.y, msg.dir | 0, playerId);
+        break;
+      }
+
+      case 'equip': {
+        const entry = players.get(playerId);
+        if (!entry) break;
+        // Item ids are short slugs; clients ignore ids they don't recognize.
+        entry.itemId =
+          typeof msg.itemId === 'string' && msg.itemId.length <= 24 ? msg.itemId : null;
+        const equipMsg = JSON.stringify({ type: 'equip', id: playerId, itemId: entry.itemId });
+        for (const [id, p] of players) {
+          if (id !== playerId && p._ws.readyState === 1) {
+            p._ws.send(equipMsg);
           }
         }
         break;

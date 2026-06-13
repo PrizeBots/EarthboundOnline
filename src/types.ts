@@ -24,6 +24,13 @@ export interface SectorMeta {
   // small rooms surrounded by black void tiles and must be camera-cropped to
   // the current room (see MapManager.computeRoomBounds / Camera.roomBounds).
   indoor?: boolean;
+  // True for cave/dungeon sectors (EarthBound "Setting: exit mouse usable").
+  // Packed adjacent to unrelated map chunks just like interiors — same crop.
+  dungeon?: boolean;
+  // Overworld region name from EB's "Town Map Image" (onett/twoson/threed/
+  // fourside/scaraba/summers); absent for interiors/dungeons. Drives the
+  // editor's location navigator (EDITOR_TOOLS.md).
+  town?: string;
 }
 
 export interface SpriteGroupMeta {
@@ -40,27 +47,17 @@ export interface NPCData {
   direction: number;
 }
 
-export interface PlayerState {
-  x: number;
-  y: number;
-  direction: Direction;
-  frame: number;
-  moving: boolean;
-}
+// Custom character appearance: the pixel-edited sprite sheet as a PNG data
+// URL. Registered as a synthetic sprite group locally and relayed verbatim so
+// other players can render it too. Current sheets are 64x240 (walk rows 0-3,
+// climb row 4, attack rows 5-8, hurt row 9); legacy 64x120 sheets (walk +
+// climb only) are still accepted, with poses falling back to walk frames.
+export type CharacterAppearance = string;
 
-// Custom character appearance: one part id per category (index into the
-// charparts catalog). Composited into a sprite sheet at runtime.
-export const APPEARANCE_CATEGORIES = [
-  'head',
-  'body',
-  'shirt',
-  'pants',
-  'shoes',
-  'face',
-  'hair',
-] as const;
-export type AppearanceCategory = (typeof APPEARANCE_CATEGORIES)[number];
-export type CharacterAppearance = Record<AppearanceCategory, number>;
+// Sprite poses. 'walk' covers idle (frame 0) and the 2-frame walk cycle;
+// 'attack' is a 2-frame swing; 'hurt' is a single flinch frame per facing.
+export const POSES = ['walk', 'climb', 'attack', 'hurt'] as const;
+export type Pose = (typeof POSES)[number];
 
 export interface RemotePlayer {
   id: string;
@@ -71,6 +68,12 @@ export interface RemotePlayer {
   y: number;
   direction: Direction;
   frame: number;
+  pose?: Pose;
+  /** Held item id (see Items.ts), or null for empty hands. */
+  itemId?: string | null;
+  // Health is not synced yet — combat will add it. Missing = full bar.
+  hp?: number;
+  maxHp?: number;
 }
 
 export enum Direction {
