@@ -23,12 +23,24 @@ import { Direction, Pose } from '../types';
 
 export type NPCKind = 'person' | 'prop' | 'enemy' | 'car';
 
+// EarthBound's telephones — talking to one calls Dad to save instead of
+// showing check text. Sprite groups: 215/216 (overworld phones), 412/427
+// (special/late-game phones). Mirrors how shopStore marks a clerk.
+const PHONE_SPRITE_GROUPS = new Set([215, 216, 412, 427]);
+
 export class NPC extends Entity {
   readonly kind: NPCKind;
   /** NPC config id keying npc_text.json, or null if this NPC has no dialogue. */
   readonly textId: number | null;
   /** Server-driven animation pose (walk/attack/hurt), same as players. */
   pose: Pose = 'walk';
+  /** Store id if this NPC is a shop clerk (set by NPCManager), else null. */
+  shopStore: number | null = null;
+
+  /** True if this placement is a telephone — talking to it triggers a save. */
+  get isPhone(): boolean {
+    return PHONE_SPRITE_GROUPS.has(this.spriteGroupId);
+  }
 
   constructor(
     x: number,

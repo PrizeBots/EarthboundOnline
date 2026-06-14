@@ -1,9 +1,10 @@
 /**
  * MenuManager — EarthBound's overworld command window.
  *
- * E (or X / Escape) opens the command window in the top-left: a 3x2 grid of
- * Talk to / Goods / PSI / Equip / Check / Status, navigated with the arrow
- * keys (or WASD) and a ">" cursor, just like pressing A in EarthBound.
+ * Q (or X / Escape) opens the command window in the top-left: a 2x2 grid of
+ * Goods / PSI / Equip / Status, navigated with the arrow keys (or WASD) and a
+ * ">" cursor, just like pressing A in EarthBound. (Talk to / Check are gone —
+ * the E button handles contextual talk/check in the field.)
  * Confirming a command that has no game system behind it yet opens a small
  * dialogue window at the bottom of the screen; any action key dismisses it.
  *
@@ -14,11 +15,23 @@
 import { drawWindow }                              from './WindowRenderer';
 import { drawText, measureText, FONT_LINE_HEIGHT } from './TextRenderer';
 import { renderStatus }                            from './StatusModal';
-import { getPointer, consumePointerClick }         from './Input';
+import { getPointer, consumePointerClick, isPointerDown,
+         consumePointerPress, consumePointerRelease } from './Input';
 import { getGoods }                                from './Inventory';
 import { getMoney }                                from './Wallet';
-import { sendUseItem, sendUsePsi }                 from './Network';
+import { sendUseItem, sendUsePsi, sendBuy, sendSell, sendEquip } from './Network';
+import { getStoreItems, sellPrice, itemType, itemEquip } from './Shop';
+import { isEquippable, drawItemIcon, getItemName }  from './Items';
 import { SCREEN_WIDTH, SCREEN_HEIGHT }             from '../types';
+
+// Hooks into the local player's held/equipped item, wired by Game (MenuManager
+// has no player ref). getHeldItem reads the current weapon; equipWeapon sets it
+// (held sprite + server 'equip'). Hotbar toggle-equip flows through these.
+export interface MenuHooks {
+  getHeldItem(): string | null;
+  equipWeapon(id: string | null): void;
+}
+let hooks: MenuHooks | null = null;
 
 const MENU_STYLE = 0;          // EB "Plain" dark-blue flavor
 const BORDER     = 6;
@@ -38,16 +51,16 @@ function drawCursor(ctx: CanvasRenderingContext2D, x: number, y: number): void {
   }
 }
 
-// EarthBound's command window: 2 rows x 3 columns, read left to right.
+// Command window: 2 rows x 2 columns, read left to right. Talk to / Check were
+// removed — the E button handles contextual talk/check in the field, so they'd
+// just be dead menu slots here.
 const MENU_ITEMS = [
-  { label: 'Talk to', action: 'talk'   },
   { label: 'Goods',   action: 'goods'  },
   { label: 'PSI',     action: 'psi'    },
   { label: 'Equip',   action: 'equip'  },
-  { label: 'Check',   action: 'check'  },
   { label: 'Status',  action: 'status' },
 ];
-const COLS = 3;
+const COLS = 2;
 const ROWS = 2;
 
 // PSI abilities castable from the PSI command. Static for now; the server
@@ -59,14 +72,57 @@ const PSI_ABILITIES = [
 // Placeholder responses until the real systems (inventory, PSI, stats,
 // NPC dialogue) exist. Each shows in an EB-style bottom dialogue window.
 const STUB_MESSAGES: Record<string, string> = {
-  talk:   "There's nobody close enough to talk to. (Enter opens chat.)",
   goods:  "You aren't carrying anything yet.",
   psi:    "You can't use PSI yet.",
   equip:  "You have nothing to equip.",
-  check:  "There's nothing unusual here.",
 };
 
-type MenuState = 'closed' | 'command' | 'message' | 'status' | 'goods' | 'psi';
+type MenuState =
+  | 'closed' | 'command' | 'message' | 'status' | 'goods' | 'psi'
+  | 'shop' | 'shop_buy' | 'shop_sell' | 'phone' | 'save' | 'equip';
+
+// --- Quick-select hotbar (2 slots, keys 1-2) ---------------------------------
+// In-memory item ids assigned to each slot (a weapon to brandish, or a
+// consumable to use). Visible only while the menu is open. More slots unlock
+// later. Drag a gear icon from the Equip modal (or a Goods row) onto a box.
+const HOTBAR_SLOTS = 2;
+const hotbar: (string | null)[] = new Array(HOTBAR_SLOTS).fill(null);
+// A drag in progress: the item id being dragged onto a hotbar box.
+let drag: { id: string } | null = null;
+let equipCursor = 0;
+
+// EarthBound's telephone menu — pick who to call. Dad saves your game; Mom
+// eases homesickness. (Escargo Express / other EB contacts can join once item
+// storage exists.) WIRING ONLY: Dad's save is a stub, Mom is flavor for now.
+const PHONE_CONTACTS: { name: string; action: 'save' | 'mom' }[] = [
+  { name: 'Dad', action: 'save' },
+  { name: 'Mom', action: 'mom'  },
+];
+const MOM_MESSAGE = "It's Mom. Are you eating right and getting enough sleep? ...There, don't you feel a little less homesick now?";
+
+// Dad's save prompt, reached from the phone menu. Real persistence (the
+// progression block, keyed by an anonymous localStorage token) is still TODO
+// (see TODO.md "Save system") — confirming just acknowledges for now.
+const SAVE_PROMPT  = "It's Dad. You sound like you're doing great, kiddo! Want me to save your progress?";
+const SAVE_DONE    = "OK, I saved your progress. Don't push yourself too hard, now!";
+const SAVE_CHOICES = ['Yes', 'No'];
+
+/** STUB — wiring only. The phone-save call site; persistence not built yet. */
+function saveGame(): void {
+  console.log('[save] phone save requested — persistence not implemented yet (stub)');
+}
+
+/** Open the telephone contact menu (called from Game.tryTalk for a phone). */
+export function openPhoneMenu(): void {
+  phoneCursor = 0;
+  menuState = 'phone';
+}
+
+// Shop: opened by talking to a clerk (openShop), NOT from the command grid.
+// 'shop' is the Buy/Sell chooser; the two lists hang under it. The server owns
+// money + inventory, so confirming just sends a request and the resulting
+// inventory/money deltas flow back through Network and re-render the lists.
+const SHOP_ROOT = ['Buy', 'Sell'];
 
 interface Cell { x: number; y: number; w: number; h: number; }
 
@@ -143,6 +199,128 @@ function goodsRowAt(px: number, py: number): number {
   return -1;
 }
 
+// --- Equip modal + hotbar geometry/logic -------------------------------------
+
+/** The player's equippable gear (weapons/armor) in inventory — the modal list. */
+function equippableGoods(): { id: string; name: string }[] {
+  return getGoods().filter((g) => isEquippable(itemType(g.id)));
+}
+
+const EQUIP_COLS = 4;
+const EQUIP_CELL = 22;  // gear icon cell (16px art + padding)
+
+/** Equip modal: a centered grid of gear icons, above the hotbar. */
+function equipLayout(): { winX: number; winY: number; winW: number; winH: number; cells: Cell[] } {
+  const items = equippableGoods();
+  const n = Math.max(1, items.length);
+  const cols = Math.min(EQUIP_COLS, n);
+  const rowsN = Math.ceil(n / cols);
+  const gridW = cols * EQUIP_CELL;
+  const innerW = Math.max(gridW, 88);
+  const innerH = rowsN * EQUIP_CELL + FONT_LINE_HEIGHT + 2; // grid + cursored-name line
+  const winW = innerW + PADDING * 2 + BORDER * 2;
+  const winH = innerH + PADDING * 2 + BORDER * 2;
+  const winX = Math.floor((SCREEN_WIDTH - winW) / 2);
+  const winY = 22;
+  const gx = winX + BORDER + PADDING + Math.floor((innerW - gridW) / 2);
+  const gy = winY + BORDER + PADDING;
+  const cells: Cell[] = [];
+  for (let i = 0; i < items.length; i++) {
+    cells.push({ x: gx + (i % cols) * EQUIP_CELL, y: gy + ((i / cols) | 0) * EQUIP_CELL, w: EQUIP_CELL, h: EQUIP_CELL });
+  }
+  return { winX, winY, winW, winH, cells };
+}
+
+function equipCellAt(px: number, py: number): number {
+  const { cells } = equipLayout();
+  for (let i = 0; i < cells.length; i++) {
+    const c = cells[i];
+    if (px >= c.x && px < c.x + c.w && py >= c.y && py < c.y + c.h) return i;
+  }
+  return -1;
+}
+
+const HOTBAR_BOX = 24;
+const HOTBAR_GAP = 6;
+
+/** The hotbar boxes, centered at the bottom of the screen. */
+function hotbarLayout(): Cell[] {
+  const totalW = HOTBAR_SLOTS * HOTBAR_BOX + (HOTBAR_SLOTS - 1) * HOTBAR_GAP;
+  const x0 = Math.floor((SCREEN_WIDTH - totalW) / 2);
+  const y = SCREEN_HEIGHT - HOTBAR_BOX - 6;
+  const boxes: Cell[] = [];
+  for (let i = 0; i < HOTBAR_SLOTS; i++) {
+    boxes.push({ x: x0 + i * (HOTBAR_BOX + HOTBAR_GAP), y, w: HOTBAR_BOX, h: HOTBAR_BOX });
+  }
+  return boxes;
+}
+
+function hotbarBoxAt(px: number, py: number): number {
+  const boxes = hotbarLayout();
+  for (let i = 0; i < boxes.length; i++) {
+    const b = boxes[i];
+    if (px >= b.x && px < b.x + b.w && py >= b.y && py < b.y + b.h) return i;
+  }
+  return -1;
+}
+
+/** Equip/unequip a weapon directly (keyboard confirm / single click on gear). */
+function directEquip(id: string): void {
+  const eq = itemEquip(id);
+  if (eq && eq.slot === 'weapon') {
+    const held = hooks?.getHeldItem() ?? null;
+    hooks?.equipWeapon(held === id ? null : id); // toggle
+  } else {
+    message = `${getItemName(id) ?? 'That'} — only weapons can be equipped for now.`;
+    menuState = 'message';
+  }
+}
+
+/** Trigger a hotbar slot: toggle-equip a weapon, or use a consumable. */
+function activateSlot(i: number): void {
+  const id = hotbar[i];
+  if (!id) return;
+  const eq = itemEquip(id);
+  if (eq && eq.slot === 'weapon') {
+    const held = hooks?.getHeldItem() ?? null;
+    hooks?.equipWeapon(held === id ? null : id); // brandish / holster
+  } else if (eq) {
+    message = `${getItemName(id) ?? 'That'} — armor slots aren't wired up yet.`;
+    menuState = 'message';
+  } else {
+    sendUseItem(id); // consumable
+  }
+}
+
+// Pointer drag/drop: press on a gear cell (Equip modal) or Goods row starts a
+// drag; release on a hotbar box assigns it; release back on the source acts as a
+// plain click (equip / use). Runs only in the 'equip' and 'goods' states.
+function updateHotbarDrag(): void {
+  const press = consumePointerPress();
+  if (press && !drag && (menuState === 'equip' || menuState === 'goods')) {
+    const items = menuState === 'equip' ? equippableGoods() : getGoods();
+    const i = menuState === 'equip' ? equipCellAt(press.x, press.y) : goodsRowAt(press.x, press.y);
+    if (i >= 0 && items[i]) drag = { id: items[i].id };
+  }
+  const rel = consumePointerRelease();
+  if (rel && drag) {
+    const box = hotbarBoxAt(rel.x, rel.y);
+    if (box >= 0) {
+      hotbar[box] = drag.id; // dropped on a slot — assign
+    } else if (menuState === 'equip') {
+      const i = equipCellAt(rel.x, rel.y);
+      const items = equippableGoods();
+      if (i >= 0 && items[i] && items[i].id === drag.id) directEquip(items[i].id); // click
+    } else if (menuState === 'goods') {
+      const i = goodsRowAt(rel.x, rel.y);
+      const items = getGoods();
+      if (i >= 0 && items[i] && items[i].id === drag.id) sendUseItem(items[i].id); // click
+    }
+    drag = null;
+  }
+  if (drag && !isPointerDown()) drag = null; // safety: never get stuck dragging
+}
+
 // The PSI ability list — same vertical-window layout as Goods, tucked under the
 // command grid. Static list, so no inventory lookup.
 function psiLayout(): { winX: number; winY: number; winW: number; winH: number; rows: Cell[] } {
@@ -171,17 +349,91 @@ function psiRowAt(px: number, py: number): number {
   return -1;
 }
 
+// Shop rows render "Name......$Cost" right-aligned price; the list is wide
+// enough for the longest such line. Rows come from the store (Buy) or the
+// player's Goods (Sell, priced at half). Returned rows include the wire id and
+// price so input can act without re-deriving them.
+interface ShopRow extends Cell { id: string; label: string; }
+const SHOP_MIN_W = 120;
+function shopListLayout(mode: 'buy' | 'sell'): {
+  winX: number; winY: number; winW: number; winH: number; rows: ShopRow[];
+} {
+  const src =
+    mode === 'buy'
+      ? getStoreItems(shopStore).map((i) => ({ id: i.id, name: i.name, price: i.cost }))
+      : getGoods().map((g) => ({ id: g.id, name: g.name, price: sellPrice(g.id) }));
+  const labels = src.map((r) => `${r.name}  $${r.price}`);
+  const maxLabelW = labels.length ? Math.max(...labels.map((l) => measureText(l, FONT_ID))) : 0;
+  const innerW = Math.max(SHOP_MIN_W, CURSOR_W + maxLabelW);
+  const count = Math.max(1, src.length);
+  const innerH = count * ITEM_H + PADDING * 2;
+  // Sit to the RIGHT of the Buy/Sell chooser — the hit-test (shopRowAt) and the
+  // renderer BOTH use this, so clicks land where the rows are drawn.
+  const chooserLabelW = Math.max(...SHOP_ROOT.map((l) => measureText(l, FONT_ID)));
+  const chooserW = CURSOR_W + chooserLabelW + PADDING * 2 + BORDER * 2;
+  const winX = 8 + chooserW + 4;
+  const winY = 8;
+  const rows: ShopRow[] = src.map((r, i) => ({
+    x: winX + BORDER + PADDING,
+    y: winY + BORDER + PADDING + i * ITEM_H,
+    w: innerW,
+    h: ITEM_H,
+    id: r.id,
+    label: labels[i],
+  }));
+  return { winX, winY, winW: innerW + PADDING * 2 + BORDER * 2, winH: innerH + BORDER * 2, rows };
+}
+
+function shopRowAt(mode: 'buy' | 'sell', px: number, py: number): number {
+  const { rows } = shopListLayout(mode);
+  for (let i = 0; i < rows.length; i++) {
+    const c = rows[i];
+    if (px >= c.x && px < c.x + c.w && py >= c.y && py < c.y + c.h) return i;
+  }
+  return -1;
+}
+
+/** Index of the Buy/Sell chooser row (top-left window) under a point, or -1. */
+function shopRootRowAt(px: number, py: number): number {
+  const labelW = Math.max(...SHOP_ROOT.map((l) => measureText(l, FONT_ID)));
+  const w = CURSOR_W + labelW;
+  for (let i = 0; i < SHOP_ROOT.length; i++) {
+    const x = 8 + BORDER + PADDING;
+    const y = 8 + BORDER + PADDING + i * ITEM_H;
+    if (px >= x && px < x + w && py >= y && py < y + ITEM_H) return i;
+  }
+  return -1;
+}
+
+/** Open a clerk's shop (called from Game.tryTalk for a shop-clerk NPC). */
+export function openShop(store: number): void {
+  shopStore = store;
+  shopRootCursor = 0;
+  shopBuyCursor = 0;
+  shopSellCursor = 0;
+  shopNote = '';
+  menuState = 'shop';
+}
+
 let menuState: MenuState = 'closed';
 let cursorIndex = 0;
 let goodsCursor = 0;
 let psiCursor = 0;
 let message = '';
+let shopStore = -1;     // store id of the clerk being talked to
+let shopRootCursor = 0; // 0 = Buy, 1 = Sell
+let shopBuyCursor = 0;
+let shopSellCursor = 0;
+let shopNote = '';      // transient line under the shop (e.g. "Not enough money")
+let phoneCursor = 0;    // selected contact in the telephone menu
+let saveCursor = 0;     // 0 = Yes, 1 = No, on the phone-save prompt
 
 const prevKeys = new Set<string>();
 let liveKeys: Set<string>;
 
-export function initMenu(keySet: Set<string>): void {
+export function initMenu(keySet: Set<string>, h?: MenuHooks): void {
   liveKeys = keySet;
+  hooks = h ?? null;
 }
 
 export function updateMenu(): void {
@@ -189,12 +441,28 @@ export function updateMenu(): void {
 
   const justPressed = (code: string) =>
     liveKeys.has(code) && !prevKeys.has(code);
-  const toggle  = justPressed('KeyE') || justPressed('KeyX') || justPressed('Escape');
-  // Confirm/activate a command: Z, Space, Enter, or Q (the contextual button).
+  const toggle  = justPressed('KeyQ') || justPressed('KeyX') || justPressed('Escape');
+  // Confirm/activate a command: Z, Space, Enter, or E (the contextual button).
   const confirm = justPressed('KeyZ') || justPressed('Space') ||
-                  justPressed('Enter') || justPressed('KeyQ');
+                  justPressed('Enter') || justPressed('KeyE');
   // A left-click anywhere this frame (game-space coords), consumed once.
   const click = menuState === 'closed' ? null : consumePointerClick();
+
+  // Hotbar (any open state): number keys 1-2 trigger a slot — except in the
+  // Equip modal, where they ASSIGN the cursored gear to that slot. Drag-drop is
+  // handled by updateHotbarDrag for the 'equip'/'goods' source lists.
+  if (menuState !== 'closed') {
+    for (let n = 0; n < HOTBAR_SLOTS; n++) {
+      if (!justPressed(`Digit${n + 1}`)) continue;
+      if (menuState === 'equip') {
+        const items = equippableGoods();
+        if (items[equipCursor]) hotbar[n] = items[equipCursor].id;
+      } else {
+        activateSlot(n);
+      }
+    }
+    updateHotbarDrag();
+  }
 
   if (menuState === 'closed') {
     if (toggle) {
@@ -253,12 +521,9 @@ export function updateMenu(): void {
       const hovered = goodsRowAt(p.x, p.y);
       if (hovered >= 0) goodsCursor = hovered;
 
-      // Use via keyboard confirm, or by clicking directly on a row.
-      let use = confirm ? goodsCursor : -1;
-      if (click) {
-        const clicked = goodsRowAt(click.x, click.y);
-        if (clicked >= 0) use = clicked;
-      }
+      // Use via keyboard confirm. Mouse use (and drag-to-hotbar) is handled by
+      // updateHotbarDrag on pointer release, so a drag doesn't also use the item.
+      const use = confirm ? goodsCursor : -1;
       if (use >= 0 && items[use]) {
         // Server-authoritative: ask to use it; the resulting `inventory` and
         // `player_hp` deltas (Cookie heals 10) flow back through Network.
@@ -289,6 +554,146 @@ export function updateMenu(): void {
         sendUsePsi(PSI_ABILITIES[use].id);
       }
     }
+  } else if (menuState === 'equip') {
+    if (toggle || justPressed('Backspace')) {
+      menuState = 'command'; // back to the command grid
+    } else {
+      const items = equippableGoods();
+      const n = items.length;
+      if (n > 0) {
+        if (justPressed('ArrowLeft')  || justPressed('KeyA')) equipCursor = (equipCursor + n - 1) % n;
+        if (justPressed('ArrowRight') || justPressed('KeyD')) equipCursor = (equipCursor + 1) % n;
+        if (justPressed('ArrowUp')    || justPressed('KeyW')) equipCursor = Math.max(0, equipCursor - EQUIP_COLS);
+        if (justPressed('ArrowDown')  || justPressed('KeyS')) equipCursor = Math.min(n - 1, equipCursor + EQUIP_COLS);
+        if (equipCursor >= n) equipCursor = n - 1;
+        // Hover moves the cursor to the gear cell under the pointer.
+        const p = getPointer();
+        const hov = equipCellAt(p.x, p.y);
+        if (hov >= 0) equipCursor = hov;
+        // Confirm equips/uses the cursored gear (keyboard parity with drag/click).
+        if (confirm && items[equipCursor]) directEquip(items[equipCursor].id);
+      }
+    }
+  } else if (menuState === 'shop') {
+    if (toggle || justPressed('Backspace')) {
+      menuState = 'closed'; // leave the shop entirely
+    } else {
+      if (justPressed('ArrowUp')   || justPressed('KeyW')) shopRootCursor = (shopRootCursor + 1) % 2;
+      if (justPressed('ArrowDown') || justPressed('KeyS')) shopRootCursor = (shopRootCursor + 1) % 2;
+      // Mouse: hover highlights, click chooses Buy/Sell.
+      const p = getPointer();
+      const hov = shopRootRowAt(p.x, p.y);
+      if (hov >= 0) shopRootCursor = hov;
+      let choose = confirm ? shopRootCursor : -1;
+      if (click) {
+        const c = shopRootRowAt(click.x, click.y);
+        if (c >= 0) choose = c;
+      }
+      if (choose >= 0) {
+        shopNote = '';
+        menuState = choose === 0 ? 'shop_buy' : 'shop_sell';
+      }
+    }
+  } else if (menuState === 'shop_buy') {
+    const rows = shopListLayout('buy').rows;
+    if (toggle || justPressed('Backspace')) {
+      menuState = 'shop';
+    } else if (rows.length) {
+      if (justPressed('ArrowUp')   || justPressed('KeyW')) shopBuyCursor = (shopBuyCursor + rows.length - 1) % rows.length;
+      if (justPressed('ArrowDown') || justPressed('KeyS')) shopBuyCursor = (shopBuyCursor + 1) % rows.length;
+      const p = getPointer();
+      const hovered = shopRowAt('buy', p.x, p.y);
+      if (hovered >= 0) shopBuyCursor = hovered;
+      let pick = confirm ? shopBuyCursor : -1;
+      if (click) {
+        const clicked = shopRowAt('buy', click.x, click.y);
+        if (clicked >= 0) pick = clicked;
+      }
+      if (pick >= 0 && rows[pick]) {
+        const item = getStoreItems(shopStore)[pick];
+        // Pre-check affordability for instant feedback; the server re-validates.
+        if (item && getMoney() < item.cost) shopNote = 'Not enough money.';
+        else {
+          sendBuy(shopStore, rows[pick].id);
+          shopNote = `Bought ${item?.name ?? 'item'}!`; // the money window confirms the spend
+        }
+      }
+    }
+  } else if (menuState === 'shop_sell') {
+    const rows = shopListLayout('sell').rows;
+    if (toggle || justPressed('Backspace')) {
+      menuState = 'shop';
+    } else if (getGoods().length) {
+      if (justPressed('ArrowUp')   || justPressed('KeyW')) shopSellCursor = (shopSellCursor + rows.length - 1) % rows.length;
+      if (justPressed('ArrowDown') || justPressed('KeyS')) shopSellCursor = (shopSellCursor + 1) % rows.length;
+      const p = getPointer();
+      const hovered = shopRowAt('sell', p.x, p.y);
+      if (hovered >= 0) shopSellCursor = hovered;
+      let pick = confirm ? shopSellCursor : -1;
+      if (click) {
+        const clicked = shopRowAt('sell', click.x, click.y);
+        if (clicked >= 0) pick = clicked;
+      }
+      if (pick >= 0 && rows[pick]) {
+        shopNote = '';
+        sendSell(rows[pick].id);
+        if (shopSellCursor >= rows.length - 1) shopSellCursor = Math.max(0, rows.length - 2);
+      }
+    } else {
+      menuState = 'shop'; // sold the last item
+    }
+  } else if (menuState === 'phone') {
+    // Telephone contact list — pick who to call.
+    if (toggle || justPressed('Backspace')) {
+      menuState = 'closed'; // hang up
+    } else {
+      if (justPressed('ArrowUp')   || justPressed('KeyW')) phoneCursor = (phoneCursor + PHONE_CONTACTS.length - 1) % PHONE_CONTACTS.length;
+      if (justPressed('ArrowDown') || justPressed('KeyS')) phoneCursor = (phoneCursor + 1) % PHONE_CONTACTS.length;
+
+      const p = getPointer();
+      const hovered = phoneRowAt(p.x, p.y);
+      if (hovered >= 0) phoneCursor = hovered;
+
+      let pick = confirm ? phoneCursor : -1;
+      if (click) {
+        const clicked = phoneRowAt(click.x, click.y);
+        if (clicked >= 0) pick = clicked;
+      }
+      if (pick >= 0 && PHONE_CONTACTS[pick]) {
+        if (PHONE_CONTACTS[pick].action === 'save') {
+          saveCursor = 0;
+          menuState = 'save';          // Dad → save prompt
+        } else {
+          message = MOM_MESSAGE;        // Mom → homesickness flavor
+          menuState = 'message';
+        }
+      }
+    }
+  } else if (menuState === 'save') {
+    // Dad's Yes/No save prompt. Cancel (Esc/Backspace) returns to the contacts.
+    if (toggle || justPressed('Backspace')) {
+      menuState = 'phone';
+    } else {
+      if (justPressed('ArrowUp')   || justPressed('KeyW')) saveCursor = (saveCursor + SAVE_CHOICES.length - 1) % SAVE_CHOICES.length;
+      if (justPressed('ArrowDown') || justPressed('KeyS')) saveCursor = (saveCursor + 1) % SAVE_CHOICES.length;
+
+      const p = getPointer();
+      const hovered = saveChoiceAt(p.x, p.y);
+      if (hovered >= 0) saveCursor = hovered;
+
+      let pick = confirm ? saveCursor : -1;
+      if (click) {
+        const clicked = saveChoiceAt(click.x, click.y);
+        if (clicked >= 0) pick = clicked;
+      }
+      if (pick === 0) {
+        saveGame();            // STUB: wiring only — persistence is TODO
+        message = SAVE_DONE;
+        menuState = 'message';
+      } else if (pick === 1) {
+        menuState = 'closed';  // hung up without saving
+      }
+    }
   }
 
   prevKeys.clear();
@@ -301,8 +706,20 @@ export function isMenuOpen(): boolean {
 
 export function renderMenu(ctx: CanvasRenderingContext2D): void {
   if (menuState === 'closed') return;
+  renderMenuBody(ctx);
+  // The hotbar (and any in-flight drag) overlay every open menu state.
+  renderHotbar(ctx);
+  renderDragGhost(ctx);
+}
+
+function renderMenuBody(ctx: CanvasRenderingContext2D): void {
   if (menuState === 'message') {
     renderMessage(ctx);
+    return;
+  }
+  if (menuState === 'equip') {
+    renderCommand(ctx); // command grid stays visible behind the modal
+    renderEquip(ctx);
     return;
   }
   if (menuState === 'status') {
@@ -319,8 +736,70 @@ export function renderMenu(ctx: CanvasRenderingContext2D): void {
     renderPsi(ctx);
     return;
   }
+  if (menuState === 'shop' || menuState === 'shop_buy' || menuState === 'shop_sell') {
+    renderShop(ctx);
+    return;
+  }
+  if (menuState === 'phone') {
+    renderPhone(ctx);
+    return;
+  }
+  if (menuState === 'save') {
+    renderSave(ctx);
+    return;
+  }
 
   renderCommand(ctx);
+}
+
+// Shop UI: a Buy/Sell chooser top-left, the active list beside it, money
+// top-right, and an optional note line at the bottom. Mouse + keyboard share
+// the same shopListLayout() geometry as the hit-test.
+function renderShop(ctx: CanvasRenderingContext2D): void {
+  // Buy/Sell chooser window (top-left).
+  const labelW = Math.max(...SHOP_ROOT.map((l) => measureText(l, FONT_ID)));
+  const rootInnerW = CURSOR_W + labelW;
+  const rootW = rootInnerW + PADDING * 2 + BORDER * 2;
+  const rootH = SHOP_ROOT.length * ITEM_H + PADDING * 2 + BORDER * 2;
+  const rootX = 8;
+  const rootY = 8;
+  drawWindow(ctx, rootX, rootY, rootW, rootH, MENU_STYLE);
+  for (let i = 0; i < SHOP_ROOT.length; i++) {
+    const x = rootX + BORDER + PADDING;
+    const y = rootY + BORDER + PADDING + i * ITEM_H;
+    if (menuState === 'shop' && i === shopRootCursor) drawCursor(ctx, x, y + 3);
+    drawText(ctx, SHOP_ROOT[i], x + CURSOR_W, y, FONT_ID);
+  }
+
+  renderMoney(ctx);
+
+  // The active list (Buy: store stock; Sell: player Goods), placed to the right
+  // of the chooser. Re-uses shopListLayout for sizing, then shifts it across.
+  if (menuState === 'shop_buy' || menuState === 'shop_sell') {
+    const mode = menuState === 'shop_buy' ? 'buy' : 'sell';
+    // Draw at the layout's own coords so the rows line up with shopRowAt's
+    // hit-test (they used to diverge, so clicks landed on empty space).
+    const { winX, winY, winW, winH, rows } = shopListLayout(mode);
+    drawWindow(ctx, winX, winY, winW, winH, MENU_STYLE);
+    const cursor = mode === 'buy' ? shopBuyCursor : shopSellCursor;
+    for (let i = 0; i < rows.length; i++) {
+      if (i === cursor) drawCursor(ctx, rows[i].x, rows[i].y + 3);
+      drawText(ctx, rows[i].label, rows[i].x + CURSOR_W, rows[i].y, FONT_ID);
+    }
+    if (rows.length === 0) {
+      drawText(ctx, mode === 'buy' ? '(nothing)' : '(empty)',
+        winX + BORDER + PADDING + CURSOR_W, winY + BORDER + PADDING, FONT_ID);
+    }
+  }
+
+  if (shopNote) {
+    const w = measureText(shopNote, FONT_ID) + PADDING * 2 + BORDER * 2;
+    const h = ITEM_H + PADDING * 2 + BORDER * 2;
+    const x = 8;
+    const y = SCREEN_HEIGHT - 8 - h;
+    drawWindow(ctx, x, y, w, h, MENU_STYLE);
+    drawText(ctx, shopNote, x + BORDER + PADDING, y + BORDER + PADDING, FONT_ID);
+  }
 }
 
 function renderCommand(ctx: CanvasRenderingContext2D): void {
@@ -368,6 +847,69 @@ function renderGoods(ctx: CanvasRenderingContext2D): void {
   }
 }
 
+function renderEquip(ctx: CanvasRenderingContext2D): void {
+  const items = equippableGoods();
+  const { winX, winY, winW, winH, cells } = equipLayout();
+  drawWindow(ctx, winX, winY, winW, winH, MENU_STYLE);
+  if (items.length === 0) {
+    drawText(ctx, 'No gear to equip', winX + BORDER + PADDING, winY + BORDER + PADDING, FONT_ID);
+    return;
+  }
+  const held = hooks?.getHeldItem() ?? null;
+  for (let i = 0; i < items.length; i++) {
+    const c = cells[i];
+    if (items[i].id === held) { // currently-equipped tint
+      ctx.fillStyle = 'rgba(120,220,120,0.28)';
+      ctx.fillRect(c.x + 1, c.y + 1, c.w - 2, c.h - 2);
+    }
+    if (i === equipCursor) { // selection box
+      ctx.strokeStyle = '#f0f0f0';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(c.x + 0.5, c.y + 0.5, c.w - 1, c.h - 1);
+    }
+    if (!drawItemIcon(ctx, items[i].id, c.x + 3, c.y + 3, 16)) {
+      ctx.fillStyle = '#557';
+      ctx.fillRect(c.x + 10, c.y + 10, 2, 2); // no-art dot
+    }
+  }
+  const sel = items[equipCursor];
+  const eq = sel ? itemEquip(sel.id) : null;
+  const stat = eq ? (eq.slot === 'weapon' ? `  +${eq.offense ?? 0} off` : `  +${eq.defense ?? 0} def`) : '';
+  drawText(ctx, (sel?.name ?? '') + stat,
+    winX + BORDER + PADDING, winY + winH - BORDER - PADDING - FONT_LINE_HEIGHT + 1, FONT_ID);
+}
+
+function renderHotbar(ctx: CanvasRenderingContext2D): void {
+  const boxes = hotbarLayout();
+  const held = hooks?.getHeldItem() ?? null;
+  for (let i = 0; i < boxes.length; i++) {
+    const b = boxes[i];
+    // Small dark box (drawWindow's 6px border would crowd a 24px slot).
+    ctx.fillStyle = 'rgba(8,12,40,0.85)';
+    ctx.fillRect(b.x, b.y, b.w, b.h);
+    ctx.strokeStyle = '#8898c8';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
+    const id = hotbar[i];
+    if (id) {
+      drawItemIcon(ctx, id, b.x + (b.w - 16) / 2, b.y + (b.h - 16) / 2, 16);
+      if (id === held) { // equipped highlight
+        ctx.strokeStyle = '#7ee07e';
+        ctx.strokeRect(b.x + 1.5, b.y + 1.5, b.w - 3, b.h - 3);
+      }
+    }
+    drawText(ctx, String(i + 1), b.x + 2, b.y + 1, FONT_ID); // number-key label
+  }
+}
+
+function renderDragGhost(ctx: CanvasRenderingContext2D): void {
+  if (!drag) return;
+  const p = getPointer();
+  ctx.globalAlpha = 0.8;
+  drawItemIcon(ctx, drag.id, p.x - 8, p.y - 8, 16);
+  ctx.globalAlpha = 1;
+}
+
 function renderPsi(ctx: CanvasRenderingContext2D): void {
   const { winX, winY, winW, winH, rows } = psiLayout();
   drawWindow(ctx, winX, winY, winW, winH, MENU_STYLE);
@@ -398,6 +940,95 @@ function renderMessage(ctx: CanvasRenderingContext2D): void {
   }
 }
 
+// Telephone contact list — a vertical window top-left, same layout family as
+// the Goods/PSI lists, with a "Call who?" prompt window beneath the command
+// area. Shares geometry with phoneRowAt for the mouse hit-test.
+const PHONE_MIN_W = 80;
+function phoneLayout(): { winX: number; winY: number; winW: number; winH: number; rows: Cell[] } {
+  const maxLabelW = Math.max(...PHONE_CONTACTS.map((c) => measureText(c.name, FONT_ID)));
+  const innerW = Math.max(PHONE_MIN_W, CURSOR_W + maxLabelW);
+  const innerH = PHONE_CONTACTS.length * ITEM_H + PADDING * 2;
+  const winX = 8;
+  const winY = 8;
+  const rows: Cell[] = PHONE_CONTACTS.map((_, i) => ({
+    x: winX + BORDER + PADDING,
+    y: winY + BORDER + PADDING + i * ITEM_H,
+    w: innerW,
+    h: ITEM_H,
+  }));
+  return { winX, winY, winW: innerW + PADDING * 2 + BORDER * 2, winH: innerH + BORDER * 2, rows };
+}
+
+/** Index of the phone contact under a game-space point, or -1. */
+function phoneRowAt(px: number, py: number): number {
+  const { rows } = phoneLayout();
+  for (let i = 0; i < rows.length; i++) {
+    const c = rows[i];
+    if (px >= c.x && px < c.x + c.w && py >= c.y && py < c.y + c.h) return i;
+  }
+  return -1;
+}
+
+function renderPhone(ctx: CanvasRenderingContext2D): void {
+  const { winX, winY, winW, winH, rows } = phoneLayout();
+  drawWindow(ctx, winX, winY, winW, winH, MENU_STYLE);
+  for (let i = 0; i < PHONE_CONTACTS.length; i++) {
+    const { x, y } = rows[i];
+    if (i === phoneCursor) drawCursor(ctx, x, y + 3);
+    drawText(ctx, PHONE_CONTACTS[i].name, x + CURSOR_W, y, FONT_ID);
+  }
+}
+
+// Phone-save UI: Dad's question in a full-width window at the bottom (same as a
+// dialogue message) with a small Yes/No chooser tucked just above its right end.
+function saveLayout(): {
+  lines: string[];
+  promptX: number; promptY: number; promptW: number; promptH: number;
+  chX: number; chY: number; chW: number; chH: number; chInnerW: number;
+} {
+  const innerW = SCREEN_WIDTH - 16 - BORDER * 2 - PADDING * 2;
+  const lines = wrapText(SAVE_PROMPT, innerW);
+  const promptW = SCREEN_WIDTH - 16;
+  const promptH = lines.length * FONT_LINE_HEIGHT + PADDING * 2 + BORDER * 2;
+  const promptX = 8;
+  const promptY = SCREEN_HEIGHT - 8 - promptH;
+
+  const labelW = Math.max(...SAVE_CHOICES.map((l) => measureText(l, FONT_ID)));
+  const chInnerW = CURSOR_W + labelW;
+  const chW = chInnerW + PADDING * 2 + BORDER * 2;
+  const chH = SAVE_CHOICES.length * ITEM_H + PADDING * 2 + BORDER * 2;
+  const chX = promptX + promptW - chW; // right-aligned over the prompt
+  const chY = promptY - chH - 2;       // sits just above the prompt
+
+  return { lines, promptX, promptY, promptW, promptH, chX, chY, chW, chH, chInnerW };
+}
+
+/** Index of the Yes/No choice under a game-space point, or -1. */
+function saveChoiceAt(px: number, py: number): number {
+  const { chX, chY, chInnerW } = saveLayout();
+  for (let i = 0; i < SAVE_CHOICES.length; i++) {
+    const x = chX + BORDER + PADDING;
+    const y = chY + BORDER + PADDING + i * ITEM_H;
+    if (px >= x && px < x + chInnerW && py >= y && py < y + ITEM_H) return i;
+  }
+  return -1;
+}
+
+function renderSave(ctx: CanvasRenderingContext2D): void {
+  const { lines, promptX, promptY, promptW, promptH, chX, chY, chW, chH } = saveLayout();
+  drawWindow(ctx, promptX, promptY, promptW, promptH, MENU_STYLE);
+  for (let i = 0; i < lines.length; i++) {
+    drawText(ctx, lines[i], promptX + BORDER + PADDING, promptY + BORDER + PADDING + i * FONT_LINE_HEIGHT, FONT_ID);
+  }
+  drawWindow(ctx, chX, chY, chW, chH, MENU_STYLE);
+  for (let i = 0; i < SAVE_CHOICES.length; i++) {
+    const x = chX + BORDER + PADDING;
+    const y = chY + BORDER + PADDING + i * ITEM_H;
+    if (i === saveCursor) drawCursor(ctx, x, y + 3);
+    drawText(ctx, SAVE_CHOICES[i], x + CURSOR_W, y, FONT_ID);
+  }
+}
+
 function onSelect(action: string): void {
   if (action === 'status') {
     menuState = 'status';
@@ -416,6 +1047,11 @@ function onSelect(action: string): void {
   if (action === 'psi') {
     psiCursor = 0;
     menuState = 'psi';
+    return;
+  }
+  if (action === 'equip') {
+    equipCursor = 0;
+    menuState = 'equip';
     return;
   }
   message = STUB_MESSAGES[action] ?? '...';

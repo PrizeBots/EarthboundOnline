@@ -145,7 +145,7 @@
       "sprite": 282,
       "x": 1204,
       "y": 1148,
-      "wanderRadius": 600,
+      "wanderRadius": 32,
       "poolSize": 4,
       "maxActive": 1,
       "spawnIntervalMs": 3500,

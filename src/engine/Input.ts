@@ -12,6 +12,12 @@ let canvas: HTMLCanvasElement | null = null;
 let pointerX = 0;
 let pointerY = 0;
 let clickPending: { x: number; y: number } | null = null;
+// Drag support (for canvas UI like the hotbar): a one-shot press latch, a live
+// held flag, and a one-shot release latch. Distinct from clickPending so the
+// menu's click handling and its drag handling don't consume each other.
+let pointerHeld = false;
+let pressPending: { x: number; y: number } | null = null;
+let releasePending: { x: number; y: number } | null = null;
 
 /** Expose the live key set so other systems (e.g. MenuManager) can read it. */
 export function getKeySet(): Set<string> {
@@ -52,8 +58,36 @@ export function initInput(gameCanvas?: HTMLCanvasElement) {
     const t = e.target as HTMLElement | null;
     if (t && t.closest('button, input, textarea, select, [data-ui]')) return;
     mouseAttack = true;
-    clickPending = toGameCoords(e.clientX, e.clientY);
+    const c = toGameCoords(e.clientX, e.clientY);
+    clickPending = c;
+    pressPending = c;
+    pointerHeld = true;
   });
+  // Track release globally (a drag can end off-canvas).
+  window.addEventListener('mouseup', (e) => {
+    if (e.button !== 0) return;
+    pointerHeld = false;
+    releasePending = toGameCoords(e.clientX, e.clientY);
+  });
+}
+
+/** True while the left button is held down (for drag interactions). */
+export function isPointerDown(): boolean {
+  return pointerHeld;
+}
+
+/** Take the pending press (mousedown) once, else null. */
+export function consumePointerPress(): { x: number; y: number } | null {
+  const p = pressPending;
+  pressPending = null;
+  return p;
+}
+
+/** Take the pending release (mouseup) once, else null. */
+export function consumePointerRelease(): { x: number; y: number } | null {
+  const r = releasePending;
+  releasePending = null;
+  return r;
 }
 
 /** Pointer position in game-space pixels (256x224). */
@@ -84,10 +118,10 @@ export function isActionPressed(): boolean {
   return false;
 }
 
-/** Q — the contextual "Talk to / Check" button. */
+/** E — the contextual "Talk to / Check" button. */
 export function isTalkPressed(): boolean {
-  if (keys.has('KeyQ')) {
-    keys.delete('KeyQ');
+  if (keys.has('KeyE')) {
+    keys.delete('KeyE');
     return true;
   }
   return false;

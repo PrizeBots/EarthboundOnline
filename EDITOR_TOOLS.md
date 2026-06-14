@@ -286,6 +286,14 @@ canonical sweep sees painted collision).
 - [x] Save to `overrides/collision.json` `cells` (per-map-tile diffs vs the
       arrangement default; no-op edits drop out) — generated collision files
       never written; npcSim re-applies via file watch, the py sweep reads it
+- [x] **Foreground promotion (G FG)** — mark whole map tiles (orange overlay) to
+      redraw over priority-behind sprites, so players can hide behind objects the
+      ROM never made foreground. Pairs with pri-hi on the walkable ground: paint
+      pri-hi where the player stands + FG on the covering tiles. Saved to
+      `overrides/collision.json` `foreground` (`["tileX,tileY", …]`); client
+      render only (`Renderer` Pass 3b via `Collision.isForegroundPromoted`), no
+      server role. Note: S/L/H now OVERWRITE the cell type (mutually exclusive);
+      hotkeys avoid WASD — Solid is **F**, not S
 
 ---
 
@@ -433,6 +441,45 @@ behind `car_traffic.json`). One car per vehicle; the server drives it.
 - [x] Apply model: on save the editing client re-runs `loadNPCs` and the server
       reloads live; changing the active-vehicle count shifts wire ids, so other
       connected clients must refresh (the save toast says so)
+
+---
+
+## 8. Sound Manager — DONE (`src/editor/tools/SoundTool.ts`, READY)
+The fix for **music playing in the wrong spots**. EarthBound assigns music PER
+SECTOR (`sectors.json` `musicId` → `music_map.json` → SPC song number), but the
+door-stitched open world leaves many sectors carrying the wrong (intro-state or
+neighbouring) musicId. Rather than re-tag the ROM extraction, the admin paints
+correct regions in OUR overrides layer.
+
+- [x] Draw rectangular **trigger areas** on the map: "+ New area" (N) then drag
+      a box; drag inside an existing area to move it; Del removes the selected one
+- [x] Per-area fields: name, x/y/w/h (numeric), and a **song** picker — a
+      **dropdown of real track titles** (`SongNames`, pulled from the SPC ID666
+      tags by `tools/extract_song_names.py` → `src/data/songNames.json`). **▶ Test /
+      ■ Stop** audition the track (`MusicManager.previewSong` resumes a suspended
+      AudioContext so sound is enabled and always restarts; `stopMusic`); picking
+      from the dropdown auto-previews
+- [x] **Rename any song** (global, like renaming an entity): the `rename` field
+      writes the song-name override to `public/overrides/song_names.json`
+      (`SongNames.setSongNameOverride`, `markDirty('song_names')`); the dropdown,
+      list, and overlay all read it back. Loaded at startup via
+      `loadSongNameOverrides()`
+- [x] **Snap to sector grid** (64×32 px) toggle, default on — keeps areas aligned
+      to EB's native music unit so they bake back to per-sector musicId on SNES
+- [x] Live overlay: each area as a translucent hued box + border, labelled with
+      the **song title** (`♪ name`); selected one highlighted white; the in-progress drag drawn dashed
+- [x] Saves the WHOLE file to `public/overrides/music.json`
+      (`{version, areas:[{name,x,y,w,h,song}]}` — OUR authored content, ships like
+      other overrides). `MusicManager.songForPoint` checks areas first (last match
+      wins) and falls back to the sector lookup, so unauthored regions are
+      unchanged. `loadMusicAreas()` runs at startup; saving pushes the working set
+      live via `setMusicAreas()` (other clients refresh)
+- [x] **Seeded from the ROM** — `tools/seed_music_areas.py` materializes the
+      current per-sector music as editable rectangles (merges same-song
+      neighbours; 456 areas covering the map) so the tool opens with everything
+      listed instead of blank. Re-run to regenerate from `sectors.json`
+- [ ] Author CORRECT regions over the seed (fix the wrong-music spots in place —
+      the content pass this tool enables)
 
 ---
 

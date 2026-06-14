@@ -99,8 +99,19 @@ export const TILE_SIZE = 32;          // 4x4 minitiles
 export const SECTOR_TILES_X = 8;     // 8 tiles wide per sector
 export const SECTOR_TILES_Y = 4;     // 4 tiles tall per sector
 
-// Full map dimensions in tiles
+// Full map dimensions in tiles. WIDTH is fixed (the stitched plane is 256 tiles
+// wide and all row-major indexing relies on it). HEIGHT is data-driven: the map
+// can be EXTENDED downward with an "interiors band" of stamped room copies (see
+// ARCHITECTURE.md — Rooms), so the height comes from the loaded map data at
+// runtime. `setMapDimensions` is called by MapManager after the data loads;
+// these are live `let` bindings so every importer sees the resolved height.
 export const MAP_WIDTH_TILES = 256;
-export const MAP_HEIGHT_TILES = 320;
 export const MAP_WIDTH_SECTORS = 32;
-export const MAP_HEIGHT_SECTORS = 80;
+export let MAP_HEIGHT_TILES = 320;     // base overworld height; grows with the interiors band
+export let MAP_HEIGHT_SECTORS = 80;
+
+/** Set the runtime map height from the loaded data (MapManager.loadMapData). */
+export function setMapDimensions(heightTiles: number, heightSectors: number): void {
+  MAP_HEIGHT_TILES = heightTiles;
+  MAP_HEIGHT_SECTORS = heightSectors;
+}

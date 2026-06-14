@@ -3,6 +3,7 @@ import { WebSocketServer } from 'ws';
 import fs from 'fs';
 import path from 'path';
 import { createNpcSim } from './server/npcSim.js';
+import { loadShops } from './server/shops.js';
 
 // --- Dev-only editor save channel (EDITOR_TOOLS.md "Save-Back Channel") ---
 // Lives ONLY in the Vite dev server: not bundled, never on the deployed
@@ -21,6 +22,8 @@ const OVERRIDE_ALLOW = new Set([
   'enemy_spawns.json',
   'places.json',
   'car_traffic.json',
+  'music.json',
+  'item_sprites.json',
 ]);
 const SAVE_BODY_LIMIT = 8 * 1024 * 1024; // sprite overrides carry data URLs
 
@@ -133,14 +136,18 @@ function gameServerPlugin() {
   const POSES = ['walk', 'climb', 'attack', 'hurt'];
   const PLAYER_MAX_HP = 60;
 
-  // Server-authoritative goods registry (mirror of server/index.js). Each
-  // player's inventory is an array of these ids (one entry per carried item,
-  // EarthBound-style slots); effects resolve here so a client can't grant
-  // itself HP — it only asks to "use" a slug it claims to own.
-  const GOODS: Record<string, { name: string; heal?: number }> = {
-    cookie: { name: 'Cookie', heal: 10 },
+  // Server-authoritative goods registry + shop catalog, loaded from shops.json
+  // (mirror of server/index.js; shared loader in server/shops.js). Each player's
+  // inventory is an array of numeric-string item ids; effects + transactions
+  // resolve here so a client can't grant itself HP or money.
+  const { goods: GOODS, storeHas, startingInventory: STARTING_INVENTORY } = loadShops(
+    path.resolve(__dirname, 'public', 'assets')
+  ) as {
+    goods: Record<string, { name: string; cost: number; heal: number }>;
+    storeHas: (store: number, item: string) => boolean;
+    startingInventory: string[];
   };
-  const STARTING_INVENTORY = ['cookie']; // welcome Cookie so Goods is never empty
+  const MAX_SLOTS = 14; // EarthBound's Goods menu holds 14 items per character
   const inventoryView = (inventory: string[]) =>
     inventory.filter((id) => GOODS[id]).map((id) => ({ id, name: GOODS[id].name }));
 
@@ -307,7 +314,8 @@ function gameServerPlugin() {
                 x: SPAWN.x, y: SPAWN.y,
                 direction: SPAWN.dir || 0, frame: 0,
                 pose: 'walk',
-                itemId: null, // held item, set by 'equip' messages
+                itemId: null, // held item (equipped weapon's sprite), set by 'equip'
+                weaponOffense: 0, // offense bonus from the equipped weapon (server-applied)
                 inventory: [...STARTING_INVENTORY], // Goods slots, mutated by 'use_item'
                 money: STARTING_MONEY, // starting cash, shown in the menu
                 // PK (player-kill) flag — see npcSim canHurt. All players start
@@ -370,7 +378,10 @@ function gameServerPlugin() {
               if (!entry) break;
               // Server-authoritative: resolve from the tracked position so reach
               // can't be spoofed. Damage scales with the player's Offense stat.
-              npcSim.handleAttack(entry.x, entry.y, msg.dir | 0, playerId, entry.offense, entry.pk);
+              npcSim.handleAttack(
+                entry.x, entry.y, msg.dir | 0, playerId,
+                entry.offense + (entry.weaponOffense || 0), entry.pk
+              );
               break;
             }
             case 'equip': {
@@ -379,6 +390,13 @@ function gameServerPlugin() {
               // Item ids are short slugs; clients ignore unknown ids.
               entry.itemId =
                 typeof msg.itemId === 'string' && msg.itemId.length <= 24 ? msg.itemId : null;
+              // Weapon offense is server-authoritative: it only counts if the
+              // equipped item is a weapon the player actually owns (no spoofing
+              // a strong weapon you don't have). Armor slots don't show a held
+              // sprite, so the held item is always the (optional) weapon.
+              const eq = entry.itemId ? GOODS[entry.itemId]?.equip : null;
+              const owns = entry.itemId ? entry.inventory.includes(entry.itemId) : false;
+              entry.weaponOffense = eq && eq.slot === 'weapon' && owns ? (eq.offense | 0) : 0;
               const equipMsg = JSON.stringify({
                 type: 'equip', id: playerId, itemId: entry.itemId,
               });
@@ -397,6 +415,9 @@ function gameServerPlugin() {
               const slot = entry.inventory.indexOf(itemId);
               // Must actually own a slot of a known item to consume it.
               if (!def || slot === -1) break;
+              // Equippable gear is NOT a consumable — "using" a weapon/armor must
+              // never destroy it. It's equipped via the 'equip' path instead.
+              if (def.equip) break;
 
               // Cookie (and any future `heal` good) restores HP up to the cap;
               // broadcast so every client redraws the bar, tagging `heal` so the
@@ -414,6 +435,36 @@ function gameServerPlugin() {
               entry._ws.send(JSON.stringify({
                 type: 'inventory', items: inventoryView(entry.inventory),
               }));
+              break;
+            }
+            case 'buy': {
+              const entry = players.get(playerId);
+              if (!entry) break;
+              const store = (msg.store as number) | 0;
+              const itemId = String(msg.item);
+              const def = GOODS[itemId];
+              // Real item, stocked by that store, affordable, room in the bag.
+              // Price is the catalog's, never the client's.
+              if (!def || !storeHas(store, itemId)) break;
+              if (entry.inventory.length >= MAX_SLOTS) break;
+              if (entry.money < def.cost) break;
+              entry.money -= def.cost;
+              entry.inventory.push(itemId);
+              entry._ws.send(JSON.stringify({ type: 'inventory', items: inventoryView(entry.inventory) }));
+              entry._ws.send(JSON.stringify({ type: 'money', money: entry.money }));
+              break;
+            }
+            case 'sell': {
+              const entry = players.get(playerId);
+              if (!entry) break;
+              const itemId = String(msg.item);
+              const def = GOODS[itemId];
+              const slot = entry.inventory.indexOf(itemId);
+              if (!def || slot === -1) break; // must own a slot of a known item
+              entry.inventory.splice(slot, 1);
+              entry.money += Math.floor(def.cost / 2); // EB buys back at half price
+              entry._ws.send(JSON.stringify({ type: 'inventory', items: inventoryView(entry.inventory) }));
+              entry._ws.send(JSON.stringify({ type: 'money', money: entry.money }));
               break;
             }
             case 'use_psi': {

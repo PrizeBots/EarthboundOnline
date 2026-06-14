@@ -2,6 +2,13 @@
 
 Always reply with concise language. I do not great reading comprehension or attention skills. Give me what matters most and get to the point always.
 
+We are building a game engine to modify earthbound rom into an MMO hack n slash games.
+
+Always speak up with your ideas. Failing to plan is planning to fail! We are a team!
+
+Remember our goal is beautiful architecture and tooling that lets us craft the greatest online fan game the worlds ever seen.
+
+Lets go!
 
 ## Architecture
 - **The browser multiplayer game IS the project** — a custom SNES ROM (PVSnesLib) + ESP32

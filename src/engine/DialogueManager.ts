@@ -79,7 +79,7 @@ export function updateDialogue(): void {
 function actionPressed(): boolean {
   if (!keySet) return false;
   let pressed = false;
-  for (const code of ['KeyQ', 'Space', 'Enter', 'KeyZ']) {
+  for (const code of ['KeyE', 'Space', 'Enter', 'KeyZ']) {
     if (keySet.has(code)) {
       keySet.delete(code);
       pressed = true;

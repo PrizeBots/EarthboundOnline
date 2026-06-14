@@ -50,6 +50,7 @@ Detailed status lives in **EDITOR_TOOLS.md** — summary only here.
 - [x] Placement Editor — NPCs (ghosts, drag/snap, add/delete, sprite/dir/kind/dialogue edit), Spawn point (config-driven via `overrides/spawn.json`), Doors/warps (`overrides/doors.json`; `ZONE_DOOR_OVERRIDES` migrated into data)
 - [x] Collision & Priority Painter (per-arrangement byte brushes, live room-crop preview, `overrides/collision.json`)
 - [x] Enemy Spawner Editor (place/configure enemy spawn points — sprite, roam radius, rate, max, hp; walkable/street-connected guard; `overrides/enemy_spawns.json`, hot-reloaded client+server)
+- [x] Sound Manager (draw rectangular music trigger areas + assign/audition a song; `overrides/music.json` wins over the ROM's per-sector musicId in MusicManager; sector-grid snap; fixes wrong-music spots from door-stitching)
 - [x] Dialogue Editor (search/edit textId pages, EB-window live preview, NPC ref counts, `overrides/dialogue.json` merged over npc_text.json; **"Dialogue ✎"** on an NPC mints + links a fresh textId and opens the editor — full place-NPC→author flow). Deferred: ccscript flag-conditionals/branches
 - [x] Save-Back Channel (`/__editor/save` Vite middleware, allow-list, atomic write + `.bak`, runtime merge in loaders)
 - [ ] NPC Sprite Animator (authored attack/hurt/diagonal bands per enemy group, gated on combat)
@@ -88,7 +89,7 @@ EarthBound ROM and all assets are extracted in their browser. See CLAUDE.md
 - [x] Experience/leveling — per-spawner **XP** (Enemy Spawner editor) → server-authoritative EXP-on-kill + level-up with **full stat growth** (geometric curve `30·1.5^(lvl-1)`; HP/offense/defense wired into combat, all 7 stats grow + display); pushed to client via `player_stats` → StatusModal. No persistence yet (resets on rejoin — needs the save system)
 - [ ] Save system (server-side persistence) — DECIDED: start with flat per-player JSON saves keyed by an **anonymous token** (generated client-side, stored in `localStorage`, sent on join); persists the progression block (level/exp/stats) across rejoins. No DB or login needed yet. Design saves so they can later be **"claimed" by a login**. Move to SQLite/Postgres when the standalone server (Phase 3) or accounts arrive
 - [~] Custom sprites for combat animations — player attack/hurt bands done (SpriteEditor); enemy bands still need the NPC Sprite Animator
-- [ ] Sound effects / music integration — music done; SFX (hit/attack/etc.) not yet
+- [~] Sound effects / music integration — music PLAYS, but region triggers come from the ROM's per-sector musicId, which the door-stitched world often gets wrong. Fix is authoring-driven: the **Sound Manager** editor tool (`overrides/music.json` areas win over the sector lookup). Still to do: author correct regions across the map, then SFX (hit/attack/etc.)
 
 ## Backlog: Hardware Track (out of scope for now)
 The SNES ROM + ESP32 port is a long-term ambition, not part of the current project.

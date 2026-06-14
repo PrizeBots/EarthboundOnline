@@ -14,6 +14,7 @@ import {
 } from './Input';
 import { loadMapData, getSector, getDrawTilesetId } from './MapManager';
 import { loadDoors, getDoorAt, DoorData } from './DoorManager';
+import { loadRooms, setActiveRoomFromPoint } from './Rooms';
 import { loadNPCs, getNearbyNPCs, applyNpcUpdates, applyNpcHp, getNpcDialogue, interpolateNpcs } from './NPCManager';
 import { NPC } from './NPC';
 import { loadAtlas } from './TilesetManager';
@@ -31,14 +32,16 @@ import {
 } from './SpriteManager';
 import { connect, sendPosition, sendEquip, sendAttack } from './Network';
 import { loadNameOverrides, getSpriteName } from './SpriteNames';
+import { loadSongNameOverrides } from './SongNames';
 import { setStatus, getStatus } from './StatusModal';
 import {
   pushRemoteSnapshot,
   dropRemoteBuffer,
   interpolateRemotePlayer,
 } from './RemoteInterp';
-import { getItemName } from './Items';
-import { loadMusicMap, initMusic, updateMusic } from './MusicManager';
+import { getItemName, loadItemSprites, isEquippable } from './Items';
+import { itemType } from './Shop';
+import { loadMusicMap, loadMusicAreas, initMusic, updateMusic } from './MusicManager';
 import {
   loadCharacterSelect,
   updateCharacterSelect,
@@ -48,7 +51,7 @@ import {
 } from './CharacterSelect';
 import { loadFont }                             from './TextRenderer';
 import { loadWindowStyle }                      from './WindowRenderer';
-import { initMenu, updateMenu, isMenuOpen, renderMenu } from './MenuManager';
+import { initMenu, updateMenu, isMenuOpen, renderMenu, openShop, openPhoneMenu } from './MenuManager';
 import {
   initDialogue,
   openDialogue,
@@ -66,7 +69,7 @@ import {
   removeBubble,
 } from './ChatManager';
 import { updateEmitters, renderEmitters, spawnDamageNumber, spawnHealNumber, spawnXpNumber, spawnLevelUp } from './Emitter';
-import { setGoods } from './Inventory';
+import { setGoods, getGoods } from './Inventory';
 import { setMoney } from './Wallet';
 import {
   RemotePlayer,
@@ -130,8 +133,10 @@ export class Game {
     console.log('Loading character select...');
     await Promise.all([
       loadNameOverrides(), // admin renames win over baked sprite names
+      loadSongNameOverrides(), // admin song renames win over baked titles
       loadCharacterSelect(),
       loadMusicMap(),
+      loadMusicAreas(), // authored music regions (overrides/music.json)
       loadFont(0), // regular EB dialogue font (chat input, command menu)
       loadFont(1), // Mr. Saturn font (backlogged chat option)
       loadFont(4), // small 8px battle font (speech bubbles)
@@ -222,7 +227,7 @@ export class Game {
 
     // Load map, player sprite, and tilesets
     console.log('Loading map data...');
-    await Promise.all([loadMapData(), loadDoors(), loadNPCs()]);
+    await Promise.all([loadMapData(), loadDoors(), loadNPCs(), loadItemSprites(), loadRooms()]);
 
     // Editor-authored spawn override (public/overrides/spawn.json) takes
     // precedence over the src/spawn.json default baked into Player.
@@ -250,7 +255,15 @@ export class Game {
     setStatus({ name: getSpriteName(spriteGroupId) ?? 'Player' });
 
     initInput(this.canvasEl);
-    initMenu(getKeySet());
+    // Hotbar/Equip hooks: the menu toggles the local player's weapon (held
+    // sprite) and tells the server, which applies the weapon's offense.
+    initMenu(getKeySet(), {
+      getHeldItem: () => this.player.heldItemId,
+      equipWeapon: (id) => {
+        this.player.heldItemId = id;
+        sendEquip(id);
+      },
+    });
     initChat(getKeySet());
     initDialogue(getKeySet());
 
@@ -438,6 +451,10 @@ export class Game {
     // Seal the room for movement: packed interiors share walkable strips
     // with their neighbors, so the player may only leave through a door.
     setActiveRoom(this.camera.roomBounds);
+    // Track which registered interior room (if any) the player is in. With
+    // stamped copies each room is a distinct region, so this follows from the
+    // position; overworld points resolve to the implicit "world" room.
+    setActiveRoomFromPoint(worldX, worldY);
   }
 
   private startTransition(door: DoorData) {
@@ -599,7 +616,7 @@ export class Game {
       return;
     }
 
-    // Q = Talk to / Check whatever is in front of the player.
+    // E = Talk to / Check whatever is in front of the player.
     if (isTalkPressed()) {
       this.tryTalk();
       return;
@@ -614,10 +631,15 @@ export class Game {
     if (isHurtPressed()) this.player.hurt();
     if (isToggleBoxesPressed()) setDebugBoxes(!debugBoxesOn());
     if (isCycleItemPressed()) {
-      this.player.cycleHeldItem();
+      // Cycle through the equippable gear in your inventory (+ none). Equipping a
+      // catalog item broadcasts its id so everyone renders its held sprite.
+      const gear = getGoods().filter((g) => isEquippable(itemType(g.id))).map((g) => g.id);
+      const cycle: (string | null)[] = [null, ...gear];
+      const idx = cycle.indexOf(this.player.heldItemId);
+      this.player.heldItemId = cycle[(idx + 1) % cycle.length] ?? null;
       sendEquip(this.player.heldItemId);
       console.log(
-        `Held item: ${this.player.heldItemId ? getItemName(this.player.heldItemId) : 'none'}`
+        `Equip: ${this.player.heldItemId ? getItemName(this.player.heldItemId) : 'none'}`
       );
     }
 
@@ -685,17 +707,18 @@ export class Game {
     const perpX = -v[1];
     const perpY = v[0];
 
-    // Two passes in one loop: the nearest target with DIALOGUE (a clerk), and
-    // the nearest target of ANY kind. A shop clerk sits behind its counter, and
-    // a blank prop or silent NPC often stands in front of it — that closer,
-    // dialogue-less thing would otherwise win the probe and you'd "Check" the
-    // counter instead of talking to the clerk. So a talkable target always wins
-    // when one is in reach; the nearest-anything is only the Check fallback.
+    // Two passes in one loop: the nearest INTERACTIVE target (has dialogue or is
+    // a shop clerk), and the nearest target of ANY kind. A shop clerk sits
+    // behind its counter, and a blank prop or silent NPC often stands in front
+    // of it — that closer, inert thing would otherwise win the probe and you'd
+    // "Check" the counter instead of reaching the clerk. So an interactive
+    // target always wins when one is in reach; nearest-anything is the Check
+    // fallback.
     let best: NPC | null = null;
     let bestScore = Infinity;
-    let bestTalk: NPC | null = null;
-    let bestTalkScore = Infinity;
-    let bestTalkPages: string[] | null = null;
+    let bestInteractive: NPC | null = null;
+    let bestInteractiveScore = Infinity;
+    let bestPages: string[] | null = null;
     for (const npc of getNearbyNPCs(this.player.x, this.player.y)) {
       const ox = npc.x - this.player.x;
       const oy = npc.y - this.player.y;
@@ -711,19 +734,33 @@ export class Game {
         best = npc;
       }
       const pages = getNpcDialogue(npc);
-      if (pages && score < bestTalkScore) {
-        bestTalkScore = score;
-        bestTalk = npc;
-        bestTalkPages = pages;
+      if ((pages || npc.shopStore !== null) && score < bestInteractiveScore) {
+        bestInteractiveScore = score;
+        bestInteractive = npc;
+        bestPages = pages;
       }
     }
 
-    const target = bestTalk ?? best;
+    const target = bestInteractive ?? best;
     if (target) {
-      const pages = bestTalk ? bestTalkPages : null;
+      // A telephone opens the contact menu (Dad saves, Mom eases homesickness)
+      // — takes priority over the phone's check text.
+      if (target.isPhone) {
+        console.log('Talk: telephone -> phone menu');
+        openPhoneMenu();
+        return;
+      }
+      // A shop clerk opens its store; anyone else talks (or gives the Check
+      // fallback if they have nothing to say).
+      if (target.shopStore !== null) {
+        console.log(`Talk: shop clerk -> store ${target.shopStore}`);
+        openShop(target.shopStore);
+        return;
+      }
+      const pages = bestInteractive ? bestPages : null;
       console.log(
         `Talk: npc(${Math.round(target.x)},${Math.round(target.y)}) score=${Math.round(
-          bestTalk ? bestTalkScore : bestScore,
+          bestInteractive ? bestInteractiveScore : bestScore,
         )} ${pages ? `"${pages[0].slice(0, 40)}..."` : 'no dialogue (Check)'}`,
       );
       openDialogue(pages ?? ['There was no problem here.']);

@@ -26,7 +26,7 @@ const path = require('path');
 const MINITILE = 8;
 const TILE = 32;
 const MAP_W_TILES = 256;
-const MAP_H_TILES = 320;
+const MAP_H_TILES_BASE = 320; // base overworld height; actual height is data-driven (mapHTiles)
 const MAP_W_SECTORS = 32;
 const SEC_TX = 8;
 const SEC_TY = 4;
@@ -71,7 +71,7 @@ const HURT_MS = 300;            // how long a struck enemy shows its flinch pose
 // For now level is just tracked; aggro is unconditional: any enemy chases and
 // hits the nearest living player it can see.
 const DEFAULT_ENEMY_LEVEL = 4;
-const DETECT_RANGE = 220;          // px — player within this aggros the enemy
+const DETECT_RANGE = 220;          // px — default aggro radius; per-entity `detectRange` (Entity Manager) overrides it
 const ATTACK_RANGE = 24;           // px — enemy must be this close to land a hit
 const ENEMY_CHASE_SPEED = 1.6;     // px/frame while pursuing (player is 2.0) — fast enough to be a real threat, slow enough to outrun
 const ENEMY_ATTACK_COOLDOWN_MS = 700; // min time between one enemy's swings
@@ -167,6 +167,9 @@ function createNpcSim(assetsDir) {
   const sectors = readJSON('map/sectors.json');
   const tiles = readJSON('map/tiles.json');
   const tilesetMapping = readJSON('map/tileset_mapping.json');
+  // Map height is data-driven (the map grows with the stamped interiors band;
+  // see ARCHITECTURE.md). Width is fixed at 256, so the row count is the height.
+  const mapHTiles = Math.round(tiles.length / MAP_W_TILES);
   const collisionByDrawTs = new Map();
   // Per-map-tile collision overrides (overrides/collision.json `cells`):
   // tileY*MAP_W_TILES+tileX -> { minitileIdx: byte }. Applied on top of the
@@ -219,7 +222,7 @@ function createNpcSim(assetsDir) {
   // Mirror of Collision.ts checkCollision
   function blocked(x, y, w, h) {
     if (x < 0 || y < 0) return true;
-    if (x + w >= MAP_W_TILES * TILE || y + h >= MAP_H_TILES * TILE) return true;
+    if (x + w >= MAP_W_TILES * TILE || y + h >= mapHTiles * TILE) return true;
     const x0 = Math.floor(x / MINITILE);
     const y0 = Math.floor(y / MINITILE);
     const x1 = Math.floor((x + w - 1) / MINITILE);
@@ -350,6 +353,8 @@ function createNpcSim(assetsDir) {
       attackCooldown: ENEMY_ATTACK_COOLDOWN_MS,
       speed: ENEMY_SPEED,
       chaseSpeed: ENEMY_CHASE_SPEED,
+      detectRange: DETECT_RANGE, // px the player must be within to aggro this enemy
+      attackRange: ATTACK_RANGE, // px the enemy must be within to land a hit
       dead: false,
       hpDirty: false,
       respawnAt: 0,
@@ -435,6 +440,8 @@ function createNpcSim(assetsDir) {
           attackCooldown: spawnerStat(sp, 'attackCooldownMs', ENEMY_ATTACK_COOLDOWN_MS),
           speed,
           chaseSpeed: speed * CHASE_RATIO,
+          detectRange: spawnerStat(sp, 'detectRange', DETECT_RANGE),
+          attackRange: spawnerStat(sp, 'attackRange', ATTACK_RANGE),
           dead: true, // inactive until the spawner wakes it
           spawner: sp,
         }));
@@ -809,8 +816,9 @@ function createNpcSim(assetsDir) {
   // townsperson it's allowed to hurt (canHurt). `isPlayer` tells the caller
   // whether to route the hit through the host (players) or apply it here (NPCs).
   function aggroTarget(n, players, now) {
+    const range = n.detectRange || DETECT_RANGE; // per-entity aggro radius (Entity Manager)
     let target = null;
-    let best = DETECT_RANGE;
+    let best = range;
     for (const p of players) {
       if (p.hp !== undefined && p.hp <= 0) continue;
       const d = Math.hypot(p.x - n.x, p.y - n.y);
@@ -828,11 +836,11 @@ function createNpcSim(assetsDir) {
     const a = n.aggressor;
     if (a && !a.dead && a.hp > 0 && now < n.aggroUntil && canHurt(n, a)) {
       const d = Math.hypot(a.x - n.x, a.y - n.y);
-      if (d <= DETECT_RANGE) return { target: a, dist: d, isPlayer: false };
+      if (d <= range) return { target: a, dist: d, isPlayer: false };
     }
 
     // Otherwise defend-on-sight: the nearest townsperson it may hurt.
-    best = DETECT_RANGE;
+    best = range;
     for (const o of actors) {
       if (o.kind !== 'person' || o.dead || o.hp <= 0 || !canHurt(n, o)) continue;
       const d = Math.hypot(o.x - n.x, o.y - n.y);
@@ -1001,7 +1009,7 @@ function createNpcSim(assetsDir) {
 
       // In striking range: stand and swing on cooldown (the hit is resolved
       // server-side; the pose broadcasts so every client sees the attack).
-      if (dist <= ATTACK_RANGE) {
+      if (dist <= (n.attackRange || ATTACK_RANGE)) {
         if (now - n.lastSwing >= n.attackCooldown && n.pose !== 'hurt') {
           n.lastSwing = now;
           n.pose = 'attack';

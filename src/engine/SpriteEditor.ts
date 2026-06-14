@@ -8,7 +8,17 @@ import { createSpritePicker, drawSpriteGroupThumb, SpritePicker } from './Sprite
 import {
   drawHeldItem, isItemBehind, nextHeldItem, getItemName,
   ITEM_W, ITEM_H, ITEM_PALETTE, HELD_ITEM_IDS, setItemOverride, renderItemArt,
+  loadItemSprites, getItemSpriteData, setItemSpriteData, canvasToItemPixels, itemSpriteIds,
 } from './Items';
+import { allItems } from './Shop';
+
+// The item list is now the whole game catalog (shops.json) — unified with the
+// Item Manager. Falls back to the legacy hand-authored ids if the catalog is
+// absent (e.g. shops.json not extracted yet).
+function itemListIds(): string[] {
+  const ids = allItems().map((i) => i.id);
+  return ids.length ? ids : [...HELD_ITEM_IDS];
+}
 import { setMuteButtonHidden } from './MuteButton';
 import { Direction, Pose } from '../types';
 
@@ -78,8 +88,6 @@ const UNDO_LIMIT = 64;
 type Tool = 'pencil' | 'eraser' | 'eyedrop';
 // The editor edits either the 16x24 character sheet or a 16x16 held-item buffer.
 type EditMode = 'char' | 'item';
-
-const ITEM_STORAGE_PREFIX = 'eb_item_sprite_';
 
 // ---------------------------------------------------------------------------
 // Left/right mirroring. EB's west-facing frames are exact horizontal flips of
@@ -233,6 +241,8 @@ let walkerItem: string | null = null;
 export interface SpriteEditorCallbacks {
   /** Closed the editor (Esc) — return to character select. */
   onCancel?: () => void;
+  /** Open straight into Item mode editing this catalog item (Item Manager handoff). */
+  focusItem?: string;
 }
 
 let editorCallbacks: SpriteEditorCallbacks = {};
@@ -250,10 +260,17 @@ export async function openSpriteEditor(callbacks: SpriteEditorCallbacks = {}): P
   await loadRoster();
   await loadOverridesDoc();
   await loadSavedItems(); // restore saved item edits before seeding the buffer
+  if (callbacks.focusItem) itemEditId = callbacks.focusItem; // Item Manager handoff
   buildItemBuffer();
 
   buildDom();
   await loadGroupIntoEditor(DEFAULT_GROUP);
+  // Item Manager handoff: jump straight into Item mode on the chosen item.
+  if (callbacks.focusItem) {
+    setEditMode('item');
+    loadItemIntoBuffer(callbacks.focusItem);
+    itemPicker?.setValue(callbacks.focusItem);
+  }
   window.addEventListener('keydown', onKeyDown, true);
   window.addEventListener('keyup', onKeyUp, true);
   window.addEventListener('mouseup', onGlobalMouseUp);
@@ -302,6 +319,7 @@ function buildItemBuffer(): void {
     itemCtx = itemCanvas.getContext('2d', { willReadFrequently: true })!;
     itemCtx.imageSmoothingEnabled = false;
   }
+  if (!itemEditId) itemEditId = itemListIds()[0] ?? '';
   // Seed the buffer with the current item's art, but DON'T touch walkerItem —
   // we start in character mode and the test pane should show no held item yet.
   if (itemEditId) {
@@ -312,31 +330,10 @@ function buildItemBuffer(): void {
   }
 }
 
-function itemStorageKey(id: string): string {
-  return ITEM_STORAGE_PREFIX + id;
-}
-
-/** Restore any saved item edits from localStorage as live overrides. */
+/** Load the shared per-item art (overrides/item_sprites.json) so the editor and
+ * the live game both start from the same authored gear. */
 async function loadSavedItems(): Promise<void> {
-  for (const id of HELD_ITEM_IDS) {
-    const saved = localStorage.getItem(itemStorageKey(id));
-    if (!saved) continue;
-    try {
-      const img = new Image();
-      await new Promise<void>((resolve, reject) => {
-        img.onload = () => resolve();
-        img.onerror = reject;
-        img.src = saved;
-      });
-      const c = document.createElement('canvas');
-      c.width = ITEM_W;
-      c.height = ITEM_H;
-      c.getContext('2d')!.drawImage(img, 0, 0);
-      setItemOverride(id, c);
-    } catch {
-      // bad/blocked entry — fall back to the built-in art for this item
-    }
-  }
+  await loadItemSprites();
 }
 
 /** Load an item's current art (override or base) into the edit buffer. */
@@ -358,12 +355,25 @@ function commitItemEdit(): void {
   renderItemThumb();
 }
 
+// Persist the edited item to the SHARED store + overrides/item_sprites.json, so
+// every client renders this gear (not just this browser). Keyed by catalog id.
 function persistItem(): void {
-  try {
-    localStorage.setItem(itemStorageKey(itemEditId), itemCanvas!.toDataURL());
-  } catch {
-    // storage full/blocked — edits still live in memory for this session
+  const pixels = canvasToItemPixels(itemCanvas!);
+  const grip = getItemSpriteData(itemEditId)?.grip;
+  setItemSpriteData(itemEditId, grip ? { pixels, grip } : { pixels });
+  void postOverride('item_sprites.json', buildItemSpriteDoc()).catch(() => {
+    if (itemNote) itemNote.textContent = 'Item save failed (dev save channel?)';
+  });
+}
+
+/** The whole authored item-art map, for the overrides/item_sprites.json file. */
+function buildItemSpriteDoc(): Record<string, { pixels: string[]; grip?: { x: number; y: number } }> {
+  const doc: Record<string, { pixels: string[]; grip?: { x: number; y: number } }> = {};
+  for (const id of itemSpriteIds()) {
+    const d = getItemSpriteData(id);
+    if (d) doc[id] = d.grip ? { pixels: d.pixels, grip: d.grip } : { pixels: d.pixels };
   }
+  return doc;
 }
 
 function sheetReady(): boolean {
@@ -741,9 +751,9 @@ function buildToolPanel(): HTMLDivElement {
   // Which item to edit (item mode only) — custom dropdown with the item art in
   // each row. Hidden until Item mode (setEditMode toggles itemRow).
   itemPicker = createSpritePicker({
-    sections: [{ values: [...HELD_ITEM_IDS] }],
-    initial: itemEditId,
-    labelFor: (v) => getItemName(v) ?? v,
+    sections: [{ values: itemListIds() }],
+    initial: itemEditId || itemListIds()[0] || '',
+    labelFor: (v) => `${v} ${getItemName(v) ?? ''}`.trim(),
     drawThumb: drawItemThumb,
     onSelect: (v) => {
       loadItemIntoBuffer(v);
@@ -1215,9 +1225,11 @@ function onKeyDown(e: KeyboardEvent): void {
   } else if (k === 'g') {
     if (editMode === 'item') {
       // Cycle which item is being edited (keeps the picker in sync).
-      const i = HELD_ITEM_IDS.indexOf(itemEditId);
-      const next = HELD_ITEM_IDS[(i + 1) % HELD_ITEM_IDS.length];
-      loadItemIntoBuffer(next); // updates the item picker (renderItemThumb)
+      const list = itemListIds();
+      const i = list.indexOf(itemEditId);
+      const next = list[(i + 1) % list.length];
+      loadItemIntoBuffer(next); // updates the item buffer/thumb
+      itemPicker?.setValue(next); // keep the dropdown in sync
       dirty = true;
     } else {
       walkerItem = nextHeldItem(walkerItem); // preview held-item overlays

@@ -6,6 +6,7 @@ import {
   getArrangementByteAt,
   setCellCollisionLive,
   clearCellCollisionLive,
+  setForegroundPromotedLive,
 } from '../../engine/Collision';
 import { Camera } from '../../engine/Camera';
 import { MAP_WIDTH_TILES, TILE_SIZE } from '../../types';
@@ -28,7 +29,7 @@ import { EditorShellApi, EditorTool, WorldPoint } from '../types';
 const DOMAIN = 'collision';
 const MINITILE = 8;
 
-type PaintTool = 'solid' | 'prilo' | 'prihi' | 'clear' | 'stamp' | 'eyedrop' | 'rect';
+type PaintTool = 'solid' | 'prilo' | 'prihi' | 'clear' | 'stamp' | 'eyedrop' | 'rect' | 'fg';
 // Hotkeys avoid WASD/arrows (camera pan) and 1-4 (grid toggles) — the active
 // tool consumes the key before the shell pans, so a movement key would be stolen.
 const TOOL_DEFS: { id: PaintTool; label: string; key: string }[] = [
@@ -39,6 +40,7 @@ const TOOL_DEFS: { id: PaintTool; label: string; key: string }[] = [
   { id: 'eyedrop', label: 'E Eyedrop', key: 'e' },
   { id: 'stamp', label: 'X Stamp', key: 'x' },
   { id: 'rect', label: 'T Rect', key: 't' },
+  { id: 'fg', label: 'G Hide', key: 'g' }, // FG-promote: tile covers you AND drops you behind it (one-step hide)
 ];
 const BIT: Record<string, number> = { solid: 0x80, prilo: 0x01, prihi: 0x02 };
 // The three paintable "types" are mutually exclusive — painting one clears the
@@ -73,6 +75,10 @@ class CollisionTool implements EditorTool {
   private authored = new Map<string, { cell: CellRef; byte: number }>();
   // Legacy per-arrangement edits already in the file — preserved on save.
   private legacyEdits: NonNullable<CollisionOverrides['edits']> = {};
+  // Whole map tiles promoted to the foreground layer ("tileX,tileY"). The FG
+  // tool toggles these; the renderer redraws them over priority-behind sprites.
+  private fgTiles = new Set<string>();
+  private fgSetting = true; // first tile of an FG stroke decides promote vs demote
 
   // Stroke state
   private painting = false;
@@ -128,6 +134,7 @@ class CollisionTool implements EditorTool {
           this.authored.set(cellKey(cell), { cell, byte });
         }
       }
+      this.fgTiles = new Set(ov.foreground ?? []);
     } catch {
       /* nothing authored yet */
     }
@@ -143,6 +150,7 @@ class CollisionTool implements EditorTool {
     const out: CollisionOverrides = { version: 1, cells };
     // Keep any legacy per-arrangement edits that were already authored.
     if (Object.keys(this.legacyEdits).length > 0) out.edits = this.legacyEdits;
+    if (this.fgTiles.size > 0) out.foreground = [...this.fgTiles];
     return out;
   }
 
@@ -257,6 +265,16 @@ class CollisionTool implements EditorTool {
       this.rectStart = { ...p };
       return true;
     }
+    if (this.tool === 'fg') {
+      // Per-tile foreground promotion. First tile decides promote vs demote.
+      const tx = Math.floor(p.x / TILE_SIZE);
+      const ty = Math.floor(p.y / TILE_SIZE);
+      this.fgSetting = !this.fgTiles.has(`${tx},${ty}`);
+      this.painting = true;
+      this.lastPaintPoint = { ...p };
+      this.paintFg(p);
+      return true;
+    }
     // Bit tools always PAINT the bit ON (hold + drag to keep painting); use the
     // Clear tool to remove. (Toggling from the first cell made a stroke that
     // started on a filled cell silently erase instead of paint.)
@@ -273,19 +291,33 @@ class CollisionTool implements EditorTool {
 
   onMouseMove(p: WorldPoint, dragging: boolean): void {
     this.hover = p;
-    if (dragging && this.painting) {
-      // Paint every cell along the path since the last sample, so a fast drag
-      // leaves no gaps.
-      const from = this.lastPaintPoint ?? p;
-      const dx = p.x - from.x;
-      const dy = p.y - from.y;
-      const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / MINITILE));
-      for (let s = 1; s <= steps; s++) {
-        const t = s / steps;
-        this.paintCells(this.cellsUnderBrush({ x: from.x + dx * t, y: from.y + dy * t }));
-      }
-      this.lastPaintPoint = { ...p };
+    if (!(dragging && this.painting)) return;
+    // Paint every step along the path since the last sample so a fast drag
+    // leaves no gaps (tiles for FG, minitile cells otherwise).
+    const from = this.lastPaintPoint ?? p;
+    const dx = p.x - from.x;
+    const dy = p.y - from.y;
+    const step = this.tool === 'fg' ? TILE_SIZE : MINITILE;
+    const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / step));
+    for (let s = 1; s <= steps; s++) {
+      const t = s / steps;
+      const q = { x: from.x + dx * t, y: from.y + dy * t };
+      if (this.tool === 'fg') this.paintFg(q);
+      else this.paintCells(this.cellsUnderBrush(q));
     }
+    this.lastPaintPoint = { ...p };
+  }
+
+  /** Promote/demote the whole map tile under `p` (FG tool). */
+  private paintFg(p: WorldPoint): void {
+    const tx = Math.floor(p.x / TILE_SIZE);
+    const ty = Math.floor(p.y / TILE_SIZE);
+    const key = `${tx},${ty}`;
+    if (this.fgTiles.has(key) === this.fgSetting) return; // already in target state
+    if (this.fgSetting) this.fgTiles.add(key);
+    else this.fgTiles.delete(key);
+    setForegroundPromotedLive(tx, ty, this.fgSetting);
+    this.shell?.markDirty(DOMAIN);
   }
 
   onMouseUp(p: WorldPoint): void {
@@ -323,6 +355,7 @@ class CollisionTool implements EditorTool {
     if (this.painting) {
       this.painting = false;
       this.lastPaintPoint = null;
+      if (this.tool === 'fg') { this.refreshPanel(); return; } // FG has no per-cell stroke
       this.commitStroke(`paint ${this.tool} (${this.strokeChanges.size} cells)`);
     }
   }
@@ -441,6 +474,19 @@ class CollisionTool implements EditorTool {
       }
     }
 
+    // Foreground-promoted tiles — orange whole-tile outline + faint fill.
+    ctx.lineWidth = 1 / camera.zoom;
+    for (const key of this.fgTiles) {
+      const [tx, ty] = key.split(',').map(Number);
+      const sx = tx * TILE_SIZE - camX;
+      const sy = ty * TILE_SIZE - camY;
+      if (sx < -TILE_SIZE || sx > vw || sy < -TILE_SIZE || sy > vh) continue;
+      ctx.fillStyle = 'rgba(255,160,40,0.16)';
+      ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
+      ctx.strokeStyle = 'rgba(255,160,40,0.9)';
+      ctx.strokeRect(sx + 0.5, sy + 0.5, TILE_SIZE - 1, TILE_SIZE - 1);
+    }
+
     // Brush / rect cursor
     ctx.strokeStyle = '#fff';
     ctx.lineWidth = 1 / camera.zoom;
@@ -450,6 +496,12 @@ class CollisionTool implements EditorTool {
       const x1 = Math.max(this.rectStart.x, this.hover.x);
       const y1 = Math.max(this.rectStart.y, this.hover.y);
       ctx.strokeRect(x0 - camX + 0.5, y0 - camY + 0.5, x1 - x0, y1 - y0);
+    } else if (this.tool === 'fg') {
+      // Whole-tile cursor for FG promotion.
+      const tx = Math.floor(this.hover.x / TILE_SIZE) * TILE_SIZE - camX;
+      const ty = Math.floor(this.hover.y / TILE_SIZE) * TILE_SIZE - camY;
+      ctx.strokeStyle = 'rgba(255,200,90,0.95)';
+      ctx.strokeRect(tx + 0.5, ty + 0.5, TILE_SIZE - 1, TILE_SIZE - 1);
     } else {
       const off = Math.floor((this.brush - 1) / 2) * MINITILE;
       const bx = Math.floor(this.hover.x / MINITILE) * MINITILE - off - camX;
@@ -516,7 +568,8 @@ class CollisionTool implements EditorTool {
     legend.innerHTML =
       '<span style="background:rgba(255,60,60,.85);padding:0 6px;">&nbsp;</span> solid 0x80 &nbsp;' +
       '<span style="background:rgba(70,130,255,.85);padding:0 6px;">&nbsp;</span> pri-lo 0x01 &nbsp;' +
-      '<span style="background:rgba(255,95,200,.85);padding:0 6px;">&nbsp;</span> pri-hi 0x02';
+      '<span style="background:rgba(255,95,200,.85);padding:0 6px;">&nbsp;</span> pri-hi 0x02<br>' +
+      '<span style="background:rgba(255,160,40,.85);padding:0 6px;">&nbsp;</span> <b>Hide</b> — paint a tile and you walk BEHIND it (covers you + drops you behind). No pri-hi needed.';
     this.panel.appendChild(legend);
 
     this.inspectorEl = document.createElement('div');

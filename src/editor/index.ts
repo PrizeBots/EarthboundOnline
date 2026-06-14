@@ -6,9 +6,12 @@ import { enemySpawnerTool } from './tools/EnemySpawnerTool';
 import { entityManagerTool } from './tools/EntityManagerTool';
 import { trafficEditorTool } from './tools/TrafficEditorTool';
 import { dialogueTool } from './tools/DialogueTool';
+import { itemManagerTool } from './tools/ItemManagerTool';
+import { soundTool } from './tools/SoundTool';
 import { registerEditorTool, registerSaveHandler } from './registry';
 import { saveOverride } from './saveOverride';
 import { getNameOverrides } from '../engine/SpriteNames';
+import { getSongNameOverrides } from '../engine/SongNames';
 import { openSpriteEditor } from '../engine/SpriteEditor';
 
 // Entry point for the dev-only editor layer. Game loads this module via a
@@ -34,6 +37,8 @@ export function initEditorTools(context: EditorContext): EditorHooks {
   registerEditorTool(entityManagerTool);
   registerEditorTool(trafficEditorTool);
   registerEditorTool(dialogueTool);
+  registerEditorTool(itemManagerTool);
+  registerEditorTool(soundTool);
   for (const t of PLANNED) registerEditorTool({ ...t, status: 'wip' });
 
   // Sprite Editor (engine/SpriteEditor.ts): a self-contained overlay that owns
@@ -54,6 +59,9 @@ export function initEditorTools(context: EditorContext): EditorHooks {
 
   // Admin sprite renames (✎ in placement panel) persist here.
   registerSaveHandler('names', () => saveOverride('names.json', getNameOverrides()));
+
+  // Admin song renames (Sound Manager) persist here, parallel to sprite names.
+  registerSaveHandler('song_names', () => saveOverride('song_names.json', getSongNameOverrides()));
 
   const enter = async () => {
     if (shell.isActive()) return;

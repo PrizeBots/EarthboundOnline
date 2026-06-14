@@ -41,6 +41,10 @@ export interface CollisionOverrides {
    * graphic. Mirrored by server/npcSim.js and the py room checker.
    */
   cells?: Record<string, Record<string, number>>;
+  /** Map tiles promoted to the FOREGROUND layer ("tileX,tileY") — their full art
+   *  redraws over priority-behind sprites so the player can hide behind objects
+   *  the ROM never made foreground (Collision Painter FG mode). */
+  foreground?: string[];
 }
 
 let collisionOverrides: CollisionOverrides | null = null;
@@ -54,6 +58,11 @@ const pristineRows = new Map<string, number[]>();
 // arrangement row in effectiveRow(), so a painted cell is the ONLY one affected.
 const cellOverrides = new Map<number, Map<number, number>>();
 
+// Map tiles promoted to the FOREGROUND layer (the Collision Painter's FG mode):
+// their full art is redrawn over priority-behind sprites, so the player can hide
+// behind objects the ROM never made foreground. Keyed tileY*MAP_WIDTH_TILES+tileX.
+const fgPromoted = new Set<number>();
+
 function rebuildCellOverrides(): void {
   cellOverrides.clear();
   const cells = collisionOverrides?.cells ?? {};
@@ -63,6 +72,23 @@ function rebuildCellOverrides(): void {
     for (const [idx, byte] of Object.entries(idxMap)) m.set(Number(idx), byte);
     cellOverrides.set(ty * MAP_WIDTH_TILES + tx, m);
   }
+  fgPromoted.clear();
+  for (const tk of collisionOverrides?.foreground ?? []) {
+    const [tx, ty] = tk.split(',').map(Number);
+    fgPromoted.add(ty * MAP_WIDTH_TILES + tx);
+  }
+}
+
+/** True if a map tile was promoted to the foreground layer. */
+export function isForegroundPromoted(tileX: number, tileY: number): boolean {
+  return fgPromoted.has(tileY * MAP_WIDTH_TILES + tileX);
+}
+
+/** Editor live paint: promote/demote a map tile to/from the foreground layer. */
+export function setForegroundPromotedLive(tileX: number, tileY: number, on: boolean): void {
+  const k = tileY * MAP_WIDTH_TILES + tileX;
+  if (on) fgPromoted.add(k);
+  else fgPromoted.delete(k);
 }
 
 /**
@@ -132,7 +158,7 @@ export function getCollisionCellAt(
 ): { drawTs: number; arr: number; idx: number } | null {
   const mtx = Math.floor(worldX / MINITILE_SIZE);
   const mty = Math.floor(worldY / MINITILE_SIZE);
-  if (mtx < 0 || mty < 0 || mtx >= MAP_WIDTH_MT || mty >= MAP_HEIGHT_MT) return null;
+  if (mtx < 0 || mty < 0 || mtx >= MAP_WIDTH_MT || mty >= MAP_HEIGHT_TILES * 4) return null;
   const sector = getSectorForTile(mtx >> 2, mty >> 2);
   if (!sector) return null;
   const drawTs = getDrawTilesetId(sector.tilesetId);
@@ -153,7 +179,7 @@ export function getCellCollisionAt(
 ): { tileX: number; tileY: number; idx: number; byte: number } | null {
   const mtx = Math.floor(worldX / MINITILE_SIZE);
   const mty = Math.floor(worldY / MINITILE_SIZE);
-  if (mtx < 0 || mty < 0 || mtx >= MAP_WIDTH_MT || mty >= MAP_HEIGHT_MT) return null;
+  if (mtx < 0 || mty < 0 || mtx >= MAP_WIDTH_MT || mty >= MAP_HEIGHT_TILES * 4) return null;
   const tileX = mtx >> 2;
   const tileY = mty >> 2;
   const row = effectiveRow(tileX, tileY);
@@ -360,6 +386,15 @@ export function getSpritePriority(worldX: number, worldY: number): number {
   let bits = 0;
   for (let mty = minMTY; mty <= maxMTY; mty++) {
     for (let mtx = minMTX; mtx <= maxMTX; mtx++) {
+      // A foreground-PROMOTED tile (Collision Painter "G FG / Hide" mode) grants
+      // whole-body priority to any sprite it overlaps, so one FG paint is the
+      // ENTIRE "hide behind this" action — no separate pri-hi pass needed. Native
+      // ROM foreground (trees/overhangs) is NOT promoted, so this never touches
+      // their existing behaviour; only tiles an admin explicitly marked FG.
+      if (fgPromoted.has((mty >> 2) * MAP_WIDTH_TILES + (mtx >> 2))) {
+        bits |= 0x02;
+        continue;
+      }
       const row = effectiveRow(mtx >> 2, mty >> 2);
       if (!row) continue;
 
@@ -375,9 +410,10 @@ export function getSpritePriority(worldX: number, worldY: number): number {
   return bits;
 }
 
-// Minitile dimensions of the whole map.
+// Minitile width of the whole map (fixed). Height is data-driven (the map grows
+// with the interiors band), so height bounds read the live MAP_HEIGHT_TILES
+// rather than a value cached at import.
 const MAP_WIDTH_MT = MAP_WIDTH_TILES * 4;
-const MAP_HEIGHT_MT = MAP_HEIGHT_TILES * 4;
 
 /**
  * Raw collision byte for the minitile under a world pixel, or null when the
@@ -387,7 +423,7 @@ const MAP_HEIGHT_MT = MAP_HEIGHT_TILES * 4;
 export function getCollisionByteAt(worldX: number, worldY: number): number | null {
   const mtx = Math.floor(worldX / MINITILE_SIZE);
   const mty = Math.floor(worldY / MINITILE_SIZE);
-  if (mtx < 0 || mty < 0 || mtx >= MAP_WIDTH_MT || mty >= MAP_HEIGHT_MT) return null;
+  if (mtx < 0 || mty < 0 || mtx >= MAP_WIDTH_MT || mty >= MAP_HEIGHT_TILES * 4) return null;
   const row = effectiveRow(mtx >> 2, mty >> 2);
   if (!row) return null;
   return row[(mty & 3) * 4 + (mtx & 3)];
@@ -395,7 +431,7 @@ export function getCollisionByteAt(worldX: number, worldY: number): number | nul
 
 /** True if the 8x8 minitile at (mtx, mty) is solid (or off-map). */
 function isMinitileSolid(mtx: number, mty: number): boolean {
-  if (mtx < 0 || mty < 0 || mtx >= MAP_WIDTH_MT || mty >= MAP_HEIGHT_MT) return true;
+  if (mtx < 0 || mty < 0 || mtx >= MAP_WIDTH_MT || mty >= MAP_HEIGHT_TILES * 4) return true;
   const row = effectiveRow(mtx >> 2, mty >> 2);
   if (!row) return true; // off-map or not loaded — treat as wall
   return (row[(mty & 3) * 4 + (mtx & 3)] & 0x80) !== 0;

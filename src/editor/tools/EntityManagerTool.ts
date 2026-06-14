@@ -32,6 +32,8 @@ const STAT_FIELDS: {
   { key: 'damage', label: 'damage', min: 0 },
   { key: 'attackCooldownMs', label: 'atk cd s', min: 50, scale: 1000 },
   { key: 'speed', label: 'speed', min: 0.1, float: true },
+  { key: 'detectRange', label: 'detect px', min: 1 },
+  { key: 'attackRange', label: 'atk px', min: 1 },
 ];
 
 class EntityManagerTool implements EditorTool {

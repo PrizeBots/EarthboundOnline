@@ -7,6 +7,7 @@ import {
   SECTOR_TILES_Y,
   MAP_WIDTH_TILES,
   MAP_HEIGHT_TILES,
+  setMapDimensions,
 } from '../types';
 
 let sectors: SectorMeta[] = [];
@@ -22,6 +23,21 @@ export async function loadMapData(): Promise<void> {
   sectors = sectorData;
   mapTiles = tileData;
   tilesetMapping = mapping;
+
+  // Height is data-driven: an extended map (overworld + stamped interiors band)
+  // makes the arrays taller. Width is fixed at 256, so the row count is the
+  // height. Resolve it from the data and publish to the live dim bindings.
+  const heightTiles = Math.round(mapTiles.length / MAP_WIDTH_TILES);
+  const heightSectors = Math.round(sectors.length / MAP_WIDTH_SECTORS);
+  setMapDimensions(heightTiles, heightSectors);
+  // Tile rows and sector rows must agree (each sector is SECTOR_TILES_Y tall).
+  if (heightTiles !== heightSectors * SECTOR_TILES_Y) {
+    console.warn(
+      `Map height mismatch: ${heightTiles} tile rows vs ${heightSectors} sector rows ` +
+      `(*${SECTOR_TILES_Y} = ${heightSectors * SECTOR_TILES_Y}) — tiles.json and sectors.json disagree`,
+    );
+  }
+  console.log(`Map loaded: ${MAP_WIDTH_TILES}x${heightTiles} tiles (${heightSectors} sector rows)`);
 }
 
 export function getDrawTilesetId(mapTilesetId: number): number {

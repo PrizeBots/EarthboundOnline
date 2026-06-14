@@ -13,6 +13,8 @@ export interface EntityStats {
   damage: number; // HP each landed hit takes off the player
   attackCooldownMs: number; // min time between this entity's swings
   speed: number; // wander move speed px/tick (chase scales from it)
+  detectRange: number; // px — player within this aggros the enemy (separate from attack range)
+  attackRange: number; // px — enemy must be this close to land a hit
 }
 
 /** sprite group id (as a string key) -> its stats. */
@@ -25,6 +27,8 @@ export const DEFAULT_ENTITY_STATS: EntityStats = {
   damage: 7,
   attackCooldownMs: 700,
   speed: 0.7,
+  detectRange: 220,
+  attackRange: 24,
 };
 
 /** Stats for a sprite group: its authored entry, or the defaults. */

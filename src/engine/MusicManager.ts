@@ -19,6 +19,45 @@ declare const ALLOC_NORMAL: number;
 // musicId -> default song number
 let musicMap: Record<string, number> = {};
 
+// Authored music regions (overrides/music.json) — OUR data layer, applied over
+// the ROM's per-sector musicId. EarthBound assigns music per sector, but the
+// door-stitched open world leaves many sectors with the wrong (intro-state or
+// neighbouring) musicId, so the wrong song plays. A rectangular area here wins
+// over the sector lookup for any point inside it. Ships like other overrides;
+// on SNES these bake back down to per-sector musicId.
+export interface MusicArea {
+  name: string;
+  x: number; y: number; w: number; h: number; // world pixels
+  song: number;                                // SPC song number (what plays)
+}
+let musicAreas: MusicArea[] = [];
+
+export async function loadMusicAreas(): Promise<void> {
+  try {
+    const res = await fetch('/overrides/music.json', { cache: 'no-store' });
+    musicAreas = res.ok ? ((await res.json())?.areas ?? []) : [];
+    console.log(`Music areas loaded: ${musicAreas.length}`);
+  } catch {
+    musicAreas = []; // none authored yet — pure sector fallback
+  }
+}
+
+/** Live-replace the areas (editor pushes its working set without a refetch). */
+export function setMusicAreas(areas: MusicArea[]): void {
+  musicAreas = areas.slice();
+  lastLoggedSong = -2; // force the next updateMusic to re-evaluate + log
+}
+
+/** Song number for a world point from the authored areas, or -1 if none. */
+function songForPoint(x: number, y: number): number {
+  // Last matching area wins — later entries are drawn on top / authored later.
+  for (let i = musicAreas.length - 1; i >= 0; i--) {
+    const a = musicAreas[i];
+    if (x >= a.x && x < a.x + a.w && y >= a.y && y < a.y + a.h) return a.song;
+  }
+  return -1;
+}
+
 // Cached SPC file data
 const spcCache = new Map<number, Uint8Array>();
 const spcLoading = new Set<number>();
@@ -86,11 +125,11 @@ export function initMusic(): void {
 function startAudioNode(): void {
   if (!audioContext || !gainNode) return;
 
-  // Stop existing node
-  if (audioNode) {
-    audioNode.disconnect();
-    audioNode = null;
-  }
+  // Keep ONE persistent node: it decodes whatever song the SPC engine currently
+  // holds, so switching tracks is just a `_my_init` — no node teardown. Tearing
+  // down + rebuilding on every change can drop audio when switching while a song
+  // is already playing (the editor's Test against live game music hit this).
+  if (audioNode) return;
 
   audioNode = audioContext.createScriptProcessor(frameSize, 0, 2);
   audioNode.onaudioprocess = (e) => {
@@ -139,7 +178,10 @@ async function loadSPC(songNumber: number): Promise<Uint8Array | null> {
 }
 
 async function playSPCSong(songNumber: number): Promise<void> {
-  if (!initialized || songNumber <= 0) return;
+  if (!initialized || songNumber <= 0) {
+    console.warn(`playSPCSong(${songNumber}) skipped: initialized=${initialized}`);
+    return;
+  }
   if (songNumber === currentSongNumber) return;
 
   // Stop custom audio
@@ -149,7 +191,10 @@ async function playSPCSong(songNumber: number): Promise<void> {
   }
 
   const spc = await loadSPC(songNumber);
-  if (!spc) return;
+  if (!spc) {
+    console.warn(`playSPCSong(${songNumber}): SPC failed to load`);
+    return;
+  }
 
   try {
     // Load SPC data into asm.js engine (use heap, not stack — SPC files are 66KB)
@@ -222,22 +267,54 @@ export function toggleMusicMuted(): boolean {
   return muted;
 }
 
-let lastLoggedMusicId = -1;
+let lastLoggedSong = -1;
 
 export function updateMusic(playerX: number, playerY: number): void {
   if (!initialized) return;
 
-  const sectorX = Math.floor(playerX / (SECTOR_TILES_X * TILE_SIZE));
-  const sectorY = Math.floor(playerY / (SECTOR_TILES_Y * TILE_SIZE));
-  const sector = getSector(sectorX, sectorY);
-  if (!sector) return;
+  // An authored area wins; otherwise fall back to the sector's ROM musicId.
+  let songNumber = songForPoint(playerX, playerY);
+  let source = 'area';
+  if (songNumber < 0) {
+    const sectorX = Math.floor(playerX / (SECTOR_TILES_X * TILE_SIZE));
+    const sectorY = Math.floor(playerY / (SECTOR_TILES_Y * TILE_SIZE));
+    const sector = getSector(sectorX, sectorY);
+    if (!sector) return;
+    songNumber = musicMap[String(sector.musicId)] ?? 0;
+    source = `sector musicId=${sector.musicId}`;
+  }
 
-  const songNumber = musicMap[String(sector.musicId)] ?? 0;
-  if (sector.musicId !== lastLoggedMusicId) {
-    console.log(`Sector (${sectorX},${sectorY}) musicId=${sector.musicId} -> song ${songNumber}`);
-    lastLoggedMusicId = sector.musicId;
+  if (songNumber !== lastLoggedSong) {
+    console.log(`Music: song ${songNumber} (${source})`);
+    lastLoggedSong = songNumber;
   }
   if (songNumber > 0 && songNumber !== currentSongNumber) {
     playSPCSong(songNumber);
   }
+}
+
+// --- Editor preview (dev tools) ----------------------------------------------
+
+/**
+ * Audition a song from the Sound Manager. Inits the engine if needed and, since
+ * the button click is a user gesture, resumes a suspended AudioContext so sound
+ * is actually enabled. Forces a restart even if this song is already current
+ * (so re-pressing Test re-auditions it).
+ */
+export function previewSong(songNumber: number): void {
+  if (!initialized) initMusic();
+  if (audioContext) {
+    // The button click is a user gesture, so a suspended context can resume here.
+    if (audioContext.state === 'suspended') void audioContext.resume();
+    console.log(`previewSong(${songNumber}): initialized=${initialized}, ctx=${audioContext.state}`);
+  } else {
+    console.warn(`previewSong(${songNumber}): no AudioContext (SPC engine not initialized)`);
+  }
+  currentSongNumber = -1;
+  void playSPCSong(songNumber);
+}
+
+/** The song currently playing (so the editor can show/stop it). */
+export function getCurrentSong(): number {
+  return currentSongNumber;
 }

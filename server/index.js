@@ -3,6 +3,7 @@ const { WebSocketServer } = require('ws');
 const http = require('http');
 const path = require('path');
 const { createNpcSim } = require('./npcSim');
+const { loadShops } = require('./shops');
 
 const PORT = process.env.PORT || 3333;
 
@@ -20,17 +21,16 @@ let nextId = 1;
 const POSES = ['walk', 'climb', 'attack', 'hurt'];
 const PLAYER_MAX_HP = 60;
 
-// Server-authoritative goods registry. Each player's inventory is an array of
-// these ids (one entry per carried item, EarthBound-style slots). Effects are
-// resolved here so a client can't grant itself HP — it only asks to "use" a
-// slug it claims to own. `heal` restores HP (capped at maxHp).
-const GOODS = {
-  cookie: { name: 'Cookie', heal: 10 },
-};
-
-// What every player starts with. A welcome Cookie so the Goods menu is never
-// empty and the use/heal flow is immediately testable.
-const STARTING_INVENTORY = ['cookie'];
+// Server-authoritative goods registry + shop catalog, loaded from the authored
+// shops.json (see tools/extract_shops.py and server/shops.js). Each player's
+// inventory is an array of numeric-string item ids (one entry per carried item,
+// EarthBound-style slots). Effects are resolved here so a client can't grant
+// itself HP or money — it only asks to use/buy/sell ids it claims to own, and
+// every transaction is validated against GOODS/STORES.
+const { goods: GOODS, storeHas, startingInventory: STARTING_INVENTORY } = loadShops(
+  path.join(__dirname, '..', 'public', 'assets')
+);
+const MAX_SLOTS = 14; // EarthBound's Goods menu holds 14 items per character
 
 // Money ($). Server-authoritative: granted on join, the sole authority on the
 // balance once shops/drops spend it.
@@ -141,7 +141,8 @@ wss.on('connection', (ws) => {
           direction: SPAWN.dir || 0,
           frame: 0,
           pose: 'walk',
-          itemId: null, // held item, set by 'equip' messages
+          itemId: null, // held item (equipped weapon's sprite), set by 'equip'
+          weaponOffense: 0, // offense bonus from the equipped weapon (server-applied)
           inventory: [...STARTING_INVENTORY], // Goods slots, mutated by 'use_item'
           money: STARTING_MONEY, // starting cash, shown in the menu
           hp: PLAYER_MAX_HP,
@@ -212,7 +213,10 @@ wss.on('connection', (ws) => {
         if (!entry) break;
         // Server-authoritative: resolve the swing from the player's tracked
         // position (not client-sent coords) so reach can't be spoofed.
-        npcSim.handleAttack(entry.x, entry.y, msg.dir | 0, playerId, entry.offense, entry.pk);
+        npcSim.handleAttack(
+          entry.x, entry.y, msg.dir | 0, playerId,
+          entry.offense + (entry.weaponOffense || 0), entry.pk
+        );
         break;
       }
 
@@ -222,6 +226,11 @@ wss.on('connection', (ws) => {
         // Item ids are short slugs; clients ignore ids they don't recognize.
         entry.itemId =
           typeof msg.itemId === 'string' && msg.itemId.length <= 24 ? msg.itemId : null;
+        // Weapon offense is server-authoritative: counts only if the equipped
+        // item is a weapon the player actually owns (no spoofing).
+        const eq = entry.itemId ? GOODS[entry.itemId]?.equip : null;
+        const owns = entry.itemId ? entry.inventory.includes(entry.itemId) : false;
+        entry.weaponOffense = eq && eq.slot === 'weapon' && owns ? (eq.offense | 0) : 0;
         const equipMsg = JSON.stringify({ type: 'equip', id: playerId, itemId: entry.itemId });
         for (const [id, p] of players) {
           if (id !== playerId && p._ws.readyState === 1) {
@@ -239,6 +248,8 @@ wss.on('connection', (ws) => {
         const slot = entry.inventory.indexOf(itemId);
         // Must actually own a slot of a known item to consume it.
         if (!def || slot === -1) break;
+        // Equippable gear is never consumed by "use" — it's equipped instead.
+        if (def.equip) break;
 
         // Apply the effect. Cookie (and any future `heal` good) restores HP up
         // to the cap; broadcast so every client redraws this player's bar, and
@@ -262,6 +273,40 @@ wss.on('connection', (ws) => {
           type: 'inventory',
           items: inventoryView(entry.inventory),
         }));
+        break;
+      }
+
+      case 'buy': {
+        const entry = players.get(playerId);
+        if (!entry) break;
+        const store = msg.store | 0;
+        const itemId = String(msg.item);
+        const def = GOODS[itemId];
+        // Validate: real item, actually stocked by that store (no off-list buys),
+        // affordable, and room in the bag. Price comes from the catalog, never
+        // the client, so it can't be spoofed.
+        if (!def || !storeHas(store, itemId)) break;
+        if (entry.inventory.length >= MAX_SLOTS) break;
+        if (entry.money < def.cost) break;
+        entry.money -= def.cost;
+        entry.inventory.push(itemId);
+        entry._ws.send(JSON.stringify({ type: 'inventory', items: inventoryView(entry.inventory) }));
+        entry._ws.send(JSON.stringify({ type: 'money', money: entry.money }));
+        break;
+      }
+
+      case 'sell': {
+        const entry = players.get(playerId);
+        if (!entry) break;
+        const itemId = String(msg.item);
+        const def = GOODS[itemId];
+        const slot = entry.inventory.indexOf(itemId);
+        // Must own a slot of a known item. EarthBound buys back at half price.
+        if (!def || slot === -1) break;
+        entry.inventory.splice(slot, 1);
+        entry.money += Math.floor(def.cost / 2);
+        entry._ws.send(JSON.stringify({ type: 'inventory', items: inventoryView(entry.inventory) }));
+        entry._ws.send(JSON.stringify({ type: 'money', money: entry.money }));
         break;
       }
 

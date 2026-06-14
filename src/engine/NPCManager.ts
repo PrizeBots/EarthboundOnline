@@ -13,6 +13,14 @@ import { spawnDamageNumber } from './Emitter';
 import { Direction, POSES } from '../types';
 import type { NpcUpdate } from './Network';
 import { createInterpolator } from './RemoteInterp';
+import { loadShops, shopStoreForNpc } from './Shop';
+
+/** ROM NPC config id from a placement key "areaIdx:npcId:occ", or -1. */
+function npcIdFromKey(k: string | undefined): number {
+  if (!k) return -1;
+  const parts = k.split(':');
+  return parts.length >= 2 ? parseInt(parts[1], 10) : -1;
+}
 
 // Smooth NPC/enemy motion the same way remote players glide. NPCs broadcast at
 // ~10Hz (slower than players), so a slightly larger render delay keeps two
@@ -156,6 +164,7 @@ export async function reloadNpcText(): Promise<void> {
 }
 
 export async function loadNPCs(): Promise<void> {
+  await loadShops(); // clerk->store map must be ready before we tag NPCs below
   const [raw, overrides, text, dialogueOv, enemyOv, enemyBase, carOv, carBase] = await Promise.all([
     loadJSON<RawNPC[]>('/assets/map/npcs.json'),
     // Editor-authored placement overrides — absent until something is authored.
@@ -228,6 +237,9 @@ function buildStaticNpcs(raw: RawNPC[], overrides: NpcOverrides | null): (NPC | 
     const kind: NPCKind = enemySpriteSet.has(r.sprite) ? 'enemy' : r.kind;
     const npc = new NPC(r.x, r.y, r.sprite, r.dir as Direction, kind, r.t ?? null);
     if (kind === 'enemy') npc.applyHp(enemyDefaultHp, enemyDefaultHp);
+    // Shop clerks (by ROM config id) carry the store they sell — Game.tryTalk
+    // opens the shop instead of dialogue. Custom/override NPCs have no ROM id.
+    if (kind === 'person') npc.shopStore = shopStoreForNpc(npcIdFromKey(r.k));
     return npc;
   });
   for (const npc of arr) {

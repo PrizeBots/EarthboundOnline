@@ -102,7 +102,9 @@ export function connect(
         callbacks?.onInventory(msg.items ?? []);
         break;
       case 'money':
-        callbacks?.onMoney(msg.amount ?? 0);
+        // Server sends { type:'money', money } (same field as welcome) — NOT
+        // `amount`. Reading the wrong field zeroed the balance on every buy/sell.
+        callbacks?.onMoney(typeof msg.money === 'number' ? msg.money : 0);
         break;
       case 'npc_update':
         callbacks?.onNpcUpdate(msg.npcs);
@@ -179,6 +181,21 @@ export function sendEquip(itemId: string | null) {
 export function sendUseItem(itemId: string) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'use_item', itemId }));
+  }
+}
+
+/** Buy `item` from `store`; the server validates stock/price and replies with
+ * fresh `inventory` + `money`. */
+export function sendBuy(store: number, item: string) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'buy', store, item }));
+  }
+}
+
+/** Sell one `item` (at half price); the server replies with fresh `inventory` + `money`. */
+export function sendSell(item: string) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'sell', item }));
   }
 }
 

@@ -121,26 +121,59 @@ sector load + room crop — use it from the console or verification scripts.
   poses a sheet lacks fall back to walk frames — ROM sprites included) and
   sends it as a PNG data URL in the join message's `appearance` field; both
   servers cap that field at 64KB.
-- **Items.ts** — held-item overlays: 16x16 pixel-art sprites authored IN THIS
-  FILE as text grids (our own art, never ROM-derived). Drawn at a
-  per-direction hand anchor relative to the entity anchor; facing away
-  (N/NE/NW) puts the item in the far hand, under the body sprite. Attack pose
-  raises (frame 0) then swings (frame 1) the item. In-game keys: F = attack,
-  H = hurt (debug hook until combat deals damage), G = cycle held item
-  (held-item art is separate from the Goods inventory below). Pose rides on
-  the move message; the held item syncs via the `equip` message and persists
-  on the server player record so late joiners see it.
+- **Items.ts** — held-item overlays: 16x16 pixel art (our own, never
+  ROM-derived) drawn at a per-direction hand anchor relative to the entity
+  anchor; facing away (N/NE/NW) puts the item in the far hand, under the body
+  sprite. Attack pose raises (frame 0) then swings (frame 1) the item. Art is
+  keyed by **catalog item id** (shops.json): authored per-item in
+  `overrides/item_sprites.json` (ITEM_PALETTE-index rows + a grip point),
+  loaded by `loadItemSprites()` at startup so every client renders the same
+  gear. A few legacy hand-authored defs (bat/pan/yoyo) seed/fallback. The
+  equip cycle key (G) steps through the **equippable gear in your inventory**
+  (by item Type, `isEquippable`); equipping broadcasts the catalog id via the
+  `equip` message (persisted on the server player record so late joiners see
+  it), and remote clients render it with `drawHeldItem`. Equip is server-
+  authoritative for COMBAT: the equipped weapon's **offense** (decoded from the
+  ROM item table by `extract_shops.py`, exposed via `server/shops.js` GOODS
+  `.equip`) is added to attack damage — Cracked bat = +4, like the game — but
+  only if the player actually owns it. Equippable gear can never be consumed
+  (`use_item` refuses items with `.equip`), fixing the bug where a weapon
+  vanished when "used" from Goods.
+- **Item Manager + Sprite Editor item mode** — the held-gear authoring
+  pipeline. The Item Manager (editor tool) lists the WHOLE item catalog with
+  the shared sprite-preview dropdown + search, shows name/cost/type plus the
+  decoded EQUIP data — slot (weapon/body/arms/other), offense/defense, and who
+  may equip it — and whether each item has art yet, and hands off (`openSpriteEditor({
+  focusItem })`) to the Sprite Editor's Item mode, whose item list is the SAME
+  catalog. Editing saves the 16x16 art to `overrides/item_sprites.json` via the
+  dev save channel, shared by all clients. (Catalog item ids and the Goods
+  inventory ids are the same numeric-string id space.)
 - **Inventory.ts + MenuManager Goods** — the server-authoritative Goods
   inventory. The server grants a starting Cookie on join and is the sole
   authority on contents and effects; `Inventory.ts` just mirrors the latest
   list (welcome snapshot + `inventory` deltas) so the command window's **Goods**
   command can render it. Selecting an item sends `use_item`; the Cookie heals
-  10 HP (capped at max), and the server replies with the trimmed list and a
-  `player_hp` carrying `heal` (the owner pops a green heal number).
+  6 HP (capped at max), and the server replies with the trimmed list and a
+  `player_hp` carrying `heal` (the owner pops a green heal number). Items are
+  identified on the wire by their numeric id as a STRING (e.g. `"88"` = Cookie),
+  the same id the catalog names from.
 - **Wallet.ts + money window** — the server-authoritative money ($). Every
-  player joins with $1000; the balance ships in `welcome` (and future `money`
-  deltas once shops/drops exist). `Wallet.ts` mirrors it so MenuManager can
+  player joins with $1000; the balance ships in `welcome` and every `money`
+  delta (shop buy/sell). `Wallet.ts` mirrors it so MenuManager can
   draw a small EB cash window in the top-right whenever the menu is open.
+- **Shops** — EarthBound shop clerks have no dialogue; their ROM script sets a
+  store flag and calls the shop routine. `tools/extract_shops.py` traces each
+  clerk's Text Pointer 1 to that flag (`store = flag - 225`) and writes
+  `public/assets/map/shops.json`: the item catalog (id → name/cost/type), each
+  store's stock, and a clerk-NPC → store map. `Shop.ts` loads it; `NPCManager`
+  tags each clerk NPC with its `shopStore` (by ROM config id from the placement
+  key). `Game.tryTalk` treats a clerk as an **interactive** target (so a silent
+  prop in front can't steal the probe) and calls `MenuManager.openShop` instead
+  of opening dialogue. The shop UI (Buy/Sell + item lists) lives in MenuManager;
+  Buy/Sell send `buy`/`sell`, and the server (`server/shops.js`, shared by both
+  servers) re-prices and validates every transaction — stock, affordability,
+  ownership, 14-slot cap, half-price buyback — then pushes fresh `inventory` +
+  `money`. Prices/stock come from the catalog server-side, never the client.
 
 ## Editor tools (dev only — see EDITOR_TOOLS.md)
 
@@ -200,12 +233,42 @@ half), pri-hi `0x02` (green upper half). **Edits are PER-ARRANGEMENT**
 every map tile using that graphic; the inspector shows the use count and 'U'
 outlines instances. Brushes: bit tools (first cell decides set/clear), clear,
 rect fill, eyedrop→stamp; B brush size; M hides art; R recomputes the room
-crop at the cursor against PAINTED collision; strokes undoable. Saves
-per-arrangement diffs to `overrides/collision.json`, applied at three synced
+crop at the cursor against PAINTED collision; strokes undoable. **`G Hide`**
+is per-TILE foreground promotion (not per-arrangement): it marks a tile so its
+art redraws OVER sprites (Renderer "Pass 3b") AND so `getSpritePriority` grants
+whole-body priority to any sprite the tile overlaps — i.e. one paint is the
+entire "let the player walk behind a building the ROM never made foreground"
+action, no separate pri-hi needed. While the local player is behind them, a
+soft CIRCLE of reveal around the player ghosts the overlapping promoted tiles
+(Pass 3b radial falloff, ~0.1 alpha at centre) so you can see what's behind
+the building — yourself, other players, enemies, gift boxes (all of which draw
+in the behind-FG pass, so fading the FG redraw exposes them); the rest of the
+building stays opaque. Promoted tiles are stored as
+`foreground: ["x,y", ...]` in `overrides/collision.json`; native ROM foreground
+(trees/overhangs) is untouched. Saves per-arrangement byte diffs plus that
+foreground list, applied at three synced
 points: `Collision.loadCollision`, `npcSim` (file-watched), and the py room
 sweep. The "Verify rooms" button runs `debug_room_crop_check.py` via the
 dev-only `/__editor/verify` endpoint (fixed-command allow-list in
 `editorSavePlugin`).
+
+**Sound Manager** (`src/editor/tools/SoundTool.ts`, READY): the fix for music
+playing in the wrong spots. EarthBound assigns music PER SECTOR (`sectors.json`
+`musicId` → `music_map.json` → SPC song number), but the door-stitched open
+world leaves many sectors with the wrong (intro-state or neighbouring) musicId.
+The admin draws rectangular trigger areas on the map and assigns the song that
+plays inside each — drag to create, drag to move, and a **song dropdown** of real
+track titles (`SongNames`, pulled from the SPC ID666 tags by
+`tools/extract_song_names.py` → `src/data/songNames.json`) with a **Test** button
+(`MusicManager.previewSong`, which resumes a suspended AudioContext so sound is
+enabled) to audition. Songs are renamable like entities — the override lives in
+`overrides/song_names.json` (`loadSongNameOverrides` at startup). Areas snap to the EB
+sector grid (64×32 px) by default so they bake back to per-sector musicId on
+SNES. Saved to `overrides/music.json` (`{version, areas:[{name,x,y,w,h,song}]}`);
+`MusicManager.songForPoint` checks areas first (last match wins) and falls back
+to the sector lookup, so unauthored regions are unchanged. `loadMusicAreas()`
+runs at startup and ships like other overrides; saving pushes the working set
+live via `setMusicAreas()`.
 
 ## Multiplayer server
 

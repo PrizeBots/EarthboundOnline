@@ -5,7 +5,7 @@ import { getTileAt, getSectorForTile } from './MapManager';
 import { drawTile, drawForegroundTile, hasForegroundTile } from './TilesetManager';
 import { drawSprite, getSpriteGroupMeta, SpritePart } from './SpriteManager';
 import { drawHeldItem, isItemBehind } from './Items';
-import { getSpritePriority } from './Collision';
+import { getSpritePriority, isForegroundPromoted } from './Collision';
 import { getStatus } from './StatusModal';
 import {
   Pose,
@@ -389,6 +389,42 @@ export class Renderer {
         const screenX = col * TILE_SIZE - camX;
         const screenY = row * TILE_SIZE - camY;
         drawForegroundTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, screenX, screenY);
+      }
+    }
+
+    // Pass 3b: foreground-promoted tiles (Collision Painter "G Hide" mode) —
+    // redraw their FULL art here so it covers priority-behind sprites. Lets the
+    // player hide behind ROM-BG objects (buildings) that have no native FG layer.
+    //
+    // "See-through while hiding": when the LOCAL player is behind promoted
+    // tiles, a soft CIRCLE of reveal around them ghosts the building so you can
+    // see what's behind it — yourself, other players, enemies, gift boxes. All
+    // of those render in the behind-FG pass (above), so fading the building's
+    // redraw here exposes them. Radial falloff keeps the edge soft; the rest of
+    // the building stays solid.
+    const REVEAL_IN = 52;    // fully ghosted within this radius (world px)
+    const REVEAL_OUT = 108;  // back to fully solid past this radius
+    const MIN_ALPHA = 0.1;   // building opacity at the centre of the reveal (~10%)
+    const playerHidden = getSpritePriority(player.x, player.y) !== 0;
+    for (let row = startRow; row <= endRow; row++) {
+      for (let col = startCol; col <= endCol; col++) {
+        if (!isForegroundPromoted(col, row)) continue;
+        const sector = getSectorForTile(col, row);
+        if (!sector) continue;
+        const tileWX = col * TILE_SIZE, tileWY = row * TILE_SIZE;
+        let alpha = 1;
+        if (playerHidden) {
+          const dx = tileWX + TILE_SIZE / 2 - player.x;
+          const dy = tileWY + TILE_SIZE / 2 - player.y;
+          const d = Math.sqrt(dx * dx + dy * dy);
+          if (d <= REVEAL_IN) alpha = MIN_ALPHA;
+          else if (d < REVEAL_OUT)
+            alpha = MIN_ALPHA + (1 - MIN_ALPHA) * ((d - REVEAL_IN) / (REVEAL_OUT - REVEAL_IN));
+        }
+        if (alpha < 1) this.ctx.globalAlpha = alpha;
+        drawTile(this.ctx, sector.tilesetId, sector.paletteId, getTileAt(col, row),
+          tileWX - camX, tileWY - camY);
+        if (alpha < 1) this.ctx.globalAlpha = 1;
       }
     }
 
