@@ -5,9 +5,20 @@
     283,
     282,
     226,
-    107
+    107,
+    330
   ],
   "entities": {
+    "74": {
+      "hp": 50,
+      "xp": 5,
+      "level": 4,
+      "damage": 14,
+      "attackCooldownMs": 700,
+      "speed": 0.7,
+      "detectRange": 220,
+      "attackRange": 24
+    },
     "226": {
       "hp": 3,
       "xp": 1,
@@ -19,38 +30,61 @@
       "attackRange": 24
     },
     "282": {
-      "hp": 5,
-      "xp": 5,
-      "level": 4,
-      "damage": 2,
+      "name": "Spiteful Crow",
+      "hp": 24,
+      "xp": 3,
+      "level": 27,
+      "damage": 5,
+      "defense": 3,
+      "money": 5,
       "attackCooldownMs": 700,
       "speed": 0.7
     },
     "283": {
-      "hp": 12,
-      "xp": 5,
-      "level": 4,
-      "damage": 2,
+      "name": "Coil Snake",
+      "hp": 18,
+      "xp": 1,
+      "level": 1,
+      "damage": 3,
+      "defense": 4,
+      "money": 4,
       "attackCooldownMs": 1000,
       "speed": 0.7
     },
     "284": {
-      "hp": 24,
-      "xp": 5,
-      "level": 4,
+      "name": "Skate Punk",
+      "hp": 31,
+      "xp": 12,
+      "level": 3,
       "damage": 7,
+      "defense": 8,
+      "money": 17,
       "attackCooldownMs": 700,
       "speed": 0.7
     },
     "291": {
-      "hp": 35,
-      "xp": 5,
-      "level": 4,
-      "damage": 7,
+      "name": "Ramblin' Evil Mushroom",
+      "hp": 60,
+      "xp": 95,
+      "level": 7,
+      "damage": 15,
+      "defense": 10,
+      "money": 15,
       "attackCooldownMs": 700,
       "speed": 0.7,
       "detectRange": 220,
       "attackRange": 24
+    },
+    "330": {
+      "name": "Runaway Dog",
+      "hp": 21,
+      "xp": 4,
+      "level": 2,
+      "damage": 4,
+      "defense": 5,
+      "money": 3,
+      "attackCooldownMs": 700,
+      "speed": 0.7
     }
   },
   "spawners": [
@@ -195,6 +229,42 @@
       "poolSize": 7,
       "maxActive": 4,
       "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-13",
+      "sprite": 330,
+      "x": 1254,
+      "y": 1039,
+      "wanderRadius": 600,
+      "poolSize": 7,
+      "maxActive": 4,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-14",
+      "sprite": 330,
+      "x": 1562,
+      "y": 843,
+      "wanderRadius": 600,
+      "poolSize": 6,
+      "maxActive": 3,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 12000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-15",
+      "sprite": 282,
+      "x": 992,
+      "y": 1897,
+      "wanderRadius": 600,
+      "poolSize": 5,
+      "maxActive": 2,
+      "spawnIntervalMs": 22000,
       "respawnDelayMs": 9000,
       "enabled": true
     }

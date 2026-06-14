@@ -1,9 +1,11 @@
 name: CI
 
-# Fast, asset-light gates: TypeScript typecheck, server syntax, and the GameHost
-# smoke test. These need only code + the committed pure-index JSON under
-# public/assets/, never the ROM. (A production `vite build` is intentionally left
-# out — it's heavier and the dev server already exercises the bundle path.)
+# Fast, asset-light gates (all via `npm run verify`): TypeScript typecheck,
+# ESLint, server syntax, Vitest unit tests (Zod override-file validation), and
+# the GameHost/combat smoke tests. These need only code + the committed
+# pure-index JSON under public/assets/, never the ROM. (A production `vite build`
+# is intentionally left out — it's heavier and the dev server already exercises
+# the bundle path.)
 on:
   push:
     branches: [main]

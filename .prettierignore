@@ -1,0 +1,6 @@
+dist
+node_modules
+public/assets
+eb_project
+*.bak
+*.tmp
