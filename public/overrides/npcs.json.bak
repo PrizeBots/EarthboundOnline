@@ -1,5 +1,36 @@
 {
   "version": 1,
-  "edits": {},
-  "additions": []
+  "edits": {
+    "135:175:0": {
+      "x": 2024,
+      "y": 1176,
+      "sprite": 208,
+      "dir": 2,
+      "kind": "prop"
+    },
+    "168:186:0": {
+      "x": 2088,
+      "y": 1504,
+      "sprite": 206,
+      "dir": 3,
+      "kind": "prop"
+    }
+  },
+  "additions": [
+    {
+      "x": 1536,
+      "y": 1136,
+      "sprite": 55,
+      "dir": 0,
+      "kind": "person",
+      "t": 900003
+    },
+    {
+      "x": 7872,
+      "y": 1536,
+      "sprite": 74,
+      "dir": 0,
+      "kind": "person"
+    }
+  ]
 }

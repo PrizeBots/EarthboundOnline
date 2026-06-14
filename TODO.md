@@ -13,13 +13,13 @@
 - [x] Character creator — pixel editor over the Ness template (SpriteEditor; sheet synced in multiplayer as a PNG data URL). The old mix-and-match parts creator was removed — it never lined up.
 - [x] Attack + hurt frames in the character sheet (v2 = 10 rows; editor rows F-J procedurally posed from the standing frames — wind-up/lunge/recoil band shears; F = attack, H = hurt-test in-game; pose synced via move messages)
 - [x] Held item overlays (Items.ts — our own 16x16 pixel art; G cycles bat/pan/yo-yo; synced via `equip` message so everyone sees carried items)
-- [ ] Verify Onett spawn point is correct and walkable
-- [ ] Fix any rendering glitches (missing atlases, palette issues) — track in bugs.md
+- [x] Verify Onett spawn point is correct and walkable
+- [x] Fix any rendering glitches (missing atlases, palette issues) — track in bugs.md
 - [x] Add NPC sprites to Onett (ROM placement extraction with fresh-start flag filter; Entity/NPC/NPCManager)
 - [x] NPC dialogue — ccscript text decoding (eb_dialogue.py → npc_text.json) + Q-key talk/check (DialogueManager)
 - [x] Door/zone transitions between areas (flag-gated doors, zone-door + scripted-door dest overrides; full-map crop sweep clean)
 - [x] Crop interior rooms to a black background (camera roomBounds + render clip; caves/dungeons too)
-- [ ] Debug overlay (collision boxes, sector grid, FPS counter)
+- [x] Debug overlay (collision boxes, sector grid, FPS counter) — delivered by the dev Editor Shell HUD (F2): cursor readout shows world/tile/minitile/sector + collision byte (hex + SOLID/PRI flags, `Collision.getCollisionByteAt`), tile/minitile/sector grid overlays, room-crop preview, FPS
 
 ## Phase 2: Multiplayer (Browser)
 - [x] WebSocket game server (embedded Vite plugin, port 4444)
@@ -29,13 +29,31 @@
 - [x] Fix ghost sprite on join (broadcast excluded self)
 - [x] Nodemon auto-restart for server changes
 - [x] Server-side NPC simulation (wander/glance movement, server/npcSim.js, synced to clients)
+- [x] Traffic cars — server-driven vehicles on authored routes (`car_traffic.json`; `Vehicle` waypoint routes, one appended actor slot per car, position broadcast like NPCs). No editor yet (hand-authored JSON)
 - [ ] Player name tags above sprites
 - [x] Chat system (text bubbles or chat box)
 - [ ] Server-side validation (speed, position bounds)
 - [x] Interpolation/smoothing for remote player movement (RemoteInterp.ts — 100ms snapshot interpolation; teleport gaps >64px snap instead of glide)
-- [ ] Interpolation for NPC movement (npc_update is 10Hz, so NPCs still step ~3px; reuse RemoteInterp with a ~150ms delay)
+- [x] Interpolation for NPC movement (RemoteInterp reused — `npcInterp = createInterpolator(160)` + `interpolateNpcs`; NPCs/enemies/cars glide like remote players)
 - [ ] Handle disconnects gracefully (timeout, reconnect)
 - [ ] Stress test with 10+ simultaneous clients
+- [x] PK (player-kill) damage model — `pk` flag on every combatant (enemies true, NPCs false, players false) + `npcSim.canHurt(attacker, target)` as the single damage-gating rule, wired into `handleAttack`
+- [ ] PK player toggle — let a player flip their own `pk` on/off (UI + server `set_pk` message); all players are non-PK until this ships
+- [ ] PvP melee resolution — server-side player-hitbox-vs-player so PK rules apply between players (PK players hurt anyone; anyone hurts a PKer)
+- [ ] NPC combat — give townsfolk HP/death and AI that attacks nearby PKers (so "enemies hurt NPCs" and "NPCs attack PKers" go live)
+
+## Dev Editor Tools (in-engine authoring layer — full checklist in EDITOR_TOOLS.md)
+Dev-only, never shipped (Vite-middleware save channel; excluded from prod build).
+Detailed status lives in **EDITOR_TOOLS.md** — summary only here.
+- [x] Editor Shell foundation (F2 / `window.__eb.admin()`): free-fly camera + zoom, cursor readout HUD, grid overlays, undo/redo, dirty tracking, save channel, Location Navigator
+- [x] Admin Hub (tool registry, launch/back, save-all, jump-to-coords)
+- [x] Placement Editor — NPCs (ghosts, drag/snap, add/delete, sprite/dir/kind/dialogue edit), Spawn point (config-driven via `overrides/spawn.json`), Doors/warps (`overrides/doors.json`; `ZONE_DOOR_OVERRIDES` migrated into data)
+- [x] Collision & Priority Painter (per-arrangement byte brushes, live room-crop preview, `overrides/collision.json`)
+- [x] Enemy Spawner Editor (place/configure enemy spawn points — sprite, roam radius, rate, max, hp; walkable/street-connected guard; `overrides/enemy_spawns.json`, hot-reloaded client+server)
+- [x] Dialogue Editor (search/edit textId pages, EB-window live preview, NPC ref counts, `overrides/dialogue.json` merged over npc_text.json; **"Dialogue ✎"** on an NPC mints + links a fresh textId and opens the editor — full place-NPC→author flow). Deferred: ccscript flag-conditionals/branches
+- [x] Save-Back Channel (`/__editor/save` Vite middleware, allow-list, atomic write + `.bak`, runtime merge in loaders)
+- [ ] NPC Sprite Animator (authored attack/hurt/diagonal bands per enemy group, gated on combat)
+- [ ] Phase-1 pipeline hardening: push `extract_npcs` / `apply_map_changes` / doors / dialogue generators to ~99% before deepening matching editors
 
 ## Pre-Launch: User-Supplied ROM Architecture (PokeMMO model — REQUIRED before going live)
 Goal: we distribute zero ROM-derived data; every player supplies their own
@@ -56,20 +74,21 @@ EarthBound ROM and all assets are extracted in their browser. See CLAUDE.md
 - [ ] Area-of-interest filtering (only send updates for nearby players)
 - [ ] Binary protocol (replace JSON with packed messages for bandwidth)
 - [ ] Server tick rate control (fixed 20Hz or 30Hz update loop)
-- [ ] Authentication (simple token or account system)
+- [ ] Authentication — BACKLOGGED until launch / cross-device / real stakes (trading, PvP, bans). Interim identity = the anonymous `localStorage` save-token. When built, prefer **OAuth** ("sign in with Google/Discord") or email **magic-links** over storing passwords; let players claim their token-save by linking a credential
+- [ ] Real backend for saves + auth — DECIDED (later): **Supabase or equivalent** (managed Postgres + built-in OAuth/magic-link auth). Handles persistence + identity ONLY; the custom Node game server stays for the real-time world (Supabase can't run the 60Hz authoritative sim). Game server loads/writes saves to it; client logs in via it. Skip the flat-JSON interim and go straight here if/when building toward launch
 
 ## Phase 4: Build the Game
-- [ ] Real-time action combat system design doc
-- [ ] Hitbox/hurtbox system
-- [ ] Basic melee attack (bat swing) — attack pose/frames + held-item swing already render; needs hit detection and damage, then replace the H hurt-test key with real damage triggers
+- [ ] Real-time action combat system design doc (combat is built ahead of the doc — write it up to lock the rules)
+- [x] Hitbox/hurtbox system (server-authoritative — `npcSim.handleAttack`: directional attack box vs enemy hurtboxes; enemy swing box vs player)
+- [x] Basic melee attack (bat swing) — player swing deals `ATTACK_DAMAGE`, enemies flinch/die/respawn; attack/hurt poses synced over the wire
 - [ ] PSI/magic system (projectiles, AoE)
-- [ ] Enemy AI (overworld encounters, aggro range)
-- [ ] Health/damage system
+- [x] Enemy AI (aggro range, chase, attack) — `npcSim` roamers detect within `DETECT_RANGE`, chase at `chaseSpeed`, swing on cooldown; per-spawner damage/rate/speed/level
+- [x] Health/damage system — server-authoritative HP for enemies AND players (`onPlayerHp`/`onPlayerRespawn`, `player_hp`/`player_respawn` msgs), death + respawn, floating damage numbers (Emitter)
 - [ ] Inventory system
-- [ ] Experience/leveling
-- [ ] Save system (server-side persistence)
-- [ ] Custom sprites for new combat animations
-- [ ] Sound effects / music integration
+- [x] Experience/leveling — per-spawner **XP** (Enemy Spawner editor) → server-authoritative EXP-on-kill + level-up with **full stat growth** (geometric curve `30·1.5^(lvl-1)`; HP/offense/defense wired into combat, all 7 stats grow + display); pushed to client via `player_stats` → StatusModal. No persistence yet (resets on rejoin — needs the save system)
+- [ ] Save system (server-side persistence) — DECIDED: start with flat per-player JSON saves keyed by an **anonymous token** (generated client-side, stored in `localStorage`, sent on join); persists the progression block (level/exp/stats) across rejoins. No DB or login needed yet. Design saves so they can later be **"claimed" by a login**. Move to SQLite/Postgres when the standalone server (Phase 3) or accounts arrive
+- [~] Custom sprites for combat animations — player attack/hurt bands done (SpriteEditor); enemy bands still need the NPC Sprite Animator
+- [ ] Sound effects / music integration — music done; SFX (hit/attack/etc.) not yet
 
 ## Backlog: Hardware Track (out of scope for now)
 The SNES ROM + ESP32 port is a long-term ambition, not part of the current project.
@@ -79,6 +98,7 @@ Engine code should still be written to port cleanly (see CLAUDE.md Architecture)
 - [ ] Real hardware integration: boot on real SNES, multiplayer state via ESP32, latency testing, multi-console stress test
 
 ## Backlog / Ideas
+- [ ] Combat hit-reactions (stun + knockback) — the hurt flinch no longer locks movement (mob stunlock fix). Re-introduce **stun** as a deliberate, server-authoritative status effect: a **% proc chance** per enemy/weapon (entity stat) that freezes the victim for a short, **capped/diminishing** window so it can't chain into a perma-freeze. Pair with **knockback**: on a landed hit, shove the victim away from the attacker by a distance scaled to damage dealt (collision-checked, server-authoritative; small for chip damage, bigger for heavy hits). Wire both into `npcSim.applyDamage`/`damagePlayer` and broadcast so all clients see it.
 - [ ] Player settings screen — selectable chat font (default: regular EB font; Mr. Saturn font as a fun option via ChatManager.setChatFont)
 - [ ] Build visual sprite catalog (HTML page showing all 463 groups with IDs)
 - [ ] Map editor in browser

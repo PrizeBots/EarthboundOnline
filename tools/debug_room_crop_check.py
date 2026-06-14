@@ -44,17 +44,24 @@ collisions = {}
 
 
 # Editor collision overrides (public/overrides/collision.json): per-arrangement
-# "drawTs:arr" -> {minitileIdx: byte}. Applied here so the canonical room sweep
-# sees the SAME collision the engine and npcSim do.
+# "drawTs:arr" -> {idx: byte} ("edits") AND per-map-tile "tx,ty" -> {idx: byte}
+# ("cells"). Applied here so the canonical room sweep sees the SAME collision
+# the engine and npcSim do. KEEP IN SYNC with Collision.ts / npcSim.js.
 def _load_collision_overrides():
     p = ROOT / "public" / "overrides" / "collision.json"
     try:
-        return json.loads(p.read_text()).get("edits") or {}
+        doc = json.loads(p.read_text())
+        return doc.get("edits") or {}, doc.get("cells") or {}
     except Exception:
-        return {}
+        return {}, {}
 
 
-COLLISION_OV = _load_collision_overrides()
+COLLISION_OV, _CELL_OV_RAW = _load_collision_overrides()
+# Per-map-tile overrides keyed by (tx, ty) -> {int idx: byte}.
+CELL_OV = {
+    tuple(int(v) for v in tk.split(",")): {int(i): b for i, b in cells.items()}
+    for tk, cells in _CELL_OV_RAW.items()
+}
 
 
 def get_collisions(ts):
@@ -91,9 +98,13 @@ def solid(mtx, mty):
         return True
     cols = get_collisions(mapping[sec["tilesetId"]])
     arr = tile_at(mtx >> 2, mty >> 2)
+    idx = (mty & 3) * 4 + (mtx & 3)
+    ov = CELL_OV.get((mtx >> 2, mty >> 2))
+    if ov is not None and idx in ov:  # per-cell override wins
+        return (ov[idx] & 0x80) != 0
     if arr >= len(cols):
         return True
-    return (cols[arr][(mty & 3) * 4 + (mtx & 3)] & 0x80) != 0
+    return (cols[arr][idx] & 0x80) != 0
 
 
 def make_croppable(indoor_only):

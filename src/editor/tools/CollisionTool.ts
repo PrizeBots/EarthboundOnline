@@ -1,14 +1,14 @@
 import {
   CollisionOverrides,
   computeRoomBounds,
-  getCollisionCellAt,
-  getCollisionRow,
-  getPristineCollisionByte,
-  setCollisionByteLive,
+  getCellCollisionAt,
+  getEffectiveRowAt,
+  getArrangementByteAt,
+  setCellCollisionLive,
+  clearCellCollisionLive,
 } from '../../engine/Collision';
-import { getSectorForTile, getTileAt, getDrawTilesetId } from '../../engine/MapManager';
 import { Camera } from '../../engine/Camera';
-import { MAP_WIDTH_TILES, MAP_HEIGHT_TILES, TILE_SIZE } from '../../types';
+import { MAP_WIDTH_TILES, TILE_SIZE } from '../../types';
 import { saveOverride } from '../saveOverride';
 import { registerSaveHandler } from '../EditorHub';
 import { EditorShellApi, EditorTool, WorldPoint } from '../types';
@@ -17,20 +17,22 @@ import { EditorShellApi, EditorTool, WorldPoint } from '../types';
 // collision bytes: solid 0x80, sprite-priority 0x01 (lower half behind FG)
 // and 0x02 (upper half behind FG).
 //
-// IMPORTANT MODEL: collision is PER-ARRANGEMENT (an attribute of the tile
-// graphic — BG tile attributes on real SNES), NOT per map cell. Painting one
-// cell edits that arrangement everywhere it appears on the map; the panel
-// shows the use count and 'U' highlights every visible instance before you
-// commit. Edits apply LIVE to the loaded collision (room-crop preview runs
-// against painted state) and save as diffs to overrides/collision.json,
-// which Collision.ts, npcSim, and debug_room_crop_check.py all re-apply.
+// MODEL: edits are PER-MAP-TILE — a paint affects ONLY the cell you click, even
+// when other map tiles reuse the same tile graphic. (Collision.ts applies these
+// per-cell overrides on top of the shared arrangement bytes; legacy
+// per-arrangement edits in overrides/collision.json still apply underneath.)
+// Edits apply LIVE (room-crop preview runs against painted state) and save as
+// diffs to overrides/collision.json `cells`, which Collision.ts, npcSim, and
+// debug_room_crop_check.py all re-apply.
 
 const DOMAIN = 'collision';
 const MINITILE = 8;
 
 type PaintTool = 'solid' | 'prilo' | 'prihi' | 'clear' | 'stamp' | 'eyedrop' | 'rect';
+// Hotkeys avoid WASD/arrows (camera pan) and 1-4 (grid toggles) — the active
+// tool consumes the key before the shell pans, so a movement key would be stolen.
 const TOOL_DEFS: { id: PaintTool; label: string; key: string }[] = [
-  { id: 'solid', label: 'S Solid', key: 's' },
+  { id: 'solid', label: 'F Solid', key: 'f' }, // NOT 's' — that pans the camera down
   { id: 'prilo', label: 'L Pri-lo', key: 'l' },
   { id: 'prihi', label: 'H Pri-hi', key: 'h' },
   { id: 'clear', label: 'C Clear', key: 'c' },
@@ -39,15 +41,18 @@ const TOOL_DEFS: { id: PaintTool; label: string; key: string }[] = [
   { id: 'rect', label: 'T Rect', key: 't' },
 ];
 const BIT: Record<string, number> = { solid: 0x80, prilo: 0x01, prihi: 0x02 };
+// The three paintable "types" are mutually exclusive — painting one clears the
+// other two (so a paint OVERWRITES the cell's type instead of stacking bits).
+const TYPE_MASK = BIT.solid | BIT.prilo | BIT.prihi;
 
-/** One paintable data cell (per-arrangement, so shared by map instances). */
+/** One paintable MAP CELL: a minitile of a specific map tile. */
 interface CellRef {
-  drawTs: number;
-  arr: number;
+  tileX: number;
+  tileY: number;
   idx: number;
 }
 
-const cellKey = (c: CellRef) => `${c.drawTs}:${c.arr}:${c.idx}`;
+const cellKey = (c: CellRef) => `${c.tileX},${c.tileY},${c.idx}`;
 
 class CollisionTool implements EditorTool {
   id = 'collision';
@@ -63,20 +68,22 @@ class CollisionTool implements EditorTool {
   private stampByte = 0x80;
   private hover: WorldPoint = { x: 0, y: 0 };
 
-  // Authored cells: key -> byte (only where current differs from pristine).
+  // Authored per-map-cell bytes: key -> byte (only where it differs from the
+  // tile's arrangement default). Saved as the override file's `cells` section.
   private authored = new Map<string, { cell: CellRef; byte: number }>();
+  // Legacy per-arrangement edits already in the file — preserved on save.
+  private legacyEdits: NonNullable<CollisionOverrides['edits']> = {};
 
   // Stroke state
   private painting = false;
+  private lastPaintPoint: WorldPoint | null = null; // for gap-free drag interpolation
   private strokeBit = 0; // bit being painted this stroke (bit tools)
   private strokeSetting = true; // first cell decides: set or clear
   private strokeChanges = new Map<string, { cell: CellRef; before: number; after: number }>();
   private rectStart: WorldPoint | null = null;
 
-  // Inspector / blast radius
+  // Inspector (the cell last clicked).
   private inspect: CellRef | null = null;
-  private inspectUses = 0;
-  private highlightUses = false;
 
   // Room-crop preview
   private roomCells: ReadonlySet<number> | null = null;
@@ -104,17 +111,20 @@ class CollisionTool implements EditorTool {
     this.rectStart = null;
   }
 
-  /** Seed the authored map from the override file already applied at load. */
+  /** Seed the authored map from the override file's `cells` (and remember the
+   *  legacy per-arrangement `edits` so saving preserves them). */
   private async loadAuthored(): Promise<void> {
     this.authored.clear();
+    this.legacyEdits = {};
     try {
       const res = await fetch('/overrides/collision.json', { cache: 'no-store' });
       if (!res.ok) return;
       const ov = (await res.json()) as CollisionOverrides;
-      for (const [key, cells] of Object.entries(ov.edits ?? {})) {
-        const [drawTs, arr] = key.split(':').map(Number);
+      this.legacyEdits = ov.edits ?? {};
+      for (const [tk, cells] of Object.entries(ov.cells ?? {})) {
+        const [tileX, tileY] = tk.split(',').map(Number);
         for (const [idx, byte] of Object.entries(cells)) {
-          const cell = { drawTs, arr, idx: Number(idx) };
+          const cell = { tileX, tileY, idx: Number(idx) };
           this.authored.set(cellKey(cell), { cell, byte });
         }
       }
@@ -125,12 +135,15 @@ class CollisionTool implements EditorTool {
   }
 
   private buildOverrides(): CollisionOverrides {
-    const edits: NonNullable<CollisionOverrides['edits']> = {};
+    const cells: NonNullable<CollisionOverrides['cells']> = {};
     for (const { cell, byte } of this.authored.values()) {
-      const key = `${cell.drawTs}:${cell.arr}`;
-      (edits[key] ??= {})[String(cell.idx)] = byte;
+      const key = `${cell.tileX},${cell.tileY}`;
+      (cells[key] ??= {})[String(cell.idx)] = byte;
     }
-    return { version: 1, edits };
+    const out: CollisionOverrides = { version: 1, cells };
+    // Keep any legacy per-arrangement edits that were already authored.
+    if (Object.keys(this.legacyEdits).length > 0) out.edits = this.legacyEdits;
+    return out;
   }
 
   async save(): Promise<void> {
@@ -147,10 +160,11 @@ class CollisionTool implements EditorTool {
     const y0 = Math.floor(p.y / MINITILE) * MINITILE - Math.floor((this.brush - 1) / 2) * MINITILE;
     for (let dy = 0; dy < base; dy += MINITILE) {
       for (let dx = 0; dx < base; dx += MINITILE) {
-        const cell = getCollisionCellAt(x0 + dx + 1, y0 + dy + 1);
-        if (!cell) continue;
+        const hit = getCellCollisionAt(x0 + dx + 1, y0 + dy + 1);
+        if (!hit) continue;
+        const cell: CellRef = { tileX: hit.tileX, tileY: hit.tileY, idx: hit.idx };
         const key = cellKey(cell);
-        if (seen.has(key)) continue; // same arrangement cell via two map tiles
+        if (seen.has(key)) continue;
         seen.add(key);
         out.push(cell);
       }
@@ -158,8 +172,21 @@ class CollisionTool implements EditorTool {
     return out;
   }
 
+  /** The cell's current effective byte (arrangement + any per-cell override). */
   private currentByte(cell: CellRef): number {
-    return getCollisionRow(cell.drawTs, cell.arr)?.[cell.idx] ?? 0;
+    return getEffectiveRowAt(cell.tileX, cell.tileY)?.[cell.idx] ?? 0;
+  }
+
+  /** The byte the cell reverts to with no per-tile override (arrangement base). */
+  private baseByte(cell: CellRef): number {
+    return getArrangementByteAt(cell.tileX, cell.tileY, cell.idx) ?? 0;
+  }
+
+  /** Apply a target byte to one cell's per-tile override (clearing it when the
+   *  target equals the arrangement base, so no redundant override is stored). */
+  private applyCell(cell: CellRef, byte: number): void {
+    if (byte === this.baseByte(cell)) clearCellCollisionLive(cell.tileX, cell.tileY, cell.idx);
+    else setCellCollisionLive(cell.tileX, cell.tileY, cell.idx, byte);
   }
 
   private paintCells(cells: CellRef[]): void {
@@ -168,22 +195,26 @@ class CollisionTool implements EditorTool {
       let after = before;
       if (this.tool === 'clear') after = 0;
       else if (this.tool === 'stamp') after = this.stampByte;
-      else after = this.strokeSetting ? before | this.strokeBit : before & ~this.strokeBit;
+      // Bit tools OVERWRITE the cell's type: set this bit and clear the other
+      // two (solid / pri-lo / pri-hi are mutually exclusive). Clear mode (a rect
+      // that starts on an already-filled corner) just drops the bit.
+      else after = this.strokeSetting
+        ? (before & ~TYPE_MASK) | this.strokeBit
+        : before & ~this.strokeBit;
       if (after === before) continue;
 
       const key = cellKey(cell);
       const prev = this.strokeChanges.get(key);
       this.strokeChanges.set(key, { cell, before: prev?.before ?? before, after });
-      setCollisionByteLive(cell.drawTs, cell.arr, cell.idx, after);
+      this.applyCell(cell, after);
     }
   }
 
-  /** Track authored state for a cell against its pristine byte. */
+  /** Track authored state for a cell against its arrangement base byte. */
   private syncAuthored(cell: CellRef): void {
     const key = cellKey(cell);
     const now = this.currentByte(cell);
-    const pristine = getPristineCollisionByte(cell.drawTs, cell.arr, cell.idx);
-    if (pristine === null || now === pristine) this.authored.delete(key);
+    if (now === this.baseByte(cell)) this.authored.delete(key);
     else this.authored.set(key, { cell, byte: now });
   }
 
@@ -193,7 +224,7 @@ class CollisionTool implements EditorTool {
     this.strokeChanges = new Map();
     const apply = (dir: 'after' | 'before') => {
       for (const c of changes) {
-        setCollisionByteLive(c.cell.drawTs, c.cell.arr, c.cell.idx, c[dir]);
+        this.applyCell(c.cell, c[dir]);
         this.syncAuthored(c.cell);
       }
       this.shell!.markDirty(DOMAIN);
@@ -211,8 +242,9 @@ class CollisionTool implements EditorTool {
   // --- shell events -------------------------------------------------------------
 
   onMouseDown(p: WorldPoint): boolean {
-    const cell = getCollisionCellAt(p.x, p.y);
-    if (!cell) return false;
+    const hit = getCellCollisionAt(p.x, p.y);
+    if (!hit) return false;
+    const cell: CellRef = { tileX: hit.tileX, tileY: hit.tileY, idx: hit.idx };
     this.setInspect(cell);
 
     if (this.tool === 'eyedrop') {
@@ -225,13 +257,16 @@ class CollisionTool implements EditorTool {
       this.rectStart = { ...p };
       return true;
     }
-    // Bit tools decide set-vs-clear from the first cell under the brush.
+    // Bit tools always PAINT the bit ON (hold + drag to keep painting); use the
+    // Clear tool to remove. (Toggling from the first cell made a stroke that
+    // started on a filled cell silently erase instead of paint.)
     if (this.tool in BIT) {
       this.strokeBit = BIT[this.tool];
-      this.strokeSetting = (this.currentByte(cell) & this.strokeBit) === 0;
+      this.strokeSetting = true;
     }
     this.painting = true;
     this.strokeChanges = new Map();
+    this.lastPaintPoint = { ...p };
     this.paintCells(this.cellsUnderBrush(p));
     return true;
   }
@@ -239,7 +274,17 @@ class CollisionTool implements EditorTool {
   onMouseMove(p: WorldPoint, dragging: boolean): void {
     this.hover = p;
     if (dragging && this.painting) {
-      this.paintCells(this.cellsUnderBrush(p));
+      // Paint every cell along the path since the last sample, so a fast drag
+      // leaves no gaps.
+      const from = this.lastPaintPoint ?? p;
+      const dx = p.x - from.x;
+      const dy = p.y - from.y;
+      const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / MINITILE));
+      for (let s = 1; s <= steps; s++) {
+        const t = s / steps;
+        this.paintCells(this.cellsUnderBrush({ x: from.x + dx * t, y: from.y + dy * t }));
+      }
+      this.lastPaintPoint = { ...p };
     }
   }
 
@@ -247,11 +292,11 @@ class CollisionTool implements EditorTool {
     if (this.rectStart) {
       const a = this.rectStart;
       this.rectStart = null;
-      const first = getCollisionCellAt(a.x, a.y);
+      const first = getCellCollisionAt(a.x, a.y);
       if (first) {
         // Rect uses the SOLID bit semantics of the first corner cell.
         this.strokeBit = BIT.solid;
-        this.strokeSetting = (this.currentByte(first) & BIT.solid) === 0;
+        this.strokeSetting = (first.byte & BIT.solid) === 0;
         this.strokeChanges = new Map();
         const cells: CellRef[] = [];
         const seen = new Set<string>();
@@ -261,8 +306,10 @@ class CollisionTool implements EditorTool {
         const y1 = Math.max(a.y, p.y);
         for (let y = Math.floor(y0 / MINITILE) * MINITILE; y <= y1; y += MINITILE) {
           for (let x = Math.floor(x0 / MINITILE) * MINITILE; x <= x1; x += MINITILE) {
-            const c = getCollisionCellAt(x + 1, y + 1);
-            if (!c || seen.has(cellKey(c))) continue;
+            const hit = getCellCollisionAt(x + 1, y + 1);
+            if (!hit) continue;
+            const c: CellRef = { tileX: hit.tileX, tileY: hit.tileY, idx: hit.idx };
+            if (seen.has(cellKey(c))) continue;
             seen.add(cellKey(c));
             cells.push(c);
           }
@@ -275,6 +322,7 @@ class CollisionTool implements EditorTool {
     }
     if (this.painting) {
       this.painting = false;
+      this.lastPaintPoint = null;
       this.commitStroke(`paint ${this.tool} (${this.strokeChanges.size} cells)`);
     }
   }
@@ -300,11 +348,6 @@ class CollisionTool implements EditorTool {
       this.refreshRoomPreview(this.hover);
       return true;
     }
-    if (key === 'u') {
-      this.highlightUses = !this.highlightUses;
-      this.refreshPanel();
-      return true;
-    }
     return false;
   }
 
@@ -316,17 +359,6 @@ class CollisionTool implements EditorTool {
   private setInspect(cell: CellRef): void {
     if (this.inspect && cellKey(this.inspect) === cellKey(cell)) return;
     this.inspect = cell;
-    // Blast radius: how many map tiles use this arrangement.
-    let uses = 0;
-    for (let ty = 0; ty < MAP_HEIGHT_TILES; ty++) {
-      for (let tx = 0; tx < MAP_WIDTH_TILES; tx++) {
-        const sector = getSectorForTile(tx, ty);
-        if (!sector) continue;
-        if (getDrawTilesetId(sector.tilesetId) !== cell.drawTs) continue;
-        if (getTileAt(tx, ty) === cell.arr) uses++;
-      }
-    }
-    this.inspectUses = uses;
     this.refreshPanel();
   }
 
@@ -355,19 +387,15 @@ class CollisionTool implements EditorTool {
       ctx.fillRect(0, 0, vw, vh);
     }
 
-    // Per-tile pass: tint collision bits. Solid = red full cell; pri-lo =
-    // blue LOWER half; pri-hi = green UPPER half (matching their meaning).
+    // Per-tile pass: tint collision bits, each a FULL cell — solid = red,
+    // pri-lo = blue, pri-hi = pink (a cell with multiple bits blends).
     const t0x = Math.floor(camX / TILE_SIZE);
     const t0y = Math.floor(camY / TILE_SIZE);
     const t1x = Math.ceil((camX + vw) / TILE_SIZE);
     const t1y = Math.ceil((camY + vh) / TILE_SIZE);
     for (let ty = t0y; ty <= t1y; ty++) {
       for (let tx = t0x; tx <= t1x; tx++) {
-        const sector = getSectorForTile(tx, ty);
-        if (!sector) continue;
-        const drawTs = getDrawTilesetId(sector.tilesetId);
-        const arr = getTileAt(tx, ty);
-        const row = getCollisionRow(drawTs, arr);
+        const row = getEffectiveRowAt(tx, ty);
         if (!row) continue;
 
         const baseX = tx * TILE_SIZE - camX;
@@ -378,28 +406,25 @@ class CollisionTool implements EditorTool {
           const cx = baseX + (i % 4) * MINITILE;
           const cy = baseY + (i >> 2) * MINITILE;
           if (b & 0x80) {
-            ctx.fillStyle = 'rgba(255,64,64,0.42)';
+            ctx.fillStyle = 'rgba(255,60,60,0.5)'; // solid → red
             ctx.fillRect(cx, cy, MINITILE, MINITILE);
           }
           if (b & 0x01) {
-            ctx.fillStyle = 'rgba(90,140,255,0.55)';
-            ctx.fillRect(cx, cy + MINITILE / 2, MINITILE, MINITILE / 2);
+            ctx.fillStyle = 'rgba(70,130,255,0.55)'; // pri-lo → blue (full cell)
+            ctx.fillRect(cx, cy, MINITILE, MINITILE);
           }
           if (b & 0x02) {
-            ctx.fillStyle = 'rgba(90,255,140,0.5)';
-            ctx.fillRect(cx, cy, MINITILE, MINITILE / 2);
+            ctx.fillStyle = 'rgba(255,95,200,0.55)'; // pri-hi → pink (full cell)
+            ctx.fillRect(cx, cy, MINITILE, MINITILE);
           }
         }
 
-        // Blast radius: outline every instance of the inspected arrangement.
-        if (
-          this.highlightUses &&
-          this.inspect &&
-          drawTs === this.inspect.drawTs &&
-          arr === this.inspect.arr
-        ) {
+        // Outline the cell last clicked (inspected).
+        if (this.inspect && this.inspect.tileX === tx && this.inspect.tileY === ty) {
+          const ix = (this.inspect.idx % 4) * MINITILE;
+          const iy = (this.inspect.idx >> 2) * MINITILE;
           ctx.strokeStyle = 'rgba(255,230,80,0.9)';
-          ctx.strokeRect(baseX + 0.5, baseY + 0.5, TILE_SIZE - 1, TILE_SIZE - 1);
+          ctx.strokeRect(baseX + ix + 0.5, baseY + iy + 0.5, MINITILE - 1, MINITILE - 1);
         }
       }
     }
@@ -438,7 +463,7 @@ class CollisionTool implements EditorTool {
   private buildPanel(): void {
     this.panel = document.createElement('div');
     this.panel.style.cssText =
-      'position:fixed;top:36px;right:8px;z-index:91;width:240px;background:#101418f2;' +
+      'width:100%;box-sizing:border-box;background:#101418f2;' +
       'color:#cde;font:12px monospace;border:1px solid #e8a33d;border-radius:5px;' +
       'padding:10px;display:flex;flex-direction:column;gap:7px;user-select:none;';
 
@@ -448,9 +473,8 @@ class CollisionTool implements EditorTool {
     this.panel.appendChild(head);
 
     const warn = document.createElement('div');
-    warn.style.cssText = 'color:#ffb38a;font-size:10px;';
-    warn.textContent =
-      'Edits are PER-ARRANGEMENT: one paint changes every map tile using that graphic. Check uses (U) first.';
+    warn.style.cssText = 'color:#9fb8cc;font-size:10px;';
+    warn.textContent = 'Per-tile. S/L/H overwrite the cell type; C clears. Hold to paint.';
     this.panel.appendChild(warn);
 
     const tools = document.createElement('div');
@@ -485,15 +509,14 @@ class CollisionTool implements EditorTool {
     mk('Brush (B)', () => this.onKey('b'));
     mk('Art (M)', () => this.onKey('m'));
     mk('Room@cursor (R)', () => this.onKey('r'));
-    mk('Uses (U)', () => this.onKey('u'));
 
     // Legend
     const legend = document.createElement('div');
     legend.style.cssText = 'font-size:10px;color:#9fb8cc;line-height:1.6;';
     legend.innerHTML =
-      '<span style="background:rgba(255,64,64,.6);padding:0 6px;">&nbsp;</span> solid 0x80 &nbsp;' +
-      '<span style="background:rgba(90,140,255,.7);padding:0 6px;">&nbsp;</span> pri-lo 0x01 &nbsp;' +
-      '<span style="background:rgba(90,255,140,.6);padding:0 6px;">&nbsp;</span> pri-hi 0x02';
+      '<span style="background:rgba(255,60,60,.85);padding:0 6px;">&nbsp;</span> solid 0x80 &nbsp;' +
+      '<span style="background:rgba(70,130,255,.85);padding:0 6px;">&nbsp;</span> pri-lo 0x01 &nbsp;' +
+      '<span style="background:rgba(255,95,200,.85);padding:0 6px;">&nbsp;</span> pri-hi 0x02';
     this.panel.appendChild(legend);
 
     this.inspectorEl = document.createElement('div');
@@ -531,7 +554,7 @@ class CollisionTool implements EditorTool {
       'font:10px monospace;padding:6px;border:1px solid #243;border-radius:3px;white-space:pre-wrap;';
     this.panel.appendChild(this.outputEl);
 
-    document.body.appendChild(this.panel);
+    this.shell!.panelHost.appendChild(this.panel);
     this.refreshPanel();
   }
 
@@ -563,10 +586,9 @@ class CollisionTool implements EditorTool {
     }
     if (this.inspectorEl) {
       const c = this.inspect;
-      const byte = c ? (getCollisionRow(c.drawTs, c.arr)?.[c.idx] ?? 0) : null;
+      const byte = c ? this.currentByte(c) : null;
       this.inspectorEl.textContent = c
-        ? `arr ts${c.drawTs}:${c.arr} cell ${c.idx}  byte 0x${byte!.toString(16).padStart(2, '0')}\n` +
-          `used by ${this.inspectUses} map tiles${this.highlightUses ? ' (highlighted)' : ''}\n` +
+        ? `tile (${c.tileX},${c.tileY}) cell ${c.idx}  byte 0x${byte!.toString(16).padStart(2, '0')}\n` +
           `${this.authored.size} authored cells · brush ${this.brush}x · stamp 0x${this.stampByte
             .toString(16)
             .padStart(2, '0')}`

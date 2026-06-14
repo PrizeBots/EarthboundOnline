@@ -13,8 +13,17 @@ export interface EditorContext {
   player: Player;
   /** Proper jump with sector load + room crop (wraps Game.debugTeleport). */
   teleport: (x: number, y: number) => void;
+  /** Stream tile atlases for the camera's current view (editor free-fly). */
+  streamView: () => void;
   /** Gameplay states in which entering the editor is allowed. */
   canEnter: () => boolean;
+  /**
+   * Get into an editable state from a non-gameplay screen (e.g. character
+   * select): starts the game as the default/selected character (Ness) and
+   * resolves true once `canEnter()` would pass. Lets admins F2 in from any
+   * screen instead of having to pick a character first.
+   */
+  ensurePlaying: () => Promise<boolean>;
 }
 
 export interface WorldPoint {
@@ -32,6 +41,8 @@ export interface EditorCommand {
 /** What the shell offers an active tool. */
 export interface EditorShellApi {
   context: EditorContext;
+  /** The dock's panel area — a tool appends its DOM panel here (not body). */
+  panelHost: HTMLElement;
   /** Push (and immediately execute) an undoable command. */
   run(cmd: EditorCommand): void;
   toast(message: string, isError?: boolean): void;
@@ -50,6 +61,12 @@ export interface EditorTool {
   name: string;
   description: string;
   status: 'ready' | 'wip';
+  /**
+   * Self-contained launcher: a tool that runs as its own full-screen overlay
+   * (e.g. the Cast Sprite Editor) rather than inside the shell. When present,
+   * clicking its hub tile closes the hub and calls this instead of setTool().
+   */
+  launch?(): void;
   activate?(shell: EditorShellApi): void;
   deactivate?(): void;
   /** Per-frame overlay, drawn in screen space after the shell's grids. */

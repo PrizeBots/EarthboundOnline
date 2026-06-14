@@ -18,6 +18,9 @@ const OVERRIDE_ALLOW = new Set([
   'dialogue.json',
   'sprites.json',
   'names.json',
+  'enemy_spawns.json',
+  'places.json',
+  'car_traffic.json',
 ]);
 const SAVE_BODY_LIMIT = 8 * 1024 * 1024; // sprite overrides carry data URLs
 
@@ -128,6 +131,88 @@ function gameServerPlugin() {
   let nextId = 1;
 
   const POSES = ['walk', 'climb', 'attack', 'hurt'];
+  const PLAYER_MAX_HP = 60;
+
+  // Server-authoritative goods registry (mirror of server/index.js). Each
+  // player's inventory is an array of these ids (one entry per carried item,
+  // EarthBound-style slots); effects resolve here so a client can't grant
+  // itself HP — it only asks to "use" a slug it claims to own.
+  const GOODS: Record<string, { name: string; heal?: number }> = {
+    cookie: { name: 'Cookie', heal: 10 },
+  };
+  const STARTING_INVENTORY = ['cookie']; // welcome Cookie so Goods is never empty
+  const inventoryView = (inventory: string[]) =>
+    inventory.filter((id) => GOODS[id]).map((id) => ({ id, name: GOODS[id].name }));
+
+  // Money ($). Server-authoritative: granted on join, the sole authority on the
+  // balance once shops/drops spend it. Mirror in server/index.js.
+  const STARTING_MONEY = 1000;
+
+  // PSI abilities (server-authoritative). `pp` is the cost; `heal` restores HP.
+  // Lifeup α heal amount is a placeholder — set it to the exact EarthBound value
+  // when confirmed. Mirror in server/index.js if that standalone server is used.
+  const PSI: Record<string, { name: string; pp: number; heal?: number }> = {
+    lifeup: { name: 'Lifeup α', pp: 3, heal: 30 },
+  };
+
+  // --- Player progression (server-authoritative; full stat growth) ---
+  // Level-1 baseline mirrors StatusModal's defaults so the client's display
+  // matches before the first server stats arrive. No persistence yet, so every
+  // join starts at level 1 (a save system is a separate TODO).
+  const BASE_STATS: Record<string, number> = {
+    level: 1, hp: PLAYER_MAX_HP, maxHp: PLAYER_MAX_HP, pp: 7, ppMax: 7, exp: 0,
+    offense: 7, defense: 3, speed: 8, guts: 7, vitality: 6, iq: 9, luck: 9,
+  };
+  // Per-level stat gains (tunable). HP/maxHp, offense and defense are wired into
+  // combat today; speed/guts/vitality/iq/luck grow and show on the Status screen
+  // but aren't mechanically hooked up yet.
+  const GROWTH: Record<string, number> = {
+    maxHp: 8, ppMax: 2, offense: 2, defense: 1, speed: 1, guts: 1, vitality: 1, iq: 1, luck: 1,
+  };
+  // EXP to go from `level` to `level+1` (geometric ramp: 30, 45, 67, 101, …).
+  const expCost = (level: number) => Math.floor(30 * Math.pow(1.5, level - 1));
+  // Total EXP needed to REACH `level` from level 1.
+  const expToReach = (level: number) => {
+    let s = 0;
+    for (let i = 1; i < level; i++) s += expCost(i);
+    return s;
+  };
+
+  function newProgression(): Record<string, number> {
+    const p = { ...BASE_STATS };
+    p.expToNext = expCost(1); // EXP remaining to next level (display)
+    return p;
+  }
+
+  function levelUp(p: any) {
+    p.level++;
+    for (const k of Object.keys(GROWTH)) p[k] += GROWTH[k];
+    p.hp = p.maxHp; // a level-up fully heals
+    p.pp = p.ppMax;
+  }
+
+  // StatusModal-shaped payload (field names match PlayerStats: hpMax/ppMax).
+  function statsPayload(p: any) {
+    return {
+      level: p.level, hp: p.hp, hpMax: p.maxHp, pp: p.pp, ppMax: p.ppMax,
+      exp: p.exp, expToNext: p.expToNext,
+      offense: p.offense, defense: p.defense, speed: p.speed, guts: p.guts,
+      vitality: p.vitality, iq: p.iq, luck: p.luck,
+    };
+  }
+
+  // Award a kill's EXP, apply any level-ups, then push the new stats to that
+  // player's client (server is authoritative). A level-up heals, so re-broadcast HP.
+  function awardXp(playerId: string, xp: number) {
+    const p = players.get(playerId);
+    if (!p || xp <= 0) return;
+    p.exp += xp;
+    let leveled = false;
+    while (p.exp >= expToReach(p.level + 1)) { levelUp(p); leveled = true; }
+    p.expToNext = expToReach(p.level + 1) - p.exp;
+    broadcastAll({ type: 'player_stats', id: playerId, stats: statsPayload(p), leveled, gained: xp });
+    if (leveled) broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: 0 });
+  }
 
   // Spawn point: editor override wins over the src/spawn.json default.
   function readSpawn() {
@@ -151,6 +236,30 @@ function gameServerPlugin() {
     }
   }
 
+  // Apply an enemy's landed hit to a player (server-authoritative HP). Broadcast
+  // the new HP so every client updates that player's bar; the victim's own
+  // client plays the hurt pose. At 0 HP the player respawns at the spawn point.
+  function damagePlayer(playerId: string, dmg: number) {
+    const p = players.get(playerId);
+    if (!p || p.hp <= 0) return;
+    // Defense softens incoming hits (always at least 1 so leveling never makes
+    // a player untouchable).
+    const eff = Math.max(1, dmg - Math.floor((p.defense || 0) / 2));
+    p.hp = Math.max(0, p.hp - eff);
+    broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: eff });
+    if (p.hp <= 0) {
+      p.hp = p.maxHp;
+      p.x = SPAWN.x;
+      p.y = SPAWN.y;
+      p.direction = SPAWN.dir || 0;
+      p.frame = 0;
+      p.pose = 'walk';
+      npcSim.noteRespawn(playerId); // exempt this teleport from enemy door-warp follow
+      broadcastAll({ type: 'player_respawn', id: playerId, x: p.x, y: p.y, dir: p.direction });
+      broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: 0 });
+    }
+  }
+
   // Server-authoritative NPC simulation: same world for every client.
   const npcSim = createNpcSim(path.resolve(__dirname, 'public', 'assets'));
 
@@ -160,8 +269,10 @@ function gameServerPlugin() {
       const wss = new WebSocketServer({ noServer: true });
 
       npcSim.start(
-        () => [...players.values()].map((p: any) => ({ x: p.x, y: p.y })),
-        (data: any) => broadcastAll(data)
+        () => [...players.values()].map((p: any) => ({ id: p.id, x: p.x, y: p.y, level: p.level, hp: p.hp })),
+        (data: any) => broadcastAll(data),
+        (playerId: string, dmg: number) => damagePlayer(playerId, dmg),
+        (playerId: string, xp: number) => awardXp(playerId, xp)
       );
 
       server.httpServer.on('upgrade', (req: any, socket: any, head: any) => {
@@ -197,6 +308,14 @@ function gameServerPlugin() {
                 direction: SPAWN.dir || 0, frame: 0,
                 pose: 'walk',
                 itemId: null, // held item, set by 'equip' messages
+                inventory: [...STARTING_INVENTORY], // Goods slots, mutated by 'use_item'
+                money: STARTING_MONEY, // starting cash, shown in the menu
+                // PK (player-kill) flag — see npcSim canHurt. All players start
+                // non-PK; a per-player toggle is backlogged (TODO). A PK player
+                // can hurt anyone; anyone can hurt a PK player.
+                pk: false,
+                // Full server-authoritative progression (level/hp/exp/stats).
+                ...newProgression(),
               };
               players.set(playerId, { ...playerData, _ws: ws });
 
@@ -213,6 +332,8 @@ function gameServerPlugin() {
                 players: otherPlayers,
                 npcs: npcSim.snapshot(),
                 npcHps: npcSim.hpSnapshot(),
+                inventory: inventoryView(playerData.inventory), // own Goods
+                money: playerData.money,                        // own balance
               }));
 
               const { _ws, ...publicData } = players.get(playerId);
@@ -248,8 +369,8 @@ function gameServerPlugin() {
               const entry = players.get(playerId);
               if (!entry) break;
               // Server-authoritative: resolve from the tracked position so reach
-              // can't be spoofed.
-              npcSim.handleAttack(entry.x, entry.y, msg.dir | 0, playerId);
+              // can't be spoofed. Damage scales with the player's Offense stat.
+              npcSim.handleAttack(entry.x, entry.y, msg.dir | 0, playerId, entry.offense, entry.pk);
               break;
             }
             case 'equip': {
@@ -266,6 +387,55 @@ function gameServerPlugin() {
                   p._ws.send(equipMsg);
                 }
               }
+              break;
+            }
+            case 'use_item': {
+              const entry = players.get(playerId);
+              if (!entry || entry.hp <= 0) break;
+              const itemId = typeof msg.itemId === 'string' ? msg.itemId : null;
+              const def = itemId ? GOODS[itemId] : null;
+              const slot = entry.inventory.indexOf(itemId);
+              // Must actually own a slot of a known item to consume it.
+              if (!def || slot === -1) break;
+
+              // Cookie (and any future `heal` good) restores HP up to the cap;
+              // broadcast so every client redraws the bar, tagging `heal` so the
+              // owner's client pops a green number.
+              if (def.heal) {
+                const healed = Math.min(entry.maxHp, entry.hp + def.heal) - entry.hp;
+                entry.hp += healed;
+                broadcastAll({
+                  type: 'player_hp', id: playerId,
+                  hp: entry.hp, maxHp: entry.maxHp, dmg: 0, heal: healed,
+                });
+              }
+
+              entry.inventory.splice(slot, 1);
+              entry._ws.send(JSON.stringify({
+                type: 'inventory', items: inventoryView(entry.inventory),
+              }));
+              break;
+            }
+            case 'use_psi': {
+              const entry = players.get(playerId);
+              if (!entry || entry.hp <= 0) break;
+              const psiId = typeof msg.psiId === 'string' ? msg.psiId : null;
+              const def = psiId ? PSI[psiId] : null;
+              if (!def || entry.pp < def.pp) break; // unknown ability or not enough PP
+              entry.pp -= def.pp;
+              if (def.heal) {
+                const healed = Math.min(entry.maxHp, entry.hp + def.heal) - entry.hp;
+                entry.hp += healed;
+                broadcastAll({
+                  type: 'player_hp', id: playerId,
+                  hp: entry.hp, maxHp: entry.maxHp, dmg: 0, heal: healed,
+                });
+              }
+              // PP changed — push updated stats so the caster's PSI bar redraws.
+              broadcastAll({
+                type: 'player_stats', id: playerId,
+                stats: statsPayload(entry), leveled: false, gained: 0,
+              });
               break;
             }
             case 'chat': {

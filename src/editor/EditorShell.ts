@@ -10,10 +10,13 @@ import {
 import { RoomBounds } from '../engine/Camera';
 import { getSectorForTile } from '../engine/MapManager';
 import { getCollisionByteAt } from '../engine/Collision';
+import { isMusicMuted, setMusicMuted } from '../engine/MusicManager';
+import { setMuteButtonHidden } from '../engine/MuteButton';
+import { isSpriteEditorOpen, closeSpriteEditor } from '../engine/SpriteEditor';
 import { getKeySet } from '../engine/Input';
 import { CommandStack } from './CommandStack';
-import { LocationNav } from './LocationNav';
-import { findEditorTool } from './registry';
+import { LocationNav, PlaceAnchor } from './LocationNav';
+import { findEditorTool, getEditorTools, getSaveHandler } from './registry';
 import { EditorContext, EditorShellApi, EditorTool, WorldPoint } from './types';
 
 // Editor Shell (EDITOR_TOOLS.md §0): the dev-only mode every tool runs in.
@@ -41,7 +44,14 @@ export class EditorShell {
 
   private activeTool: EditorTool | null = null;
   private savedRoomBounds: RoomBounds | null = null;
+  // Mute state to restore on exit — the editor force-mutes the game while active.
+  private mutedBeforeEditor = false;
   private nav: LocationNav | null = null;
+
+  // Draggable quick-link anchor published by the Places nav (a selected
+  // building/room). Drawn on the map; drag it to move the link's coords.
+  private placeAnchor: PlaceAnchor | null = null;
+  private draggingAnchor = false;
 
   // Overlay toggles
   private showTileGrid = true;
@@ -63,15 +73,19 @@ export class EditorShell {
   private toastEl: HTMLDivElement | null = null;
   private toastTimer = 0;
 
+  // Right-side tool dock (persistent tab menu + the active tool's panel host).
+  // Replaces the old modal Admin Hub: tools live in a column you can flip
+  // between without ever leaving the editor.
+  private dock: HTMLDivElement | null = null;
+  private panelHost: HTMLDivElement | null = null;
+  private toolHint: HTMLDivElement | null = null;
+  private readonly toolTabs = new Map<string, HTMLButtonElement>();
+  private saveAllBtn: HTMLButtonElement | null = null;
+
   // FPS
   private frames = 0;
   private fpsStamp = 0;
   fps = 0;
-
-  /** Set by index.ts — opens the Admin Hub overlay. */
-  onHubRequest: () => void = () => {};
-  /** Set by index.ts — true while the hub overlay is open (shell yields keys). */
-  isHubOpen: () => boolean = () => false;
 
   constructor(readonly context: EditorContext) {}
 
@@ -93,6 +107,12 @@ export class EditorShell {
     getKeySet().clear(); // a held walk key must not leak into gameplay state
     this.heldKeys.clear();
 
+    // Silence the game while editing and hide the mute button (the editor owns
+    // audio here). The player's own mute preference is restored on exit.
+    this.mutedBeforeEditor = isMusicMuted();
+    setMusicMuted(true);
+    setMuteButtonHidden(true);
+
     window.addEventListener('keydown', this.onKeyDown, true);
     window.addEventListener('keyup', this.onKeyUp, true);
     this.context.canvas.addEventListener('mousedown', this.onMouseDown);
@@ -112,11 +132,27 @@ export class EditorShell {
           Math.floor(this.context.player.y / TILE_SIZE)
         );
         return t?.town ?? 'other';
+      },
+      {
+        viewCenter: () => {
+          const cam = this.context.camera;
+          return {
+            x: Math.round(cam.x + cam.viewW / 2),
+            y: Math.round(cam.y + cam.viewH / 2),
+          };
+        },
+        select: (a) => {
+          this.placeAnchor = a;
+          this.draggingAnchor = false;
+        },
+        toast: (m, e) => this.toast(m, e),
       }
     );
     void this.nav.mount();
 
-    this.toast('Editor mode — F2 exits, Esc opens the hub, wheel zooms');
+    this.buildDock();
+
+    this.toast('Editor mode — pick a tool on the right · F2 exits · wheel zooms');
   }
 
   /**
@@ -136,6 +172,10 @@ export class EditorShell {
     if (!this.active) return;
     this.active = false;
 
+    // Restore the player's pre-editor mute preference and bring the button back.
+    setMusicMuted(this.mutedBeforeEditor);
+    setMuteButtonHidden(false);
+
     this.setTool(null);
     this.context.camera.zoom = 1; // gameplay always renders at native scale
     this.context.camera.roomBounds = this.savedRoomBounds;
@@ -153,6 +193,12 @@ export class EditorShell {
 
     this.nav?.destroy();
     this.nav = null;
+    this.dock?.remove();
+    this.dock = null;
+    this.panelHost = null;
+    this.toolHint = null;
+    this.saveAllBtn = null;
+    this.toolTabs.clear();
     this.bar?.remove();
     this.bar = null;
     this.toastEl?.remove();
@@ -165,8 +211,29 @@ export class EditorShell {
     if (this.activeTool === tool) return;
     this.activeTool?.deactivate?.();
     this.activeTool = tool;
-    tool?.activate?.(this.api());
+    tool?.activate?.(this.api()); // tools mount their panel into the dock's panelHost
+    if (this.toolHint) this.toolHint.style.display = tool ? 'none' : '';
+    this.syncToolTabs();
     if (tool) this.toast(`Tool: ${tool.name}`);
+  }
+
+  /** Tab/launch click in the dock: WIP tools warn, self-contained tools launch,
+   *  shell tools toggle active (click the active tab again to deselect). */
+  private selectTool(tool: EditorTool): void {
+    if (tool.status !== 'ready') {
+      this.toast(`${tool.name} is not built yet (see EDITOR_TOOLS.md)`, true);
+      return;
+    }
+    if (tool.launch) {
+      // Self-contained overlay (e.g. Sprite Editor). Clicking its tab while it's
+      // already open toggles it closed; otherwise launch it.
+      if (isSpriteEditorOpen()) closeSpriteEditor();
+      else tool.launch();
+      return;
+    }
+    // Switching to a normal shell tool closes the Sprite Editor first.
+    if (isSpriteEditorOpen()) closeSpriteEditor();
+    this.setTool(this.activeTool === tool ? null : tool);
   }
 
   getTool(): EditorTool | null {
@@ -176,6 +243,7 @@ export class EditorShell {
   api(): EditorShellApi {
     return {
       context: this.context,
+      panelHost: this.panelHost!, // the dock body — tools append their panel here
       run: (cmd) => this.commands.run(cmd),
       toast: (msg, isError) => this.toast(msg, isError),
       markDirty: (d) => this.markDirty(d),
@@ -205,9 +273,153 @@ export class EditorShell {
   }
 
   private updateDirtyDot(): void {
-    if (!this.dirtyDot) return;
     const n = this.dirtyDomains.size;
-    this.dirtyDot.textContent = n > 0 ? `● unsaved: ${[...this.dirtyDomains].join(', ')}` : '';
+    if (this.dirtyDot) {
+      this.dirtyDot.textContent = n > 0 ? `● unsaved: ${[...this.dirtyDomains].join(', ')}` : '';
+    }
+    if (this.saveAllBtn) this.saveAllBtn.textContent = `💾 Save all${n ? ` (${n})` : ''}`;
+  }
+
+  // --- right tool dock -------------------------------------------------------
+
+  private buildDock(): void {
+    this.dock = document.createElement('div');
+    this.dock.style.cssText =
+      'position:fixed;top:31px;right:0;bottom:0;width:256px;z-index:90;display:flex;' +
+      'flex-direction:column;background:#101418f2;color:#cde;font:12px monospace;' +
+      'border-left:2px solid #e8a33d;user-select:none;';
+    // Typing into a tool field must not pan the camera / fire tool hotkeys.
+    this.dock.addEventListener('keydown', (e) => e.stopPropagation());
+
+    const head = document.createElement('div');
+    head.textContent = '⚒ TOOLS';
+    head.title = 'dev only — never ships';
+    head.style.cssText = 'color:#e8a33d;font-weight:bold;letter-spacing:1px;padding:6px 8px 4px;';
+    this.dock.appendChild(head);
+
+    // One tab per registered tool.
+    const tabs = document.createElement('div');
+    tabs.style.cssText =
+      'display:flex;flex-direction:column;gap:3px;padding:0 6px 6px;border-bottom:1px solid #243;';
+    for (const tool of getEditorTools()) {
+      const b = document.createElement('button');
+      b.textContent = tool.name + (tool.status === 'ready' ? '' : '  (WIP)');
+      b.title = tool.description;
+      b.style.cssText = this.tabStyle(false, tool.status === 'ready');
+      b.onclick = () => this.selectTool(tool);
+      this.toolTabs.set(tool.id, b);
+      tabs.appendChild(b);
+    }
+    this.dock.appendChild(tabs);
+
+    // The active tool mounts its panel here; scrolls if it's tall.
+    this.panelHost = document.createElement('div');
+    this.panelHost.style.cssText = 'flex:1;min-height:0;overflow:auto;padding:8px 6px;';
+    this.toolHint = document.createElement('div');
+    this.toolHint.textContent = 'Pick a tool above to start editing.';
+    this.toolHint.style.cssText = 'color:#667;font-size:11px;';
+    this.panelHost.appendChild(this.toolHint);
+    this.dock.appendChild(this.panelHost);
+
+    this.dock.appendChild(this.buildDockFooter());
+    document.body.appendChild(this.dock);
+    this.syncToolTabs();
+    this.updateDirtyDot();
+  }
+
+  private tabStyle(active: boolean, ready: boolean): string {
+    const base =
+      'font:11px monospace;padding:4px 8px;text-align:left;border-radius:3px;cursor:pointer;';
+    if (!ready) return base + 'background:#11161c;color:#8899aa;border:1px solid #2a3340;opacity:.7;';
+    return active
+      ? base + 'background:#3d2f14;color:#e8a33d;border:1px solid #e8a33d;'
+      : base + 'background:#1d2530;color:#cde;border:1px solid #3a4a5a;';
+  }
+
+  private syncToolTabs(): void {
+    for (const tool of getEditorTools()) {
+      const b = this.toolTabs.get(tool.id);
+      if (b) b.style.cssText = this.tabStyle(this.activeTool === tool, tool.status === 'ready');
+    }
+  }
+
+  /** Footer: jump-to-px + Save all + Back to game. */
+  private buildDockFooter(): HTMLDivElement {
+    const footer = document.createElement('div');
+    footer.style.cssText =
+      'display:flex;flex-direction:column;gap:6px;padding:6px;border-top:1px solid #243;';
+
+    const jump = document.createElement('div');
+    jump.style.cssText = 'display:flex;gap:4px;align-items:center;';
+    const mkIn = (ph: string) => {
+      const i = document.createElement('input');
+      i.placeholder = ph;
+      i.style.cssText =
+        'width:50px;font:11px monospace;background:#0c1014;color:#cde;' +
+        'border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
+      return i;
+    };
+    const xIn = mkIn('x');
+    const yIn = mkIn('y');
+    const go = this.mkDockBtn('Go', () => {
+      const x = parseInt(xIn.value, 10);
+      const y = parseInt(yIn.value, 10);
+      if (Number.isNaN(x) || Number.isNaN(y)) {
+        this.toast('Enter numeric x and y', true);
+        return;
+      }
+      this.goTo(x, y);
+    });
+    const jLabel = document.createElement('span');
+    jLabel.textContent = 'jump px';
+    jLabel.style.cssText = 'color:#9fb8cc;font-size:10px;';
+    jump.append(jLabel, xIn, yIn, go);
+    footer.appendChild(jump);
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:6px;';
+    this.saveAllBtn = this.mkDockBtn('💾 Save all', () => void this.saveAll(), true);
+    this.saveAllBtn.style.flex = '1';
+    btnRow.appendChild(this.saveAllBtn);
+    const back = this.mkDockBtn('Back to game', () => this.exit());
+    btnRow.appendChild(back);
+    footer.appendChild(btnRow);
+    return footer;
+  }
+
+  private mkDockBtn(label: string, onClick: () => void, accent = false): HTMLButtonElement {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.style.cssText =
+      'font:11px monospace;padding:4px 8px;cursor:pointer;border-radius:3px;' +
+      (accent
+        ? 'background:#1f3a26;color:#9f9;border:1px solid #4a6;'
+        : 'background:#1d2530;color:#cde;border:1px solid #3a4a5a;');
+    b.onclick = onClick;
+    return b;
+  }
+
+  /** Run every dirty domain's registered save handler (moved off the old hub). */
+  private async saveAll(): Promise<void> {
+    if (this.dirtyDomains.size === 0) {
+      this.toast('Nothing to save');
+      return;
+    }
+    for (const domain of [...this.dirtyDomains]) {
+      const save = getSaveHandler(domain);
+      if (!save) {
+        this.toast(`No save handler for '${domain}'`, true);
+        continue;
+      }
+      try {
+        await save();
+        this.clearDirty(domain);
+        this.toast(`Saved ${domain}`);
+      } catch (err) {
+        this.toast(String(err), true);
+        return;
+      }
+    }
   }
 
   private onBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -228,6 +440,11 @@ export class EditorShell {
     if (this.heldKeys.has('w') || this.heldKeys.has('arrowup')) dy -= speed;
     if (this.heldKeys.has('s') || this.heldKeys.has('arrowdown')) dy += speed;
     this.clampCamera(cam.x + dx, cam.y + dy);
+
+    // Stream atlases for whatever the free camera now shows — gameplay only
+    // loads around the (frozen) player, so panned/zoomed-out areas would
+    // otherwise render black with doors/NPCs floating on them.
+    this.context.streamView();
 
     const now = performance.now();
     this.frames++;
@@ -290,6 +507,29 @@ export class EditorShell {
     ctx.stroke();
 
     this.activeTool?.drawOverlay?.(ctx, cam);
+
+    // Selected quick-link anchor (from the Places nav): a pink pin you can drag.
+    if (this.placeAnchor) {
+      const ax = Math.round(this.placeAnchor.x) - camX;
+      const ay = Math.round(this.placeAnchor.y) - camY;
+      ctx.strokeStyle = this.draggingAnchor ? '#ffd23e' : '#ff3ea5';
+      ctx.fillStyle = this.draggingAnchor ? 'rgba(255,210,62,0.9)' : 'rgba(255,62,165,0.85)';
+      ctx.lineWidth = lw * 2;
+      ctx.beginPath();
+      ctx.arc(ax, ay, 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath(); // center diamond
+      ctx.moveTo(ax, ay - 4);
+      ctx.lineTo(ax + 4, ay);
+      ctx.lineTo(ax, ay + 4);
+      ctx.lineTo(ax - 4, ay);
+      ctx.closePath();
+      ctx.fill();
+      ctx.font = `${Math.round(11 / cam.zoom)}px monospace`;
+      ctx.fillStyle = '#fff';
+      ctx.fillText(this.placeAnchor.label, ax + 9, ay - 5);
+    }
+
     ctx.restore();
   }
 
@@ -315,7 +555,9 @@ export class EditorShell {
   // --- input ----------------------------------------------------------------
 
   private onKeyDown = (e: KeyboardEvent) => {
-    if (this.isHubOpen()) return; // hub overlay owns the keyboard
+    // The Sprite Editor (docked left) owns the keyboard while open — bail
+    // BEFORE stopPropagation so its own listeners still receive the event.
+    if (isSpriteEditorOpen()) return;
     // Typing into a panel input must not pan the camera / trigger tools.
     const focused = document.activeElement?.tagName;
     if (focused === 'INPUT' || focused === 'SELECT' || focused === 'TEXTAREA') return;
@@ -327,10 +569,11 @@ export class EditorShell {
       this.exit();
       return;
     }
-    // The active tool gets Escape first (e.g. closing its own overlay).
+    // The active tool gets Escape first (e.g. closing its own overlay); otherwise
+    // Esc deselects the current tool (the dock stays — no modal to close).
     if (k === 'escape') {
       if (this.activeTool?.onKey?.('escape')) return;
-      this.onHubRequest();
+      this.setTool(null);
       return;
     }
     if ((e.ctrlKey || e.metaKey) && k === 'z') {
@@ -407,6 +650,16 @@ export class EditorShell {
   private onMouseDown = (e: MouseEvent) => {
     if (e.button !== 0) return;
     const p = this.toWorld(e.clientX, e.clientY);
+    // Grabbing the selected place anchor wins over panning / the active tool.
+    if (this.placeAnchor) {
+      const grab = 10 / this.context.camera.zoom; // ~10 device px
+      if (Math.hypot(p.x - this.placeAnchor.x, p.y - this.placeAnchor.y) <= grab) {
+        this.draggingAnchor = true;
+        this.lastClientX = e.clientX;
+        this.lastClientY = e.clientY;
+        return;
+      }
+    }
     if (this.activeTool?.onMouseDown?.(p)) {
       this.toolDragging = true;
     } else {
@@ -418,6 +671,13 @@ export class EditorShell {
 
   private onMouseMove = (e: MouseEvent) => {
     this.hover = this.toWorld(e.clientX, e.clientY);
+    if (this.draggingAnchor && this.placeAnchor) {
+      this.placeAnchor.x = Math.round(this.hover.x);
+      this.placeAnchor.y = Math.round(this.hover.y);
+      this.placeAnchor.onMove(this.placeAnchor.x, this.placeAnchor.y);
+      this.updateReadout();
+      return;
+    }
     if (this.panning) {
       const rect = this.context.canvas.getBoundingClientRect();
       const cam = this.context.camera;
@@ -434,6 +694,11 @@ export class EditorShell {
   };
 
   private onMouseUp = (e: MouseEvent) => {
+    if (this.draggingAnchor) {
+      this.draggingAnchor = false;
+      this.placeAnchor?.onCommit();
+      return;
+    }
     if (this.toolDragging) {
       this.activeTool?.onMouseUp?.(this.toWorld(e.clientX, e.clientY));
     }
@@ -467,8 +732,6 @@ export class EditorShell {
       this.bar!.appendChild(b);
       return b;
     };
-
-    mkBtn('Hub (Esc)', () => this.onHubRequest(), true);
 
     for (const [label, which] of [
       ['1 Tile', 'tile'],

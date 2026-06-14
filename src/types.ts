@@ -71,9 +71,11 @@ export interface RemotePlayer {
   pose?: Pose;
   /** Held item id (see Items.ts), or null for empty hands. */
   itemId?: string | null;
-  // Health is not synced yet — combat will add it. Missing = full bar.
+  // Synced by the server's player_hp broadcasts (enemy combat). Missing = full bar.
   hp?: number;
   maxHp?: number;
+  /** Entity level (no flee AI yet — tracked for a future leveling system). */
+  level?: number;
 }
 
 export enum Direction {

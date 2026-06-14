@@ -127,9 +127,20 @@ sector load + room crop — use it from the console or verification scripts.
   (N/NE/NW) puts the item in the far hand, under the body sprite. Attack pose
   raises (frame 0) then swings (frame 1) the item. In-game keys: F = attack,
   H = hurt (debug hook until combat deals damage), G = cycle held item
-  (placeholder until an inventory exists). Pose rides on the move message;
-  the held item syncs via the `equip` message and persists on the server
-  player record so late joiners see it.
+  (held-item art is separate from the Goods inventory below). Pose rides on
+  the move message; the held item syncs via the `equip` message and persists
+  on the server player record so late joiners see it.
+- **Inventory.ts + MenuManager Goods** — the server-authoritative Goods
+  inventory. The server grants a starting Cookie on join and is the sole
+  authority on contents and effects; `Inventory.ts` just mirrors the latest
+  list (welcome snapshot + `inventory` deltas) so the command window's **Goods**
+  command can render it. Selecting an item sends `use_item`; the Cookie heals
+  10 HP (capped at max), and the server replies with the trimmed list and a
+  `player_hp` carrying `heal` (the owner pops a green heal number).
+- **Wallet.ts + money window** — the server-authoritative money ($). Every
+  player joins with $1000; the balance ships in `welcome` (and future `money`
+  deltas once shops/drops exist). `Wallet.ts` mirrors it so MenuManager can
+  draw a small EB cash window in the top-right whenever the menu is open.
 
 ## Editor tools (dev only — see EDITOR_TOOLS.md)
 
@@ -204,7 +215,11 @@ wander AI (mirrors Collision.ts math, and stops a wander leg that would overlap
 a player so collision is mutual) so all clients see identical NPC state. Wire:
 `move` carries `pose` (whitelisted to walk/climb/attack/hurt); `equip` sets the
 player's held item id (string ≤ 24 chars, stored on the player record so late
-joiners see it; clients ignore unknown ids); `attack` requests a melee swing,
+joiners see it; clients ignore unknown ids); `use_item` consumes a Goods slot
+the player owns (validated against the server-side `GOODS` registry) and applies
+its effect (Cookie → +10 HP, capped), replying with an `inventory` list to the
+owner and a `heal`-tagged `player_hp` to everyone; players also carry `money`
+(start $1000), shipped in `welcome`; `attack` requests a melee swing,
 resolved server-side from the player's *tracked* position (not client coords)
 against enemy hurtboxes. `npc_update: [[id, x, y, dir, frame], ...]` carries
 positions and `npc_hp: [[id, hp, maxHp], ...]` carries enemy HP (hp ≤ 0 =
@@ -230,9 +245,86 @@ deactivate then re-activate later; ROM-placed enemies instead revive at home
 after a delay. HP, damage, death, and respawn are all server-authoritative —
 the client only sends `attack` and renders the broadcast `npc_hp`. Hurt/hit
 box geometry is mirrored in `npcSim.handleAttack` (authoritative) and
-`Renderer` (the **B**-key debug overlay). Friendly fire is impossible — only
-enemies are damageable; health bars hide at full HP, so a damaged shark shows
-its bar while the local player always sees its own.
+`Renderer` (the **B**-key debug overlay). Enemies AND townsfolk are damageable
+(see NPC self-defense below); health bars hide at full HP, so a damaged shark or
+hurt townsperson shows its bar while the local player always sees its own.
+
+**NPC self-defense.** Every `person` carries HP (`NPC_HP`, matching the client's
+Entity default so full-HP folk need no sync) and defends itself: it HOLDS GROUND
+— never chases — and on **defend-on-sight** (no first hit needed) faces and
+swings at the nearest living enemy within `NPC_DETECT_RANGE`, dealing `NPC_DAMAGE`
+on a cooldown. A downed townsperson hides (hp 0, like a dead enemy — the client's
+`NPC.dead` getter now covers persons) and `reviveNpcs` revives it at its home
+spot after `NPC_RESPAWN_MS` (backlog: a hospital / per-entity respawn point and
+personality flags in the Entity Manager). Enemies target the nearest living
+**player** within `DETECT_RANGE`, and **only if none is in range** fall back to
+the nearest townsperson — players always take targeting priority. **Retaliation:**
+when an NPC hits an enemy it stamps itself as that enemy's `aggressor` for
+`ENEMY_AGGRO_MEMORY_MS`; with no player in range the enemy turns on its attacker
+first (over a closer bystander). `applyDamage` is the one death path shared by
+player swings, enemy swings, and NPC swings (it awards EXP only on player-dealt
+enemy kills); all damage is still gated by `canHurt`. `hpSnapshot` ships
+damaged/downed persons too so late joiners see their bars.
+
+**Pursuit into buildings & regroup.** Each enemy runs a small `mode` machine:
+`patrol` (wander) → `chase` (has a target) → `return` (lost it). Player movement
+is client-reported (`index.js`/`vite.config.ts` just record `msg.x/y`) and the
+client warps through a door by setting its own coords, so a door warp reaches the
+sim as a **one-tick position jump** (`> WARP_DELTA`). The tick loop diffs each
+player's position against `prevPlayerPos` to spot those jumps; an enemy whose
+chased `targetId` jumped while it's within `WARP_FOLLOW_RANGE` of the doorway
+**follows through** — it's dropped beside where the player landed (`findFreeNear`)
+and the door is pushed onto its `warpStack`. While chasing, the home leash is
+widened (`PURSUIT_LEASH_MULT × wanderRadius`) and dropped entirely once inside a
+building (home is across the map). A respawn-teleport also jumps the (full-HP)
+player to spawn, indistinguishable from a door warp, so the host calls
+`npcSim.noteRespawn(id)` to exempt that one jump. On losing the target the enemy
+switches to `return`: it retraces its `warpStack` (warping back out at each
+recorded door) then walks to its spawn point to regroup; a wedged retrace gives
+up after `RETURN_GIVEUP_MS` and snaps home. Returning enemies keep ticking even
+with no player nearby (the off-station branch in the tick loop) so they don't
+freeze out of position. Pool/static respawns reset `mode/targetId/warpStack`.
+
+**Pose animation.** EB has no overworld combat art, so `SpriteManager`
+(`loadSpriteGroup`) gives EVERY group a 13-row pose sheet — the ROM walk rows
+plus attack/hurt bands generated by `PoseGen` (wind-up→swing, recoil→settle) —
+so any NPC/enemy/player can play every pose. The sim drives it: setting an
+`attack`/`hurt` pose stamps `poseStart`, and the tick loop steps the two
+generated frames (f0 for the first half, f1 for the second) and holds the actor
+still while a pose plays (movement would overwrite the frame). All of this lives
+in `npcSim` (shared by both servers).
+
+**PK (player-kill) model.** Every combatant carries a `pk` flag, and one helper
+— `npcSim.canHurt(attacker, target)` — is the single source of truth for who
+can damage whom. Enemies are always `pk:true`, townsfolk NPCs `pk:false`,
+players `pk:false` for now (a per-player toggle is backlogged). Rules: enemies
+hurt every non-enemy but never each other; PK players hurt everything including
+other PKers and enemies; non-PK players and NPCs hurt only PKers, so two
+non-PKers can't friendly-fire. `handleAttack` takes the attacker's `pk` (the
+host passes `player.pk`) and gates each hit through `canHurt`. Players live on
+the host (`vite.config.ts` / `server/index.js`), not in npcSim, so the host
+builds the attacker shape from its player record. Live consequences today:
+players hit enemies, enemies hit players and townsfolk, and townsfolk hit
+enemies back (NPC self-defense above). Player-vs-player melee resolution still
+isn't wired (no PK player can yet land a swing on another), but the flag and
+rule cover it.
+
+## Traffic (cars)
+
+Car is a fourth NPC kind. `car_traffic.json` (OUR content — committed default in
+`public/assets/map/`, editor override in `public/overrides/`) lists vehicles,
+each with a sprite group, speed, loop flag, and a hand-authored **waypoint
+route**. Client (`NPCManager`) and server (`npcSim`) build the same car **pool**
+appended *after* the enemy pool (one slot per active vehicle — `enabled` with
+≥2 waypoints — in file order) so wire ids stay aligned. The server drives each
+car along its route (`tickCar`/`dir8`), facing its travel direction, and
+broadcasts position over the existing `npc_update` channel; cars carry no HP and
+aren't attackable. Cars are solid to **everything**: a car waits in place when a
+player or any actor overlaps its body box (`carBlocked`), `hitsActor` treats a
+car as a full-rect obstacle for townsfolk/enemies, and `blockedByNPC` makes cars
+solid for the local player. Routes are authored in the **Traffic Editor**
+(`src/editor/tools/TrafficEditorTool.ts`). No road data exists in the ROM, so
+routes are entirely hand-placed on the streets.
 
 ## NPC system
 

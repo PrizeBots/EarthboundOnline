@@ -14,7 +14,7 @@ import {
 } from './Input';
 import { loadMapData, getSector, getDrawTilesetId } from './MapManager';
 import { loadDoors, getDoorAt, DoorData } from './DoorManager';
-import { loadNPCs, getNearbyNPCs, applyNpcUpdates, applyNpcHp, getNpcDialogue } from './NPCManager';
+import { loadNPCs, getNearbyNPCs, applyNpcUpdates, applyNpcHp, getNpcDialogue, interpolateNpcs } from './NPCManager';
 import { NPC } from './NPC';
 import { loadAtlas } from './TilesetManager';
 import {
@@ -30,7 +30,8 @@ import {
   CUSTOM_GROUP_BASE,
 } from './SpriteManager';
 import { connect, sendPosition, sendEquip, sendAttack } from './Network';
-import { loadNameOverrides } from './SpriteNames';
+import { loadNameOverrides, getSpriteName } from './SpriteNames';
+import { setStatus, getStatus } from './StatusModal';
 import {
   pushRemoteSnapshot,
   dropRemoteBuffer,
@@ -45,7 +46,6 @@ import {
   handleCharSelectInput,
   getSelectedSpriteGroupId,
 } from './CharacterSelect';
-import { openSpriteEditor, isSpriteEditorOpen } from './SpriteEditor';
 import { loadFont }                             from './TextRenderer';
 import { loadWindowStyle }                      from './WindowRenderer';
 import { initMenu, updateMenu, isMenuOpen, renderMenu } from './MenuManager';
@@ -65,6 +65,9 @@ import {
   addRemoteBubble,
   removeBubble,
 } from './ChatManager';
+import { updateEmitters, renderEmitters, spawnDamageNumber, spawnHealNumber, spawnXpNumber, spawnLevelUp } from './Emitter';
+import { setGoods } from './Inventory';
+import { setMoney } from './Wallet';
 import {
   RemotePlayer,
   CharacterAppearance,
@@ -148,12 +151,14 @@ export class Game {
           camera: this.camera,
           player: this.player,
           teleport: (x, y) => void this.debugTeleport(x, y),
+          streamView: () => this.loadSectorsInView(),
           canEnter: () =>
             this.phase === 'playing' &&
             !isChatTyping() &&
             !isMenuOpen() &&
             !isDialogueOpen() &&
             !this.transitioning,
+          ensurePlaying: () => this.ensurePlaying(),
         });
       });
     }
@@ -164,20 +169,10 @@ export class Game {
 
   private onKeyDown(e: KeyboardEvent) {
     if (this.phase === 'charselect') {
-      if (isSpriteEditorOpen()) return; // editor overlay owns the keyboard
       const result = handleCharSelectInput(e.key);
       if (result === 'confirm') {
         initMusic(); // Must be called from user gesture for AudioContext
         this.startGame();
-      } else if (result === 'create') {
-        // CREATE opens the pixel editor; confirming there starts the game
-        // with the edited sheet, Esc falls back to character select.
-        void openSpriteEditor({
-          onConfirm: (sheetDataUrl) => {
-            initMusic(); // confirm is a click/keypress — still a user gesture
-            void this.startGame(sheetDataUrl);
-          },
-        });
       }
       return;
     }
@@ -196,6 +191,20 @@ export class Game {
       if (isMenuOpen() || this.transitioning || isDialogueOpen()) return;
       handleChatKey(e);
     }
+  }
+
+  /**
+   * Bring the game into a playable state so the admin editor can be entered
+   * from a non-gameplay screen (F2 on character select / any screen). On
+   * character select this starts the game as the default selected character
+   * (Ness); a normal `startGame()` flips the phase to 'playing' when done.
+   */
+  private async ensurePlaying(): Promise<boolean> {
+    if (this.phase === 'charselect') {
+      initMusic(); // F2 is a user gesture, so the AudioContext may start here
+      await this.startGame(); // default selected character (Ness)
+    }
+    return this.phase === 'playing';
   }
 
   private async startGame(appearance?: CharacterAppearance) {
@@ -237,13 +246,16 @@ export class Game {
     // In case the spawn point is inside an interior, crop to that room.
     this.updateRoomBounds(this.player.x, this.player.y);
 
-    initInput();
+    // Status screen shows the chosen character's name (custom sheets have none).
+    setStatus({ name: getSpriteName(spriteGroupId) ?? 'Player' });
+
+    initInput(this.canvasEl);
     initMenu(getKeySet());
     initChat(getKeySet());
     initDialogue(getKeySet());
 
     // Connect to multiplayer server
-    connect(spriteGroupId, `Player`, appearance ?? null, {
+    connect(spriteGroupId, `Player`, appearance ?? null, getStatus().level, {
       onWelcome: (playerId, players) => {
         this.localPlayerId = playerId;
         for (const p of players) {
@@ -284,6 +296,58 @@ export class Game {
       onNpcHp: (rows) => {
         applyNpcHp(rows);
       },
+      onPlayerHp: (id, hp, maxHp, dmg, heal) => {
+        if (id === this.localPlayerId) {
+          this.player.hp = hp;
+          this.player.maxHp = maxHp;
+          if (dmg > 0) {
+            spawnDamageNumber(this.player.x, this.player.y, dmg);
+            this.player.hurt(); // flinch pose; broadcast to others via sendPosition
+          }
+          if (heal > 0) spawnHealNumber(this.player.x, this.player.y, heal);
+          setStatus({ hp, hpMax: maxHp }); // reflect in the Status screen
+        } else {
+          const rp = this.remotePlayers.get(id);
+          if (rp) {
+            rp.hp = hp;
+            rp.maxHp = maxHp;
+            if (dmg > 0) spawnDamageNumber(rp.x, rp.y, dmg);
+            if (heal > 0) spawnHealNumber(rp.x, rp.y, heal);
+          }
+        }
+      },
+      onInventory: (items) => {
+        setGoods(items); // mirror the server's Goods list for the menu
+      },
+      onMoney: (amount) => {
+        setMoney(amount); // mirror the server's balance for the menu
+      },
+      onPlayerRespawn: (id, x, y, dir) => {
+        if (id === this.localPlayerId) {
+          this.player.x = x;
+          this.player.y = y;
+          this.player.direction = dir;
+          this.player.moving = false;
+          this.player.frame = 0;
+          this.camera.follow(x, y);
+          this.updateRoomBounds(x, y);
+        } else {
+          const rp = this.remotePlayers.get(id);
+          if (rp) {
+            rp.x = x;
+            rp.y = y;
+          }
+          dropRemoteBuffer(id); // snap across the map, don't glide
+        }
+      },
+      onPlayerStats: (id, stats, leveled, gained) => {
+        if (id !== this.localPlayerId) return;
+        // Server-authoritative progression — mirror it into the Status screen
+        // and pop floats off the player so kills/level-ups feel rewarding.
+        setStatus(stats);
+        if (gained > 0) spawnXpNumber(this.player.x, this.player.y, gained);
+        if (leveled) spawnLevelUp(this.player.x, this.player.y);
+      },
     });
 
     this.phase = 'playing';
@@ -315,14 +379,30 @@ export class Game {
   private async loadNearbySectors() {
     const sectorX = Math.floor(this.player.x / (SECTOR_TILES_X * TILE_SIZE));
     const sectorY = Math.floor(this.player.y / (SECTOR_TILES_Y * TILE_SIZE));
+    await this.loadSectorRange(sectorX - 4, sectorY - 6, sectorX + 4, sectorY + 6);
+  }
 
-    const rangeX = 4;
-    const rangeY = 6;
+  /**
+   * Editor free-fly: gameplay streams atlases around the (now frozen) player,
+   * so the free camera would pan over un-loaded sectors that render black with
+   * only doors/NPCs on them. Stream whatever the camera currently shows instead.
+   * Fire-and-forget per frame — the loadedAtlases set makes repeat calls cheap.
+   */
+  loadSectorsInView(): void {
+    const { startCol, startRow, endCol, endRow } = this.camera.getVisibleTileRange();
+    void this.loadSectorRange(
+      Math.floor(startCol / SECTOR_TILES_X) - 1,
+      Math.floor(startRow / SECTOR_TILES_Y) - 1,
+      Math.floor(endCol / SECTOR_TILES_X) + 1,
+      Math.floor(endRow / SECTOR_TILES_Y) + 1,
+    );
+  }
 
+  /** Load (once) the BG/FG atlas + collision for every sector in a range. */
+  private async loadSectorRange(sx0: number, sy0: number, sx1: number, sy1: number) {
     const promises: Promise<void>[] = [];
-
-    for (let sy = sectorY - rangeY; sy <= sectorY + rangeY; sy++) {
-      for (let sx = sectorX - rangeX; sx <= sectorX + rangeX; sx++) {
+    for (let sy = sy0; sy <= sy1; sy++) {
+      for (let sx = sx0; sx <= sx1; sx++) {
         if (sx < 0 || sx >= MAP_WIDTH_SECTORS) continue;
         if (sy < 0 || sy >= MAP_HEIGHT_SECTORS) continue;
 
@@ -481,12 +561,14 @@ export class Game {
 
     if (this.phase !== 'playing') return;
 
-    // Float/fade chat bubbles regardless of other state.
+    // Float/fade chat bubbles + damage/heal popups regardless of other state.
     updateChatBubbles();
+    updateEmitters();
 
-    // Remote players keep gliding even while menus/dialogue/transitions
-    // freeze the local world — their senders haven't stopped.
+    // Remote players + server NPCs/enemies keep gliding even while menus/
+    // dialogue/transitions freeze the local world — their senders haven't stopped.
     for (const [, rp] of this.remotePlayers) interpolateRemotePlayer(rp);
+    interpolateNpcs();
 
     // Editor mode (dev only): free camera replaces gameplay simulation; the
     // world stays visible (remotes/NPCs keep updating above) but the player,
@@ -595,7 +677,7 @@ export class Game {
     // simple radius. Project each NPC onto the facing axis: allow a long FORWARD
     // reach (clears a counter) but a tight LATERAL band (stays directional, so
     // we don't grab someone standing off to the side).
-    const REACH_FORWARD = 52; // how far ahead an anchor may be (≈1.5 tiles)
+    const REACH_FORWARD = 60; // how far ahead an anchor may be (≈2 tiles) — clears a counter plus a prop standing in front of the clerk
     const REACH_BACK = 8;     // tolerate an anchor slightly behind / overlapping
     const REACH_LATERAL = 20; // must be roughly in line with the facing
 
@@ -603,8 +685,17 @@ export class Game {
     const perpX = -v[1];
     const perpY = v[0];
 
+    // Two passes in one loop: the nearest target with DIALOGUE (a clerk), and
+    // the nearest target of ANY kind. A shop clerk sits behind its counter, and
+    // a blank prop or silent NPC often stands in front of it — that closer,
+    // dialogue-less thing would otherwise win the probe and you'd "Check" the
+    // counter instead of talking to the clerk. So a talkable target always wins
+    // when one is in reach; the nearest-anything is only the Check fallback.
     let best: NPC | null = null;
     let bestScore = Infinity;
+    let bestTalk: NPC | null = null;
+    let bestTalkScore = Infinity;
+    let bestTalkPages: string[] | null = null;
     for (const npc of getNearbyNPCs(this.player.x, this.player.y)) {
       const ox = npc.x - this.player.x;
       const oy = npc.y - this.player.y;
@@ -619,15 +710,24 @@ export class Game {
         bestScore = score;
         best = npc;
       }
+      const pages = getNpcDialogue(npc);
+      if (pages && score < bestTalkScore) {
+        bestTalkScore = score;
+        bestTalk = npc;
+        bestTalkPages = pages;
+      }
     }
 
-    if (best) {
-      const pages = getNpcDialogue(best);
+    const target = bestTalk ?? best;
+    if (target) {
+      const pages = bestTalk ? bestTalkPages : null;
       console.log(
-        `Talk: npc(${Math.round(best.x)},${Math.round(best.y)}) score=${Math.round(bestScore)} ${pages ? `"${pages[0].slice(0, 40)}..."` : 'no dialogue'}`,
+        `Talk: npc(${Math.round(target.x)},${Math.round(target.y)}) score=${Math.round(
+          bestTalk ? bestTalkScore : bestScore,
+        )} ${pages ? `"${pages[0].slice(0, 40)}..."` : 'no dialogue (Check)'}`,
       );
       openDialogue(pages ?? ['There was no problem here.']);
-      this.talkingNpc = best;
+      this.talkingNpc = target;
       this.faceTalkingNpc();
     } else {
       console.log('Talk: nothing in reach');
@@ -657,12 +757,17 @@ export class Game {
   }
 
   private render() {
+    // Non-gameplay screens draw straight onto the canvas, so set the base
+    // transform to match the supersampled backbuffer (render() does this for
+    // gameplay itself).
     if (this.phase === 'charselect') {
+      this.renderer.prepareUI();
       drawCharacterSelect(this.ctx);
       return;
     }
 
     if (this.phase === 'loading') {
+      this.renderer.prepareUI();
       this.ctx.fillStyle = '#000';
       this.ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
       this.ctx.fillStyle = '#fff';
@@ -686,9 +791,11 @@ export class Game {
     if (this.camera.zoom !== 1) {
       this.ctx.save();
       this.ctx.scale(this.camera.zoom, this.camera.zoom);
+      renderEmitters(this.ctx, this.camera);
       renderChat(this.ctx, this.camera, this.player, this.remotePlayers);
       this.ctx.restore();
     } else {
+      renderEmitters(this.ctx, this.camera);
       renderChat(this.ctx, this.camera, this.player, this.remotePlayers);
     }
 

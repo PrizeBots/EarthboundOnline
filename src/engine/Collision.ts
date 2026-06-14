@@ -32,7 +32,15 @@ const collisionData = new Map<number, number[][]>();
  */
 export interface CollisionOverrides {
   version: number;
+  /** Legacy PER-ARRANGEMENT edits: "drawTs:arr" -> { minitileIdx: byte }. */
   edits?: Record<string, Record<string, number>>;
+  /**
+   * PER-MAP-TILE edits: "tileX,tileY" -> { minitileIdx: byte }. These win over
+   * the arrangement's bytes for that ONE map cell, so the painter can author a
+   * single tile without changing every other cell that reuses the same tile
+   * graphic. Mirrored by server/npcSim.js and the py room checker.
+   */
+  cells?: Record<string, Record<string, number>>;
 }
 
 let collisionOverrides: CollisionOverrides | null = null;
@@ -40,6 +48,47 @@ let overridesLoading: Promise<void> | null = null;
 // Pristine extracted rows for every (ts,arr) that overrides or live painting
 // touched — the editor diffs against these so no-op edits drop out.
 const pristineRows = new Map<string, number[]>();
+
+// Per-map-tile collision overrides (the `cells` section), keyed by
+// tileY*MAP_WIDTH_TILES+tileX -> Map<minitileIdx, byte>. Applied on top of the
+// arrangement row in effectiveRow(), so a painted cell is the ONLY one affected.
+const cellOverrides = new Map<number, Map<number, number>>();
+
+function rebuildCellOverrides(): void {
+  cellOverrides.clear();
+  const cells = collisionOverrides?.cells ?? {};
+  for (const [tk, idxMap] of Object.entries(cells)) {
+    const [tx, ty] = tk.split(',').map(Number);
+    const m = new Map<number, number>();
+    for (const [idx, byte] of Object.entries(idxMap)) m.set(Number(idx), byte);
+    cellOverrides.set(ty * MAP_WIDTH_TILES + tx, m);
+  }
+}
+
+/**
+ * The effective 16-byte collision row for a map tile: the arrangement's row
+ * (with any legacy per-arrangement edits already baked into collisionData) with
+ * this cell's per-map-tile overrides applied on top. Null if the sector or
+ * tileset data isn't loaded. Every collision read goes through here, so per-cell
+ * paints affect gameplay, sprite priority, and room cropping at that cell only.
+ */
+const ZERO_ROW: readonly number[] = new Array(16).fill(0);
+
+function effectiveRow(tileX: number, tileY: number): number[] | null {
+  const sector = getSectorForTile(tileX, tileY);
+  if (!sector) return null; // off-map → caller treats as solid
+  const collisions = collisionData.get(getDrawTilesetId(sector.tilesetId));
+  if (!collisions) return null; // tileset not loaded → solid
+  const arr = getTileAt(tileX, tileY);
+  // Arrangement beyond the collision table = no data = non-solid (historically
+  // skipped); per-cell overrides may still apply on top of an all-zero base.
+  const base = arr < collisions.length ? collisions[arr] : ZERO_ROW;
+  const ov = cellOverrides.get(tileY * MAP_WIDTH_TILES + tileX);
+  if (!ov || ov.size === 0) return base as number[];
+  const row = [...base];
+  for (const [idx, byte] of ov) row[idx] = byte;
+  return row;
+}
 
 function applyOverridesTo(drawTilesetId: number, data: number[][]): void {
   const edits = collisionOverrides?.edits ?? {};
@@ -59,9 +108,11 @@ export async function loadCollision(drawTilesetId: number): Promise<void> {
     overridesLoading = loadJSON<CollisionOverrides>('/overrides/collision.json')
       .then((ov) => {
         collisionOverrides = ov;
+        rebuildCellOverrides();
       })
       .catch(() => {
         collisionOverrides = null; // nothing authored yet
+        cellOverrides.clear();
       });
   }
   const [data] = await Promise.all([
@@ -89,6 +140,64 @@ export function getCollisionCellAt(
   const data = collisionData.get(drawTs);
   if (!data || arr >= data.length) return null;
   return { drawTs, arr, idx: (mty & 3) * 4 + (mtx & 3) };
+}
+
+/**
+ * Per-tile collision painter accessors. The painter authors a single MAP CELL
+ * (not the shared arrangement), so it works in (tileX, tileY, minitileIdx) and
+ * its edits land in the per-map-tile override layer.
+ */
+export function getCellCollisionAt(
+  worldX: number,
+  worldY: number
+): { tileX: number; tileY: number; idx: number; byte: number } | null {
+  const mtx = Math.floor(worldX / MINITILE_SIZE);
+  const mty = Math.floor(worldY / MINITILE_SIZE);
+  if (mtx < 0 || mty < 0 || mtx >= MAP_WIDTH_MT || mty >= MAP_HEIGHT_MT) return null;
+  const tileX = mtx >> 2;
+  const tileY = mty >> 2;
+  const row = effectiveRow(tileX, tileY);
+  if (!row) return null;
+  const idx = (mty & 3) * 4 + (mtx & 3);
+  return { tileX, tileY, idx, byte: row[idx] };
+}
+
+/** Effective 16-byte row (arrangement + per-cell overrides) — overlay drawing. */
+export function getEffectiveRowAt(tileX: number, tileY: number): number[] | null {
+  return effectiveRow(tileX, tileY);
+}
+
+/** The byte a cell reverts to when its per-tile override is cleared: the
+ *  arrangement byte (legacy per-arrangement edits applied, per-cell NOT). */
+export function getArrangementByteAt(tileX: number, tileY: number, idx: number): number | null {
+  const sector = getSectorForTile(tileX, tileY);
+  if (!sector) return null;
+  const data = collisionData.get(getDrawTilesetId(sector.tilesetId));
+  if (!data) return null;
+  const arr = getTileAt(tileX, tileY);
+  if (arr >= data.length) return 0;
+  return data[arr][idx];
+}
+
+/** Editor live paint: set one map-cell's per-tile collision byte. Gameplay and
+ *  the room-crop preview read it immediately via effectiveRow. */
+export function setCellCollisionLive(tileX: number, tileY: number, idx: number, byte: number): void {
+  const key = tileY * MAP_WIDTH_TILES + tileX;
+  let m = cellOverrides.get(key);
+  if (!m) {
+    m = new Map();
+    cellOverrides.set(key, m);
+  }
+  m.set(idx, byte);
+}
+
+/** Editor live paint: drop a map-cell's per-tile override (revert to arrangement). */
+export function clearCellCollisionLive(tileX: number, tileY: number, idx: number): void {
+  const key = tileY * MAP_WIDTH_TILES + tileX;
+  const m = cellOverrides.get(key);
+  if (!m) return;
+  m.delete(idx);
+  if (m.size === 0) cellOverrides.delete(key);
 }
 
 /** Current (live) 16-byte row of an arrangement, or null if not loaded. */
@@ -185,18 +294,9 @@ export function checkCollision(
       const localX = mtx % 4;
       const localY = mty % 4;
 
-      const sector = getSectorForTile(tileX, tileY);
-      if (!sector) return true;
-
-      const drawTilesetId = getDrawTilesetId(sector.tilesetId);
-      const collisions = collisionData.get(drawTilesetId);
-      if (!collisions) return true;
-
-      const arrangementId = getTileAt(tileX, tileY);
-      if (arrangementId >= collisions.length) continue;
-
-      const collisionByte = collisions[arrangementId][localY * 4 + localX];
-      if ((collisionByte & 0x80) !== 0) return true;
+      const row = effectiveRow(tileX, tileY);
+      if (!row) return true; // off-map or tileset not loaded → solid
+      if ((row[localY * 4 + localX] & 0x80) !== 0) return true;
     }
   }
 
@@ -208,18 +308,10 @@ export function checkCollision(
  * Foreground tiles are drawn on top of the player (foliage, building eaves).
  */
 export function isForegroundTile(tileX: number, tileY: number): boolean {
-  const sector = getSectorForTile(tileX, tileY);
-  if (!sector) return false;
-
-  const drawTilesetId = getDrawTilesetId(sector.tilesetId);
-  const collisions = collisionData.get(drawTilesetId);
-  if (!collisions) return false;
-
-  const arrangementId = getTileAt(tileX, tileY);
-  if (arrangementId >= collisions.length) return false;
-
+  const row = effectiveRow(tileX, tileY);
+  if (!row) return false;
   for (let i = 0; i < 16; i++) {
-    if ((collisions[arrangementId][i] & 0x10) !== 0) return true;
+    if ((row[i] & 0x10) !== 0) return true;
   }
   return false;
 }
@@ -232,18 +324,10 @@ export function tileHasAnySolid(tileX: number, tileY: number): boolean {
   if (tileX < 0 || tileY < 0) return false;
   if (tileX >= MAP_WIDTH_TILES || tileY >= MAP_HEIGHT_TILES) return false;
 
-  const sector = getSectorForTile(tileX, tileY);
-  if (!sector) return false;
-
-  const drawTilesetId = getDrawTilesetId(sector.tilesetId);
-  const collisions = collisionData.get(drawTilesetId);
-  if (!collisions) return false;
-
-  const arrangementId = getTileAt(tileX, tileY);
-  if (arrangementId >= collisions.length) return false;
-
+  const row = effectiveRow(tileX, tileY);
+  if (!row) return false;
   for (let i = 0; i < 16; i++) {
-    if ((collisions[arrangementId][i] & 0x80) !== 0) return true;
+    if ((row[i] & 0x80) !== 0) return true;
   }
   return false;
 }
@@ -276,24 +360,15 @@ export function getSpritePriority(worldX: number, worldY: number): number {
   let bits = 0;
   for (let mty = minMTY; mty <= maxMTY; mty++) {
     for (let mtx = minMTX; mtx <= maxMTX; mtx++) {
-      const tileX = mtx >> 2;
-      const tileY = mty >> 2;
-      const sector = getSectorForTile(tileX, tileY);
-      if (!sector) continue;
-
-      const drawTilesetId = getDrawTilesetId(sector.tilesetId);
-      const collisions = collisionData.get(drawTilesetId);
-      if (!collisions) continue;
-
-      const arrangementId = getTileAt(tileX, tileY);
-      if (arrangementId >= collisions.length) continue;
+      const row = effectiveRow(mtx >> 2, mty >> 2);
+      if (!row) continue;
 
       // Skip SOLID minitiles: counters/tables carry priority bits on their
       // own solid front faces (e.g. burger-shop counter = 0x80|0x02), but
       // feet can never stand there — sampling them sank the player's head
       // behind the counter when pressed against it. Only flags on walkable
       // ground (clerk strips, sofa cushions, canopy shade) apply to sprites.
-      const b = collisions[arrangementId][(mty & 3) * 4 + (mtx & 3)];
+      const b = row[(mty & 3) * 4 + (mtx & 3)];
       if ((b & 0x80) === 0) bits |= b & 0x03;
     }
   }
@@ -313,34 +388,17 @@ export function getCollisionByteAt(worldX: number, worldY: number): number | nul
   const mtx = Math.floor(worldX / MINITILE_SIZE);
   const mty = Math.floor(worldY / MINITILE_SIZE);
   if (mtx < 0 || mty < 0 || mtx >= MAP_WIDTH_MT || mty >= MAP_HEIGHT_MT) return null;
-  const tileX = mtx >> 2;
-  const tileY = mty >> 2;
-  const sector = getSectorForTile(tileX, tileY);
-  if (!sector) return null;
-  const collisions = collisionData.get(getDrawTilesetId(sector.tilesetId));
-  if (!collisions) return null;
-  const arrangementId = getTileAt(tileX, tileY);
-  if (arrangementId >= collisions.length) return null;
-  return collisions[arrangementId][(mty & 3) * 4 + (mtx & 3)];
+  const row = effectiveRow(mtx >> 2, mty >> 2);
+  if (!row) return null;
+  return row[(mty & 3) * 4 + (mtx & 3)];
 }
 
 /** True if the 8x8 minitile at (mtx, mty) is solid (or off-map). */
 function isMinitileSolid(mtx: number, mty: number): boolean {
   if (mtx < 0 || mty < 0 || mtx >= MAP_WIDTH_MT || mty >= MAP_HEIGHT_MT) return true;
-
-  const tileX = mtx >> 2;
-  const tileY = mty >> 2;
-  const sector = getSectorForTile(tileX, tileY);
-  if (!sector) return true;
-
-  const drawTilesetId = getDrawTilesetId(sector.tilesetId);
-  const collisions = collisionData.get(drawTilesetId);
-  if (!collisions) return true; // not loaded yet — treat as wall
-
-  const arrangementId = getTileAt(tileX, tileY);
-  if (arrangementId >= collisions.length) return true;
-
-  return (collisions[arrangementId][(mty & 3) * 4 + (mtx & 3)] & 0x80) !== 0;
+  const row = effectiveRow(mtx >> 2, mty >> 2);
+  if (!row) return true; // off-map or not loaded — treat as wall
+  return (row[(mty & 3) * 4 + (mtx & 3)] & 0x80) !== 0;
 }
 
 // Sanity backstop on flood-fill size (in minitiles). Real interiors — even the
@@ -593,19 +651,12 @@ export function checkCollisionTile(tileX: number, tileY: number): boolean {
   if (tileX < 0 || tileY < 0) return true;
   if (tileX >= MAP_WIDTH_TILES || tileY >= MAP_HEIGHT_TILES) return true;
 
-  const sector = getSectorForTile(tileX, tileY);
-  if (!sector) return true;
-
-  const drawTilesetId = getDrawTilesetId(sector.tilesetId);
-  const collisions = collisionData.get(drawTilesetId);
-  if (!collisions) return true;
-
-  const arrangementId = getTileAt(tileX, tileY);
-  if (arrangementId >= collisions.length) return true;
+  const row = effectiveRow(tileX, tileY);
+  if (!row) return true;
 
   // Check all 16 minitiles — tile is solid only if ALL are solid
   for (let i = 0; i < 16; i++) {
-    if (collisions[arrangementId][i] === 0) return false;
+    if (row[i] === 0) return false;
   }
   return true;
 }

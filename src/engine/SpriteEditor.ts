@@ -1,13 +1,25 @@
-import { loadImage, loadJSON } from './AssetLoader';
-import { registerCustomSprite, drawSprite, getSpriteGroupMeta } from './SpriteManager';
-import { drawHeldItem, isItemBehind, nextHeldItem, getItemName } from './Items';
+import { loadJSON, primeJSONCache } from './AssetLoader';
+import {
+  drawSprite, getSpriteGroupMeta, loadSpriteGroup,
+  getLiveSheet, getPristineSheet, getSourceSheet, refreshDiagSupport, SpriteOverrides,
+} from './SpriteManager';
+import { getSpriteName, setSpriteNameOverride, getNameOverrides } from './SpriteNames';
+import { createSpritePicker, drawSpriteGroupThumb, SpritePicker } from './SpritePicker';
+import {
+  drawHeldItem, isItemBehind, nextHeldItem, getItemName,
+  ITEM_W, ITEM_H, ITEM_PALETTE, HELD_ITEM_IDS, setItemOverride, renderItemArt,
+} from './Items';
+import { setMuteButtonHidden } from './MuteButton';
 import { Direction, Pose } from '../types';
 
-// The character creation screen: a pixel editor over the Ness sheet template.
-// Opens as a DOM overlay on top of the game canvas (the 256x224 game screen
-// is too small for per-pixel work). Edits live on an in-memory canvas
-// persisted to localStorage — the extracted PNGs on disk are never touched.
-// Confirming hands the finished sheet back as a PNG data URL.
+// Cast sprite editor (admin): a pixel editor for any cast character's
+// attack/hurt animation frames, plus their held-item art. Opens as a DOM
+// overlay on top of the game canvas (the 256x224 game screen is too small for
+// per-pixel work). Pick a character from the dropdown; the editor paints into
+// that group's LIVE pose sheet (ROM walk/climb + PoseGen attack/hurt), so the
+// world and the test pane update as you draw. Walk/climb rows are ROM and
+// locked. Save writes only the attack/hurt diff vs the generated frames to
+// public/overrides/sprites.json — no ROM-derived pixels ever land in the file.
 
 const FRAME_W = 16;
 const FRAME_H = 24;
@@ -23,9 +35,22 @@ const CLIMB_ROW = 4;
 const ATTACK_ROW_START = 5;
 const HURT_ROW_START = 9;
 
-const NESS_GROUP = 1;
-const LADDER_GROUP = 17;
-const ROPE_GROUP = 21;
+const DEFAULT_GROUP = 1; // Ness — the screen opens on him
+const BAND_ROWS = SHEET_ROWS - ATTACK_ROW_START; // editable pose rows (attack + hurt)
+
+// Drivable vehicle groups — listed in the dropdown so you can SEE them, but
+// NOT editable: they're bigger, directional-only sheets with no attack/hurt
+// band. Selecting one shows it in the preview + test pane (view-only). Mirrors
+// the Traffic Editor's VEHICLE_SPRITES list.
+const VEHICLE_GROUPS: { id: number; name: string }[] = [
+  { id: 255, name: 'Car' },            { id: 206, name: 'Taxi' },
+  { id: 459, name: 'Truck' },          { id: 207, name: 'Delivery Truck' },
+  { id: 460, name: 'Moving Van' },     { id: 208, name: 'Camper Van' },
+  { id: 243, name: 'Tour Bus' },       { id: 254, name: 'Bulldozer' },
+];
+function vehicleName(id: number): string | null {
+  return VEHICLE_GROUPS.find((v) => v.id === id)?.name ?? null;
+}
 
 const ZOOM = 16;            // edit canvas: 1 sprite pixel = 16 screen pixels
 const STRIP_SCALE = 2;      // frame-strip preview scale (13 rows, overlay scrolls)
@@ -48,14 +73,13 @@ const STRIP_W = 2 * (STRIP_GUTTER + STRIP_SET_W);
 const CHECKER_A = '#d8d8e0';
 const CHECKER_B = '#bcbcc8';
 
-// Synthetic sprite group for the live test pane — far above the ids
-// registerCustomSheet hands out (CUSTOM_GROUP_BASE + small counts).
-const PREVIEW_GROUP = 999999;
-
-const STORAGE_KEY = 'eb_sprite_editor_sheet';
 const UNDO_LIMIT = 64;
 
 type Tool = 'pencil' | 'eraser' | 'eyedrop';
+// The editor edits either the 16x24 character sheet or a 16x16 held-item buffer.
+type EditMode = 'char' | 'item';
+
+const ITEM_STORAGE_PREFIX = 'eb_item_sprite_';
 
 // ---------------------------------------------------------------------------
 // Left/right mirroring. EB's west-facing frames are exact horizontal flips of
@@ -144,12 +168,29 @@ const STRIP_H = DISPLAY_ROWS.length * STRIP_FRAME_H;
 
 let open = false;
 let overlay: HTMLDivElement | null = null;
+// The LIVE pose sheet of the character being edited (shared with the engine's
+// sprite cache — edits show in the world immediately) + a pristine copy of its
+// generated frames for diffing on save.
 let sheet: HTMLCanvasElement | null = null;
 let sheetCtx: CanvasRenderingContext2D | null = null;
+let pristineSheet: HTMLCanvasElement | null = null;
+let groupId = DEFAULT_GROUP;
+let viewOnly = false; // true while previewing a non-editable group (vehicles)
+let roster: number[] = [];
+let overridesDoc: SpriteOverrides = { version: 1, groups: {} };
 let palette: [number, number, number][] = [];
 
 let tool: Tool = 'pencil';
 let colorIndex = 1;
+
+// --- Item-editing mode ---
+let editMode: EditMode = 'char';
+let itemEditId: string = HELD_ITEM_IDS[0] ?? '';
+let itemCanvas: HTMLCanvasElement | null = null;   // 16x16 edit buffer
+let itemCtx: CanvasRenderingContext2D | null = null;
+let itemUndo: ImageData[] = [];
+// ITEM_PALETTE parsed to RGB for the eyedropper's nearest-color match.
+const itemPaletteRGB: [number, number, number][] = ITEM_PALETTE.map(parseHexColor);
 let selRow = 1; // start on the south-facing frame — the classic editing view
 let selCol = 0;
 let painting = false;
@@ -167,6 +208,15 @@ let itemNote: HTMLDivElement | null = null;
 let copyNote: HTMLDivElement | null = null;
 let toolButtons = new Map<Tool, HTMLButtonElement>();
 let swatchEls: HTMLDivElement[] = [];
+let paletteGrid: HTMLDivElement | null = null;
+let modeButtons = new Map<EditMode, HTMLButtonElement>();
+// Custom sprite-preview dropdowns: the trigger AND every option row render the
+// real sprite (a native <option> can't). See createSpritePicker.
+let charPicker: SpritePicker | null = null;
+let itemPicker: SpritePicker | null = null;
+let itemRow: HTMLDivElement | null = null;
+let charNote: HTMLDivElement | null = null;
+let nameInput: HTMLInputElement | null = null;
 let rafId = 0;
 
 // --- WASD walker state for the test pane ---
@@ -181,9 +231,7 @@ let walkerPoseTimer = 0;
 let walkerItem: string | null = null;
 
 export interface SpriteEditorCallbacks {
-  /** Player confirmed their character — receives the sheet as a PNG data URL. */
-  onConfirm?: (sheetDataUrl: string) => void;
-  /** Player backed out (Esc). */
+  /** Closed the editor (Esc) — return to character select. */
   onCancel?: () => void;
 }
 
@@ -197,12 +245,15 @@ export async function openSpriteEditor(callbacks: SpriteEditorCallbacks = {}): P
   if (open) return;
   open = true;
   editorCallbacks = callbacks;
+  setMuteButtonHidden(true); // this overlay is its own screen — hide game chrome
 
-  await loadPalette();
-  await buildSheet();
+  await loadRoster();
+  await loadOverridesDoc();
+  await loadSavedItems(); // restore saved item edits before seeding the buffer
+  buildItemBuffer();
 
-  registerCustomSprite(PREVIEW_GROUP, sheet!, FRAME_W, FRAME_H);
   buildDom();
+  await loadGroupIntoEditor(DEFAULT_GROUP);
   window.addEventListener('keydown', onKeyDown, true);
   window.addEventListener('keyup', onKeyUp, true);
   window.addEventListener('mouseup', onGlobalMouseUp);
@@ -210,9 +261,10 @@ export async function openSpriteEditor(callbacks: SpriteEditorCallbacks = {}): P
   rafId = requestAnimationFrame(tick);
 }
 
-function closeSpriteEditor(): void {
+export function closeSpriteEditor(): void {
   if (!open) return;
   open = false;
+  setMuteButtonHidden(false); // back to the game — restore the mute button
   cancelAnimationFrame(rafId);
   window.removeEventListener('keydown', onKeyDown, true);
   window.removeEventListener('keyup', onKeyUp, true);
@@ -221,20 +273,351 @@ function closeSpriteEditor(): void {
   overlay?.remove();
   overlay = null;
   toolButtons.clear();
+  modeButtons.clear();
   swatchEls = [];
+  paletteGrid = null;
+  itemPicker = null;
+  itemRow = null;
+  charPicker = null;
+  charNote = null;
+  nameInput = null;
   copyNote = null;
   frameClipboard = null;
+  sheet = null;
+  sheetCtx = null;
+  pristineSheet = null;
+  editMode = 'char';
 }
 
-/** Enter / Start button: hand the finished sheet to the game. */
-function confirmEditor(): void {
+// ---------------------------------------------------------------------------
+// Item edit buffer & persistence
+// ---------------------------------------------------------------------------
+
+/** Create the 16x16 item edit canvas and seed it with the first item's art. */
+function buildItemBuffer(): void {
+  if (!itemCanvas) {
+    itemCanvas = document.createElement('canvas');
+    itemCanvas.width = ITEM_W;
+    itemCanvas.height = ITEM_H;
+    itemCtx = itemCanvas.getContext('2d', { willReadFrequently: true })!;
+    itemCtx.imageSmoothingEnabled = false;
+  }
+  // Seed the buffer with the current item's art, but DON'T touch walkerItem —
+  // we start in character mode and the test pane should show no held item yet.
+  if (itemEditId) {
+    const art = renderItemArt(itemEditId);
+    itemCtx!.clearRect(0, 0, ITEM_W, ITEM_H);
+    if (art) itemCtx!.drawImage(art, 0, 0);
+    itemUndo = [];
+  }
+}
+
+function itemStorageKey(id: string): string {
+  return ITEM_STORAGE_PREFIX + id;
+}
+
+/** Restore any saved item edits from localStorage as live overrides. */
+async function loadSavedItems(): Promise<void> {
+  for (const id of HELD_ITEM_IDS) {
+    const saved = localStorage.getItem(itemStorageKey(id));
+    if (!saved) continue;
+    try {
+      const img = new Image();
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = reject;
+        img.src = saved;
+      });
+      const c = document.createElement('canvas');
+      c.width = ITEM_W;
+      c.height = ITEM_H;
+      c.getContext('2d')!.drawImage(img, 0, 0);
+      setItemOverride(id, c);
+    } catch {
+      // bad/blocked entry — fall back to the built-in art for this item
+    }
+  }
+}
+
+/** Load an item's current art (override or base) into the edit buffer. */
+function loadItemIntoBuffer(id: string): void {
+  itemEditId = id;
+  const art = renderItemArt(id);
+  itemCtx!.clearRect(0, 0, ITEM_W, ITEM_H);
+  if (art) itemCtx!.drawImage(art, 0, 0);
+  itemUndo = [];
+  walkerItem = id; // show it on the test-pane character immediately
+  if (itemNote) itemNote.textContent = `Editing item: ${getItemName(id) ?? id}`;
+  renderItemThumb();
+}
+
+/** Push the live item buffer as the runtime override + refresh the preview. */
+function commitItemEdit(): void {
+  setItemOverride(itemEditId, itemCanvas!);
+  walkerItem = itemEditId;
+  renderItemThumb();
+}
+
+function persistItem(): void {
+  try {
+    localStorage.setItem(itemStorageKey(itemEditId), itemCanvas!.toDataURL());
+  } catch {
+    // storage full/blocked — edits still live in memory for this session
+  }
+}
+
+function sheetReady(): boolean {
+  return !!sheet && !!sheetCtx && !!pristineSheet;
+}
+
+// ---------------------------------------------------------------------------
+// Cast roster + per-character loading
+// ---------------------------------------------------------------------------
+
+/** Load the char-select roster (the 16x24 cast) for the character dropdown. */
+async function loadRoster(): Promise<void> {
+  if (roster.length) return;
+  try {
+    roster = await loadJSON<number[]>('/assets/sprites/characters.json');
+  } catch {
+    roster = [DEFAULT_GROUP];
+  }
+}
+
+/** Load any saved attack/hurt overrides so edits start from the live state. */
+async function loadOverridesDoc(): Promise<void> {
+  try {
+    overridesDoc = await loadJSON<SpriteOverrides>('/overrides/sprites.json');
+    overridesDoc.groups ??= {};
+  } catch {
+    overridesDoc = { version: 1, groups: {} };
+  }
+}
+
+async function loadGroupPalette(palIdx: number): Promise<void> {
+  const palettes = await loadJSON<number[][][]>('/assets/sprites/palettes.json');
+  const pal = palettes[palIdx] ?? palettes[5] ?? [];
+  palette = pal.map((c) => [c[0], c[1], c[2]]);
+}
+
+/**
+ * Point the editor at a cast character. Loads the group's live pose sheet
+ * (ROM walk/climb + PoseGen attack/hurt + any saved overrides) plus a pristine
+ * copy for diffing. The editor paints straight into the live sheet, so the
+ * test pane and the running world both update as you draw.
+ */
+async function loadGroupIntoEditor(id: number): Promise<void> {
+  await loadSpriteGroup(id);
+  const meta = getSpriteGroupMeta(id);
+  const live = getLiveSheet(id);
+  if (!meta || !live || meta.width !== FRAME_W || meta.height !== FRAME_H) {
+    // Non-cast sprite (vehicles): show it in the preview + test pane, but keep
+    // the 16x24 paint pipeline off. sheet=null gates every editing path.
+    viewOnly = true;
+    groupId = id;
+    sheet = null;
+    sheetCtx = null;
+    pristineSheet = null;
+    undoStack = [];
+    walkerPose = 'walk';
+    walkerDir = Direction.S;
+    walkerFrame = 0;
+    walkerItem = null;
+    charPicker?.setValue(String(id));
+    if (nameInput) nameInput.value = getSpriteName(id) ?? '';
+    const nm = getSpriteName(id) ?? vehicleName(id) ?? `#${id}`;
+    if (charNote) {
+      charNote.textContent = meta
+        ? `View only — ${nm} (${meta.width}×${meta.height})`
+        : `#${id} has no sprite metadata`;
+    }
+    renderCharThumb();
+    dirty = true;
+    return;
+  }
+  viewOnly = false;
+  groupId = id;
+  sheet = live;
+  sheetCtx = live.getContext('2d', { willReadFrequently: true })!;
+  pristineSheet = getPristineSheet(id);
+  undoStack = [];
+  await loadGroupPalette(meta.palette);
+  // Land on the south-facing attack frame — the first editable cell.
+  selRow = ATTACK_ROW_START + DIR_BASE.S.row;
+  selCol = DIR_BASE.S.col;
+  walkerPose = 'walk';
+  walkerDir = Direction.S;
+  charPicker?.setValue(String(id));
+  if (nameInput) nameInput.value = getSpriteName(id) ?? '';
+  updateCharNote();
+  renderCharThumb();
+  renderSwatches();
+  dirty = true;
+}
+
+// The sprite-preview dropdown (createSpritePicker) and the generic sprite-group
+// thumb (drawSpriteGroupThumb, formerly drawCharThumb) now live in
+// ./SpritePicker so the editor tools can reuse them. drawItemThumb stays here
+// because it renders the live item-edit buffer, which is editor-only state.
+
+/** drawThumb for a held item: its art (live edit buffer for the active item). */
+function drawItemThumb(canvas: HTMLCanvasElement, v: string): void {
+  const ctx = canvas.getContext('2d')!;
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const src: CanvasImageSource | null = v === itemEditId && itemCanvas ? itemCanvas : renderItemArt(v);
+  if (!src) return;
+  const s = Math.max(1, Math.floor(Math.min(canvas.width / (ITEM_W + 2), canvas.height / (ITEM_H + 2))));
+  const dw = ITEM_W * s;
+  const dh = ITEM_H * s;
+  ctx.drawImage(src, 0, 0, ITEM_W, ITEM_H, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
+}
+
+// Thin shims so existing call sites keep working: point the picker at the
+// current selection and redraw its sprite preview (trigger + open row).
+function renderCharThumb(): void {
+  charPicker?.setValue(String(groupId));
+}
+function renderItemThumb(): void {
+  itemPicker?.setValue(itemEditId);
+}
+
+function updateCharNote(suffix = ''): void {
+  if (!charNote) return;
+  const star = overridesDoc.groups?.[String(groupId)] ? ' ★ edited' : '';
+  charNote.textContent = `${getSpriteName(groupId) ?? `#${groupId}`}${star}${suffix}`;
+}
+
+/**
+ * Every row is editable. Walk/climb frames used to be ROM-locked, but admins
+ * need to author the directional frames many NPCs never got (4-direction
+ * sheets missing their diagonals). Save still diffs vs the generated/ROM
+ * pristine sheet, so only hand-painted pixels are ever stored.
+ */
+function editableRow(_row: number): boolean {
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Save: diff the WHOLE live sheet vs pristine -> overrides/sprites.json. Only
+// hand-painted deltas are written (paint + erase PNGs); unedited ROM walk
+// frames and the generated bands match pristine, so they never land in the
+// file. `band:0` on the entry marks a full-sheet patch (legacy entries with no
+// band are the old attack/hurt-only band, applied at row 5).
+// ---------------------------------------------------------------------------
+
+const BAND_Y = 0;
+const BAND_H = SHEET_H;
+
+function captureGroupDiff(): void {
+  if (!sheetReady()) return;
+  const w = SHEET_W;
+  const liveD = sheetCtx!.getImageData(0, BAND_Y, w, BAND_H);
+  const prisD = pristineSheet!.getContext('2d')!.getImageData(0, BAND_Y, w, BAND_H);
+
+  const paint = document.createElement('canvas');
+  const erase = document.createElement('canvas');
+  paint.width = erase.width = w;
+  paint.height = erase.height = BAND_H;
+  const paintD = paint.getContext('2d')!.createImageData(w, BAND_H);
+  const eraseD = erase.getContext('2d')!.createImageData(w, BAND_H);
+  let paintCount = 0;
+  let eraseCount = 0;
+  for (let i = 0; i < liveD.data.length; i += 4) {
+    const same =
+      liveD.data[i] === prisD.data[i] &&
+      liveD.data[i + 1] === prisD.data[i + 1] &&
+      liveD.data[i + 2] === prisD.data[i + 2] &&
+      liveD.data[i + 3] === prisD.data[i + 3];
+    if (same) continue;
+    if (liveD.data[i + 3] === 0) {
+      eraseD.data[i + 3] = 255; // pixel removed vs the generated frame
+      eraseCount++;
+    } else {
+      paintD.data[i] = liveD.data[i];
+      paintD.data[i + 1] = liveD.data[i + 1];
+      paintD.data[i + 2] = liveD.data[i + 2];
+      paintD.data[i + 3] = liveD.data[i + 3];
+      paintCount++;
+    }
+  }
+  const groups = (overridesDoc.groups ??= {});
+  const key = String(groupId);
+  if (paintCount === 0 && eraseCount === 0) {
+    delete groups[key]; // back to the generated frames — drop the entry
+    return;
+  }
+  paint.getContext('2d')!.putImageData(paintD, 0, 0);
+  erase.getContext('2d')!.putImageData(eraseD, 0, 0);
+  const entry: { paint?: string; erase?: string; band?: number } = { band: 0 };
+  if (paintCount > 0) entry.paint = paint.toDataURL();
+  if (eraseCount > 0) entry.erase = erase.toDataURL();
+  groups[key] = entry;
+}
+
+/** Dev-only save-back channel (Vite middleware; absent in production builds). */
+async function postOverride(name: string, data: unknown): Promise<void> {
+  const res = await fetch('/__editor/save', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name, data }),
+  });
+  if (!res.ok) throw new Error(`save ${name}: ${res.status}`);
+  primeJSONCache(`/overrides/${name}`, data);
+}
+
+/**
+ * Save the active surface. In Item mode this commits + persists the held-item
+ * art (localStorage) and confirms on the item note. In Character mode it diffs
+ * the attack/hurt bands vs pristine into overrides/sprites.json.
+ */
+function saveCurrentGroup(): void {
   if (!open || painting) return;
-  if (!sheetHasAnyPixels()) return; // an empty sheet would be invisible in-game
-  const dataUrl = sheet!.toDataURL();
-  persistSheet();
-  const cb = editorCallbacks.onConfirm;
-  closeSpriteEditor();
-  cb?.(dataUrl);
+  if (editMode === 'item') {
+    commitItemEdit();
+    persistItem();
+    if (itemNote) itemNote.textContent = `Item saved: ${getItemName(itemEditId) ?? itemEditId}`;
+    return;
+  }
+  if (!sheetReady()) return;
+  captureGroupDiff();
+  void postOverride('sprites.json', overridesDoc)
+    .then(() => updateCharNote(' — saved'))
+    .catch((err) => {
+      if (charNote) charNote.textContent = `save failed: ${String(err)}`;
+    });
+}
+
+/**
+ * Rename the active character. Writes the display-name override to
+ * overrides/names.json (empty / unchanged-from-base clears it) and refreshes
+ * the dropdown entry + note. Names ship — no ROM data involved.
+ */
+function saveCharName(): void {
+  if (!open || !nameInput) return;
+  const name = nameInput.value.trim();
+  setSpriteNameOverride(groupId, name || null);
+  // Reflect the resolved name (override or baked base) back into the field + UI.
+  const resolved = getSpriteName(groupId) ?? '';
+  nameInput.value = resolved;
+  charPicker?.refresh(); // relabel the option rows + trigger with the new name
+  void postOverride('names.json', getNameOverrides())
+    .then(() => updateCharNote(' — renamed'))
+    .catch((err) => {
+      if (charNote) charNote.textContent = `rename failed: ${String(err)}`;
+    });
+}
+
+/** Restore the selected frame to its generated (pristine) pixels. */
+function resetSelectedFrame(): void {
+  if (!sheetReady() || !editableRow(selRow)) return;
+  pushUndo();
+  const x = selCol * FRAME_W;
+  const y = selRow * FRAME_H;
+  sheetCtx!.clearRect(x, y, FRAME_W, FRAME_H);
+  sheetCtx!.drawImage(pristineSheet!, x, y, FRAME_W, FRAME_H, x, y, FRAME_W, FRAME_H);
+  syncMirrorCell(selRow, selCol);
+  dirty = true;
 }
 
 function cancelEditor(): void {
@@ -244,224 +627,23 @@ function cancelEditor(): void {
   cb?.();
 }
 
-function sheetHasAnyPixels(): boolean {
-  const data = sheetCtx!.getImageData(0, 0, SHEET_W, SHEET_H).data;
-  for (let i = 3; i < data.length; i += 4) {
-    if (data[i] > 0) return true;
-  }
-  return false;
-}
-
-async function loadPalette(): Promise<void> {
-  if (palette.length) return;
-  const palettes = await loadJSON<number[][][]>('/assets/sprites/palettes.json');
-  const palIdx = getSpriteGroupMeta(NESS_GROUP)?.palette ?? 5;
-  palette = palettes[palIdx].map((c) => [c[0], c[1], c[2]]);
-}
-
-/**
- * Assemble Ness's frame template into the 64x312 v3 sheet: walk sheet (4x4
- * grid, 8 directions x 2 frames — Ness has true diagonal art), the climb row
- * stitched from the ladder/rope groups (cells 0-1 only), and procedurally
- * seeded attack (rows 5-8) and hurt (rows 9-12) blocks. A saved sheet is
- * loaded and migrated forward instead.
- */
-async function buildSheet(): Promise<void> {
-  if (sheet) return;
-  sheet = document.createElement('canvas');
-  sheet.width = SHEET_W;
-  sheet.height = SHEET_H;
-  sheetCtx = sheet.getContext('2d', { willReadFrequently: true })!;
-  sheetCtx.imageSmoothingEnabled = false;
-
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if (saved) {
-    const img = new Image();
-    await new Promise<void>((resolve, reject) => {
-      img.onload = () => resolve();
-      img.onerror = reject;
-      img.src = saved;
-    });
-    sheetCtx.drawImage(img, 0, 0);
-    const savedRows = Math.round(img.naturalHeight / FRAME_H);
-    // Seed any pose block the saved sheet predates, preserving blocks it has.
-    // v1 (5 rows): no attack/hurt. v2 (10 rows): attack + an old single-row
-    // hurt (row 9) we discard for the new 8-dir x 2-frame hurt. v3 (13 rows):
-    // complete — only upgrade untouched verbatim-walk copies.
-    if (savedRows < ATTACK_ROW_START + 4) seedAttackRows();
-    if (savedRows < HURT_ROW_START + 4) seedHurtRows();
-    reseedLegacyCopies();
-    return;
-  }
-  await resetSheetFromRom();
-}
-
-async function resetSheetFromRom(): Promise<void> {
-  const [walk, ladder, rope] = await Promise.all([
-    loadImage(`/assets/sprites/${NESS_GROUP}.png`),
-    loadImage(`/assets/sprites/${LADDER_GROUP}.png`),
-    loadImage(`/assets/sprites/${ROPE_GROUP}.png`),
-  ]);
-  const ctx = sheetCtx!;
-  ctx.clearRect(0, 0, SHEET_W, SHEET_H);
-  ctx.drawImage(walk, 0, 0);
-  ctx.drawImage(ladder, 0, 0, FRAME_W * 2, FRAME_H, 0, CLIMB_ROW * FRAME_H, FRAME_W * 2, FRAME_H);
-  ctx.drawImage(rope, 0, 0, FRAME_W * 2, FRAME_H, FRAME_W * 2, CLIMB_ROW * FRAME_H, FRAME_W * 2, FRAME_H);
-  fillPoseDefaults();
-}
-
-// ---------------------------------------------------------------------------
-// Procedural pose art. EB has no overworld attack/hurt frames, so we GENERATE
-// them from each direction's standing frame by re-posing its body bands
-// (head / torso / legs) — the classic trick for faking extra animation:
-//   attack f0 = wind-up (upper body pulled back, opposite the facing)
-//   attack f1 = swing   (upper body lunged hard into the facing)
-//   hurt   f0 = recoil  (staggered hard back and crushed down)
-//   hurt   f1 = settle  (partial return toward standing)
-// The shears are symmetric in the facing's horizontal sign, so a derived
-// (west) frame generated this way equals the flip of its canonical (east)
-// frame — consistent with the editor's auto-mirroring. Only transform math
-// lives in the repo; the pixels still come from the player's own sprites.
-// ---------------------------------------------------------------------------
-
-// The four walk rows' frame cells with each direction's facing vector.
-const DIR_CELLS: { row: number; col: number; fx: number; fy: number }[] = [
-  { row: 0, col: 0, fx: 0, fy: -1 },  // N
-  { row: 0, col: 2, fx: 1, fy: 0 },   // E
-  { row: 1, col: 0, fx: 0, fy: 1 },   // S
-  { row: 1, col: 2, fx: -1, fy: 0 },  // W
-  { row: 2, col: 0, fx: 1, fy: -1 },  // NE
-  { row: 2, col: 2, fx: 1, fy: 1 },   // SE
-  { row: 3, col: 0, fx: -1, fy: 1 },  // SW
-  { row: 3, col: 2, fx: -1, fy: -1 }, // NW
-];
-
-/** One horizontal slice of the body, drawn with its own offset. */
-type Band = { y0: number; y1: number; dx: number; dy: number };
-const LEGS: Band = { y0: 16, y1: 23, dx: 0, dy: 0 }; // feet stay planted
-
-// Side-facing poses shear the upper body along the facing; straight N/S poses
-// (no horizontal axis to shear along) read through vertical motion instead.
-function bandsWindup(sx: number): Band[] {
-  return sx !== 0
-    ? [LEGS, { y0: 8, y1: 15, dx: -sx, dy: 0 }, { y0: 0, y1: 7, dx: -2 * sx, dy: 0 }]
-    : [LEGS, { y0: 8, y1: 15, dx: 0, dy: 1 }, { y0: 0, y1: 7, dx: 0, dy: 1 }]; // crouch
-}
-
-function bandsSwing(sx: number, fy: number): Band[] {
-  if (sx !== 0) {
-    return [LEGS, { y0: 8, y1: 15, dx: sx, dy: 1 }, { y0: 0, y1: 7, dx: 3 * sx, dy: 1 }];
-  }
-  return fy > 0
-    ? [LEGS, { y0: 8, y1: 15, dx: 0, dy: 1 }, { y0: 0, y1: 7, dx: 0, dy: 2 }]  // S: lean over
-    : [LEGS, { y0: 8, y1: 15, dx: 0, dy: -1 }, { y0: 0, y1: 7, dx: 0, dy: -1 }]; // N: reach away
-}
-
-// Hurt frame 0: hard recoil away from the facing, crushed down.
-function bandsHurtRecoil(sx: number): Band[] {
-  return sx !== 0
-    ? [LEGS, { y0: 8, y1: 15, dx: -sx, dy: 1 }, { y0: 0, y1: 7, dx: -2 * sx, dy: 2 }]
-    : [LEGS, { y0: 8, y1: 15, dx: 0, dy: 1 }, { y0: 0, y1: 7, dx: 0, dy: 2 }];
-}
-
-// Hurt frame 1: partial return toward standing (a smaller offset than recoil).
-function bandsHurtSettle(sx: number): Band[] {
-  return sx !== 0
-    ? [LEGS, { y0: 8, y1: 15, dx: 0, dy: 0 }, { y0: 0, y1: 7, dx: -sx, dy: 1 }]
-    : [LEGS, { y0: 8, y1: 15, dx: 0, dy: 0 }, { y0: 0, y1: 7, dx: 0, dy: 1 }];
-}
-
-/** Copy a frame band-by-band (legs first, head last so it overlaps the torso),
- *  clipped to the destination cell so shears can't bleed into neighbors. */
-function drawPosedFrame(srcRow: number, srcCol: number, dstRow: number, dstCol: number, bands: Band[]): void {
-  const ctx = sheetCtx!;
-  const cellX = dstCol * FRAME_W;
-  const cellY = dstRow * FRAME_H;
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(cellX, cellY, FRAME_W, FRAME_H);
-  ctx.clip();
-  for (const b of bands) {
-    const h = b.y1 - b.y0 + 1;
-    ctx.drawImage(
-      sheet!,
-      srcCol * FRAME_W, srcRow * FRAME_H + b.y0, FRAME_W, h,
-      cellX + b.dx, cellY + b.y0 + b.dy, FRAME_W, h
-    );
-  }
-  ctx.restore();
-}
-
-// Seed a 4-row, 8-direction, 2-frame pose block at `offset`, generated from
-// the matching walk frame. Each direction's two frames come from f0/f1 band
-// functions taking (horizontalSign, facingY).
-type BandFn = (sx: number, fy: number) => Band[];
-function seedPoseRows(offset: number, f0: BandFn, f1: BandFn): void {
-  sheetCtx!.clearRect(0, offset * FRAME_H, SHEET_W, FRAME_H * 4);
-  for (const d of DIR_CELLS) {
-    const sx = Math.sign(d.fx);
-    drawPosedFrame(d.row, d.col, d.row + offset, d.col, f0(sx, d.fy));
-    drawPosedFrame(d.row, d.col, d.row + offset, d.col + 1, f1(sx, d.fy));
-  }
-}
-
-function seedAttackRows(): void {
-  seedPoseRows(ATTACK_ROW_START, (sx) => bandsWindup(sx), (sx, fy) => bandsSwing(sx, fy));
-}
-
-function seedHurtRows(): void {
-  seedPoseRows(HURT_ROW_START, (sx) => bandsHurtRecoil(sx), (sx) => bandsHurtSettle(sx));
-}
-
-function fillPoseDefaults(): void {
-  seedAttackRows();
-  seedHurtRows();
-}
-
-function regionEquals(ax: number, ay: number, bx: number, by: number, w: number, h: number): boolean {
-  const ctx = sheetCtx!;
-  const a = ctx.getImageData(ax, ay, w, h).data;
-  const b = ctx.getImageData(bx, by, w, h).data;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
-
-/**
- * An early migration seeded attack/hurt rows as VERBATIM copies of the walk
- * rows. If a saved sheet still carries those untouched copies (the whole block
- * equals the walk block), replace them with the procedural poses; edited rows
- * are left alone.
- */
-function reseedLegacyCopies(): void {
-  const isWalkCopy = (offset: number) =>
-    regionEquals(0, 0, 0, offset * FRAME_H, SHEET_W, FRAME_H * 4);
-  if (isWalkCopy(ATTACK_ROW_START)) seedAttackRows();
-  if (isWalkCopy(HURT_ROW_START)) seedHurtRows();
-}
-
-function persistSheet(): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, sheet!.toDataURL());
-  } catch {
-    // storage full/blocked — edits still live in memory for this session
-  }
-}
-
 // ---------------------------------------------------------------------------
 // DOM construction
 // ---------------------------------------------------------------------------
 
 function buildDom(): void {
   overlay = document.createElement('div');
+  // Docked to the LEFT of the editor's right-side tool column (256px wide, see
+  // EditorShell.buildDock) rather than full-screen, so the tool dock stays
+  // visible. `right:256px` leaves that column clear; top:31px sits below the
+  // shell's HUD bar.
   overlay.style.cssText =
-    'position:fixed;inset:0;z-index:100;background:#16161e;color:#ddd;' +
+    'position:fixed;left:0;top:31px;right:256px;bottom:0;z-index:95;background:#16161e;color:#ddd;' +
     'font:12px monospace;display:flex;flex-direction:column;align-items:center;' +
     'overflow:auto;user-select:none;';
 
   const title = document.createElement('div');
-  title.textContent = 'CREATE CHARACTER — pixel editor   (WASD: test walk · 1/2/3: tools · Ctrl+C/V: copy/paste frame · Ctrl+Z: undo · Enter: start · Esc: back)';
+  title.textContent = 'SPRITE EDITOR — attack/hurt frames + held items   (pick a character · Character/Item modes · WASD: test walk · F attack · H hurt · 1/2/3 or Q/E: tools · Alt+click: eyedrop · G: cycle item · Ctrl+C/V: copy/paste frame · Ctrl+Z: undo · Ctrl+S: save · Esc: back)';
   title.style.cssText = 'padding:10px;color:#fff;letter-spacing:1px;';
   overlay.appendChild(title);
 
@@ -492,9 +674,89 @@ function panel(label: string): HTMLDivElement {
 function buildToolPanel(): HTMLDivElement {
   const div = panel('TOOLS');
 
+  // Character picker — load any cast member's sheet to fix its anim frames.
+  const charHead = document.createElement('div');
+  charHead.textContent = 'CHARACTER';
+  charHead.style.cssText = 'color:#9af;font-size:11px;letter-spacing:1px;';
+  div.appendChild(charHead);
+
+  // Custom dropdown whose trigger AND every row render the real sprite (a native
+  // <option> can't). Cast first, then the view-only vehicle groups.
+  charPicker = createSpritePicker({
+    sections: [
+      { values: roster.map(String) },
+      { label: 'Vehicles (view only)', values: VEHICLE_GROUPS.map((v) => String(v.id)) },
+    ],
+    initial: String(groupId),
+    labelFor: (v) => `${v} ${getSpriteName(Number(v)) ?? vehicleName(Number(v)) ?? ''}`.trim(),
+    drawThumb: drawSpriteGroupThumb,
+    onSelect: (v) => void loadGroupIntoEditor(Number(v)),
+  });
+  div.appendChild(charPicker.el);
+
+  charNote = document.createElement('div');
+  charNote.style.cssText = 'color:#9fd; font-size:10px; min-height:12px;';
+  div.appendChild(charNote);
+
+  // Rename: edit the display name, written to overrides/names.json on save.
+  const nameRow = document.createElement('div');
+  nameRow.style.cssText = 'display:flex;gap:6px;';
+  nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.placeholder = 'rename…';
+  nameInput.style.cssText =
+    'flex:1;min-width:0;font:11px monospace;padding:4px;background:#2a2a3a;' +
+    'color:#ddd;border:1px solid #444;border-radius:3px;';
+  // Don't let the editor's global hotkeys fire while typing a name.
+  nameInput.onkeydown = (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') saveCharName();
+  };
+  nameRow.appendChild(nameInput);
+  const nameBtn = document.createElement('button');
+  nameBtn.textContent = 'Rename';
+  nameBtn.style.cssText =
+    'font:11px monospace;padding:4px 8px;background:#2a2a3a;color:#ddd;' +
+    'border:1px solid #444;border-radius:3px;cursor:pointer;';
+  nameBtn.onclick = saveCharName;
+  nameRow.appendChild(nameBtn);
+  div.appendChild(nameRow);
+
+  // Edit-target toggle: the character sheet, or a held-item sprite.
+  const modeRow = document.createElement('div');
+  modeRow.style.cssText = 'display:flex;gap:6px;';
+  const modes: [EditMode, string][] = [['char', 'Character'], ['item', 'Item']];
+  for (const [m, label] of modes) {
+    const btn = document.createElement('button');
+    btn.textContent = label;
+    btn.style.cssText =
+      'flex:1;font:12px monospace;padding:5px 8px;background:#2a2a3a;color:#ddd;' +
+      'border:1px solid #444;border-radius:3px;cursor:pointer;';
+    btn.onclick = () => setEditMode(m);
+    modeButtons.set(m, btn);
+    modeRow.appendChild(btn);
+  }
+  div.appendChild(modeRow);
+
+  // Which item to edit (item mode only) — custom dropdown with the item art in
+  // each row. Hidden until Item mode (setEditMode toggles itemRow).
+  itemPicker = createSpritePicker({
+    sections: [{ values: [...HELD_ITEM_IDS] }],
+    initial: itemEditId,
+    labelFor: (v) => getItemName(v) ?? v,
+    drawThumb: drawItemThumb,
+    onSelect: (v) => {
+      loadItemIntoBuffer(v);
+      dirty = true;
+    },
+  });
+  itemRow = itemPicker.el;
+  itemPicker.el.style.display = 'none'; // shown in Item mode (setEditMode)
+  div.appendChild(itemPicker.el);
+
   const tools: [Tool, string][] = [
-    ['pencil', '1 ✏ Pencil'],
-    ['eraser', '2 ▭ Eraser'],
+    ['pencil', '1/Q ✏ Pencil'],
+    ['eraser', '2/E ▭ Eraser'],
     ['eyedrop', '3 ⊕ Eyedrop'],
   ];
   for (const [t, label] of tools) {
@@ -513,51 +775,32 @@ function buildToolPanel(): HTMLDivElement {
   palHead.style.cssText = 'margin-top:8px;color:#9af;font-size:11px;letter-spacing:1px;';
   div.appendChild(palHead);
 
-  const grid = document.createElement('div');
-  grid.style.cssText = 'display:grid;grid-template-columns:repeat(4,24px);gap:3px;';
-  for (let i = 0; i < palette.length; i++) {
-    const sw = document.createElement('div');
-    sw.style.cssText = 'width:24px;height:24px;border:2px solid #444;cursor:pointer;border-radius:2px;';
-    if (i === 0) {
-      // Color 0 is hardware-transparent on the SNES — painting it erases.
-      sw.style.background =
-        'repeating-conic-gradient(#555 0% 25%, #2a2a2a 0% 50%) 0 0 / 12px 12px';
-      sw.title = '0: transparent';
-    } else {
-      const [r, g, b] = palette[i];
-      sw.style.background = `rgb(${r},${g},${b})`;
-      sw.title = `${i}: rgb(${r},${g},${b})`;
-    }
-    sw.onclick = () => setColor(i);
-    swatchEls.push(sw);
-    grid.appendChild(sw);
-  }
-  div.appendChild(grid);
+  paletteGrid = document.createElement('div');
+  paletteGrid.style.cssText = 'display:grid;grid-template-columns:repeat(4,24px);gap:3px;';
+  div.appendChild(paletteGrid);
+  renderSwatches();
 
   const reset = document.createElement('button');
-  reset.textContent = 'Reset to Ness';
+  reset.textContent = 'Reset frame';
+  reset.title = 'Restore the selected attack/hurt frame to its generated default';
   reset.style.cssText =
     'margin-top:10px;font:11px monospace;padding:4px 6px;background:#3a2a2a;' +
     'color:#fbb;border:1px solid #644;border-radius:3px;cursor:pointer;';
-  reset.onclick = () => {
-    pushUndo();
-    void resetSheetFromRom().then(() => {
-      localStorage.removeItem(STORAGE_KEY);
-      dirty = true;
-    });
-  };
+  reset.onclick = resetSelectedFrame;
   div.appendChild(reset);
 
-  const start = document.createElement('button');
-  start.textContent = '▶ Start game';
-  start.style.cssText =
+  const save = document.createElement('button');
+  save.textContent = '💾 Save (Ctrl+S)';
+  save.title = 'Write this character\'s attack/hurt edits to overrides/sprites.json';
+  save.style.cssText =
     'margin-top:4px;font:12px monospace;padding:6px 8px;background:#1f3a26;' +
     'color:#9f9;border:1px solid #4a6;border-radius:3px;cursor:pointer;';
-  start.onclick = confirmEditor;
-  div.appendChild(start);
+  save.onclick = saveCurrentGroup;
+  div.appendChild(save);
 
   setTool('pencil');
   setColor(colorIndex);
+  setEditMode('char'); // highlight the default mode button
   return div;
 }
 
@@ -576,6 +819,7 @@ function buildStripPanel(): HTMLDivElement {
   stripCanvas.height = STRIP_H;
   stripCanvas.style.cssText = 'image-rendering:pixelated;cursor:pointer;';
   stripCanvas.onmousedown = (e) => {
+    if (viewOnly || editMode === 'item') return; // read-only frame grid: nothing to select
     const r = stripCanvas.getBoundingClientRect();
     const x = e.clientX - r.left;
     const y = e.clientY - r.top;
@@ -680,41 +924,133 @@ function setColor(i: number): void {
   });
 }
 
+/** Rebuild the palette swatches for the active edit mode (char vs item). */
+function renderSwatches(): void {
+  if (!paletteGrid) return;
+  paletteGrid.innerHTML = '';
+  swatchEls = [];
+  const count = editMode === 'item' ? ITEM_PALETTE.length : palette.length;
+  for (let i = 0; i < count; i++) {
+    const sw = document.createElement('div');
+    sw.style.cssText = 'width:24px;height:24px;border:2px solid #444;cursor:pointer;border-radius:2px;';
+    const color = colorFor(i);
+    if (color === null) {
+      // Color 0 is hardware-transparent on the SNES — painting it erases.
+      sw.style.background = 'repeating-conic-gradient(#555 0% 25%, #2a2a2a 0% 50%) 0 0 / 12px 12px';
+      sw.title = '0: transparent';
+    } else {
+      sw.style.background = color;
+      sw.title = `${i}: ${color}`;
+    }
+    sw.onclick = () => setColor(i);
+    swatchEls.push(sw);
+    paletteGrid.appendChild(sw);
+  }
+  setColor(Math.min(colorIndex, count - 1));
+}
+
+function setEditMode(m: EditMode): void {
+  for (const [key, btn] of modeButtons) {
+    btn.style.borderColor = key === m ? '#9af' : '#444';
+    btn.style.color = key === m ? '#fff' : '#ddd';
+  }
+  if (editMode === m) return;
+  editMode = m;
+  if (itemRow) itemRow.style.display = m === 'item' ? 'block' : 'none';
+  if (m === 'item') {
+    colorIndex = 1;
+    loadItemIntoBuffer(itemEditId); // also sets walkerItem so it previews on the character
+  } else {
+    walkerItem = null;
+    if (itemNote) itemNote.textContent = 'Item: none (G cycles)';
+  }
+  renderSwatches();
+  dirty = true;
+}
+
 // ---------------------------------------------------------------------------
 // Painting
 // ---------------------------------------------------------------------------
 
+/** Parse '#rrggbb' to an RGB tuple ('' / non-hex -> black). */
+function parseHexColor(hex: string): [number, number, number] {
+  if (!hex || hex[0] !== '#') return [0, 0, 0];
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+// The canvas + cell origin + dimensions currently being painted. Character mode
+// targets the selected sheet cell (16x24); item mode targets the 16x16 buffer.
+function activeTarget(): { ctx: CanvasRenderingContext2D; w: number; h: number; ox: number; oy: number } {
+  if (editMode === 'item') return { ctx: itemCtx!, w: ITEM_W, h: ITEM_H, ox: 0, oy: 0 };
+  return { ctx: sheetCtx!, w: FRAME_W, h: FRAME_H, ox: selCol * FRAME_W, oy: selRow * FRAME_H };
+}
+
+/** CSS color for a palette index in the active mode, or null for transparent. */
+function colorFor(i: number): string | null {
+  if (i === 0) return null;
+  if (editMode === 'item') return ITEM_PALETTE[i] || null;
+  const c = palette[i];
+  return c ? `rgb(${c[0]},${c[1]},${c[2]})` : null;
+}
+
+/** Nearest palette index to an RGB color in the active mode (for eyedrop). */
+function nearestActiveIndex(r: number, g: number, b: number): number {
+  if (editMode !== 'item') return nearestPaletteIndex(r, g, b);
+  let best = 1;
+  let bestDist = Infinity;
+  for (let i = 1; i < itemPaletteRGB.length; i++) {
+    const [pr, pg, pb] = itemPaletteRGB[i];
+    const d = (pr - r) ** 2 + (pg - g) ** 2 + (pb - b) ** 2;
+    if (d < bestDist) {
+      bestDist = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
 function applyToolAt(e: MouseEvent): void {
+  if (editMode === 'char' && !sheetReady()) return; // view-only group: nothing to paint
+  const { ctx, w, h, ox, oy } = activeTarget();
   const r = editCanvas.getBoundingClientRect();
   const px = Math.floor((e.clientX - r.left) / ZOOM);
   const py = Math.floor((e.clientY - r.top) / ZOOM);
-  if (px < 0 || py < 0 || px >= FRAME_W || py >= FRAME_H) return;
+  if (px < 0 || py < 0 || px >= w || py >= h) return;
 
-  const sx = selCol * FRAME_W + px;
-  const sy = selRow * FRAME_H + py;
-  const ctx = sheetCtx!;
+  const sx = ox + px;
+  const sy = oy + py;
 
   // Right mouse button always erases, whatever tool is active.
   const erase = tool === 'eraser' || (e.buttons & 2) !== 0;
 
-  if (tool === 'eyedrop' && !erase) {
+  // Alt+click samples a color without switching off the active tool; the
+  // eyedrop tool does the same but then drops back to the pencil. (Sampling is
+  // allowed on the locked walk rows; only painting them is blocked.)
+  if ((tool === 'eyedrop' || e.altKey) && !erase) {
     const d = ctx.getImageData(sx, sy, 1, 1).data;
-    setColor(d[3] === 0 ? 0 : nearestPaletteIndex(d[0], d[1], d[2]));
-    setTool('pencil');
+    setColor(d[3] === 0 ? 0 : nearestActiveIndex(d[0], d[1], d[2]));
+    if (tool === 'eyedrop') setTool('pencil');
     return;
   }
 
-  if (erase || colorIndex === 0) {
+
+  const color = colorFor(colorIndex);
+  if (erase || color === null) {
     ctx.clearRect(sx, sy, 1, 1);
   } else {
-    const [cr, cg, cb] = palette[colorIndex];
     ctx.clearRect(sx, sy, 1, 1); // replace, don't blend
-    ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
+    ctx.fillStyle = color;
     ctx.fillRect(sx, sy, 1, 1);
   }
-  // Auto-mirror: keep the west/diagonal-left partner cell a flipped copy of the
-  // canonical cell being edited (selection is always canonical — see strip click).
-  syncMirrorCell(selRow, selCol);
+
+  if (editMode === 'item') {
+    commitItemEdit(); // push the buffer as a live override so the test pane updates
+  } else {
+    // Auto-mirror: keep the west/diagonal-left partner cell a flipped copy of the
+    // canonical cell being edited (selection is always canonical — see strip click).
+    syncMirrorCell(selRow, selCol);
+  }
   strokeChanged = true;
   dirty = true;
 }
@@ -748,16 +1084,38 @@ function nearestPaletteIndex(r: number, g: number, b: number): number {
 }
 
 function pushUndo(): void {
-  undoStack.push(sheetCtx!.getImageData(0, 0, SHEET_W, SHEET_H));
+  if (editMode === 'item') {
+    itemUndo.push(itemCtx!.getImageData(0, 0, ITEM_W, ITEM_H));
+    if (itemUndo.length > UNDO_LIMIT) itemUndo.shift();
+    return;
+  }
+  if (!sheetCtx) return; // view-only group: no sheet to snapshot
+  undoStack.push(sheetCtx.getImageData(0, 0, SHEET_W, SHEET_H));
   if (undoStack.length > UNDO_LIMIT) undoStack.shift();
 }
 
 function undo(): void {
+  if (editMode === 'item') {
+    const snap = itemUndo.pop();
+    if (!snap) return;
+    itemCtx!.putImageData(snap, 0, 0);
+    commitItemEdit();
+    persistItem();
+    dirty = true;
+    return;
+  }
   const snap = undoStack.pop();
   if (!snap) return;
   sheetCtx!.putImageData(snap, 0, 0);
-  persistSheet();
+  refreshDiagSupport(groupId); // an undo may add/remove diagonal frames
   dirty = true;
+}
+
+/** Persist whichever surface is currently being edited. Item art autosaves to
+ *  localStorage; character anim edits persist only via the explicit Save (to
+ *  overrides/sprites.json), so there's nothing to do for the char sheet here. */
+function persistActive(): void {
+  if (editMode === 'item') persistItem();
 }
 
 /** Human label for a sheet cell (selection is always a canonical strip cell). */
@@ -774,12 +1132,16 @@ function labelForCell(row: number, col: number): string {
 
 /** Grab the selected frame's 16x24 pixels into the clipboard. */
 function copyFrame(): void {
+  if (editMode === 'item') return; // frame copy/paste is character-sheet only
+  if (!sheetReady()) return; // view-only group
   frameClipboard = sheetCtx!.getImageData(selCol * FRAME_W, selRow * FRAME_H, FRAME_W, FRAME_H);
   if (copyNote) copyNote.textContent = `Clipboard: ${labelForCell(selRow, selCol)}`;
 }
 
 /** Replace the selected frame with the clipboard (undoable; re-mirrors). */
 function pasteFrame(): void {
+  if (editMode === 'item') return;
+  if (!sheetReady()) return; // view-only group
   if (!frameClipboard) return;
   pushUndo();
   // putImageData overwrites the cell wholesale (incl. transparency) — a true
@@ -787,15 +1149,20 @@ function pasteFrame(): void {
   sheetCtx!.putImageData(frameClipboard, selCol * FRAME_W, selRow * FRAME_H);
   // Selection is canonical, so refresh its W/NW/SW mirror partner if it has one.
   syncMirrorCell(selRow, selCol);
-  persistSheet();
   dirty = true;
 }
 
 function onGlobalMouseUp(): void {
   if (painting && strokeChanged) {
-    persistSheet();
+    persistActive();
+    // A finished character stroke may have filled (or cleared) diagonal frames;
+    // refresh diag support so the test pane + world show them immediately
+    // instead of the side-view fallback.
+    if (editMode === 'char') refreshDiagSupport(groupId);
   } else if (painting && !strokeChanged) {
-    undoStack.pop(); // stroke did nothing (e.g. eyedrop) — drop its snapshot
+    // stroke did nothing (e.g. eyedrop) — drop its snapshot from the active stack
+    if (editMode === 'item') itemUndo.pop();
+    else undoStack.pop();
   }
   painting = false;
 }
@@ -805,14 +1172,19 @@ function onGlobalMouseUp(): void {
 // ---------------------------------------------------------------------------
 
 function onKeyDown(e: KeyboardEvent): void {
+  // While typing in a field (the sprite picker's search, the rename box), let
+  // the key reach the input — don't steal it for WASD/tool hotkeys.
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   e.stopPropagation();
   const k = e.key.toLowerCase();
   if (k === 'escape') {
     cancelEditor();
     return;
   }
-  if (k === 'enter') {
-    confirmEditor();
+  if ((e.ctrlKey || e.metaKey) && k === 's') {
+    e.preventDefault();
+    saveCurrentGroup();
     return;
   }
   if ((e.ctrlKey || e.metaKey) && k === 'z') {
@@ -830,8 +1202,8 @@ function onKeyDown(e: KeyboardEvent): void {
     pasteFrame();
     return;
   }
-  if (k === '1') setTool('pencil');
-  else if (k === '2') setTool('eraser');
+  if (k === '1' || k === 'q') setTool('pencil');
+  else if (k === '2' || k === 'e') setTool('eraser');
   else if (k === '3') setTool('eyedrop');
   else if (k === 'w' || k === 'a' || k === 's' || k === 'd') heldKeys.add(k);
   else if (k === 'f' && walkerPose === 'walk') {
@@ -841,8 +1213,16 @@ function onKeyDown(e: KeyboardEvent): void {
     walkerPose = 'hurt'; // preview the hurt row
     walkerPoseTimer = 0;
   } else if (k === 'g') {
-    walkerItem = nextHeldItem(walkerItem); // preview held-item overlays
-    if (itemNote) itemNote.textContent = `Item: ${walkerItem ? getItemName(walkerItem) : 'none'} (G cycles)`;
+    if (editMode === 'item') {
+      // Cycle which item is being edited (keeps the picker in sync).
+      const i = HELD_ITEM_IDS.indexOf(itemEditId);
+      const next = HELD_ITEM_IDS[(i + 1) % HELD_ITEM_IDS.length];
+      loadItemIntoBuffer(next); // updates the item picker (renderItemThumb)
+      dirty = true;
+    } else {
+      walkerItem = nextHeldItem(walkerItem); // preview held-item overlays
+      if (itemNote) itemNote.textContent = `Item: ${walkerItem ? getItemName(walkerItem) : 'none'} (G cycles)`;
+    }
   }
 }
 
@@ -937,13 +1317,57 @@ function drawTestPane(): void {
   if (walkerItem && itemBehind) {
     drawHeldItem(ctx, walkerItem, walkerDir, walkerFrame, walkerPose, walkerX, walkerY);
   }
-  drawSprite(ctx, PREVIEW_GROUP, walkerDir, walkerFrame, walkerX, walkerY, 'full', walkerPose);
+  drawSprite(ctx, groupId, walkerDir, walkerFrame, walkerX, walkerY, 'full', walkerPose);
   if (walkerItem && !itemBehind) {
     drawHeldItem(ctx, walkerItem, walkerDir, walkerFrame, walkerPose, walkerX, walkerY);
   }
 }
 
+/** Edit-area stand-in for view-only groups: the sprite scaled to fit + a flag. */
+function drawViewOnlyPreview(): void {
+  const cv = editCanvas;
+  if (cv.width !== FRAME_W * ZOOM || cv.height !== FRAME_H * ZOOM) {
+    cv.width = FRAME_W * ZOOM;
+    cv.height = FRAME_H * ZOOM;
+  }
+  const ctx = cv.getContext('2d')!;
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = CHECKER_A;
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.fillStyle = CHECKER_B;
+  for (let y = 0; y < cv.height; y += 16) {
+    for (let x = (y / 16) % 2 === 0 ? 0 : 16; x < cv.width; x += 32) ctx.fillRect(x, y, 16, 16);
+  }
+  const meta = getSpriteGroupMeta(groupId);
+  const w = meta?.width ?? FRAME_W;
+  const h = meta?.height ?? FRAME_H;
+  const s = Math.max(1, Math.floor(Math.min((cv.width - 24) / w, (cv.height - 24) / h)));
+  ctx.save();
+  ctx.scale(s, s);
+  drawSprite(ctx, groupId, Direction.S, 0, cv.width / s / 2, cv.height / s / 2 + h / 2);
+  ctx.restore();
+  ctx.fillStyle = '#fff';
+  ctx.font = '12px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('VIEW ONLY', cv.width / 2, 16);
+  ctx.textAlign = 'left';
+}
+
 function drawEditCanvas(): void {
+  // Edit grid follows the active target (16x24 char cell vs 16x16 item).
+  const isItem = editMode === 'item';
+  // View-only group (vehicle): there's no editable cell — show a scaled preview.
+  if (!isItem && viewOnly) {
+    drawViewOnlyPreview();
+    return;
+  }
+  const gw = isItem ? ITEM_W : FRAME_W;
+  const gh = isItem ? ITEM_H : FRAME_H;
+  if (editCanvas.width !== gw * ZOOM || editCanvas.height !== gh * ZOOM) {
+    editCanvas.width = gw * ZOOM;
+    editCanvas.height = gh * ZOOM;
+  }
+
   const ctx = editCanvas.getContext('2d')!;
   ctx.imageSmoothingEnabled = false;
 
@@ -952,24 +1376,28 @@ function drawEditCanvas(): void {
   ctx.fillStyle = CHECKER_A;
   ctx.fillRect(0, 0, editCanvas.width, editCanvas.height);
   ctx.fillStyle = CHECKER_B;
-  for (let y = 0; y < FRAME_H; y++) {
-    for (let x = (y % 2 === 0 ? 0 : 1); x < FRAME_W; x += 2) {
+  for (let y = 0; y < gh; y++) {
+    for (let x = (y % 2 === 0 ? 0 : 1); x < gw; x += 2) {
       ctx.fillRect(x * ZOOM, y * ZOOM, ZOOM, ZOOM);
     }
   }
 
-  ctx.drawImage(
-    sheet!,
-    selCol * FRAME_W, selRow * FRAME_H, FRAME_W, FRAME_H,
-    0, 0, FRAME_W * ZOOM, FRAME_H * ZOOM
-  );
+  if (isItem) {
+    ctx.drawImage(itemCanvas!, 0, 0, ITEM_W, ITEM_H, 0, 0, gw * ZOOM, gh * ZOOM);
+  } else {
+    ctx.drawImage(
+      sheet!,
+      selCol * FRAME_W, selRow * FRAME_H, FRAME_W, FRAME_H,
+      0, 0, gw * ZOOM, gh * ZOOM
+    );
+  }
 
   // Pixel grid (dark, to read on the light checker), heavier on 8x8 SNES tiles.
-  for (let x = 0; x <= FRAME_W; x++) {
+  for (let x = 0; x <= gw; x++) {
     ctx.fillStyle = x % 8 === 0 ? 'rgba(0,0,0,0.35)' : 'rgba(0,0,0,0.12)';
     ctx.fillRect(x * ZOOM, 0, 1, editCanvas.height);
   }
-  for (let y = 0; y <= FRAME_H; y++) {
+  for (let y = 0; y <= gh; y++) {
     ctx.fillStyle = y % 8 === 0 ? 'rgba(0,0,0,0.35)' : 'rgba(0,0,0,0.12)';
     ctx.fillRect(0, y * ZOOM, editCanvas.width, 1);
   }
@@ -986,7 +1414,126 @@ function fillChecker(ctx: CanvasRenderingContext2D, x: number, y: number, w: num
   }
 }
 
+// Direction label for a source-sheet cell (vehicles reuse the cast walk layout,
+// so rows 0-3 / cols 0-3 map to the 8 directions × 2 frames).
+const SRC_CELL_LABEL: Record<string, string> = (() => {
+  const m: Record<string, string> = {};
+  for (const [dir, { row, col }] of Object.entries(DIR_BASE)) {
+    m[`${row},${col}`] = dir;
+    m[`${row},${col + 1}`] = dir; // second frame, same direction
+  }
+  return m;
+})();
+
+interface StripCell {
+  label: string;
+  w: number;
+  h: number;
+  draw: (ctx: CanvasRenderingContext2D, dx: number, dy: number, dw: number, dh: number) => void;
+}
+
+/** Read-only frame grid (vehicles, items): every frame the object has, scaled
+ *  to fit, labeled. Resizes the strip canvas to the content. */
+function drawFramesGrid(cells: StripCell[], cols: number): void {
+  const ctx = stripCanvas.getContext('2d')!;
+  if (cells.length === 0) {
+    stripCanvas.width = STRIP_W;
+    stripCanvas.height = 36;
+    ctx.fillStyle = '#1f1f2a';
+    ctx.fillRect(0, 0, stripCanvas.width, stripCanvas.height);
+    ctx.fillStyle = '#8895aa';
+    ctx.font = '10px monospace';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('no frames', 8, 18);
+    return;
+  }
+  const fw = Math.max(...cells.map((c) => c.w));
+  const fh = Math.max(...cells.map((c) => c.h));
+  // Integer scale toward a ~52px target: small cast frames enlarge, big vehicle
+  // frames sit at 1x.
+  const scale = Math.max(1, Math.round(52 / Math.max(fw, fh)));
+  const PAD = 4;
+  const LABEL = 12;
+  const GAP = 4;
+  const cw = fw * scale + PAD * 2;
+  const ch = fh * scale + PAD * 2 + LABEL;
+  const rows = Math.ceil(cells.length / cols);
+  stripCanvas.width = cols * cw + GAP * (cols + 1);
+  stripCanvas.height = rows * ch + GAP * (rows + 1);
+  ctx.imageSmoothingEnabled = false; // resize reset context state
+  ctx.fillStyle = '#1f1f2a';
+  ctx.fillRect(0, 0, stripCanvas.width, stripCanvas.height);
+  ctx.font = '9px monospace';
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'center';
+  cells.forEach((cell, i) => {
+    const cx = GAP + (i % cols) * (cw + GAP);
+    const cy = GAP + Math.floor(i / cols) * (ch + GAP);
+    ctx.fillStyle = '#cdd6e6';
+    ctx.fillText(cell.label, cx + cw / 2, cy + LABEL / 2 + 1);
+    const bx = cx + PAD;
+    const by = cy + LABEL;
+    const bw = fw * scale;
+    const bh = fh * scale;
+    fillChecker(ctx, bx, by, bw, bh);
+    const dw = cell.w * scale;
+    const dh = cell.h * scale;
+    cell.draw(ctx, bx + (bw - dw) / 2, by + (bh - dh) / 2, dw, dh); // center smaller frames
+    ctx.strokeStyle = '#888';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+  });
+  ctx.textAlign = 'left';
+}
+
+/** Every source frame of the current (view-only) group, in sheet order. */
+function vehicleStripCells(): StripCell[] {
+  const src = getSourceSheet(groupId);
+  if (!src) return [];
+  const { img, frameW, frameH, cols, rows } = src;
+  const cells: StripCell[] = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      cells.push({
+        label: SRC_CELL_LABEL[`${r},${c}`] ?? `${r},${c}`,
+        w: frameW,
+        h: frameH,
+        draw: (ctx, dx, dy, dw, dh) =>
+          ctx.drawImage(img, c * frameW, r * frameH, frameW, frameH, dx, dy, dw, dh),
+      });
+    }
+  }
+  return cells;
+}
+
+/** The current held item's single frame (its live edit buffer or base art). */
+function itemStripCells(): StripCell[] {
+  const art: CanvasImageSource | null = itemEditId && itemCanvas ? itemCanvas : renderItemArt(itemEditId);
+  if (!art) return [];
+  return [{
+    label: getItemName(itemEditId) ?? itemEditId,
+    w: ITEM_W,
+    h: ITEM_H,
+    draw: (ctx, dx, dy, dw, dh) => ctx.drawImage(art, 0, 0, ITEM_W, ITEM_H, dx, dy, dw, dh),
+  }];
+}
+
 function drawStrip(): void {
+  // Item / view-only groups show a read-only grid of every frame they have.
+  if (editMode === 'item') {
+    drawFramesGrid(itemStripCells(), 1);
+    return;
+  }
+  if (viewOnly) {
+    drawFramesGrid(vehicleStripCells(), getSourceSheet(groupId)?.cols ?? 4);
+    return;
+  }
+
+  // Editable character: the canonical walk/climb/attack/hurt pose strip.
+  if (stripCanvas.width !== STRIP_W || stripCanvas.height !== STRIP_H) {
+    stripCanvas.width = STRIP_W;
+    stripCanvas.height = STRIP_H;
+  }
   const ctx = stripCanvas.getContext('2d')!;
   ctx.imageSmoothingEnabled = false;
   // Panel-dark fill so the label gutters blend in; frame sets get a light
@@ -995,6 +1542,12 @@ function drawStrip(): void {
   ctx.fillRect(0, 0, STRIP_W, STRIP_H);
   ctx.textBaseline = 'middle';
   ctx.font = '10px monospace';
+
+  if (!sheet) {
+    ctx.fillStyle = '#8895aa';
+    ctx.fillText('no frames', 8, 18);
+    return;
+  }
 
   for (let dr = 0; dr < DISPLAY_ROWS.length; dr++) {
     const y = dr * STRIP_FRAME_H;

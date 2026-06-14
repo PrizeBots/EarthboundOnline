@@ -6,6 +6,7 @@
  */
 
 import { Direction } from '../types';
+import { spawnDamageNumber, spawnHealNumber } from './Emitter';
 
 const ANIM_INTERVAL = 8; // frames between walk-cycle toggles
 
@@ -47,10 +48,12 @@ export abstract class Entity implements EntityView {
 
   takeDamage(amount: number): void {
     this.hp = Math.max(0, this.hp - amount);
+    if (amount > 0) spawnDamageNumber(this.x, this.y, amount);
   }
 
   heal(amount: number): void {
     this.hp = Math.min(this.maxHp, this.hp + amount);
+    if (amount > 0) spawnHealNumber(this.x, this.y, amount);
   }
 
   /** Advance the 2-frame walk cycle. Call only while moving. */

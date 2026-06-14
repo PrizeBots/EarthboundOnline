@@ -97,3 +97,12 @@ export function initMuteButton(): void {
   render();
   document.body.appendChild(btn);
 }
+
+/**
+ * Show/hide the mute button (the editor hides it while active, since it mutes
+ * the game itself). Restores the button's flex layout when shown.
+ */
+export function setMuteButtonHidden(hidden: boolean): void {
+  const btn = document.getElementById('eb-mute');
+  if (btn) btn.style.display = hidden ? 'none' : 'flex';
+}

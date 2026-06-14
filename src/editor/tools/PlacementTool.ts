@@ -1,8 +1,8 @@
 import { loadJSON } from '../../engine/AssetLoader';
-import { drawSprite, loadSpriteGroup, getSpriteGroupMeta } from '../../engine/SpriteManager';
+import { drawSprite, loadSpriteGroup, getSpriteGroupMeta, listSpriteGroupIds } from '../../engine/SpriteManager';
+import { createSpritePicker, drawSpriteGroupThumb, SpritePicker } from '../../engine/SpritePicker';
 import { getSpriteName, setSpriteNameOverride } from '../../engine/SpriteNames';
-import { spriteAnimatorTool } from './SpriteAnimatorTool';
-import { RawNPC, NpcOverrides } from '../../engine/NPCManager';
+import { RawNPC, NpcOverrides, reloadNpcsLive } from '../../engine/NPCManager';
 import { DoorOverrides, EditorDoor, getEditorDoorBase, loadDoors } from '../../engine/DoorManager';
 import { checkCollision } from '../../engine/Collision';
 import { Camera } from '../../engine/Camera';
@@ -10,6 +10,7 @@ import { Direction } from '../../types';
 import { saveOverride } from '../saveOverride';
 import { registerSaveHandler } from '../EditorHub';
 import { EditorShellApi, EditorTool, WorldPoint } from '../types';
+import { dialogueTool } from './DialogueTool';
 import spawnBase from '../../spawn.json';
 
 // Placement Editor (EDITOR_TOOLS.md §2) — three tabs:
@@ -100,6 +101,7 @@ class PlacementTool implements EditorTool {
   private infoEl: HTMLDivElement | null = null;
   private fields = new Map<string, HTMLInputElement | HTMLSelectElement>();
   private thumb: HTMLCanvasElement | null = null;
+  private spritePicker: SpritePicker | null = null;
   private requestedSheets = new Set<number>();
 
   // --- lifecycle -----------------------------------------------------------
@@ -268,6 +270,7 @@ class PlacementTool implements EditorTool {
 
   async saveNpcs(): Promise<void> {
     await saveOverride('npcs.json', this.buildNpcOverrides());
+    await reloadNpcsLive(); // apply live in this client (like saveDoors -> loadDoors)
   }
 
   async saveSpawn(): Promise<void> {
@@ -376,13 +379,11 @@ class PlacementTool implements EditorTool {
   onKey(key: string): boolean {
     if (key === 'delete' || key === 'backspace') {
       if (this.mode === 'npcs' && this.selNpc) {
-        this.mutate(this.selNpc.deleted ? 'restore' : 'delete placement', this.selNpc,
-          { deleted: !this.selNpc.deleted }, 'npcs');
+        this.deleteSelected();
         return true;
       }
       if (this.mode === 'doors' && this.selDoor) {
-        this.mutate(this.selDoor.deleted ? 'restore door' : 'delete door', this.selDoor,
-          { deleted: !this.selDoor.deleted }, 'doors');
+        this.deleteSelected();
         return true;
       }
     }
@@ -394,6 +395,23 @@ class PlacementTool implements EditorTool {
     }
     if (key === 'tab') return false;
     return false;
+  }
+
+  /**
+   * Delete the selected placement/door: mark it deleted (an undoable command —
+   * Ctrl+Z restores it) and clear the selection so it vanishes from the world
+   * and the panel. Save commits the removal to the overrides layer.
+   */
+  private deleteSelected(): void {
+    if (this.mode === 'npcs' && this.selNpc) {
+      this.mutate('delete placement', this.selNpc, { deleted: true }, 'npcs');
+      this.selNpc = null;
+      this.refreshPanel();
+    } else if (this.mode === 'doors' && this.selDoor) {
+      this.mutate('delete door', this.selDoor, { deleted: true }, 'doors');
+      this.selDoor = null;
+      this.refreshPanel();
+    }
   }
 
   private snapV(v: number): number {
@@ -577,16 +595,7 @@ class PlacementTool implements EditorTool {
       if (sx < -VIEW_MARGIN || sx > vw + VIEW_MARGIN) continue;
       if (sy < -VIEW_MARGIN || sy > vh + VIEW_MARGIN) continue;
 
-      if (e.deleted) {
-        ctx.strokeStyle = 'rgba(255,80,80,0.9)';
-        ctx.beginPath();
-        ctx.moveTo(sx - 4, sy - 4);
-        ctx.lineTo(sx + 4, sy + 4);
-        ctx.moveTo(sx + 4, sy - 4);
-        ctx.lineTo(sx - 4, sy + 4);
-        ctx.stroke();
-        continue;
-      }
+      if (e.deleted) continue; // deleted placements are gone, not marked
       if (!this.requestedSheets.has(e.sprite)) {
         this.requestedSheets.add(e.sprite);
         loadSpriteGroup(e.sprite).catch(() => {});
@@ -636,15 +645,16 @@ class PlacementTool implements EditorTool {
 
   private drawDoors(ctx: CanvasRenderingContext2D, camX: number, camY: number, vw: number, vh: number): void {
     for (const d of this.doors) {
+      // Deleted doors are GONE — not drawn at all. The entry is kept (so Save
+      // writes the deletion and Ctrl+Z can restore it), but invisible.
+      if (d.deleted) continue;
       const sx = d.worldX - camX;
       const sy = d.worldY - camY;
       const onScreen =
         sx >= -VIEW_MARGIN && sx <= vw + VIEW_MARGIN &&
         sy >= -VIEW_MARGIN && sy <= vh + VIEW_MARGIN;
       if (onScreen) {
-        if (d.deleted) {
-          ctx.strokeStyle = 'rgba(255,80,80,0.8)';
-        } else if (d.zone && !this.isDoorAuthored(d)) {
+        if (d.zone && !this.isDoorAuthored(d)) {
           ctx.strokeStyle = 'rgba(140,140,140,0.5)'; // inactive zone door
         } else if (d.added) {
           ctx.strokeStyle = 'rgba(120,255,120,0.9)';
@@ -652,12 +662,6 @@ class PlacementTool implements EditorTool {
           ctx.strokeStyle = 'rgba(232,163,61,0.85)';
         }
         ctx.strokeRect(sx - 8.5, sy - 8.5, 17, 17);
-        if (d.deleted) {
-          ctx.beginPath();
-          ctx.moveTo(sx - 8, sy - 8);
-          ctx.lineTo(sx + 8, sy + 8);
-          ctx.stroke();
-        }
       }
       if (d === this.selDoor) {
         const dx = d.destX - camX;
@@ -704,7 +708,7 @@ class PlacementTool implements EditorTool {
   private buildPanel(): void {
     this.panel = document.createElement('div');
     this.panel.style.cssText =
-      'position:fixed;top:36px;right:8px;z-index:91;width:236px;background:#101418f2;' +
+      'width:100%;box-sizing:border-box;background:#101418f2;' +
       'color:#cde;font:12px monospace;border:1px solid #e8a33d;border-radius:5px;' +
       'padding:10px;display:flex;flex-direction:column;gap:7px;user-select:none;';
     this.panel.addEventListener('keydown', (e) => e.stopPropagation());
@@ -737,7 +741,7 @@ class PlacementTool implements EditorTool {
     this.formEl.style.cssText = 'display:flex;flex-direction:column;gap:5px;';
     this.panel.appendChild(this.formEl);
 
-    document.body.appendChild(this.panel);
+    this.shell!.panelHost.appendChild(this.panel);
     this.rebuildForm();
   }
 
@@ -799,6 +803,7 @@ class PlacementTool implements EditorTool {
     this.formEl.innerHTML = '';
     this.fields.clear();
     this.thumb = null;
+    this.spritePicker = null;
     for (const b of this.panel.querySelectorAll<HTMLButtonElement>('button[data-tab]')) {
       const on = b.dataset.tab === this.mode;
       b.style.color = on ? '#e8a33d' : '#cde';
@@ -839,17 +844,19 @@ class PlacementTool implements EditorTool {
     this.mkInput(form, 'x', 'x', (v) => sel((e) => !Number.isNaN(num(v)) && this.mutate('x', e, { x: num(v) }, 'npcs'))());
     this.mkInput(form, 'y', 'y', (v) => sel((e) => !Number.isNaN(num(v)) && this.mutate('y', e, { y: num(v) }, 'npcs'))());
 
+    // Sprite picker — the shared dropdown with a pixel preview per row + a
+    // quick-search box (same component as the Cast / Entity / Spawner tools).
     const spriteRow = this.mkRow(form, 'sprite');
-    const spriteIn = document.createElement('input');
-    spriteIn.style.cssText =
-      'width:44px;font:11px monospace;background:#0c1014;color:#cde;' +
-      'border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
-    spriteIn.onchange = () =>
-      sel((e) => !Number.isNaN(num(spriteIn.value)) && this.mutate('sprite', e, { sprite: Math.max(0, num(spriteIn.value)) }, 'npcs'))();
-    spriteRow.appendChild(spriteIn);
-    this.fields.set('sprite', spriteIn);
-    this.mkBtn('◀', sel((e) => this.mutate('sprite', e, { sprite: Math.max(0, e.sprite - 1) }, 'npcs')), spriteRow);
-    this.mkBtn('▶', sel((e) => this.mutate('sprite', e, { sprite: e.sprite + 1 }, 'npcs')), spriteRow);
+    spriteRow.style.alignItems = 'stretch';
+    this.spritePicker = createSpritePicker({
+      sections: [{ values: listSpriteGroupIds().map(String) }],
+      initial: String(this.selNpc?.sprite ?? 1),
+      labelFor: (v) => `${v} ${getSpriteName(Number(v)) ?? ''}`.trim(),
+      drawThumb: drawSpriteGroupThumb,
+      onSelect: (v) => sel((e) => this.mutate('sprite', e, { sprite: Math.max(0, num(v)) }, 'npcs'))(),
+    });
+    this.spritePicker.el.style.flex = '1';
+    spriteRow.appendChild(this.spritePicker.el);
 
     this.thumb = document.createElement('canvas');
     this.thumb.width = 48;
@@ -875,15 +882,9 @@ class PlacementTool implements EditorTool {
       if (name === null) return;
       setSpriteNameOverride(e.sprite, name.trim() || null);
       this.shell?.markDirty('names');
+      this.spritePicker?.refresh(); // relabel the dropdown rows with the new name
       this.refreshPanel();
       this.shell?.toast(`Renamed to "${name.trim() || '(default)'}" — Save-all writes names.json`);
-    }, nameRow);
-    this.mkBtn('Edit sprite', () => {
-      const e = this.selNpc;
-      if (!e) return;
-      const sprite = e.sprite;
-      this.shell?.openTool('sprite-animator');
-      void spriteAnimatorTool.openGroup(sprite);
     }, nameRow);
     form.appendChild(nameRow);
 
@@ -900,15 +901,47 @@ class PlacementTool implements EditorTool {
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;gap:6px;border-top:1px solid #243;padding-top:7px;';
     form.appendChild(actions);
-    this.mkBtn('Delete (Del)', sel((e) => this.mutate(e.deleted ? 'restore' : 'delete placement', e, { deleted: !e.deleted }, 'npcs')), actions);
+    this.mkBtn('Dialogue ✎', () => {
+      if (this.selNpc) void this.authorDialogue(this.selNpc);
+    }, actions);
+    this.mkBtn('Delete (Del)', () => this.deleteSelected(), actions);
     this.mkBtn('Save', () => {
       void this.saveNpcs()
         .then(() => {
           this.shell?.clearDirty('npcs');
-          this.shell?.toast('Saved npcs — persons go live in ~2s; refresh for props');
+          this.shell?.toast('Saved npcs — applied live; persons start moving in ~2s');
         })
         .catch((err) => this.shell?.toast(String(err), true));
     }, actions, true);
+  }
+
+  /** Lowest unused textId in the authored range (kept clear of ROM config ids). */
+  private mintTextId(): number {
+    let max = 899999;
+    for (const n of this.npcs) if (n.t != null && n.t > max) max = n.t;
+    return max + 1;
+  }
+
+  /**
+   * "Author dialogue" for the selected NPC: assign a fresh textId if it has
+   * none, persist the NPC + link now (so the new line isn't orphaned), then
+   * open the Dialogue Editor focused on that textId.
+   */
+  private async authorDialogue(e: NpcEntry): Promise<void> {
+    let id = e.t;
+    if (id == null) {
+      id = this.mintTextId();
+      this.mutate('text id', e, { t: id }, 'npcs');
+    }
+    try {
+      await this.saveNpcs();
+      this.shell?.clearDirty('npcs');
+    } catch (err) {
+      this.shell?.toast(String(err), true);
+      return;
+    }
+    dialogueTool.requestEntry(String(id));
+    this.shell?.openTool('dialogue');
   }
 
   private buildSpawnForm(): void {
@@ -997,7 +1030,7 @@ class PlacementTool implements EditorTool {
       this.shell!.context.teleport(e.destX, e.destY);
       this.shell?.toast(`Teleported through ${e.key}`);
     }), actions);
-    this.mkBtn('Delete (Del)', sel((e) => this.mutate(e.deleted ? 'restore door' : 'delete door', e, { deleted: !e.deleted }, 'doors')), actions);
+    this.mkBtn('Delete (Del)', () => this.deleteSelected(), actions);
     this.mkBtn('Save', () => {
       void this.saveDoors()
         .then(() => {
@@ -1041,7 +1074,7 @@ class PlacementTool implements EditorTool {
     if (this.mode === 'npcs') {
       const e = this.selNpc;
       if (e) {
-        setVal('sprite', String(e.sprite));
+        this.spritePicker?.setValue(String(e.sprite));
         setVal('dir', String(e.dir));
         setVal('kind', e.kind);
         setVal('t', e.t === null ? '' : String(e.t));

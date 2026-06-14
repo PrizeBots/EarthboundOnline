@@ -1,4 +1,4 @@
-import { loadJSON } from '../engine/AssetLoader';
+import { loadJSON, primeJSONCache } from '../engine/AssetLoader';
 import { getSector, getSectorForTile, getTileAt } from '../engine/MapManager';
 import { loadAtlas, drawTile, drawForegroundTile, hasForegroundTile } from '../engine/TilesetManager';
 import {
@@ -111,8 +111,36 @@ interface LocNode {
   x: number;
   y: number;
   kind: 'town' | 'building' | 'room';
+  // Stable identity for the editable-outline overrides (hide / move / add). For
+  // derived nodes this is a coord-based key (the derivation is deterministic);
+  // manual nodes carry their generated id.
+  key: string;
+  townKey?: string;  // raw region key (town nodes only) — indexes added buildings
+  manual?: boolean;  // hand-authored via the + buttons (vs. door-derived)
   thumb?: { x: number; y: number }; // storefront art anchor (building entrance px)
   children?: LocNode[];
+}
+
+// ── editable-outline overrides (public/overrides/places.json) ────────────────
+// Layered on top of the door-derived tree each time the editor opens: you can
+// add extra buildings/rooms, hide any link, and nudge a quick-link anchor. No
+// ROM data — just authored navigation metadata, so it ships.
+interface AddedRoom { id: string; label: string; x: number; y: number; }
+interface AddedBuilding { id: string; label: string; x: number; y: number; }
+interface PlacesDoc {
+  version: number;
+  hidden: string[];                              // node keys removed from the outline
+  moved: Record<string, { x: number; y: number }>; // anchor overrides (derived or manual)
+  labels: Record<string, string>;               // name overrides for DERIVED nodes
+  buildings: Record<string, AddedBuilding[]>;    // townKey -> manual buildings
+  rooms: Record<string, AddedRoom[]>;            // buildingKey -> manual rooms
+}
+
+function buildingKeyOf(townKey: string, ex: number, ey: number): string {
+  return `${townKey}|b@${ex},${ey}`;
+}
+function roomKeyOf(buildingKey: string, dx: number, dy: number): string {
+  return `${buildingKey}|r@${dx},${dy}`;
 }
 
 interface Room {
@@ -320,6 +348,8 @@ async function buildTree(): Promise<LocNode[]> {
         x: cx,
         y: cy,
         kind: 'town' as const,
+        key: `t:${town}`,
+        townKey: town,
         children: buildings.map((b, i) => buildingNode(townLabel, b, i + 1)),
       };
     });
@@ -331,6 +361,7 @@ function buildingNode(townLabel: string, b: Building, ordinal: number): LocNode 
   const people = rooms.reduce((s, r) => s + r.people, 0);
   const name = named?.place ?? `${townLabel} Bldg ${ordinal}`;
 
+  const bKey = buildingKeyOf(b.town, b.ex, b.ey);
   const counters: Record<string, number> = {};
   return {
     label: `${name}${peopleChip(people)}`,
@@ -338,6 +369,7 @@ function buildingNode(townLabel: string, b: Building, ordinal: number): LocNode 
     x: b.ex,
     y: b.ey,
     kind: 'building',
+    key: bKey,
     thumb: { x: b.ex, y: b.ey },
     children: rooms.map((r) => {
       const noun = roomNoun(r.kind);
@@ -349,6 +381,7 @@ function buildingNode(townLabel: string, b: Building, ordinal: number): LocNode 
         x: r.dx,
         y: r.dy,
         kind: 'room' as const,
+        key: roomKeyOf(bKey, r.dx, r.dy),
       };
     }),
   };
@@ -452,32 +485,67 @@ async function storefrontThumb(entranceX: number, entranceY: number): Promise<st
   return url;
 }
 
+/** The draggable map marker the nav hands to the shell when a node is selected. */
+export interface PlaceAnchor {
+  x: number;
+  y: number;
+  label: string;
+  onMove: (x: number, y: number) => void; // live during drag
+  onCommit: () => void;                    // drag end — persist
+}
+
+/** What the editor shell offers the nav for the map-side anchor affordance. */
+export interface PlaceAnchorApi {
+  /** Current camera-view center (world px) — where a new node is dropped. */
+  viewCenter: () => { x: number; y: number };
+  /** Show (non-null) or clear (null) the draggable anchor on the map. */
+  select: (anchor: PlaceAnchor | null) => void;
+  toast: (msg: string, isError?: boolean) => void;
+}
+
+const EMPTY_PLACES: PlacesDoc = { version: 1, hidden: [], moved: {}, labels: {}, buildings: {}, rooms: {} };
+
 export class LocationNav {
   private panel: HTMLDivElement | null = null;
+  private body: HTMLDivElement | null = null;
   private visible = true;
   // Lazily render storefront thumbnails only when their row scrolls into view.
   private thumbObserver: IntersectionObserver | null = null;
+
+  // Door-derived tree (built once); the composed tree re-applies the overrides
+  // over a fresh clone of it on every edit.
+  private derivedTree: LocNode[] = [];
+  private composed: LocNode[] = [];
+  private doc: PlacesDoc = structuredClone(EMPTY_PLACES);
+
+  private expandedKeys = new Set<string>();
+  private selectedKey: string | null = null;
+  private selectedRow: HTMLDivElement | null = null;
+  private idCounter = 0;
 
   constructor(
     private readonly goTo: (x: number, y: number) => void,
     /** Town key the player is currently in, to auto-expand it. */
     private readonly currentTown: () => string,
+    private readonly anchorApi: PlaceAnchorApi,
   ) {}
 
   async mount(): Promise<void> {
     this.panel = document.createElement('div');
     this.panel.style.cssText =
-      'position:fixed;top:30px;left:0;bottom:0;width:230px;z-index:90;overflow:auto;' +
+      'position:fixed;top:30px;left:0;bottom:0;width:248px;z-index:90;overflow:auto;' +
       'background:#101418f2;color:#cde;font:11px monospace;border-right:2px solid #e8a33d;' +
       'padding:6px 4px;user-select:none;';
 
     const head = document.createElement('div');
     head.textContent = '📍 PLACES';
+    head.title = '+ adds a building/room at the view center · X removes a link · ' +
+      'click a building/room then drag its pink anchor on the map to move it';
     head.style.cssText = 'color:#e8a33d;font-weight:bold;letter-spacing:1px;padding:2px 6px 6px;';
     this.panel.appendChild(head);
 
-    const body = document.createElement('div');
-    this.panel.appendChild(body);
+    this.body = document.createElement('div');
+    this.panel.appendChild(this.body);
     document.body.appendChild(this.panel);
 
     this.thumbObserver = new IntersectionObserver(
@@ -493,17 +561,31 @@ export class LocationNav {
     );
 
     try {
-      const tree = await buildTree();
+      [this.derivedTree, this.doc] = await Promise.all([buildTree(), loadPlaces()]);
+      // Seed expansion: auto-open the town the player is standing in.
       const here = this.currentTown();
-      for (const town of tree) {
-        // Auto-expand the town the player is standing in.
-        const expand = town.label.toLowerCase().startsWith((TOWN_LABEL[here] ?? '').toLowerCase()) && here !== 'other';
-        body.appendChild(this.renderNode(town, 0, expand));
+      const hereLabel = (TOWN_LABEL[here] ?? '').toLowerCase();
+      for (const town of this.derivedTree) {
+        if (here !== 'other' && town.label.toLowerCase().startsWith(hereLabel)) {
+          this.expandedKeys.add(town.key);
+        }
       }
-      if (tree.length === 0) body.textContent = 'No doors found.';
+      this.rerender();
     } catch {
-      body.textContent = 'Failed to load locations.';
+      if (this.body) this.body.textContent = 'Failed to load locations.';
     }
+  }
+
+  /** Re-apply the overrides over the derived tree and rebuild the panel DOM. */
+  private rerender(): void {
+    if (!this.body) return;
+    this.composed = composeTree(this.derivedTree, this.doc);
+    this.body.replaceChildren();
+    this.selectedRow = null;
+    for (const town of this.composed) {
+      this.body.appendChild(this.renderNode(town, 0, null));
+    }
+    if (this.composed.length === 0) this.body.textContent = 'No doors found.';
   }
 
   private async fillThumb(img: HTMLImageElement): Promise<void> {
@@ -518,16 +600,22 @@ export class LocationNav {
     }
   }
 
-  private renderNode(node: LocNode, depth: number, expanded: boolean): HTMLDivElement {
+  private renderNode(node: LocNode, depth: number, parent: LocNode | null): HTMLDivElement {
     const wrap = document.createElement('div');
+    const expanded = this.expandedKeys.has(node.key);
 
     const row = document.createElement('div');
     row.title = node.title;
     row.style.cssText =
       `display:flex;align-items:center;gap:3px;padding:2px 4px;cursor:pointer;border-radius:3px;` +
       `margin-left:${depth * 10}px;`;
-    row.onmouseenter = () => (row.style.background = '#1d2530');
-    row.onmouseleave = () => (row.style.background = '');
+    const selected = node.key === this.selectedKey;
+    if (selected) {
+      row.style.background = '#243447';
+      this.selectedRow = row;
+    }
+    row.onmouseenter = () => { if (node.key !== this.selectedKey) row.style.background = '#1d2530'; };
+    row.onmouseleave = () => { if (node.key !== this.selectedKey) row.style.background = ''; };
 
     const hasKids = !!node.children && node.children.length > 0;
     const caret = document.createElement('span');
@@ -548,32 +636,210 @@ export class LocationNav {
     }
 
     const label = document.createElement('span');
-    label.textContent = node.label;
+    label.textContent = node.label + (node.manual ? ' ✎' : '');
     label.style.cssText =
-      `overflow:hidden;text-overflow:ellipsis;white-space:nowrap;` +
+      `flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;` +
       `color:${node.kind === 'town' ? '#cde' : node.kind === 'building' ? '#cfe3d2' : '#8aa'};`;
     row.appendChild(label);
+
+    // Per-row actions: + to add a child (towns add buildings, buildings add
+    // rooms); X to remove the link (buildings + rooms). Double-click a label to
+    // rename a manual node.
+    if (node.kind === 'town') {
+      row.appendChild(this.actionBtn('+', 'Add a building here', '#9fe3a0', () => this.addBuilding(node)));
+    } else if (node.kind === 'building') {
+      row.appendChild(this.actionBtn('+', 'Add a room here', '#9fe3a0', () => this.addRoom(node)));
+      row.appendChild(this.actionBtn('✕', 'Remove this building from the outline', '#ff8a7a', () => this.remove(node, parent)));
+    } else {
+      row.appendChild(this.actionBtn('✕', 'Remove this room from the outline', '#ff8a7a', () => this.remove(node, parent)));
+    }
 
     let kids: HTMLDivElement | null = null;
     if (hasKids) {
       kids = document.createElement('div');
       kids.style.display = expanded ? 'block' : 'none';
-      for (const c of node.children!) kids.appendChild(this.renderNode(c, depth + 1, false));
+      for (const c of node.children!) kids.appendChild(this.renderNode(c, depth + 1, node));
     }
 
-    // Caret toggles expand; clicking the label/thumb flies to the node's coord.
     caret.onclick = (e) => {
       e.stopPropagation();
       if (!kids) return;
-      const open = kids.style.display === 'none';
-      kids.style.display = open ? 'block' : 'none';
-      caret.textContent = open ? '▾' : '▸';
+      const nowOpen = kids.style.display === 'none';
+      kids.style.display = nowOpen ? 'block' : 'none';
+      caret.textContent = nowOpen ? '▾' : '▸';
+      if (nowOpen) this.expandedKeys.add(node.key);
+      else this.expandedKeys.delete(node.key);
     };
-    label.onclick = () => this.goTo(node.x, node.y);
+
+    // Click flies there; buildings/rooms also become the selected (draggable) anchor.
+    label.onclick = () => {
+      this.goTo(node.x, node.y);
+      if (node.kind !== 'town') this.select(node, parent, row);
+    };
+    // Buildings and rooms (derived or manual) rename on double-click.
+    if (node.kind === 'building' || node.kind === 'room') {
+      label.title = 'Double-click to rename';
+      label.ondblclick = (e) => { e.stopPropagation(); this.renameNode(node, parent, label); };
+    }
 
     wrap.appendChild(row);
     if (kids) wrap.appendChild(kids);
     return wrap;
+  }
+
+  private actionBtn(glyph: string, title: string, color: string, fn: () => void): HTMLSpanElement {
+    const b = document.createElement('span');
+    b.textContent = glyph;
+    b.title = title;
+    b.style.cssText =
+      `flex:none;width:16px;text-align:center;color:${color};border-radius:2px;` +
+      `cursor:pointer;font-weight:bold;`;
+    b.onmouseenter = () => (b.style.background = '#2c3a4c');
+    b.onmouseleave = () => (b.style.background = '');
+    b.onclick = (e) => { e.stopPropagation(); fn(); };
+    return b;
+  }
+
+  // --- editing ---------------------------------------------------------------
+
+  private genId(prefix: string): string {
+    return `${prefix}_${Date.now().toString(36)}${this.idCounter++}`;
+  }
+
+  private addBuilding(town: LocNode): void {
+    const c = this.anchorApi.viewCenter();
+    const b: AddedBuilding = { id: this.genId('mb'), label: 'New Building', x: c.x, y: c.y };
+    (this.doc.buildings[town.townKey!] ??= []).push(b);
+    this.expandedKeys.add(town.key);
+    this.selectedKey = b.id; // highlight the new row on rerender
+    void this.persist();
+    this.rerender();
+    this.selectByKey(b.id); // ready to drag the new anchor immediately
+  }
+
+  private addRoom(building: LocNode): void {
+    const c = this.anchorApi.viewCenter();
+    const r: AddedRoom = { id: this.genId('mr'), label: 'New Room', x: c.x, y: c.y };
+    (this.doc.rooms[building.key] ??= []).push(r);
+    this.expandedKeys.add(building.key);
+    this.selectedKey = r.id; // highlight the new row on rerender
+    void this.persist();
+    this.rerender();
+    this.selectByKey(r.id);
+  }
+
+  private remove(node: LocNode, parent: LocNode | null): void {
+    if (node.manual) {
+      if (node.kind === 'building' && parent) {
+        const list = this.doc.buildings[parent.townKey!];
+        if (list) this.doc.buildings[parent.townKey!] = list.filter((b) => b.id !== node.key);
+        delete this.doc.rooms[node.key]; // its manual rooms go with it
+      } else if (node.kind === 'room' && parent) {
+        const list = this.doc.rooms[parent.key];
+        if (list) this.doc.rooms[parent.key] = list.filter((r) => r.id !== node.key);
+      }
+      delete this.doc.moved[node.key];
+    } else if (!this.doc.hidden.includes(node.key)) {
+      this.doc.hidden.push(node.key); // derived link — hide it
+    }
+    delete this.doc.labels[node.key];
+    if (this.selectedKey === node.key) this.clearSelection();
+    void this.persist();
+    this.rerender();
+  }
+
+  private renameNode(node: LocNode, parent: LocNode | null, label: HTMLSpanElement): void {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = node.label;
+    input.style.cssText =
+      'flex:1;min-width:0;font:11px monospace;background:#0c1016;color:#fff;' +
+      'border:1px solid #e8a33d;border-radius:2px;padding:0 2px;';
+    const commit = (save: boolean) => {
+      const name = input.value.trim();
+      input.replaceWith(label);
+      if (save && name && name !== node.label) {
+        this.setLabel(node, parent, name);
+        void this.persist();
+        this.rerender();
+      }
+    };
+    input.onkeydown = (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') commit(true);
+      else if (e.key === 'Escape') commit(false);
+    };
+    input.onblur = () => commit(true);
+    label.replaceWith(input);
+    input.focus();
+    input.select();
+  }
+
+  private setLabel(node: LocNode, parent: LocNode | null, name: string): void {
+    if (node.manual) {
+      // Manual nodes store their label on their own entry.
+      if (node.kind === 'building' && parent) {
+        this.doc.buildings[parent.townKey!]?.forEach((b) => { if (b.id === node.key) b.label = name; });
+      } else if (node.kind === 'room' && parent) {
+        this.doc.rooms[parent.key]?.forEach((r) => { if (r.id === node.key) r.label = name; });
+      }
+    } else {
+      // Derived node: keep a name override keyed by its stable coord-key.
+      this.doc.labels[node.key] = name;
+    }
+  }
+
+  // --- selection + draggable anchor -----------------------------------------
+
+  private selectByKey(key: string): void {
+    const found = findNode(this.composed, key);
+    if (found) this.select(found.node, found.parent, null);
+  }
+
+  private select(node: LocNode, parent: LocNode | null, row: HTMLDivElement | null): void {
+    // Don't clear the highlight when re-selecting the same key (e.g. right after
+    // an add, where rerender already highlighted the new row).
+    if (this.selectedRow && this.selectedKey !== node.key) this.selectedRow.style.background = '';
+    this.selectedKey = node.key;
+    if (row) {
+      row.style.background = '#243447';
+      this.selectedRow = row;
+    }
+    this.anchorApi.select({
+      x: node.x,
+      y: node.y,
+      label: node.label,
+      onMove: (x, y) => { node.x = x; node.y = y; },
+      onCommit: () => {
+        if (node.manual) this.setCoords(node, parent, node.x, node.y);
+        else this.doc.moved[node.key] = { x: node.x, y: node.y };
+        void this.persist();
+        this.anchorApi.toast(`Moved "${node.label}" to (${node.x},${node.y})`);
+      },
+    });
+  }
+
+  private setCoords(node: LocNode, parent: LocNode | null, x: number, y: number): void {
+    if (node.kind === 'building' && parent) {
+      this.doc.buildings[parent.townKey!]?.forEach((b) => { if (b.id === node.key) { b.x = x; b.y = y; } });
+    } else if (node.kind === 'room' && parent) {
+      this.doc.rooms[parent.key]?.forEach((r) => { if (r.id === node.key) { r.x = x; r.y = y; } });
+    }
+  }
+
+  private clearSelection(): void {
+    this.selectedKey = null;
+    if (this.selectedRow) this.selectedRow.style.background = '';
+    this.selectedRow = null;
+    this.anchorApi.select(null);
+  }
+
+  private async persist(): Promise<void> {
+    try {
+      await postPlaces(this.doc);
+    } catch (err) {
+      this.anchorApi.toast(`Save failed: ${String(err)}`, true);
+    }
   }
 
   toggle(): void {
@@ -586,9 +852,105 @@ export class LocationNav {
   }
 
   destroy(): void {
+    this.anchorApi.select(null);
     this.thumbObserver?.disconnect();
     this.thumbObserver = null;
     this.panel?.remove();
     this.panel = null;
+    this.body = null;
   }
+}
+
+// ── overrides load / save / compose ──────────────────────────────────────────
+
+async function loadPlaces(): Promise<PlacesDoc> {
+  try {
+    const d = await loadJSON<Partial<PlacesDoc>>('/overrides/places.json');
+    return {
+      version: d.version ?? 1,
+      hidden: d.hidden ?? [],
+      moved: d.moved ?? {},
+      labels: d.labels ?? {},
+      buildings: d.buildings ?? {},
+      rooms: d.rooms ?? {},
+    };
+  } catch {
+    return structuredClone(EMPTY_PLACES);
+  }
+}
+
+async function postPlaces(doc: PlacesDoc): Promise<void> {
+  const res = await fetch('/__editor/save', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'places.json', data: doc }),
+  });
+  if (!res.ok) throw new Error(`save places: ${res.status}`);
+  primeJSONCache('/overrides/places.json', doc);
+}
+
+/** Locate a node (and its parent) anywhere in the tree by key. */
+function findNode(
+  nodes: LocNode[],
+  key: string,
+  parent: LocNode | null = null,
+): { node: LocNode; parent: LocNode | null } | null {
+  for (const n of nodes) {
+    if (n.key === key) return { node: n, parent };
+    if (n.children) {
+      const hit = findNode(n.children, key, n);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+/**
+ * Layer the authored overrides over a fresh clone of the door-derived tree:
+ * append manual buildings/rooms, apply moved anchors, drop hidden links, and
+ * refresh each town's building count.
+ */
+function composeTree(derived: LocNode[], doc: PlacesDoc): LocNode[] {
+  const tree = structuredClone(derived) as LocNode[];
+  const hidden = new Set(doc.hidden);
+  const applyMoved = (n: LocNode) => {
+    const m = doc.moved[n.key];
+    if (m) {
+      n.x = m.x;
+      n.y = m.y;
+      if (n.thumb) n.thumb = { x: m.x, y: m.y };
+    }
+  };
+
+  for (const town of tree) {
+    town.children ??= [];
+    // Manual buildings for this town.
+    for (const mb of doc.buildings[town.townKey!] ?? []) {
+      town.children.push({
+        label: mb.label, title: `entrance (${mb.x},${mb.y}) · manual`,
+        x: mb.x, y: mb.y, kind: 'building', key: mb.id, manual: true,
+        thumb: { x: mb.x, y: mb.y }, children: [],
+      });
+    }
+    for (const b of town.children) {
+      b.children ??= [];
+      // Manual rooms for this building (derived or manual).
+      for (const mr of doc.rooms[b.key] ?? []) {
+        b.children.push({
+          label: mr.label, title: `dest (${mr.x},${mr.y}) · manual`,
+          x: mr.x, y: mr.y, kind: 'room', key: mr.id, manual: true,
+        });
+      }
+      b.children = b.children.filter((r) => !hidden.has(r.key));
+      b.children.forEach(applyMoved);
+      b.children.forEach((r) => { const l = doc.labels[r.key]; if (l) r.label = l; });
+      applyMoved(b);
+      const bl = doc.labels[b.key];
+      if (bl) b.label = bl;
+    }
+    town.children = town.children.filter((b) => !hidden.has(b.key));
+    const label = TOWN_LABEL[town.townKey!] ?? town.townKey!;
+    town.label = `${label} (${town.children.length})`;
+  }
+  return tree;
 }

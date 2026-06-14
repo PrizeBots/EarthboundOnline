@@ -1,12 +1,15 @@
 import { EditorContext } from './types';
 import { EditorShell } from './EditorShell';
-import { EditorHub, registerEditorTool } from './EditorHub';
 import { placementTool } from './tools/PlacementTool';
 import { collisionTool } from './tools/CollisionTool';
-import { spriteAnimatorTool } from './tools/SpriteAnimatorTool';
-import { registerSaveHandler } from './registry';
+import { enemySpawnerTool } from './tools/EnemySpawnerTool';
+import { entityManagerTool } from './tools/EntityManagerTool';
+import { trafficEditorTool } from './tools/TrafficEditorTool';
+import { dialogueTool } from './tools/DialogueTool';
+import { registerEditorTool, registerSaveHandler } from './registry';
 import { saveOverride } from './saveOverride';
 import { getNameOverrides } from '../engine/SpriteNames';
+import { openSpriteEditor } from '../engine/SpriteEditor';
 
 // Entry point for the dev-only editor layer. Game loads this module via a
 // dev-gated dynamic import (`if (import.meta.env.DEV) import('../editor')`),
@@ -18,41 +21,56 @@ export interface EditorHooks {
   drawOverlay(): void;
 }
 
-// Planned tools (EDITOR_TOOLS.md §2-5) appear in the hub as WIP until built.
-// Real tools replace these stubs and self-register the same way.
-const PLANNED: { id: string; name: string; description: string }[] = [
-  {
-    id: 'dialogue',
-    name: 'Dialogue Editor',
-    description: 'Author NPC text through the real DialogueManager window.',
-  },
-];
+// Planned tools (EDITOR_TOOLS.md) appear in the hub as WIP until built. Empty
+// now — all planned tools are built; keep the hook for the next WIP stub.
+const PLANNED: { id: string; name: string; description: string }[] = [];
 
 export function initEditorTools(context: EditorContext): EditorHooks {
   const shell = new EditorShell(context);
-  const hub = new EditorHub(shell);
-  shell.onHubRequest = () => (hub.isOpen() ? hub.close() : hub.open());
-  shell.isHubOpen = () => hub.isOpen();
 
   registerEditorTool(placementTool);
   registerEditorTool(collisionTool);
-  registerEditorTool(spriteAnimatorTool);
+  registerEditorTool(enemySpawnerTool);
+  registerEditorTool(entityManagerTool);
+  registerEditorTool(trafficEditorTool);
+  registerEditorTool(dialogueTool);
   for (const t of PLANNED) registerEditorTool({ ...t, status: 'wip' });
 
-  // Admin sprite renames (✎ in placement panel / animator) persist here.
+  // Sprite Editor (engine/SpriteEditor.ts): a self-contained overlay that owns
+  // overrides/sprites.json. Its dock tab opens it docked to the LEFT of the tool
+  // column (the shell stays up, yielding the keyboard while it's open); Esc — or
+  // clicking another tab — closes it.
+  registerEditorTool({
+    id: 'cast-sprites',
+    name: 'Sprite Editor',
+    description: 'Fix attack/hurt frames + held items for any cast character.',
+    status: 'ready',
+    launch: () => {
+      // Dock it to the left of the tool column (the shell stays up); the shell
+      // yields the keyboard to it while it's open (see isSpriteEditorOpen).
+      void openSpriteEditor();
+    },
+  });
+
+  // Admin sprite renames (✎ in placement panel) persist here.
   registerSaveHandler('names', () => saveOverride('names.json', getNameOverrides()));
 
-  const enter = () => {
-    if (shell.isActive() || !context.canEnter()) return;
-    shell.enter();
-    hub.open(); // land on the hub, like a desktop
+  const enter = async () => {
+    if (shell.isActive()) return;
+    // F2 from a non-gameplay screen (character select / loading): drop the
+    // admin straight in by starting the game as the default character first.
+    if (!context.canEnter()) {
+      const playing = await context.ensurePlaying();
+      if (!playing || !context.canEnter()) return;
+    }
+    shell.enter(); // the dock (right column) is always present while editing
   };
 
   // F2 toggles in; the shell handles F2-out itself while active.
   window.addEventListener('keydown', (e) => {
     if (e.key === 'F2' && !shell.isActive()) {
       e.preventDefault();
-      enter();
+      void enter();
     }
   });
 
@@ -65,10 +83,7 @@ export function initEditorTools(context: EditorContext): EditorHooks {
 
   return {
     isActive: () => shell.isActive(),
-    update: () => {
-      if (hub.isOpen()) return; // world holds still behind the hub
-      shell.update();
-    },
+    update: () => shell.update(),
     drawOverlay: () => shell.drawOverlay(),
   };
 }

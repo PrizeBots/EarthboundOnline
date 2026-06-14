@@ -11,17 +11,24 @@
  * kind "enemy": same server-authoritative channel, plus HP. Attackable; the
  * server resolves damage and broadcasts `npc_hp`. hp <= 0 means dead/hidden
  * (also the initial state of inactive spawner-pool slots).
+ *
+ * kind "car": server-authoritative traffic. Follows an authored waypoint route
+ * (overrides/car_traffic.json), facing its travel direction; no HP, no
+ * dialogue. Solid to every entity — a car stops when one is in its path and
+ * blocks the player from walking through it.
  */
 
 import { Entity } from './Entity';
-import { Direction } from '../types';
+import { Direction, Pose } from '../types';
 
-export type NPCKind = 'person' | 'prop' | 'enemy';
+export type NPCKind = 'person' | 'prop' | 'enemy' | 'car';
 
 export class NPC extends Entity {
   readonly kind: NPCKind;
   /** NPC config id keying npc_text.json, or null if this NPC has no dialogue. */
   readonly textId: number | null;
+  /** Server-driven animation pose (walk/attack/hurt), same as players. */
+  pose: Pose = 'walk';
 
   constructor(
     x: number,
@@ -37,9 +44,13 @@ export class NPC extends Entity {
     this.textId = textId;
   }
 
-  /** Enemy with no HP left — dead, or an inactive spawner slot. Hidden + non-solid. */
+  /**
+   * No HP left — hidden + non-solid. Enemies: killed or an inactive spawner
+   * slot. People: a townsperson an enemy downed (revives at home server-side).
+   * Props/cars have no HP and never report dead.
+   */
   get dead(): boolean {
-    return this.kind === 'enemy' && this.hp <= 0;
+    return (this.kind === 'enemy' || this.kind === 'person') && this.hp <= 0;
   }
 
   update(): void {
@@ -51,10 +62,17 @@ export class NPC extends Entity {
     this.maxHp = maxHp;
   }
 
-  applyServerState(x: number, y: number, direction: Direction, frame: number): void {
+  applyServerState(
+    x: number,
+    y: number,
+    direction: Direction,
+    frame: number,
+    pose: Pose = 'walk',
+  ): void {
     this.x = x;
     this.y = y;
     this.direction = direction;
     this.frame = frame;
+    this.pose = pose;
   }
 }

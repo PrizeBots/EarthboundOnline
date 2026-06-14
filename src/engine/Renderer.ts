@@ -6,6 +6,7 @@ import { drawTile, drawForegroundTile, hasForegroundTile } from './TilesetManage
 import { drawSprite, getSpriteGroupMeta, SpritePart } from './SpriteManager';
 import { drawHeldItem, isItemBehind } from './Items';
 import { getSpritePriority } from './Collision';
+import { getStatus } from './StatusModal';
 import {
   Pose,
   Direction,
@@ -30,8 +31,8 @@ export function debugBoxesOn(): boolean {
 const HURT_W = 14;
 const HURT_H = 18;
 const HURT_OY = -18;
-const ATTACK_REACH = 16;
-const ATTACK_HALF = 11;
+const ATTACK_REACH = 14;
+const ATTACK_HALF = 8;
 const DBG_DIAG = Math.SQRT1_2;
 // Indexed by Direction: S,N,W,E,NW,SW,SE,NE.
 const DBG_DIR_VEC: [number, number][] = [
@@ -39,15 +40,17 @@ const DBG_DIR_VEC: [number, number][] = [
   [-DBG_DIAG, -DBG_DIAG], [-DBG_DIAG, DBG_DIAG], [DBG_DIAG, DBG_DIAG], [DBG_DIAG, -DBG_DIAG],
 ];
 
-// --- Health bars -----------------------------------------------------------
-// Drawn above an entity's head: 1px black outline, fill green at full health,
-// blending to yellow at 50% and solid red at 30% or below.
-// Visibility: the local player always sees their OWN bar; everyone else's bar
-// (remote players, NPCs) is hidden at full HP and only appears once damaged
-// (ratio < 1). Props never carry one.
+// --- Health / PSI bars ------------------------------------------------------
+// Drawn above an entity's head, half-pixel black outline (crisp at the gameplay
+// supersample). HP fill: green at full, blending to yellow at 50%, red at 30%-.
+// The LOCAL player's bar also carries a PSI (PP) bar stacked directly beneath
+// the HP bar — sharing the middle divider line to stay compact — dark blue at
+// full PP fading to light blue when low.
+// Visibility: you ONLY see your OWN player bar; other players' bars are never
+// drawn. Enemies show an HP bar only once damaged. Props never carry one.
 
-const BAR_W = 16; // inner fill width
-const BAR_H = 2;  // inner fill height
+const BAR_W = 21;  // inner fill length (~30% longer than the original 16)
+const BAR_H = 1.5; // inner fill height (each bar thin — half the previous 3)
 const BAR_GAP = 4; // px between sprite top and bar
 const DEFAULT_SPRITE_H = 24;
 
@@ -62,22 +65,69 @@ function healthColor(ratio: number): string {
   return `rgb(${lerp(232, 216, t)},${lerp(208, 40, t)},${lerp(32, 24, t)})`;
 }
 
+// Dark blue at full PP -> light blue when low.
+function ppColor(ratio: number): string {
+  const lerp = (a: number, b: number, t: number) => Math.round(a + (b - a) * t);
+  const t = 1 - Math.max(0, Math.min(1, ratio)); // 0 at full -> 1 at empty
+  return `rgb(${lerp(36, 150, t)},${lerp(72, 210, t)},${lerp(210, 255, t)})`;
+}
+
+// One capsule bar: a rounded-rect black frame with the colored fill clipped to
+// it. `topR`/`bottomR` are the corner radii for each end (logical px) — the
+// outer end is fully rounded; the inner (shared-divider) end gets a small radius
+// so a pixel is trimmed off each side of the divider, reading as two pills
+// kissing. Antialiased but CLEAN (the 2x supersampled backbuffer smooths it).
+function drawBarCapsule(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  ratio: number,
+  color: string,
+  topR: number,
+  bottomR: number
+): void {
+  const B = 0.5; // black frame thickness
+  const w = BAR_W + 2 * B;
+  const h = BAR_H + 2 * B;
+  ctx.save();
+  ctx.beginPath();
+  // roundRect corner order: [top-left, top-right, bottom-right, bottom-left].
+  ctx.roundRect(x, y, w, h, [topR, topR, bottomR, bottomR]);
+  ctx.fillStyle = '#000';
+  ctx.fill();
+  ctx.clip(); // the fill can't spill past the capsule
+  const fill = Math.round(ratio * BAR_W);
+  if (fill > 0) {
+    ctx.fillStyle = color;
+    ctx.fillRect(x + B, y + B, fill, BAR_H);
+  }
+  ctx.restore();
+}
+
+// `ppRatio` (0..1) is supplied ONLY for the local player — when present, a PSI
+// capsule sits flush beneath the HP capsule, sharing one black divider line.
 function drawHealthBar(
   ctx: CanvasRenderingContext2D,
   centerX: number,
   feetY: number,
   spriteGroupId: number,
-  ratio: number
+  ratio: number,
+  ppRatio?: number
 ): void {
   const spriteH = getSpriteGroupMeta(spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
-  const x = centerX - BAR_W / 2 - 1;
-  const y = feetY - spriteH - BAR_GAP - BAR_H - 2;
-  ctx.fillStyle = '#000';
-  ctx.fillRect(x, y, BAR_W + 2, BAR_H + 2);
-  const fill = Math.round(ratio * BAR_W);
-  if (fill > 0) {
-    ctx.fillStyle = healthColor(ratio);
-    ctx.fillRect(x + 1, y + 1, fill, BAR_H);
+  const B = 0.5;
+  const h = BAR_H + 2 * B; // one capsule's height
+  const R = h / 2;         // outer end: fully rounded
+  const INNER_R = 1;       // inner end: small radius — trims a px off each divider side
+  const hasPP = ppRatio !== undefined;
+  const total = h + (hasPP ? h : 0); // flush — no gap between the two
+  const x = centerX - BAR_W / 2 - B;
+  const y = feetY - spriteH - BAR_GAP - total;
+  // HP rounds its top fully; its inner (bottom) end is lightly rounded — or
+  // fully rounded when it's the only bar (enemies, no PP).
+  drawBarCapsule(ctx, x, y, ratio, healthColor(ratio), R, hasPP ? INNER_R : R);
+  if (hasPP) {
+    drawBarCapsule(ctx, x, y + h, ppRatio, ppColor(ppRatio), INNER_R, R);
   }
 }
 
@@ -86,12 +136,15 @@ export class Renderer {
   private ctx: CanvasRenderingContext2D;
   // Integer CSS upscale factor (256x224 -> on-screen size).
   private scale = 1;
-  // True only while the editor zoom is active. Then the backbuffer renders at
-  // full display resolution so zoom-out stays crisp; gameplay (zoom 1) keeps
-  // the native 256x224 buffer + CSS pixelated upscale, which is what gives
-  // sprites AND text their chunky look. Scoped here so the editor fix never
-  // touches how the game proper renders.
+  // True only while the editor zoom is active — the backbuffer renders at full
+  // display resolution so zoom-out stays crisp.
   private highRes = false;
+  // Gameplay supersample. The backbuffer is gameSS× the logical 256x224 and CSS
+  // magnifies it gameSS× LESS, so integer-positioned art (sprites, tiles,
+  // bitmap text) is byte-for-byte identical on screen while sub-logical-pixel
+  // detail — e.g. a half-pixel health-bar border — becomes drawable. Editor
+  // zoom overrides this with full display res.
+  private readonly gameSS = 2;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -108,18 +161,34 @@ export class Renderer {
   }
 
   /**
-   * Size the backbuffer. Gameplay uses a native 256x224 buffer (CSS magnifies
-   * it with image-rendering: pixelated — chunky pixels, chunky text). Editor
-   * zoom uses a full-resolution buffer so shrinking the world stays sharp
-   * instead of blurring a tiny buffer. On-screen CSS size is identical either
-   * way. Resizing the canvas clears context state, so re-assert smoothing.
+   * Size the backbuffer. Gameplay uses a gameSS× supersampled buffer (CSS
+   * magnifies it correspondingly less with image-rendering: pixelated — so the
+   * look stays chunky but half-pixel detail is drawable). Editor zoom uses a
+   * full-resolution buffer so shrinking the world stays sharp. On-screen CSS
+   * size is identical either way. Resizing clears context state, so re-assert
+   * smoothing.
    */
   private applyBackbuffer() {
-    const res = this.highRes ? this.scale : 1;
+    const res = this.highRes ? this.scale : this.gameSS;
     this.canvas.width = SCREEN_WIDTH * res;
     this.canvas.height = SCREEN_HEIGHT * res;
     this.canvas.style.width = `${SCREEN_WIDTH * this.scale}px`;
     this.canvas.style.height = `${SCREEN_HEIGHT * this.scale}px`;
+    this.ctx.imageSmoothingEnabled = false;
+  }
+
+  /** Logical→backbuffer scale in effect (gameSS for gameplay, scale in editor). */
+  private get baseScale(): number {
+    return this.highRes ? this.scale : this.gameSS;
+  }
+
+  /**
+   * Set the base transform for non-gameplay screens (character select, loading)
+   * that draw straight onto the canvas without going through render(). Without
+   * this they'd draw at 1:1 into the supersampled buffer and fill only a corner.
+   */
+  prepareUI(): void {
+    this.ctx.setTransform(this.baseScale, 0, 0, this.baseScale, 0, 0);
     this.ctx.imageSmoothingEnabled = false;
   }
 
@@ -131,9 +200,9 @@ export class Renderer {
       this.highRes = wantHighRes;
       this.applyBackbuffer();
     }
-    // Base transform: scale logical 256x224 coords onto the (possibly larger)
-    // backbuffer. Identity for gameplay; the integer display scale in editor.
-    const baseScale = this.highRes ? this.scale : 1;
+    // Base transform: scale logical 256x224 coords onto the larger backbuffer
+    // (gameSS× for gameplay, the integer display scale in editor zoom).
+    const baseScale = this.baseScale;
     this.ctx.setTransform(baseScale, 0, 0, baseScale, 0, 0);
     this.ctx.imageSmoothingEnabled = false;
 
@@ -264,7 +333,13 @@ export class Renderer {
           player.spriteGroupId, player.direction, player.frame,
           player.pose, player.heldItemId, playerSx, playerSy, part
         ),
-      () => drawHealthBar(this.ctx, playerSx, playerSy, player.spriteGroupId, player.healthRatio)
+      () => {
+        // Your own bar: HP + a PSI bar beneath it (PP from the authoritative
+        // stats mirror). Only you ever see this.
+        const s = getStatus();
+        const ppRatio = s.ppMax > 0 ? Math.max(0, Math.min(1, s.pp / s.ppMax)) : 0;
+        drawHealthBar(this.ctx, playerSx, playerSy, player.spriteGroupId, player.healthRatio, ppRatio);
+      }
     );
 
     for (const [, rp] of remotePlayers) {
@@ -272,18 +347,14 @@ export class Renderer {
       const rpScreenY = Math.round(rp.y) - camY;
       if (rpScreenX < -32 || rpScreenX > vw + 32) continue;
       if (rpScreenY < -48 || rpScreenY > vh + 48) continue;
-      const ratio = rp.maxHp ? Math.max(0, Math.min(1, (rp.hp ?? rp.maxHp) / rp.maxHp)) : 1;
       enqueueSprite(
         rp.x, rp.y,
         (part) =>
           drawPlayerPart(
             rp.spriteGroupId, rp.direction, rp.frame,
             rp.pose ?? 'walk', rp.itemId ?? null, rpScreenX, rpScreenY, part
-          ),
-        // Other players' bars are hidden at full HP — only show when damaged.
-        ratio < 1
-          ? () => drawHealthBar(this.ctx, rpScreenX, rpScreenY, rp.spriteGroupId, ratio)
-          : undefined
+          )
+        // No bar: you never see other players' health/PSI bars.
       );
     }
 
@@ -299,7 +370,7 @@ export class Renderer {
         : undefined;
       enqueueSprite(
         npc.x, npc.y,
-        (part) => drawSprite(this.ctx, npc.spriteGroupId, npc.direction, npc.frame, nScreenX, nScreenY, part),
+        (part) => drawSprite(this.ctx, npc.spriteGroupId, npc.direction, npc.frame, nScreenX, nScreenY, part, npc.pose),
         drawBar
       );
     }

@@ -75,6 +75,11 @@ mirrors the patterns already in the codebase — `apply_map_changes.py`'s curate
 - **Live in the real renderer.** Edit against the actual `Renderer`/`Camera` so
   what you see is what ships — no separate preview that can drift.
 - **Reuse the `SpriteEditor.ts` overlay pattern** for input/mode handling.
+- **Reuse the sprite picker.** Any "choose a sprite" UI must use the shared
+  `createSpritePicker` dropdown in `engine/SpritePicker.ts` (trigger + every row
+  render the real sprite next to its id/name) — not a number field or stepper.
+  Pair it with `drawSpriteGroupThumb` and `listSpriteGroupIds()`. The Cast
+  editor and the Enemy Spawner both use it.
 
 ---
 
@@ -131,27 +136,44 @@ Shared plumbing every tool depends on. Nothing else is cheap until this exists.
       sign over the door is the real "name", read by sight. Interiors with no
       overworld door (elevator/nested-only) bucket under "Other / Interiors".
       "Places" button in the HUD toggles it; the player's current town
-      auto-expands. Renaming nodes (authored names override) is a future add.
+      auto-expands.
+- [x] **Editable outline** — the derived tree is the base layer; hand edits layer
+      on top and persist to `public/overrides/places.json` (save-back channel,
+      allow-listed). Per-row actions: `+` on a region adds a building, `+` on a
+      building adds a room (both dropped at the current view center), `✕` removes
+      a building or room from the outline (manual nodes are deleted; derived ones
+      are added to a `hidden` list). Click a building/room to select it: its
+      quick-link anchor shows as a draggable **pink pin** on the map (handled in
+      `EditorShell` — grab beats pan/tool), and dropping it writes the new coords
+      (`moved` for derived nodes, the node's own x/y for manual ones).
+      **Double-click any building/room label to rename it** — derived nodes store
+      a name override in `labels` (keyed by their coord-key), manual nodes update
+      their own entry; manual nodes also carry a `✎`. Overrides re-apply over a
+      fresh derived clone each open, so the door graph stays authoritative while
+      your additions/prunes/moves ride on top.
 
 ---
 
-## 1. Admin Home Screen (the hub)
-Single entry point that lists every tool and launches it. The "desktop" for all
-editors. **Built 2026-06-12** (`src/editor/EditorHub.ts`); F2 lands on the hub.
+## 1. Tool dock (persistent right column)
+The hub is no longer a modal — it's a **persistent right-side dock** built by the
+Editor Shell (`EditorShell.buildDock`), so the tab menu is always on screen and
+admins flip between tools without ever leaving the editor. `EditorHub.ts` is now
+just a registry re-export shim.
 
-- [x] Launch trigger: F2 hotkey + `window.__eb.admin()` console hook
-- [x] Tool registry: tools self-register via `registerEditorTool` (the four
-      planned tools are registered as WIP stubs until built)
-- [x] Grid/list of tool tiles with name + one-line description + status badge
-      (ready / WIP)
-- [x] Launch a tool → enters Editor Shell with that tool active
-- [x] Global "back to hub" (Esc / Hub button) and "back to game" (F2 / button)
-- [x] Global save-all (runs per-domain `registerSaveHandler` fns) +
-      unsaved-changes indicator in the shell HUD
-- [x] Current-context display: player world pos, camera center, sector, FPS
-- [x] Quick "jump to coords" field (wraps existing `debugTeleport`)
-- [x] Keyboard navigable HTML/DOM overlay panel (its own editor styling, kept
-      visually distinct from in-game EB chrome so dev UI is never mistaken for it)
+- [x] Entry trigger: F2 hotkey + `window.__eb.admin()` console hook → enters the
+      editor with the dock already present (no modal landing screen)
+- [x] Tool registry unchanged: tools self-register via `registerEditorTool`
+- [x] **Tab per tool** in the dock (name + status; WIP tools disabled), the
+      active one highlighted. Click a tab to activate; click it again to
+      deselect. Self-contained tools (Sprite Editor) launch their own overlay
+- [x] The **active tool mounts its panel into the dock body** (`api.panelHost`),
+      which scrolls — tools no longer float their own `position:fixed` panels
+- [x] Footer: global **Save all** (runs per-domain `registerSaveHandler` fns,
+      label shows the unsaved count), a **jump-to-px** field (wraps `goTo`/
+      `debugTeleport`), and **Back to game**. Esc deselects the current tool;
+      F2 exits the editor
+- [x] HTML/DOM styling kept visually distinct from in-game EB chrome so dev UI
+      is never mistaken for it
 
 ---
 
@@ -236,56 +258,79 @@ the `debug_pri_flags` / `debug_solid_pri` / `debug_room_bleed` /
 `debug_sector_claims` scripts did. Keep `debug_room_crop_check` as the
 verifier this tool calls to confirm room crops after edits.
 
-**Built 2026-06-12** (`src/editor/tools/CollisionTool.ts`, READY in the hub).
-**Model decision: edits are PER-ARRANGEMENT** ("drawTs:arr" → {minitileIdx:
-byte}) — the SNES reality, where collision is an attribute of the tile graphic
-(BG tile attributes), so one paint changes every map cell using that
-arrangement. The tool makes the blast radius visible: the inspector shows the
-arrangement's map-wide use count, and 'U' outlines every visible instance.
-Overrides apply at THREE points kept in sync: `Collision.loadCollision`
-(client), `server/npcSim.js` (wander AI, hot-reloads the override file), and
-`tools/debug_room_crop_check.py` (the canonical sweep sees painted collision).
+**Built 2026-06-12** (`src/editor/tools/CollisionTool.ts`, READY in the dock).
+**Model: edits are PER-MAP-TILE** — a paint affects ONLY the cell you click,
+even when other map tiles reuse the same tile graphic. A per-map-tile override
+layer (`overrides/collision.json` `cells`: "tx,ty" → {minitileIdx: byte}) is
+applied on top of the shared arrangement bytes; any legacy per-arrangement
+`edits` already in the file still apply underneath and are preserved on save.
+Overrides apply at THREE points kept in sync: `Collision.effectiveRow`
+(client — every collision/priority/room-crop read), `server/npcSim.js` (wander
+AI, hot-reloads the override file), and `tools/debug_room_crop_check.py` (the
+canonical sweep sees painted collision).
 
 - [x] Overlay the collision grid colored by byte: solid `0x80` red full-cell,
       `0x01` blue LOWER half, `0x02` green UPPER half (halves match meaning)
 - [x] Brush tools: solid / pri-lo / pri-hi (first cell decides set-vs-clear),
       clear, rectangle fill, eyedropper → stamp byte (keys S/L/H/C/T/E/X)
-- [x] Adjustable brush size (B: 1/2/4 minitiles); minitile-accurate painting,
-      deduped per arrangement-cell within a stroke; strokes are undoable
+- [x] Adjustable brush size (B: 1/2/4 minitiles); minitile-accurate painting;
+      strokes are undoable; painting a cell back to its arrangement default
+      drops the override (no redundant data)
 - [x] Live room-crop preview (R recomputes `computeRoomBounds` at the cursor
       against PAINTED collision; auto-refreshes after each stroke); "Verify
       rooms" button runs `debug_room_crop_check.py` through the dev-only
       `/__editor/verify` endpoint (fixed-command allow-list) and shows output
-- [x] Legend + per-cell byte inspector (arrangement, cell, byte, use count)
+- [x] Legend + cell inspector (map tile, minitile, byte); the clicked cell is
+      outlined
 - [x] Toggle map art off (M) to paint against bare collision
-- [x] Save to `overrides/collision.json` (per-arrangement diffs vs pristine;
-      no-op edits drop out) — generated collision files never written; npcSim
-      re-applies via file watch, the py sweep reads the same file
+- [x] Save to `overrides/collision.json` `cells` (per-map-tile diffs vs the
+      arrangement default; no-op edits drop out) — generated collision files
+      never written; npcSim re-applies via file watch, the py sweep reads it
 
 ---
 
-## 4. Dialogue Editor
-Author `npc_text.json` through the real `DialogueManager` window. Composes onto
-the Placement Editor (select NPC → edit its lines).
+## 4. Dialogue Editor — v1 DONE (`src/editor/tools/DialogueTool.ts`, READY)
+Author the decoded NPC text. Each entry is keyed by a `textId` (the NPC config
+id; NPCs link via their `t` field) and holds ordered pages — the same shape
+`npc_text.json` / `DialogueManager` use. Client-side only (no server role), so
+edits go live on save with just `reloadNpcText()`; no dev-server restart.
 
-- [ ] List/search dialogue entries by `textId`; show which NPCs reference each
-- [ ] Edit pages with live preview in the actual EB text window (real wrapping,
-      paging, speed)
-- [ ] Assign/unassign a `textId` to the selected NPC
-- [ ] Support flag conditionals / branches the engine understands
-- [ ] Validate: orphaned entries, NPCs with missing/blank dialogue
-      ("Verify" runs `verify_dialogue.mjs`)
-- [ ] Save to the dialogue overrides layer, applied on top of `eb_dialogue.py`
-      output — never edit generated `npc_text.json` directly
+- [x] List/search dialogue entries by `textId`; each row shows a snippet, an
+      authored `*` marker, and a `👤N` count of NPCs that speak it (from
+      `npcs.json` + placement overrides, grouped by `t`)
+- [x] Edit pages (one textarea per page, add/remove page) with a **faithful
+      EB-window live preview** (reuses `drawWindow`/`drawText`/`wrapText`, font 0,
+      real wrapping; ◀/▶ flip pages, ▼ hint when a page overflows one box)
+- [x] "Go to speaker" flies the camera to the first NPC that references the entry
+- [x] Save to `overrides/dialogue.json` (`{version, edits:{textId: pages|null}}`,
+      only entries that diverge from the decoded base) — merged over
+      `npc_text.json` by `NPCManager.mergeDialogue`; generated text never touched.
+      "Revert to base" restores an entry's decoded pages
+- [x] Assign a `textId` to an NPC + author net-new lines — the Placement Editor's
+      **"Dialogue ✎"** button on a selected NPC mints a fresh textId (≥900000, clear
+      of ROM config ids) if it has none, saves the NPC + link, then opens the
+      Dialogue Editor focused on that entry (`dialogueTool.requestEntry` handoff +
+      `shell.openTool`). The Dialogue Editor also has a standalone **"+ New
+      dialogue"**. So: place NPC → Dialogue ✎ → type → Save
+- [ ] Support flag conditionals / branches the engine understands — DEFERRED
+      (ccscript-level; the engine renders flat pages today)
+- [ ] Validate: orphaned entries / blank dialogue — DEFERRED (`verify_dialogue.mjs`
+      is a heavy Playwright screenshot run, not a quick fixed-command verifier)
 
 ---
 
-## 5. NPC Sprite Animator (extends SpriteEditor)
-Load any of the 463 ROM sprite groups into the pixel editor to author the
-animation bands EarthBound never had — **attack** and **hurt** (and any missing
-**diagonals**/**climb**) — so NPCs and enemies can fight/flinch like the player.
-The current `SpriteEditor` only handles the player's 16×24 Ness template; this
-generalizes it to arbitrary groups.
+## 5. Cast Sprite Editor — DONE (lives in `engine/SpriteEditor.ts`, off char-select)
+**Built, but not as an F2 tool.** Reached from the character-select screen's
+✎ EDIT cell. Pick any cast character from the dropdown (the `characters.json`
+roster) and hand-polish the **attack/hurt** animation bands PoseGen generates,
+with the live WASD/F/H walk-test pane and held-item editing/overlay. Walk/climb
+rows are ROM and locked. **Save (Ctrl+S)** writes only the attack/hurt diff vs
+the generated frames to `public/overrides/sprites.json` (the same override layer
+described below), applying to that sprite group everywhere in-game.
+
+The earlier plan was an F2 "NPC Sprite Animator" tool; that was scrapped in
+favor of reusing the richer create-character editor UI. The notes below describe
+the shippable override layer it writes into (still accurate).
 
 **DECIDED — authored-only sprite override layer (the goal: real-time-action
 frames for every character).** EarthBound's overworld sprites have only walk +
@@ -328,6 +373,69 @@ climb; real-time action needs attack, hurt, and full 8-direction coverage. We
 
 ---
 
+## 6. Enemy Spawner Editor — DONE (`src/editor/tools/EnemySpawnerTool.ts`, READY)
+Place and configure the enemy spawn points (the data behind
+`enemy_spawns.json`) visually. One enemy type per spawner; mix by adding more.
+
+- [x] List of spawners + "+ New spawner" (N) → click the map to drop one;
+      select/drag a marker to move it; Del removes it
+- [x] Per-spawner fields: name, enabled toggle, enemy sprite (id + ◀/▶ + live
+      thumbnail), x/y, **roam radius**, **rate** (spawn interval, seconds),
+      **max** active, **hp**, **respawn delay** (seconds). `poolSize` is derived
+      from max at save time (a buffer above the live cap), not hand-managed.
+      "min enemies" was intentionally dropped — max + rate were enough
+- [x] Live overlay: spawn marker + foot box, the **roam-radius ring**, and a
+      ghost of the assigned enemy sprite
+- [x] **Walkability/connection guard** — the marker and a panel readout turn RED
+      when a spawn point is on a solid tile or sealed off from the street network
+      (bounded 8px flood fill mirroring `Collision`/`npcSim`). This is the exact
+      bug that trapped the arcade sharks in a pocket; the editor now refuses to
+      let it pass silently
+- [x] Saves the WHOLE file to `public/overrides/enemy_spawns.json` (OUR authored
+      content — no ROM base to merge, so the override REPLACES the committed
+      default). `enemySpriteGroups` is auto-derived from the enabled spawners'
+      sprites. Preferred over `public/assets/map/enemy_spawns.json` by BOTH
+      `NPCManager.loadNPCs` (client) and `server/npcSim.js`, which now hot-reloads
+      it. KEEP IN SYNC: both skip disabled spawners when building the pool so
+      wire ids stay aligned
+- [x] Apply model: on save the editing client re-runs `loadNPCs` and the server
+      reloads live. Tuning edits (radius/rate/hp/position) apply immediately;
+      changing the live **pool size** (add/remove/enable/disable/max) shifts wire
+      ids, so other connected clients must refresh (the save toast says so)
+
+---
+
+## 7. Traffic Editor — DONE (`src/editor/tools/TrafficEditorTool.ts`, READY)
+Place vehicles and draw the **waypoint routes** they drive around town (the data
+behind `car_traffic.json`). One car per vehicle; the server drives it.
+
+- [x] List of vehicles + "+ New vehicle" (N) → click the map to drop one (its
+      first waypoint), then **Add waypoints** mode appends the rest of the route
+      on each click; drag any dot to move it; Del removes the selected waypoint
+      (or the vehicle when none is selected)
+- [x] Per-vehicle fields: name, vehicle sprite (id + ◀/▶ + live thumbnail —
+      Taxi 206 / Car 255 / Truck 459 / Bus 243 …), **speed**, **loop** (circuit
+      vs. back-and-forth), enabled toggle
+- [x] Live overlay: the route polyline (closed when looping) with per-segment
+      **direction arrows**, numbered waypoint dots, a start marker, and a ghost
+      of the vehicle sprite facing its first segment
+- [x] Saves the WHOLE file to `public/overrides/car_traffic.json` (OUR authored
+      content — no ROM base; replaces the committed default). The collision box
+      `w`/`h` is derived from the sprite size at save time. Preferred over
+      `public/assets/map/car_traffic.json` by BOTH `NPCManager.loadNPCs` and
+      `server/npcSim.js` (hot-reloaded). KEEP IN SYNC: both build one car per
+      active vehicle (`enabled` + ≥2 waypoints) in file order so wire ids align
+- [x] Behaviour (server-authoritative, `npcSim.tickCar`): the car follows its
+      route facing the travel direction (`dir8` → the matching directional
+      sprite), looping or ping-ponging. It is **solid to every entity, no
+      damage** — it waits in place when a player/NPC/other car is in its path and
+      resumes when clear; `blockedByNPC` also makes it solid for the local player
+- [x] Apply model: on save the editing client re-runs `loadNPCs` and the server
+      reloads live; changing the active-vehicle count shifts wire ids, so other
+      connected clients must refresh (the save toast says so)
+
+---
+
 ## Save-Back Channel
 Shared dev-only persistence used by all tools. **Implemented as a Vite dev-server
 middleware** (`vite.config.ts` `configureServer`) — exists only under
@@ -338,8 +446,8 @@ Writes go to the **overrides layer**, not the generated asset files.
       `editorSavePlugin`) writing `public/overrides/<name>` — built 2026-06-12
 - [x] Lives entirely in the dev server: `apply: 'serve'` plugin, not bundled,
       not on express/Render (restart `npm run dev` once to load it)
-- [x] Path allow-list (npcs / doors / spawn / collision / dialogue / sprites
-      .json only) + 8MB body cap
+- [x] Path allow-list (npcs / doors / spawn / collision / dialogue / sprites /
+      names / enemy_spawns / places / car_traffic `.json` only) + 8MB body cap
 - [x] Atomic write (tmp + rename) + pretty-print (stable key order is the
       writing tool's responsibility)
 - [x] `.bak` copy of the previous version before every overwrite

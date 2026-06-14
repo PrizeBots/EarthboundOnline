@@ -14,10 +14,40 @@ const wss = new WebSocketServer({ server });
 app.use(express.static(path.join(__dirname, '..', 'dist')));
 
 // --- Game State ---
-const players = new Map(); // id -> { id, name, spriteGroupId, x, y, direction, frame, pose, itemId }
+const players = new Map(); // id -> { id, name, spriteGroupId, x, y, direction, frame, pose, itemId, hp, maxHp, level }
 let nextId = 1;
 
 const POSES = ['walk', 'climb', 'attack', 'hurt'];
+const PLAYER_MAX_HP = 60;
+
+// Server-authoritative goods registry. Each player's inventory is an array of
+// these ids (one entry per carried item, EarthBound-style slots). Effects are
+// resolved here so a client can't grant itself HP — it only asks to "use" a
+// slug it claims to own. `heal` restores HP (capped at maxHp).
+const GOODS = {
+  cookie: { name: 'Cookie', heal: 10 },
+};
+
+// What every player starts with. A welcome Cookie so the Goods menu is never
+// empty and the use/heal flow is immediately testable.
+const STARTING_INVENTORY = ['cookie'];
+
+// Money ($). Server-authoritative: granted on join, the sole authority on the
+// balance once shops/drops spend it.
+const STARTING_MONEY = 1000;
+
+// Project an inventory (array of ids) to the wire shape the client renders:
+// [{ id, name }]. Unknown ids are dropped rather than sent nameless.
+function inventoryView(inventory) {
+  return inventory
+    .filter((id) => GOODS[id])
+    .map((id) => ({ id, name: GOODS[id].name }));
+}
+
+function clampLevel(v) {
+  const n = v | 0;
+  return n >= 1 && n <= 99 ? n : 1;
+}
 
 // Spawn point: editor override (public/overrides/spawn.json) wins over the
 // src/spawn.json default the client also uses. Read once at startup (nodemon
@@ -35,11 +65,33 @@ function readSpawn() {
 }
 const SPAWN = readSpawn();
 
+// Apply an enemy's landed hit to a player (server-authoritative HP). Broadcast
+// the new HP so every client updates that player's bar; the victim's own client
+// plays the hurt pose. At 0 HP the player respawns at the spawn point.
+function damagePlayer(playerId, dmg) {
+  const p = players.get(playerId);
+  if (!p || p.hp <= 0) return;
+  p.hp = Math.max(0, p.hp - dmg);
+  broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg });
+  if (p.hp <= 0) {
+    p.hp = p.maxHp;
+    p.x = SPAWN.x;
+    p.y = SPAWN.y;
+    p.direction = SPAWN.dir || 0;
+    p.frame = 0;
+    p.pose = 'walk';
+    npcSim.noteRespawn(playerId); // exempt this teleport from enemy door-warp follow
+    broadcastAll({ type: 'player_respawn', id: playerId, x: p.x, y: p.y, dir: p.direction });
+    broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: 0 });
+  }
+}
+
 // Server-authoritative NPC simulation: same world for every client.
 const npcSim = createNpcSim(path.join(__dirname, '..', 'public', 'assets'));
 npcSim.start(
-  () => [...players.values()].map((p) => ({ x: p.x, y: p.y })),
-  (data) => broadcastAll(data)
+  () => [...players.values()].map((p) => ({ id: p.id, x: p.x, y: p.y, level: p.level, hp: p.hp })),
+  (data) => broadcastAll(data),
+  (playerId, dmg) => damagePlayer(playerId, dmg)
 );
 
 function broadcast(data, excludeId) {
@@ -90,6 +142,14 @@ wss.on('connection', (ws) => {
           frame: 0,
           pose: 'walk',
           itemId: null, // held item, set by 'equip' messages
+          inventory: [...STARTING_INVENTORY], // Goods slots, mutated by 'use_item'
+          money: STARTING_MONEY, // starting cash, shown in the menu
+          hp: PLAYER_MAX_HP,
+          maxHp: PLAYER_MAX_HP,
+          level: clampLevel(msg.level), // entities carry a level (no flee AI yet)
+          // PK (player-kill) flag — see npcSim canHurt. All players start
+          // non-PK; a per-player toggle is backlogged (TODO).
+          pk: false,
         };
         players.set(playerId, { ...playerData, _ws: ws });
 
@@ -107,6 +167,8 @@ wss.on('connection', (ws) => {
           players: otherPlayers,
           npcs: npcSim.snapshot(),
           npcHps: npcSim.hpSnapshot(),
+          inventory: inventoryView(playerData.inventory), // own Goods
+          money: playerData.money,                        // own balance
         }));
 
         // Tell everyone else about the new player
@@ -150,7 +212,7 @@ wss.on('connection', (ws) => {
         if (!entry) break;
         // Server-authoritative: resolve the swing from the player's tracked
         // position (not client-sent coords) so reach can't be spoofed.
-        npcSim.handleAttack(entry.x, entry.y, msg.dir | 0, playerId);
+        npcSim.handleAttack(entry.x, entry.y, msg.dir | 0, playerId, entry.offense, entry.pk);
         break;
       }
 
@@ -166,6 +228,40 @@ wss.on('connection', (ws) => {
             p._ws.send(equipMsg);
           }
         }
+        break;
+      }
+
+      case 'use_item': {
+        const entry = players.get(playerId);
+        if (!entry || entry.hp <= 0) break;
+        const itemId = typeof msg.itemId === 'string' ? msg.itemId : null;
+        const def = GOODS[itemId];
+        const slot = entry.inventory.indexOf(itemId);
+        // Must actually own a slot of a known item to consume it.
+        if (!def || slot === -1) break;
+
+        // Apply the effect. Cookie (and any future `heal` good) restores HP up
+        // to the cap; broadcast so every client redraws this player's bar, and
+        // tag `heal` so the user's own client can pop a green number.
+        if (def.heal) {
+          const healed = Math.min(entry.maxHp, entry.hp + def.heal) - entry.hp;
+          entry.hp += healed;
+          broadcastAll({
+            type: 'player_hp',
+            id: playerId,
+            hp: entry.hp,
+            maxHp: entry.maxHp,
+            dmg: 0,
+            heal: healed,
+          });
+        }
+
+        // Consume the slot and send the owner their updated Goods list.
+        entry.inventory.splice(slot, 1);
+        entry._ws.send(JSON.stringify({
+          type: 'inventory',
+          items: inventoryView(entry.inventory),
+        }));
         break;
       }
 

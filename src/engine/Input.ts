@@ -1,11 +1,34 @@
+import { SCREEN_WIDTH, SCREEN_HEIGHT } from '../types';
+
 const keys = new Set<string>();
+// Left mouse click acts as an attack press (same as F). Latched on mousedown,
+// consumed by isAttackPressed like a key.
+let mouseAttack = false;
+
+// Pointer position in game space (256x224), plus a one-shot click latch the
+// UI (e.g. MenuManager) consumes. The canvas is CSS-upscaled by an integer
+// factor, so we map through its bounding rect to stay scale-independent.
+let canvas: HTMLCanvasElement | null = null;
+let pointerX = 0;
+let pointerY = 0;
+let clickPending: { x: number; y: number } | null = null;
 
 /** Expose the live key set so other systems (e.g. MenuManager) can read it. */
 export function getKeySet(): Set<string> {
   return keys;
 }
 
-export function initInput() {
+function toGameCoords(clientX: number, clientY: number): { x: number; y: number } {
+  if (!canvas) return { x: 0, y: 0 };
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: ((clientX - rect.left) / rect.width) * SCREEN_WIDTH,
+    y: ((clientY - rect.top) / rect.height) * SCREEN_HEIGHT,
+  };
+}
+
+export function initInput(gameCanvas?: HTMLCanvasElement) {
+  if (gameCanvas) canvas = gameCanvas;
   window.addEventListener('keydown', (e) => {
     keys.add(e.code);
     // Prevent arrow keys from scrolling the page
@@ -16,6 +39,38 @@ export function initInput() {
   window.addEventListener('keyup', (e) => {
     keys.delete(e.code);
   });
+  window.addEventListener('mousemove', (e) => {
+    const p = toGameCoords(e.clientX, e.clientY);
+    pointerX = p.x;
+    pointerY = p.y;
+  });
+  // Left mouse button = attack. Ignore clicks on UI controls (buttons, inputs,
+  // the editor overlay) so they don't trigger a swing. The click is also
+  // latched as a UI pointer event so menus can hit-test it.
+  window.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    const t = e.target as HTMLElement | null;
+    if (t && t.closest('button, input, textarea, select, [data-ui]')) return;
+    mouseAttack = true;
+    clickPending = toGameCoords(e.clientX, e.clientY);
+  });
+}
+
+/** Pointer position in game-space pixels (256x224). */
+export function getPointer(): { x: number; y: number } {
+  return { x: pointerX, y: pointerY };
+}
+
+/**
+ * Take the pending left-click (game-space coords) if there is one, else null.
+ * Consuming a click also clears the attack latch, so a click the UI handled
+ * never leaks through as a sword swing once the menu closes.
+ */
+export function consumePointerClick(): { x: number; y: number } | null {
+  const c = clickPending;
+  clickPending = null;
+  if (c) mouseAttack = false;
+  return c;
 }
 
 export function isActionPressed(): boolean {
@@ -38,10 +93,11 @@ export function isTalkPressed(): boolean {
   return false;
 }
 
-/** F — swing the held item / attack. */
+/** F or left mouse click — swing the held item / attack. */
 export function isAttackPressed(): boolean {
-  if (keys.has('KeyF')) {
+  if (keys.has('KeyF') || mouseAttack) {
     keys.delete('KeyF');
+    mouseAttack = false;
     return true;
   }
   return false;

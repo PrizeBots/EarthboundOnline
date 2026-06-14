@@ -14,10 +14,12 @@ const COL_HEIGHT = 8;
 const COL_OFFSET_Y = -8; // collision box is near feet
 
 // Pose timing, in game frames (60/s): attack = wind-up then swing; hurt =
-// recoil then settle. Movement is locked while either plays.
+// recoil then settle. Movement is locked during an ATTACK (you committed to the
+// swing) but NOT during a HURT flinch — locking the flinch let a mob of enemies
+// chain-reset it and freeze the player solid (stunlock). The flinch is now
+// cosmetic: you can walk out of a crowd while it plays.
 const ATTACK_WINDUP = 8;
 const ATTACK_TOTAL = 16;
-const HURT_RECOIL = 8;
 const HURT_TOTAL = 20;
 
 export class Player extends Entity {
@@ -29,7 +31,8 @@ export class Player extends Entity {
     // Spawn position/facing come from src/spawn.json (Onett default), so the
     // admin spawn-point tool can relocate it without a code change. Sprite
     // group 1 (Ness) is the default character appearance, set elsewhere.
-    super(spawn.x, spawn.y, 1);
+    // 60 max HP mirrors the server's PLAYER_MAX_HP (server-authoritative combat).
+    super(spawn.x, spawn.y, 1, 60);
     this.direction = spawn.dir as Direction;
   }
 
@@ -64,14 +67,16 @@ export class Player extends Entity {
       return;
     }
     if (this.pose === 'hurt') {
+      // Advance the flinch, but DON'T lock movement (no return) — being mobbed
+      // kept re-triggering hurt() and froze the player. The flinch plays while
+      // you keep walking; if you stand still the movement block below shows the
+      // recoil/settle frames, and the pose clears itself after HURT_TOTAL.
       this.poseTimer++;
-      this.frame = this.poseTimer < HURT_RECOIL ? 0 : 1; // recoil then settle
       if (this.poseTimer >= HURT_TOTAL) {
         this.pose = 'walk';
         this.resetAnimation();
       }
-      this.moving = false;
-      return;
+      // fall through to normal movement
     }
 
     const { dx, dy } = getDirection();

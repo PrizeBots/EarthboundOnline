@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "enemySpriteGroups": [
+    284,
+    283,
+    282
+  ],
+  "entities": {
+    "282": {
+      "hp": 5,
+      "xp": 5,
+      "level": 4,
+      "damage": 2,
+      "attackCooldownMs": 700,
+      "speed": 0.7
+    },
+    "283": {
+      "hp": 12,
+      "xp": 5,
+      "level": 4,
+      "damage": 2,
+      "attackCooldownMs": 1000,
+      "speed": 0.7
+    },
+    "284": {
+      "hp": 24,
+      "xp": 5,
+      "level": 4,
+      "damage": 7,
+      "attackCooldownMs": 700,
+      "speed": 0.7
+    }
+  },
+  "spawners": [
+    {
+      "name": "onett-arcade-sharks",
+      "sprite": 284,
+      "x": 1578,
+      "y": 1754,
+      "wanderRadius": 1400,
+      "poolSize": 11,
+      "maxActive": 7,
+      "spawnIntervalMs": 3000,
+      "respawnDelayMs": 8000,
+      "enabled": true
+    },
+    {
+      "name": "onett-north-sharks",
+      "sprite": 284,
+      "x": 1424,
+      "y": 304,
+      "wanderRadius": 600,
+      "poolSize": 7,
+      "maxActive": 4,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "enabled": true
+    },
+    {
+      "name": "onett-northeast-sharks",
+      "sprite": 284,
+      "x": 2577,
+      "y": 589,
+      "wanderRadius": 600,
+      "poolSize": 7,
+      "maxActive": 4,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "enabled": true
+    },
+    {
+      "name": "onett-central-sharks",
+      "sprite": 284,
+      "x": 2144,
+      "y": 896,
+      "wanderRadius": 650,
+      "poolSize": 7,
+      "maxActive": 4,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "enabled": true
+    },
+    {
+      "name": "onett-east-sharks",
+      "sprite": 284,
+      "x": 2848,
+      "y": 1504,
+      "wanderRadius": 600,
+      "poolSize": 11,
+      "maxActive": 7,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "enabled": true
+    },
+    {
+      "name": "onett-west-sharks",
+      "sprite": 284,
+      "x": 304,
+      "y": 1872,
+      "wanderRadius": 600,
+      "poolSize": 7,
+      "maxActive": 4,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "enabled": true
+    },
+    {
+      "name": "onett-south-sharks",
+      "sprite": 284,
+      "x": 1200,
+      "y": 3200,
+      "wanderRadius": 700,
+      "poolSize": 7,
+      "maxActive": 4,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-8",
+      "sprite": 283,
+      "x": 1812,
+      "y": 363,
+      "wanderRadius": 600,
+      "poolSize": 7,
+      "maxActive": 4,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-9",
+      "sprite": 283,
+      "x": 1092,
+      "y": 991,
+      "wanderRadius": 100,
+      "poolSize": 6,
+      "maxActive": 3,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-10",
+      "sprite": 282,
+      "x": 1204,
+      "y": 1148,
+      "wanderRadius": 600,
+      "poolSize": 4,
+      "maxActive": 1,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 12000,
+      "enabled": true
+    }
+  ]
+}

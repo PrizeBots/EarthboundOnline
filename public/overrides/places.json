@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "hidden": [
+    "onett|b@7960,104",
+    "onett|b@6936,872"
+  ],
+  "moved": {
+    "onett|b@1416,496|r@2752,8608": {
+      "x": 2688,
+      "y": 8609
+    },
+    "onett|b@2648,336": {
+      "x": 2648,
+      "y": 336
+    }
+  },
+  "labels": {
+    "onett|b@1832,120": "Liars house",
+    "onett|b@1096,304": "bigstep cave",
+    "onett|b@2648,336": "Ness House",
+    "onett|b@2392,344": "Pokey House",
+    "onett|b@1256,456": "Bigstep Cave",
+    "onett|b@1064,464": "Bigstep Cave",
+    "onett|b@1416,496": "Bigstep Entrance",
+    "onett|b@2128,864": "Library",
+    "onett|b@2016,1704": "Police",
+    "onett|b@1576,1736": "Game",
+    "onett|b@1856,1736": "Bakery",
+    "onett|b@456,1752": "Cabin",
+    "onett|b@1576,2264": "House"
+  },
+  "buildings": {
+    "onett": [
+      {
+        "id": "mb_mqbwl0s10",
+        "label": "Liar",
+        "x": 1808,
+        "y": 120
+      }
+    ]
+  },
+  "rooms": {}
+}

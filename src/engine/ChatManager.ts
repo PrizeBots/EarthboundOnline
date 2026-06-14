@@ -34,7 +34,6 @@ const MAX_INPUT_LEN = 80;
 const INPUT_INNER_W = 150;           // wrap width inside the input box
 const BUBBLE_INNER_W = 88;           // wrap width inside a speech bubble
 const INPUT_MARGIN = 8;              // gap from screen edges for the input box
-const SCREEN_EDGE = 2;               // bubbles never cross this screen margin
 
 const BUBBLE_LIFETIME = 5000;        // ms a bubble stays before vanishing
 const BUBBLE_FADE = 1200;            // ms of fade-out at the end of life
@@ -48,6 +47,12 @@ interface Bubble {
   lines: string[];
   boxW: number;
   born: number;
+  // World anchor, captured the first time the bubble is drawn. The bubble
+  // belongs to the WORLD at the spot the speaker stood when they chatted — it
+  // does not follow them as they walk away. Undefined until first render.
+  x?: number;
+  y?: number;
+  spriteH?: number;
 }
 
 let typing = false;
@@ -162,14 +167,19 @@ export function renderChat(
   player: Player,
   remotePlayers: Map<string, RemotePlayer>,
 ): void {
-  // World-space speech bubbles above each speaking player.
+  // World-space speech bubbles, pinned to where the speaker stood when sending.
   if (localBubble) {
-    drawBubble(ctx, localBubble, player.x, player.y, player.spriteGroupId, camera);
+    anchorBubble(localBubble, player.x, player.y, player.spriteGroupId);
+    drawBubble(ctx, localBubble, camera);
   }
   for (const [id, bubble] of remoteBubbles) {
-    const rp = remotePlayers.get(id);
-    if (!rp) continue;
-    drawBubble(ctx, bubble, rp.x, rp.y, rp.spriteGroupId, camera);
+    if (bubble.x === undefined) {
+      // Anchor on the first frame we know where the speaker is, then it's fixed.
+      const rp = remotePlayers.get(id);
+      if (!rp) continue;
+      anchorBubble(bubble, rp.x, rp.y, rp.spriteGroupId);
+    }
+    drawBubble(ctx, bubble, camera);
   }
 
   // Screen-space input box (only while typing).
@@ -183,14 +193,20 @@ function makeBubble(text: string, maxW: number): Bubble {
   return { lines, boxW: boxW + BUBBLE_INSET * 2, born: now() };
 }
 
+/** Pin a bubble to a fixed world spot the first time it's seen (idempotent). */
+function anchorBubble(bubble: Bubble, worldX: number, worldY: number, spriteGroupId: number): void {
+  if (bubble.x !== undefined) return;
+  bubble.x = worldX;
+  bubble.y = worldY;
+  bubble.spriteH = getSpriteGroupMeta(spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
+}
+
 function drawBubble(
   ctx: CanvasRenderingContext2D,
   bubble: Bubble,
-  worldX: number,
-  worldY: number,
-  spriteGroupId: number,
   camera: Camera,
 ): void {
+  if (bubble.x === undefined || bubble.y === undefined) return; // not anchored yet
   const age = now() - bubble.born;
   const rise = (age / BUBBLE_LIFETIME) * BUBBLE_RISE;
   const alpha =
@@ -199,22 +215,20 @@ function drawBubble(
       : 1;
   if (alpha <= 0) return;
 
-  const spriteH = getSpriteGroupMeta(spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
+  const spriteH = bubble.spriteH ?? DEFAULT_SPRITE_H;
   const lineH = getLineHeight(BUBBLE_FONT) + 1;
   const boxW = bubble.boxW;
   const boxH = bubble.lines.length * lineH + BUBBLE_INSET * 2;
 
-  const headTopScreenY = Math.floor(worldY - spriteH - camera.y);
-  const centerScreenX = Math.floor(worldX - camera.x);
+  const headTopScreenY = Math.floor(bubble.y - spriteH - camera.y);
+  const centerScreenX = Math.floor(bubble.x - camera.x);
 
-  let boxLeft = centerScreenX - Math.floor(boxW / 2);
-  boxLeft = Math.max(SCREEN_EDGE, Math.min(boxLeft, SCREEN_WIDTH - boxW - SCREEN_EDGE));
-  let boxTop = Math.floor(headTopScreenY - BUBBLE_GAP - rise - boxH);
-
-  // Skip if the speaker is off-screen; otherwise clamp the bubble fully
-  // on-screen (a player near the top edge would push it out of view).
-  if (boxTop > SCREEN_HEIGHT || headTopScreenY < -spriteH) return;
-  boxTop = Math.max(SCREEN_EDGE, Math.min(boxTop, SCREEN_HEIGHT - boxH - SCREEN_EDGE));
+  // The bubble is a WORLD object: draw it at its true screen position (over the
+  // spot the speaker stood) and let it scroll with the map. No edge-clamping —
+  // that would glue it to the view. Cull only when it's fully off-screen.
+  const boxLeft = centerScreenX - Math.floor(boxW / 2);
+  const boxTop = Math.floor(headTopScreenY - BUBBLE_GAP - rise - boxH);
+  if (boxLeft + boxW < 0 || boxLeft > SCREEN_WIDTH || boxTop + boxH < 0 || boxTop > SCREEN_HEIGHT) return;
 
   ctx.save();
   ctx.globalAlpha = alpha;

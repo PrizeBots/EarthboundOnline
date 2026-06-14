@@ -7,9 +7,18 @@
  */
 
 import { loadJSON } from './AssetLoader';
-import { loadSpriteGroup } from './SpriteManager';
+import { loadSpriteGroup, getSpriteGroupMeta } from './SpriteManager';
 import { NPC, NPCKind } from './NPC';
-import { Direction } from '../types';
+import { spawnDamageNumber } from './Emitter';
+import { Direction, POSES } from '../types';
+import type { NpcUpdate } from './Network';
+import { createInterpolator } from './RemoteInterp';
+
+// Smooth NPC/enemy motion the same way remote players glide. NPCs broadcast at
+// ~10Hz (slower than players), so a slightly larger render delay keeps two
+// snapshots bracketing the render time even under jitter. Separate instance
+// from the player interpolator so numeric NPC ids can't collide with player ids.
+const npcInterp = createInterpolator(160);
 
 export interface RawNPC {
   /** Stable placement identity (extract_npcs.py) — the overrides key. */
@@ -66,6 +75,10 @@ let npcsById: (NPC | null)[] = [];
 const requestedSheets = new Set<number>();
 // Decoded ROM dialogue, keyed by NPC config id (see tools/extract_npcs.py).
 let npcText: Record<string, string[]> = {};
+// Enemy classification + default HP, captured at load so a live reload (after
+// the editor saves npcs.json) can rebuild the static placements identically.
+let enemySpriteSet = new Set<number>();
+let enemyDefaultHp = 24;
 
 // Spawner-pool enemies (our own enemy_spawns.json). They wander town-wide, so
 // they're tracked in a flat list rather than the home-keyed area buckets, and
@@ -73,40 +86,153 @@ let npcText: Record<string, string[]> = {};
 // (sharks in npcs.json) live in the normal buckets like townsfolk.
 const roamers: NPC[] = [];
 
+// Traffic cars (our own car_traffic.json). Like roamers they drive town-wide,
+// so they're a flat list rather than home-keyed buckets. Each enabled vehicle
+// with a real route (>=2 waypoints) is ONE appended slot; the server moves it
+// along the route and broadcasts position like any other actor.
+const cars: NPC[] = [];
+
 interface EnemyConfig {
   enemySpriteGroups?: number[];
-  spawners?: { sprite: number; x: number; y: number; poolSize?: number; hp?: number }[];
+  entities?: Record<string, { hp?: number }>; // per-entity stats (Entity Manager); client only needs hp
+  spawners?: { sprite: number; x: number; y: number; poolSize?: number; hp?: number; enabled?: boolean }[];
+}
+
+export interface Vehicle {
+  id: string;
+  name: string;
+  sprite: number;
+  /** Collision box (px), derived from the sprite size when authored. */
+  w?: number;
+  h?: number;
+  speed: number;
+  loop: boolean;
+  enabled: boolean;
+  waypoints: [number, number][];
+}
+export interface CarTraffic {
+  version: number;
+  vehicles?: Vehicle[];
+}
+
+/** Vehicles that produce a live car slot — KEEP IN SYNC with npcSim.js. */
+function activeVehicles(cfg: CarTraffic | null): Vehicle[] {
+  return (cfg?.vehicles ?? []).filter(
+    (v) => v.enabled !== false && Array.isArray(v.waypoints) && v.waypoints.length >= 2,
+  );
+}
+
+/**
+ * Dialogue Editor override (public/overrides/dialogue.json — OUR authored text).
+ * `edits` maps a textId to replacement pages, or null to revert that entry to
+ * the decoded base. Merged over npc_text.json so re-running eb_dialogue.py
+ * never clobbers authoring.
+ */
+export interface DialogueOverrides {
+  version: number;
+  edits?: Record<string, string[] | null>;
+}
+
+function mergeDialogue(
+  base: Record<string, string[]>,
+  ov: DialogueOverrides | null,
+): Record<string, string[]> {
+  if (!ov?.edits) return { ...base };
+  const merged = { ...base };
+  for (const [id, pages] of Object.entries(ov.edits)) {
+    if (pages === null) delete merged[id];
+    else merged[id] = pages;
+  }
+  return merged;
+}
+
+/** Re-merge npc_text + dialogue override (Dialogue Editor live refresh). */
+export async function reloadNpcText(): Promise<void> {
+  const [base, ov] = await Promise.all([
+    loadJSON<Record<string, string[]>>('/assets/map/npc_text.json'),
+    loadJSON<DialogueOverrides>('/overrides/dialogue.json').catch(() => null),
+  ]);
+  npcText = mergeDialogue(base, ov);
 }
 
 export async function loadNPCs(): Promise<void> {
-  const [raw, overrides, text, enemyCfg] = await Promise.all([
+  const [raw, overrides, text, dialogueOv, enemyOv, enemyBase, carOv, carBase] = await Promise.all([
     loadJSON<RawNPC[]>('/assets/map/npcs.json'),
     // Editor-authored placement overrides — absent until something is authored.
     loadJSON<NpcOverrides>('/overrides/npcs.json').catch(() => null),
     loadJSON<Record<string, string[]>>('/assets/map/npc_text.json'),
+    // Dialogue Editor override — authored pages win over the decoded text.
+    loadJSON<DialogueOverrides>('/overrides/dialogue.json').catch(() => null),
+    // Enemy spawners: editor-authored override (Enemy Spawner tool) wins over
+    // the committed default. KEEP IN SYNC with server/npcSim.js — both build
+    // the same pool (disabled spawners skipped) so wire ids stay aligned.
+    loadJSON<EnemyConfig>('/overrides/enemy_spawns.json').catch(() => null),
     loadJSON<EnemyConfig>('/assets/map/enemy_spawns.json').catch(() => ({}) as EnemyConfig),
+    // Traffic (Traffic Editor) — override wins over the committed default. KEEP
+    // IN SYNC with server/npcSim.js (same active-vehicle filter so ids align).
+    loadJSON<CarTraffic>('/overrides/car_traffic.json').catch(() => null),
+    loadJSON<CarTraffic>('/assets/map/car_traffic.json').catch(() => ({ version: 1 }) as CarTraffic),
   ]);
-  npcText = text;
-  npcsByArea.clear();
+  const enemyCfg = enemyOv ?? enemyBase;
+  npcText = mergeDialogue(text, dialogueOv);
   roamers.length = 0;
+  cars.length = 0;
 
-  const enemySprites = new Set(enemyCfg.enemySpriteGroups ?? []);
-  const defaultHp = enemyCfg.spawners?.[0]?.hp ?? 24;
+  enemySpriteSet = new Set(enemyCfg.enemySpriteGroups ?? []);
+  enemyDefaultHp = enemyCfg.spawners?.[0]?.hp ?? 24;
 
-  // ROM placements + authored overrides; sprite groups marked hostile in
-  // enemy_spawns.json become kind 'enemy' (alive until the server's hp
-  // snapshot says otherwise).
-  npcsById = mergeNpcOverrides(raw, overrides).map((r) => {
+  // ROM placements + authored overrides (sprite groups marked hostile in
+  // enemy_spawns.json become kind 'enemy').
+  npcsById = buildStaticNpcs(raw, overrides);
+
+  // Spawner pool appended AFTER the ROM placements so wire ids match the
+  // server, which builds the same pool from the same file. Each starts dead
+  // (hp 0 = hidden) until activated via npc_hp.
+  let id = npcsById.length;
+  for (const sp of enemyCfg.spawners ?? []) {
+    if (sp.enabled === false) continue; // disabled spawner: no pool (server skips it too)
+    // maxHp drives the health bar; it now lives per-entity (Entity Manager),
+    // with a legacy per-spawner hp fallback.
+    const maxHp = enemyCfg.entities?.[String(sp.sprite)]?.hp ?? sp.hp ?? enemyDefaultHp;
+    for (let i = 0; i < (sp.poolSize ?? 0); i++) {
+      const npc = new NPC(sp.x, sp.y, sp.sprite, Direction.N, 'enemy', null);
+      npc.applyHp(0, maxHp);
+      npcsById[id++] = npc;
+      roamers.push(npc);
+    }
+  }
+
+  // Traffic cars appended AFTER the enemy pool, one slot per active vehicle, in
+  // file order — the server builds the same pool so wire ids line up. Each car
+  // starts at its first waypoint; the server drives it from there.
+  for (const v of activeVehicles(carOv ?? carBase)) {
+    const [sx, sy] = v.waypoints[0];
+    const car = new NPC(sx, sy, v.sprite, Direction.S, 'car', null);
+    npcsById[id++] = car;
+    cars.push(car);
+  }
+
+  console.log(`Loaded ${npcsById.length} NPCs (${roamers.length} enemy slots, ${cars.length} cars)`);
+}
+
+/**
+ * Build the static (ROM + override) placements into npcsById/npcsByArea and
+ * return them. Shared by loadNPCs and reloadNpcsLive so both classify enemies
+ * and bucket identically. Clears the area buckets (static only; roamers are
+ * tracked separately).
+ */
+function buildStaticNpcs(raw: RawNPC[], overrides: NpcOverrides | null): (NPC | null)[] {
+  npcsByArea.clear();
+  const arr = mergeNpcOverrides(raw, overrides).map((r) => {
     if (!r) return null; // override-deleted slot
-    const kind: NPCKind = enemySprites.has(r.sprite) ? 'enemy' : r.kind;
+    const kind: NPCKind = enemySpriteSet.has(r.sprite) ? 'enemy' : r.kind;
     const npc = new NPC(r.x, r.y, r.sprite, r.dir as Direction, kind, r.t ?? null);
-    if (kind === 'enemy') npc.applyHp(defaultHp, defaultHp);
+    if (kind === 'enemy') npc.applyHp(enemyDefaultHp, enemyDefaultHp);
     return npc;
   });
-  for (const npc of npcsById) {
+  for (const npc of arr) {
     if (!npc) continue;
-    const area =
-      Math.floor(npc.y / AREA_PX) * AREA_COLS + Math.floor(npc.x / AREA_PX);
+    const area = Math.floor(npc.y / AREA_PX) * AREA_COLS + Math.floor(npc.x / AREA_PX);
     let bucket = npcsByArea.get(area);
     if (!bucket) {
       bucket = [];
@@ -114,27 +240,44 @@ export async function loadNPCs(): Promise<void> {
     }
     bucket.push(npc);
   }
+  return arr;
+}
 
-  // Spawner pool appended AFTER the ROM placements so wire ids match the
-  // server, which builds the same pool from the same file. Each starts dead
-  // (hp 0 = hidden) until activated via npc_hp.
+/**
+ * Re-apply NPC placements live after the editor saves overrides/npcs.json —
+ * the NPC counterpart to saveDoors()→loadDoors(). Rebuilds the static (ROM +
+ * override) placements so adds/edits/deletes show immediately on toggling out
+ * of the editor, then re-appends the EXISTING enemy pool instances (preserving
+ * their live HP/positions) after the static list so active sharks aren't reset.
+ * Wire ids realign with the server once its own ~2s file-watch reload runs.
+ */
+export async function reloadNpcsLive(): Promise<void> {
+  const [raw, overrides] = await Promise.all([
+    loadJSON<RawNPC[]>('/assets/map/npcs.json'),
+    // saveOverride() primed this cache entry with the just-saved data.
+    loadJSON<NpcOverrides>('/overrides/npcs.json').catch(() => null),
+  ]);
+  npcsById = buildStaticNpcs(raw, overrides);
   let id = npcsById.length;
-  for (const sp of enemyCfg.spawners ?? []) {
-    for (let i = 0; i < (sp.poolSize ?? 0); i++) {
-      const npc = new NPC(sp.x, sp.y, sp.sprite, Direction.N, 'enemy', null);
-      npc.applyHp(0, sp.hp ?? defaultHp);
-      npcsById[id++] = npc;
-      roamers.push(npc);
-    }
-  }
-
-  console.log(`Loaded ${npcsById.length} NPCs (${roamers.length} enemy pool slots)`);
+  for (const npc of roamers) npcsById[id++] = npc;
+  // Cars sit after the enemy pool — re-append the existing instances so wire
+  // ids stay aligned and live cars keep their positions across the reload.
+  for (const car of cars) npcsById[id++] = car;
 }
 
 /** Apply authoritative enemy HP (welcome snapshot + on-damage deltas). */
 export function applyNpcHp(rows: [number, number, number][]): void {
   for (const [id, hp, maxHp] of rows) {
-    npcsById[id]?.applyHp(hp, maxHp);
+    const npc = npcsById[id];
+    if (!npc) continue;
+    const prev = npc.hp;
+    npc.applyHp(hp, maxHp);
+    // Pop a damage number on a real hit. Guard prev > 0 so the join snapshot
+    // (0 -> full HP on inactive pool slots) and respawns don't spawn numbers.
+    if (prev > 0 && hp < prev) spawnDamageNumber(npc.x, npc.y, prev - hp);
+    // Died/hidden: clear its interp buffer so a later respawn (which teleports
+    // it back to its spawn point) starts fresh instead of gliding across town.
+    if (hp <= 0) npcInterp.drop(String(id));
   }
 }
 
@@ -149,9 +292,30 @@ export function getNpcDialogue(npc: NPC): string[] | null {
  * HOME position on purpose: wanderers are leashed within 32px of home, so
  * re-bucketing on movement is unnecessary.
  */
-export function applyNpcUpdates(rows: [number, number, number, number, number][]): void {
-  for (const [id, x, y, dir, frame] of rows) {
-    npcsById[id]?.applyServerState(x, y, dir as Direction, frame);
+export function applyNpcUpdates(rows: NpcUpdate[]): void {
+  for (const [id, x, y, dir, frame, poseCode] of rows) {
+    const npc = npcsById[id];
+    if (!npc) continue;
+    const pose = POSES[poseCode ?? 0] ?? 'walk';
+    const key = String(id);
+    // Buffer the snapshot for smooth interpolation (see interpolateNpcs). The
+    // FIRST snapshot after appearing/respawning snaps the position directly so
+    // the NPC doesn't glide in from a stale spot; later ones interpolate.
+    const fresh = !npcInterp.has(key);
+    npcInterp.push(key, x, y, dir as Direction, frame, pose);
+    if (fresh) npc.applyServerState(x, y, dir as Direction, frame, pose);
+  }
+}
+
+/**
+ * Advance every buffered NPC/enemy to its interpolated position for this frame.
+ * Call once per frame (alongside the remote-player interpolation), so server
+ * NPCs glide between 10Hz snapshots instead of stepping once per packet.
+ */
+export function interpolateNpcs(): void {
+  for (const key of npcInterp.ids()) {
+    const npc = npcsById[Number(key)];
+    if (npc && !npc.dead) npcInterp.interpolate(key, npc);
   }
 }
 
@@ -181,21 +345,31 @@ export function blockedByNPC(
   curY?: number,
 ): boolean {
   const haveCur = curX !== undefined && curY !== undefined;
-  // Solid for the player: live people AND live enemies (sharks). Props and dead
-  // enemies don't block. A body the player ALREADY overlaps doesn't block, so an
-  // embedded player can always walk back out.
+  // Solid for the player: live people, live enemies (sharks), and cars. Props
+  // and dead enemies don't block. A body the player ALREADY overlaps doesn't
+  // block, so an embedded player can always walk back out. Cars use their full
+  // sprite rect (feet-anchored) as the obstacle; people/enemies use a foot box.
+  const boxOf = (npc: NPC): [number, number, number, number] | null => {
+    if (npc.kind === 'car') {
+      const meta = getSpriteGroupMeta(npc.spriteGroupId);
+      if (!meta) return null; // sheet not loaded yet — not solid this frame
+      return [npc.x - meta.width / 2, npc.y - meta.height, meta.width, meta.height];
+    }
+    return [npc.x - NPC_COL_W / 2, npc.y + NPC_COL_OY, NPC_COL_W, NPC_COL_H];
+  };
   const hits = (npc: NPC): boolean => {
     if (npc.dead) return false;
-    if (npc.kind !== 'person' && npc.kind !== 'enemy') return false;
-    const nx = npc.x - NPC_COL_W / 2;
-    const ny = npc.y + NPC_COL_OY;
-    if (!(x < nx + NPC_COL_W && x + w > nx && y < ny + NPC_COL_H && y + h > ny)) {
+    if (npc.kind !== 'person' && npc.kind !== 'enemy' && npc.kind !== 'car') return false;
+    const box = boxOf(npc);
+    if (!box) return false;
+    const [nx, ny, nw, nh] = box;
+    if (!(x < nx + nw && x + w > nx && y < ny + nh && y + h > ny)) {
       return false;
     }
     if (
       haveCur &&
-      curX! < nx + NPC_COL_W && curX! + w > nx &&
-      curY! < ny + NPC_COL_H && curY! + h > ny
+      curX! < nx + nw && curX! + w > nx &&
+      curY! < ny + nh && curY! + h > ny
     ) {
       return false; // already inside at move start — let them leave
     }
@@ -214,8 +388,9 @@ export function blockedByNPC(
       for (const npc of bucket) if (hits(npc)) return true;
     }
   }
-  // Roamers aren't bucketed (they wander town-wide) — scan the small pool.
+  // Roamers and cars aren't bucketed (they range town-wide) — scan the pools.
   for (const npc of roamers) if (hits(npc)) return true;
+  for (const npc of cars) if (hits(npc)) return true;
   return false;
 }
 
@@ -249,10 +424,15 @@ export function getNearbyNPCs(px: number, py: number): NPC[] {
     }
   }
 
-  // Roamers aren't bucketed; include the live ones within the near window.
+  // Roamers and cars aren't bucketed; include the live ones within the window.
   const reach = NEAR_RANGE * AREA_PX;
   for (const npc of roamers) {
     if (npc.dead) continue;
+    if (Math.abs(npc.x - px) > reach || Math.abs(npc.y - py) > reach) continue;
+    ensureSheet(npc);
+    result.push(npc);
+  }
+  for (const npc of cars) {
     if (Math.abs(npc.x - px) > reach || Math.abs(npc.y - py) > reach) continue;
     ensureSheet(npc);
     result.push(npc);

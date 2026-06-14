@@ -69,11 +69,8 @@ export async function loadCharacterSelect(): Promise<void> {
   characters = entries;
 }
 
-// Grid cell 0 is the CREATE button; characters fill cells 1..n.
-const CREATE_CELL = 0;
-
 export function getSelectedSpriteGroupId(): number {
-  return characters[selectedIndex - 1]?.meta.id ?? 1;
+  return characters[selectedIndex]?.meta.id ?? 1;
 }
 
 export function updateCharacterSelect(): boolean {
@@ -94,8 +91,8 @@ export function updateCharacterSelect(): boolean {
   return false; // not confirmed yet — Game checks for Enter key
 }
 
-export function handleCharSelectInput(key: string): 'confirm' | 'create' | null {
-  const totalCells = characters.length + 1; // +1 for the CREATE button
+export function handleCharSelectInput(key: string): 'confirm' | null {
+  const totalCells = characters.length;
   const rows = Math.ceil(totalCells / COLS);
   const currentRow = Math.floor(selectedIndex / COLS);
   const currentCol = selectedIndex % COLS;
@@ -124,7 +121,7 @@ export function handleCharSelectInput(key: string): 'confirm' | 'create' | null 
       break;
     case 'Enter':
     case ' ':
-      return selectedIndex === CREATE_CELL ? 'create' : 'confirm';
+      return 'confirm';
   }
 
   // Scroll to keep selection visible
@@ -158,7 +155,7 @@ export function drawCharacterSelect(ctx: CanvasRenderingContext2D) {
   ctx.rect(0, GRID_Y - 2, SCREEN_WIDTH, SCREEN_HEIGHT - GRID_Y - 38);
   ctx.clip();
 
-  for (let i = 0; i < characters.length + 1; i++) {
+  for (let i = 0; i < characters.length; i++) {
     const row = Math.floor(i / COLS);
     const col = i % COLS;
     const x = GRID_X + col * (CELL_W + PADDING);
@@ -173,23 +170,7 @@ export function drawCharacterSelect(ctx: CanvasRenderingContext2D) {
       ctx.strokeRect(x - 1, y - 1, CELL_W + 2, CELL_H + 2);
     }
 
-    if (i === CREATE_CELL) {
-      // CREATE button cell
-      ctx.fillStyle = '#1a2a1a';
-      ctx.fillRect(x, y, CELL_W, CELL_H);
-      ctx.strokeStyle = i === selectedIndex ? '#ff0' : '#4a4';
-      ctx.strokeRect(x + 1.5, y + 1.5, CELL_W - 3, CELL_H - 3);
-      ctx.fillStyle = '#6f6';
-      ctx.font = '10px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText('+', x + CELL_W / 2, y + CELL_H / 2 - 1);
-      ctx.font = '6px monospace';
-      ctx.fillText('NEW', x + CELL_W / 2, y + CELL_H / 2 + 9);
-      ctx.font = '8px monospace';
-      continue;
-    }
-
-    const { meta, img } = characters[i - 1];
+    const { meta, img } = characters[i];
 
     // Draw south-facing frame 0
     const srcX = SOUTH_COL * meta.width;
@@ -203,20 +184,8 @@ export function drawCharacterSelect(ctx: CanvasRenderingContext2D) {
   ctx.restore();
 
   // Selected character preview (larger, animated, cycling directions)
-  if (selectedIndex === CREATE_CELL) {
-    const previewY = SCREEN_HEIGHT - 36;
-    ctx.fillStyle = '#222';
-    ctx.fillRect(0, previewY - 2, SCREEN_WIDTH, 38);
-    ctx.fillStyle = '#6f6';
-    ctx.font = '10px monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText('Create your own character', 16, previewY + 14);
-    ctx.fillStyle = '#888';
-    ctx.font = '8px monospace';
-    ctx.fillText('Pixel-edit your own sprite, starting from Ness', 16, previewY + 26);
-  }
-  const sel = characters[selectedIndex - 1];
-  if (sel && selectedIndex !== CREATE_CELL) {
+  const sel = characters[selectedIndex];
+  if (sel) {
     const previewY = SCREEN_HEIGHT - 36;
     ctx.fillStyle = '#222';
     ctx.fillRect(0, previewY - 2, SCREEN_WIDTH, 38);

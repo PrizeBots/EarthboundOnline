@@ -9,10 +9,11 @@ const spriteImages = new Map<number, CanvasImageSource>();
 let spriteMetadata: SpriteGroupMeta[] = [];
 const customMetadata = new Map<number, SpriteGroupMeta>();
 
-// Most NPC groups only have the 4 cardinal directions (sheet rows 2-3 empty).
-// Like the real game, they fall back to their side-view frames when moving
-// diagonally — detected once per sheet at load time.
-const diagSupport = new Map<number, boolean>();
+// Which DIAGONAL directions a group has real art for (per direction, not all-
+// or-nothing): a sprite renders a diagonal frame the moment it's authored, and
+// falls back to its side view only for the diagonals it's still missing. Many
+// ROM NPCs ship with 4 cardinals and no diagonals; admins fill them in.
+const diagDirs = new Map<number, Set<Direction>>();
 
 // How many frame rows each sheet actually has. ROM sheets have 4 (walk only);
 // v1 custom sheets have 5 (+ climb); v2 have 10 (+ attack rows 5-8 and a
@@ -83,19 +84,49 @@ const DIRECTION_LAYOUT: Record<Direction, [number, number][]> = {
   [Direction.NW]: [[3, 2], [3, 3]],  // pair 7: NW (back, angled left)
 };
 
+const DIAG_DIRECTIONS: Direction[] = [Direction.NE, Direction.SE, Direction.SW, Direction.NW];
+
+/**
+ * The diagonal directions a sheet has real art for — checked per direction
+ * (either of its two frame cells passing MIN_DIAG_PIXELS counts). drawSprite
+ * renders a diagonal when present and falls back to the side view otherwise, so
+ * a half-authored sheet shows exactly the frames that exist.
+ */
+function diagonalDirsWithArt(img: CanvasImageSource, frameW: number, frameH: number): Set<Direction> {
+  const canvas = document.createElement('canvas');
+  canvas.width = frameW * 4;
+  canvas.height = frameH * 4;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+  ctx.drawImage(img, 0, 0);
+  const set = new Set<Direction>();
+  for (const d of DIAG_DIRECTIONS) {
+    for (const [r, c] of DIRECTION_LAYOUT[d]) {
+      const data = ctx.getImageData(c * frameW, r * frameH, frameW, frameH).data;
+      let opaque = 0;
+      for (let i = 3; i < data.length; i += 4) {
+        if (data[i] > 0 && ++opaque >= MIN_DIAG_PIXELS) break;
+      }
+      if (opaque >= MIN_DIAG_PIXELS) { set.add(d); break; } // any frame with art = direction present
+    }
+  }
+  return set;
+}
+
 export async function loadSpriteMetadata(): Promise<void> {
   spriteMetadata = await loadJSON<SpriteGroupMeta[]>('/assets/sprites/metadata.json');
 }
 
-// --- Authored sprite-frame overrides (NPC Sprite Animator) -----------------
-// public/overrides/sprites.json: per-group PATCHES over the generated
-// attack/hurt bands — `paint` (pixels the admin painted) and `erase` (mask of
-// pixels forced transparent), each a PNG covering rows 5-12 of the v3 layout.
-// Only hand-painted diffs are stored, never ROM or ROM-derived pixels: the
-// base bands regenerate from the player's own extraction (PoseGen) at load.
+// --- Authored sprite-frame overrides (Sprite Editor) -----------------------
+// public/overrides/sprites.json: per-group PATCHES — `paint` (pixels the admin
+// painted) and `erase` (mask of pixels forced transparent), each a PNG applied
+// at `band` (the frame-row offset it starts at). `band:0` = a full 13-row sheet
+// patch (lets admins author missing walk/directional frames); legacy entries
+// omit `band` and cover just the attack/hurt rows starting at row 5. Only
+// hand-painted diffs are stored, never untouched ROM/generated pixels: the base
+// sheet regenerates from the player's own extraction (PoseGen) at load.
 export interface SpriteOverrides {
   version: number;
-  groups?: Record<string, { paint?: string; erase?: string }>;
+  groups?: Record<string, { paint?: string; erase?: string; band?: number }>;
 }
 
 let spriteOverrides: SpriteOverrides | null = null;
@@ -116,7 +147,9 @@ async function applySpritePatch(groupId: number, sheet: HTMLCanvasElement, frame
   const ov = spriteOverrides?.groups?.[String(groupId)];
   if (!ov) return;
   const ctx = sheet.getContext('2d')!;
-  const bandY = frameH * ATTACK_ROW_OFFSET;
+  // band 0 = full-sheet patch (walk + attack + hurt); legacy entries omit band
+  // and start at the attack row. The PNG's own height covers the rest.
+  const bandY = frameH * (ov.band ?? ATTACK_ROW_OFFSET);
   try {
     if (ov.erase) {
       const erase = await loadDataUrl(ov.erase);
@@ -159,18 +192,30 @@ export async function loadSpriteGroup(groupId: number): Promise<CanvasImageSourc
     return img;
   }
   romImages.set(groupId, img);
-  diagSupport.set(groupId, sheetHasDiagonals(img, meta.width, meta.height));
 
   // Every group gets a full 13-row pose sheet: ROM walk/climb rows + attack
   // and hurt bands generated from the standing frames (PoseGen), with any
-  // authored Animator patches composited on top. NPCs/enemies can then play
-  // every pose the player can.
+  // authored patches composited on top. NPCs/enemies can then play every pose
+  // the player can.
   const srcRows = Math.floor(sourceHeight(img) / meta.height);
   const sheet = generatePoseSheet(img, meta.width, meta.height, srcRows);
   await applySpritePatch(groupId, sheet, meta.height);
+  // Diagonal art is read from the COMPOSITED sheet, not the raw ROM image, and
+  // per direction: an admin can author the diagonal frames a 4-direction sprite
+  // never had, and each one renders the moment its cells are filled.
+  diagDirs.set(groupId, diagonalDirsWithArt(sheet, meta.width, meta.height));
   spriteImages.set(groupId, sheet);
   sheetRowCount.set(groupId, POSE_SHEET_ROWS);
   return sheet;
+}
+
+/** Recompute whether a group's COMPOSITED sheet has diagonal art, after the
+ *  Sprite Editor authored or erased diagonal frames — so drawSprite stops (or
+ *  starts) the side-view fallback live, without a reload. */
+export function refreshDiagSupport(groupId: number): void {
+  const sheet = spriteImages.get(groupId);
+  const meta = getSpriteGroupMeta(groupId);
+  if (sheet && meta) diagDirs.set(groupId, diagonalDirsWithArt(sheet, meta.width, meta.height));
 }
 
 /** The live composited sheet canvas for a loaded ROM group (animator edits
@@ -189,6 +234,26 @@ export function getPristineSheet(groupId: number): HTMLCanvasElement | null {
   return generatePoseSheet(rom, meta.width, meta.height, srcRows);
 }
 
+/**
+ * The raw extracted ROM sheet for a group + its frame grid, for read-only
+ * frame inspection (the Sprite Editor shows every source cell). Returns null
+ * for custom/unloaded groups.
+ */
+export function getSourceSheet(
+  groupId: number,
+): { img: CanvasImageSource; frameW: number; frameH: number; cols: number; rows: number } | null {
+  const img = romImages.get(groupId);
+  const meta = getSpriteGroupMeta(groupId);
+  if (!img || !meta) return null;
+  return {
+    img,
+    frameW: meta.width,
+    frameH: meta.height,
+    cols: Math.max(1, Math.floor(img.width / meta.width)),
+    rows: Math.max(1, Math.floor(sourceHeight(img) / meta.height)),
+  };
+}
+
 /** Register a runtime-built sprite sheet (sprite editor output / previews). */
 export function registerCustomSprite(
   groupId: number,
@@ -198,8 +263,9 @@ export function registerCustomSprite(
 ): void {
   spriteImages.set(groupId, sheet);
   customMetadata.set(groupId, { id: groupId, width, height, palette: 5 });
-  // Editor sheets start from Ness, who has real diagonal art.
-  diagSupport.set(groupId, true);
+  // Per-direction diagonal art read straight from the sheet (players can erase
+  // diagonals in the creator, so a custom sheet may be 4-direction).
+  diagDirs.set(groupId, diagonalDirsWithArt(sheet, width, height));
   sheetRowCount.set(groupId, Math.floor(sourceHeight(sheet) / height));
 }
 
@@ -241,15 +307,18 @@ export async function registerCustomSheet(dataUrl: string): Promise<number> {
   }
   const groupId = nextCustomId++;
   registeredSheets.set(dataUrl, groupId);
-  registerCustomSprite(groupId, img, SHEET_FRAME_W, SHEET_FRAME_H);
-  // The editor lets players erase the diagonal cells — detect like ROM sheets
-  // so a 4-direction custom character falls back to side views.
-  diagSupport.set(groupId, sheetHasDiagonals(img, SHEET_FRAME_W, SHEET_FRAME_H));
+  registerCustomSprite(groupId, img, SHEET_FRAME_W, SHEET_FRAME_H); // sets per-direction diag art
   return groupId;
 }
 
 export function getSpriteGroupMeta(groupId: number): SpriteGroupMeta | undefined {
   return customMetadata.get(groupId) ?? spriteMetadata.find((s) => s.id === groupId);
+}
+
+/** All known sprite-group ids (extracted ROM groups), sorted ascending. For
+ *  sprite pickers that let you choose any group, not just the cast roster. */
+export function listSpriteGroupIds(): number[] {
+  return spriteMetadata.map((s) => s.id).sort((a, b) => a - b);
 }
 
 // Which vertical slice of the sprite to draw. EarthBound's tile priority
@@ -273,9 +342,11 @@ export function drawSprite(
   const meta = getSpriteGroupMeta(groupId);
   if (!meta) return;
 
-  // 4-direction sheets show their side view when moving diagonally.
-  const dir = diagSupport.get(groupId) === false
-    ? DIAG_REMAP[direction] ?? direction
+  // Diagonals fall back to the side view, but ONLY for directions this sprite
+  // lacks art for — an authored diagonal renders as soon as it's painted.
+  const remap = DIAG_REMAP[direction];
+  const dir = remap !== undefined && !diagDirs.get(groupId)?.has(direction)
+    ? remap
     : direction;
 
   const frameIndex = Math.min(frame, 1);

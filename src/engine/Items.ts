@@ -5,8 +5,31 @@ import { Direction, Pose } from '../types';
 // grids authored below) — never ROM-derived, so it ships with the site. On
 // SNES hardware each item is one extra 16x16 OAM sprite next to the player.
 
-const ITEM_W = 16;
-const ITEM_H = 16;
+export const ITEM_W = 16;
+export const ITEM_H = 16;
+
+// A general-purpose 16-color palette for the item editor. Items are OUR OWN
+// art (not ROM-derived) and become a standalone OAM palette on SNES, so they
+// are NOT tied to the EB sprite palette — this is a hand-picked spread. Index
+// 0 is transparent (empty string), matching the character editor's color 0.
+export const ITEM_PALETTE: string[] = [
+  '',        // 0: transparent
+  '#000000', // 1: black (outline)
+  '#ffffff', // 2: white
+  '#7a4a20', // 3: wood dark
+  '#c08850', // 4: wood light
+  '#502800', // 5: wood outline
+  '#a8a8b0', // 6: metal light
+  '#484850', // 7: metal dark
+  '#d82820', // 8: red
+  '#208040', // 9: green
+  '#2860d8', // 10: blue
+  '#f0d020', // 11: yellow
+  '#e07820', // 12: orange
+  '#902080', // 13: purple
+  '#d8d8d8', // 14: silver
+  '#181818', // 15: near-black
+];
 
 interface ItemDef {
   name: string;
@@ -107,9 +130,40 @@ export function getItemName(itemId: string): string | null {
 // Rendered item canvases, normal + horizontally flipped.
 const itemCanvases = new Map<string, HTMLCanvasElement>();
 
+// Runtime art overrides (the sprite editor). When an item has an override its
+// pixels come from the supplied ITEM_W x ITEM_H canvas instead of ITEM_DEFS.
+const itemOverrides = new Map<string, HTMLCanvasElement>();
+
+/**
+ * Replace an item's art at runtime with a 16x16 canvas (the editor's buffer).
+ * Busts the render cache so the new pixels show on the very next draw — the
+ * game/test-pane render path (drawHeldItem) picks it up with no other plumbing.
+ */
+export function setItemOverride(itemId: string, canvas: HTMLCanvasElement): void {
+  itemOverrides.set(itemId, canvas);
+  itemCanvases.delete(itemId);
+  itemCanvases.delete(`${itemId}:f`);
+}
+
+/**
+ * Render an item's CURRENT art (override if present, else the base def) into a
+ * fresh 16x16 canvas. The editor uses this to seed its edit buffer so you start
+ * from the existing pixels.
+ */
+export function renderItemArt(itemId: string): HTMLCanvasElement | null {
+  const base = getItemCanvas(itemId, false);
+  if (!base) return null;
+  const c = document.createElement('canvas');
+  c.width = ITEM_W;
+  c.height = ITEM_H;
+  c.getContext('2d')!.drawImage(base, 0, 0);
+  return c;
+}
+
 function getItemCanvas(itemId: string, flip: boolean): HTMLCanvasElement | null {
   const def = ITEM_DEFS[itemId];
-  if (!def) return null; // unknown id from the network — draw nothing
+  const override = itemOverrides.get(itemId);
+  if (!def && !override) return null; // unknown id from the network — draw nothing
   const key = flip ? `${itemId}:f` : itemId;
   let canvas = itemCanvases.get(key);
   if (canvas) return canvas;
@@ -118,13 +172,24 @@ function getItemCanvas(itemId: string, flip: boolean): HTMLCanvasElement | null 
   canvas.width = ITEM_W;
   canvas.height = ITEM_H;
   const ctx = canvas.getContext('2d')!;
-  for (let y = 0; y < Math.min(def.pixels.length, ITEM_H); y++) {
-    const row = def.pixels[y];
-    for (let x = 0; x < Math.min(row.length, ITEM_W); x++) {
-      const color = def.palette[row[x]];
-      if (!color) continue;
-      ctx.fillStyle = color;
-      ctx.fillRect(flip ? ITEM_W - 1 - x : x, y, 1, 1);
+  ctx.imageSmoothingEnabled = false;
+
+  if (override) {
+    // Edited art: blit the override canvas, mirrored for the flipped variant.
+    if (flip) {
+      ctx.translate(ITEM_W, 0);
+      ctx.scale(-1, 1);
+    }
+    ctx.drawImage(override, 0, 0);
+  } else {
+    for (let y = 0; y < Math.min(def!.pixels.length, ITEM_H); y++) {
+      const row = def!.pixels[y];
+      for (let x = 0; x < Math.min(row.length, ITEM_W); x++) {
+        const color = def!.palette[row[x]];
+        if (!color) continue;
+        ctx.fillStyle = color;
+        ctx.fillRect(flip ? ITEM_W - 1 - x : x, y, 1, 1);
+      }
     }
   }
   itemCanvases.set(key, canvas);
