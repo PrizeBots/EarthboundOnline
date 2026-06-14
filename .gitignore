@@ -21,6 +21,13 @@ __pycache__/
 public/test_onett.png
 public/test_render.png
 
+# Debug/scratch renders from tools (ROM-derived pixels — never commit, per
+# CLAUDE.md ROM policy). Verify scripts also emit screenshots; keep them out.
+tools/*.png
+tools/*.jpg
+tools/_*
+*.screenshot.png
+
 # Blender
 *.blend
 *.blend1

@@ -3,9 +3,13 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "dev": "nodemon --watch vite.config.ts --watch server --ext ts,js --exec \"npx vite --port 4444\"",
+    "dev": "nodemon --watch vite.config.ts --watch server --ignore \"server/*.test.js\" --ext ts,js --exec \"npx vite --port 4444\"",
     "build": "vite build",
     "start": "node server/index.js",
+    "typecheck": "tsc --noEmit",
+    "check:server": "node --check server/gameHost.js && node --check server/npcSim.js && node --check server/shops.js && node --check server/index.js",
+    "test": "node server/gameHost.test.js",
+    "verify": "npm run typecheck && npm run check:server && npm test",
     "extract": "python tools/convert_all.py"
   },
   "keywords": [],

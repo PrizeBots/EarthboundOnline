@@ -65,12 +65,18 @@ EarthBound ROM and all assets are extracted in their browser. See CLAUDE.md
 - [ ] Asset cache in IndexedDB/OPFS; AssetLoader reads cache instead of HTTP
 - [ ] Exclude `public/assets/` from production build (dev keeps local pre-extracted assets for speed)
 - [ ] Scrub `public/assets/` from ALL git history (`git filter-repo`), force-push
+  (also covers `tools/_*.png` debug renders — untracked + gitignored now, but
+  still present in earlier commits)
 - [ ] Redeploy Render with code only; verify nothing ROM-derived is served
 - [ ] SPC700 music sources sample/song data from the player's ROM (was the plan anyway)
 - [ ] Consider renaming the project (trademark exposure is separate from copyright)
 
 ## Phase 3: Game Server (Production)
-- [ ] Move game server to standalone Node process (separate from Vite)
+- [~] Move game server to standalone Node process (separate from Vite) — host
+  logic is now unified in `GameHost` (`server/gameHost.js`); `server/index.js`
+  (standalone) and `vite.config.ts` are thin transports over it. Remaining: make
+  the standalone process the dev runtime too (proxy Vite HMR) so there's one
+  server everywhere, not just one code path.
 - [ ] Persistent world state (player positions survive server restart)
 - [ ] Area-of-interest filtering (only send updates for nearby players)
 - [ ] Binary protocol (replace JSON with packed messages for bandwidth)

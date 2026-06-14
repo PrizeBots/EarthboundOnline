@@ -1,0 +1,28 @@
+name: CI
+
+# Fast, asset-light gates: TypeScript typecheck, server syntax, and the GameHost
+# smoke test. These need only code + the committed pure-index JSON under
+# public/assets/, never the ROM. (A production `vite build` is intentionally left
+# out — it's heavier and the dev server already exercises the bundle path.)
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify (typecheck + server syntax + tests)
+        run: npm run verify

@@ -65,13 +65,11 @@ export interface PlayerStatsPayload {
 
 let ws: WebSocket | null = null;
 let callbacks: NetworkCallback | null = null;
-let sendInterval: number | null = null;
 
 export function connect(
   spriteGroupId: number,
   name: string,
   appearance: CharacterAppearance | null,
-  level: number,
   cb: NetworkCallback
 ) {
   callbacks = cb;
@@ -81,12 +79,14 @@ export function connect(
   ws = new WebSocket(`${protocol}//${location.host}/ws`);
 
   ws.onopen = () => {
+    // Level is NOT sent: the server is authoritative on progression (every join
+    // starts at level 1 until the save system lands) and ignores client-supplied
+    // levels, so sending one would only imply a control the client doesn't have.
     ws!.send(JSON.stringify({
       type: 'join',
       spriteGroupId,
       name,
       appearance,
-      level,
     }));
   };
 
@@ -146,7 +146,6 @@ export function connect(
 
   ws.onclose = () => {
     console.log('Disconnected from server');
-    if (sendInterval) clearInterval(sendInterval);
   };
 }
 

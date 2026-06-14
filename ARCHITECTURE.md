@@ -17,7 +17,8 @@ state. Every system is designed to port cleanly to real SNES hardware later
 EarthBound.sfc ──tools/*.py──▶ public/assets/*.json+png ──HTTP──▶ src/engine (browser)
 eb_project/  (CoilSnake decompile: scripts, NPC/door tables, music) ──┘     ▲
                                                                             │ WebSocket
-                                            server/index.js + server/npcSim.js
+                            server/gameHost.js (GameHost) + server/npcSim.js
+                            ↑ shared by server/index.js AND vite.config.ts
 ```
 
 ## Data pipeline (run in order)
@@ -215,7 +216,7 @@ sector load + room crop — use it from the console or verification scripts.
   press-then-release on the same row is a plain use), and number keys **1–2** or
   a click trigger a slot — toggle-equip gear into its slot, or use a consumable.
   Hotbar slots + equipped gear are in-memory (more slots + a save system are
-  TODO). Mirrored equip model in `vite.config.ts` and `server/index.js`.
+  TODO). The equip model lives once in `GameHost` (`server/gameHost.js`).
 - **Wallet.ts + money window** — the server-authoritative money ($). Every
   player joins with $1000; the balance ships in `welcome` and every `money`
   delta (shop buy/sell). `Wallet.ts` mirrors it so MenuManager can
@@ -331,8 +332,29 @@ live via `setMusicAreas()`.
 
 ## Multiplayer server
 
-`server/index.js` (standalone) and the Vite-embedded dev server both relay
-join/move/chat/equip **and run `server/npcSim.js`**: server-authoritative NPC
+**`server/gameHost.js` is the single source of truth for host logic** — the
+`GameHost` class owns the players map, the message switch (join/move/chat/
+attack/equip/use_item/buy/sell/use_psi), progression (level/exp/stats), combat
+HP, and the `npcSim` wiring. There are now TWO thin transports around it, NOT
+two copies of the logic:
+- `server/index.js` — standalone deploy server: Express serves `dist/`, a plain
+  `ws` server hands each socket to `host.handleConnection(ws)`.
+- `vite.config.ts` `gameServerPlugin` — dev server: the `/ws` upgrade hands each
+  socket to the same `host.handleConnection(ws)`.
+
+Both construct one `GameHost(assetsDir)`, call `host.start()`, and forward
+sockets. Any behaviour change goes in `GameHost` and both servers get it — the
+old "keep both servers in sync" hazard is gone by construction (the two copies
+had already drifted: the standalone server was missing progression + PSI before
+this was unified). A socket only needs to look like a `ws` WebSocket
+(`.send`/`.readyState`/`.on`), which both transports satisfy.
+`server/gameHost.test.js` (`npm test`) drives the class with fake sockets and
+asserts both the broadcast contract (join/move/chat/leave) and the
+server-authoritative economy rules (equip/use_item/buy/sell, incl. refusing to
+consume gear and rejecting unaffordable buys) — 17 checks.
+
+`GameHost` relays join/move/chat/equip **and runs `server/npcSim.js`**:
+server-authoritative NPC
 wander AI (mirrors Collision.ts math, and stops a wander leg that would overlap
 a player so collision is mutual) so all clients see identical NPC state. Wire:
 `move` carries `pose` (whitelisted to walk/climb/attack/hurt); `equip` sets the
@@ -349,9 +371,9 @@ dead/hidden); both keyed by the shared wire id, and `welcome` ships an `npcHps`
 snapshot beside the `npcs` one. npcSim hot-reloads `npcs.json` (2s poll) when
 extraction rewrites it and re-broadcasts every person — without this, a running
 server kept pushing stale home positions and clients saw NPCs snap back to
-pre-fix spots; refresh the browser too so the client picks up props. **Keep
-both servers' message handling in sync.** The server never touches ROM assets
-beyond the pure-index JSON it simulates from.
+pre-fix spots; refresh the browser too so the client picks up props. (Message handling is
+single-sourced in `GameHost` now, so there is nothing to keep in sync.) The
+server never touches ROM assets beyond the pure-index JSON it simulates from.
 
 ## Combat & enemies
 

@@ -116,8 +116,9 @@ Format:
   leave `floodSectors` and never step onto a door cell. That fills the room's
   OWN floor (same sectors, no door between) while making a neighbour-room merge
   structurally impossible — neighbours always live in a different sector or
-  behind a door mat. Mirrored in `tools/debug_room_crop_check.py` and
-  `tools/extract_rooms.py` (KEEP IN SYNC).
+  behind a door mat. The room-bounds algorithm lives in
+  `Collision.computeRoomBounds` and is mirrored by the canonical verifier
+  `tools/debug_room_crop_check.py` (KEEP IN SYNC).
 - **Verified:** in-game screenshot (floor now complete, no black squares) and
   the canonical sweep — only 6 indoor rooms change, all pure additions (0
   removals), indoor multi-style rooms still 0 (no building merges), 0 NO-CROP

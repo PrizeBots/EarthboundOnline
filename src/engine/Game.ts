@@ -36,7 +36,7 @@ import {
 import { connect, sendPosition, sendEquip, sendAttack } from './Network';
 import { loadNameOverrides, getSpriteName } from './SpriteNames';
 import { loadSongNameOverrides } from './SongNames';
-import { setStatus, getStatus } from './StatusModal';
+import { setStatus } from './StatusModal';
 import {
   pushRemoteSnapshot,
   dropRemoteBuffer,
@@ -288,7 +288,7 @@ export class Game {
     initDialogue(getKeySet());
 
     // Connect to multiplayer server
-    connect(spriteGroupId, `Player`, appearance ?? null, getStatus().level, {
+    connect(spriteGroupId, `Player`, appearance ?? null, {
       onWelcome: (playerId, players) => {
         this.localPlayerId = playerId;
         for (const p of players) {
