@@ -22,8 +22,8 @@ const diagDirs = new Map<number, Set<Direction>>();
 const sheetRowCount = new Map<number, number>();
 const CLIMB_ROW = 4;
 const ATTACK_ROW_OFFSET = 5; // attack rows mirror walk rows 0-3, shifted down
-const HURT_ROW_OFFSET = 9;   // v3 hurt rows 9-12, same layout as walk/attack
-const HURT_ROW_LEGACY = 9;   // v2 single-row hurt (4 cardinals)
+const HURT_ROW_OFFSET = 9; // v3 hurt rows 9-12, same layout as walk/attack
+const HURT_ROW_LEGACY = 9; // v2 single-row hurt (4 cardinals)
 
 // v2 legacy hurt row cells, one flinch frame per cardinal: | N | E | S | W |
 const HURT_COL: Partial<Record<Direction, number>> = {
@@ -47,11 +47,7 @@ const DIAG_REMAP: Partial<Record<Direction, Direction>> = {
 const MIN_DIAG_PIXELS = 20; // per-cell threshold for "real" diagonal art
 
 /** True if all 8 diagonal cells (grid rows 2-3) contain real art. */
-export function sheetHasDiagonals(
-  img: CanvasImageSource,
-  frameW: number,
-  frameH: number
-): boolean {
+export function sheetHasDiagonals(img: CanvasImageSource, frameW: number, frameH: number): boolean {
   const canvas = document.createElement('canvas');
   canvas.width = frameW * 4;
   canvas.height = frameH * 4;
@@ -74,14 +70,38 @@ export function sheetHasDiagonals(
 // EarthBound sprite sheet layout: 4 columns x 4 rows
 // Verified by inspecting individual sprites at 6x zoom
 const DIRECTION_LAYOUT: Record<Direction, [number, number][]> = {
-  [Direction.N]:  [[0, 0], [0, 1]],  // pair 0: north (back view)
-  [Direction.E]:  [[0, 2], [0, 3]],  // pair 1: east (facing right)
-  [Direction.S]:  [[1, 0], [1, 1]],  // pair 2: south (front view)
-  [Direction.W]:  [[1, 2], [1, 3]],  // pair 3: west (facing left)
-  [Direction.NE]: [[2, 0], [2, 1]],  // pair 4: NE (back, angled right)
-  [Direction.SE]: [[2, 2], [2, 3]],  // pair 5: SE (front, angled right)
-  [Direction.SW]: [[3, 0], [3, 1]],  // pair 6: SW (front, angled left)
-  [Direction.NW]: [[3, 2], [3, 3]],  // pair 7: NW (back, angled left)
+  [Direction.N]: [
+    [0, 0],
+    [0, 1],
+  ], // pair 0: north (back view)
+  [Direction.E]: [
+    [0, 2],
+    [0, 3],
+  ], // pair 1: east (facing right)
+  [Direction.S]: [
+    [1, 0],
+    [1, 1],
+  ], // pair 2: south (front view)
+  [Direction.W]: [
+    [1, 2],
+    [1, 3],
+  ], // pair 3: west (facing left)
+  [Direction.NE]: [
+    [2, 0],
+    [2, 1],
+  ], // pair 4: NE (back, angled right)
+  [Direction.SE]: [
+    [2, 2],
+    [2, 3],
+  ], // pair 5: SE (front, angled right)
+  [Direction.SW]: [
+    [3, 0],
+    [3, 1],
+  ], // pair 6: SW (front, angled left)
+  [Direction.NW]: [
+    [3, 2],
+    [3, 3],
+  ], // pair 7: NW (back, angled left)
 };
 
 const DIAG_DIRECTIONS: Direction[] = [Direction.NE, Direction.SE, Direction.SW, Direction.NW];
@@ -92,7 +112,11 @@ const DIAG_DIRECTIONS: Direction[] = [Direction.NE, Direction.SE, Direction.SW, 
  * renders a diagonal when present and falls back to the side view otherwise, so
  * a half-authored sheet shows exactly the frames that exist.
  */
-function diagonalDirsWithArt(img: CanvasImageSource, frameW: number, frameH: number): Set<Direction> {
+function diagonalDirsWithArt(
+  img: CanvasImageSource,
+  frameW: number,
+  frameH: number
+): Set<Direction> {
   const canvas = document.createElement('canvas');
   canvas.width = frameW * 4;
   canvas.height = frameH * 4;
@@ -106,7 +130,10 @@ function diagonalDirsWithArt(img: CanvasImageSource, frameW: number, frameH: num
       for (let i = 3; i < data.length; i += 4) {
         if (data[i] > 0 && ++opaque >= MIN_DIAG_PIXELS) break;
       }
-      if (opaque >= MIN_DIAG_PIXELS) { set.add(d); break; } // any frame with art = direction present
+      if (opaque >= MIN_DIAG_PIXELS) {
+        set.add(d);
+        break;
+      } // any frame with art = direction present
     }
   }
   return set;
@@ -133,6 +160,61 @@ let spriteOverrides: SpriteOverrides | null = null;
 let spriteOverridesLoading: Promise<void> | null = null;
 // Original ROM sheets + pristine generated sheets, for the animator's diffing.
 const romImages = new Map<number, HTMLImageElement>();
+// The composited sheet BEFORE any saved override is applied (generated bands +
+// ROM climb), cached per group. This is the editor's diff baseline, so painting
+// over a composited-in ROM climb frame and saving doesn't re-store ROM pixels.
+const pristineSheets = new Map<number, HTMLCanvasElement>();
+
+// The four playable heroes keep their ladder/rope climb art in SEPARATE sprite
+// groups (playable_char_gfx_table.yml). We composite those two source frames
+// into the reserved climb row (row 4) of each hero's pose sheet so climbing is
+// editable/exportable in one sheet and renders in-game via the 'climb' pose.
+// walk group -> { ladder group, rope group }
+const HERO_CLIMB: Record<number, { ladder: number; rope: number }> = {
+  1: { ladder: 17, rope: 21 }, // Ness
+  2: { ladder: 18, rope: 22 }, // Paula
+  3: { ladder: 19, rope: 23 }, // Jeff
+  4: { ladder: 20, rope: 24 }, // Poo
+};
+
+/** A fresh canvas copy of another canvas (deep, independent pixels). */
+function cloneCanvas(src: HTMLCanvasElement): HTMLCanvasElement {
+  const out = document.createElement('canvas');
+  out.width = src.width;
+  out.height = src.height;
+  out.getContext('2d')!.drawImage(src, 0, 0);
+  return out;
+}
+
+/**
+ * Composite a hero's ladder + rope climb frames into the reserved climb row
+ * (row 4): ladder frame 0/1 -> cols 0/1, rope frame 0/1 -> cols 2/3. The source
+ * groups store the climb pair in row 0 (cols 0/1). No-op for non-heroes or if a
+ * climb source is missing (the row just stays blank, as before).
+ */
+async function applyHeroClimb(
+  groupId: number,
+  sheet: HTMLCanvasElement,
+  frameW: number,
+  frameH: number
+): Promise<void> {
+  const map = HERO_CLIMB[groupId];
+  if (!map) return;
+  const ctx = sheet.getContext('2d')!;
+  const y = CLIMB_ROW * frameH;
+  try {
+    const [ladder, rope] = await Promise.all([
+      loadImage(`/assets/sprites/${map.ladder}.png`),
+      loadImage(`/assets/sprites/${map.rope}.png`),
+    ]);
+    ctx.drawImage(ladder, 0, 0, frameW, frameH, 0, y, frameW, frameH); // ladder f0 -> col 0
+    ctx.drawImage(ladder, frameW, 0, frameW, frameH, frameW, y, frameW, frameH); // ladder f1 -> col 1
+    ctx.drawImage(rope, 0, 0, frameW, frameH, 2 * frameW, y, frameW, frameH); // rope f0 -> col 2
+    ctx.drawImage(rope, frameW, 0, frameW, frameH, 3 * frameW, y, frameW, frameH); // rope f1 -> col 3
+  } catch {
+    // climb source missing — leave the climb row blank
+  }
+}
 
 function loadDataUrl(dataUrl: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -143,7 +225,11 @@ function loadDataUrl(dataUrl: string): Promise<HTMLImageElement> {
   });
 }
 
-async function applySpritePatch(groupId: number, sheet: HTMLCanvasElement, frameH: number): Promise<void> {
+async function applySpritePatch(
+  groupId: number,
+  sheet: HTMLCanvasElement,
+  frameH: number
+): Promise<void> {
   const ov = spriteOverrides?.groups?.[String(groupId)];
   if (!ov) return;
   const ctx = sheet.getContext('2d')!;
@@ -199,6 +285,9 @@ export async function loadSpriteGroup(groupId: number): Promise<CanvasImageSourc
   // the player can.
   const srcRows = Math.floor(sourceHeight(img) / meta.height);
   const sheet = generatePoseSheet(img, meta.width, meta.height, srcRows);
+  await applyHeroClimb(groupId, sheet, meta.width, meta.height);
+  // Cache the pre-override sheet (generated bands + ROM climb) as the diff baseline.
+  pristineSheets.set(groupId, cloneCanvas(sheet));
   await applySpritePatch(groupId, sheet, meta.height);
   // Diagonal art is read from the COMPOSITED sheet, not the raw ROM image, and
   // per direction: an admin can author the diagonal frames a 4-direction sprite
@@ -225,8 +314,13 @@ export function getLiveSheet(groupId: number): HTMLCanvasElement | null {
   return img instanceof HTMLCanvasElement ? img : null;
 }
 
-/** Pristine generated sheet (no authored patches), for override diffing. */
+/** Pristine sheet (generated bands + ROM climb, no authored patches) for the
+ *  editor's override diffing. Prefers the cached pre-override copy built at load
+ *  (which includes the composited hero climb row); falls back to regenerating the
+ *  plain generated sheet for groups that were never loaded. */
 export function getPristineSheet(groupId: number): HTMLCanvasElement | null {
+  const cached = pristineSheets.get(groupId);
+  if (cached) return cloneCanvas(cached);
   const rom = romImages.get(groupId);
   const meta = getSpriteGroupMeta(groupId);
   if (!rom || !meta) return null;
@@ -240,7 +334,7 @@ export function getPristineSheet(groupId: number): HTMLCanvasElement | null {
  * for custom/unloaded groups.
  */
 export function getSourceSheet(
-  groupId: number,
+  groupId: number
 ): { img: CanvasImageSource; frameW: number; frameH: number; cols: number; rows: number } | null {
   const img = romImages.get(groupId);
   const meta = getSpriteGroupMeta(groupId);
@@ -345,9 +439,7 @@ export function drawSprite(
   // Diagonals fall back to the side view, but ONLY for directions this sprite
   // lacks art for — an authored diagonal renders as soon as it's painted.
   const remap = DIAG_REMAP[direction];
-  const dir = remap !== undefined && !diagDirs.get(groupId)?.has(direction)
-    ? remap
-    : direction;
+  const dir = remap !== undefined && !diagDirs.get(groupId)?.has(direction) ? remap : direction;
 
   const frameIndex = Math.min(frame, 1);
   const rows = sheetRowCount.get(groupId) ?? 4;

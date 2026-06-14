@@ -176,11 +176,17 @@ function editorSavePlugin() {
 // plugin is only the Vite transport glue (the /ws upgrade). Keep behaviour
 // changes in GameHost so both servers stay identical by construction.
 function gameServerPlugin() {
-  const host = new GameHost(path.resolve(__dirname, 'public', 'assets'));
-
   return {
     name: 'game-server',
+    // Dev server ONLY. Critical: GameHost is constructed inside configureServer,
+    // NOT in this factory — its npcSim installs fs.watchFile watchers on
+    // construction, which keep the Node event loop alive forever. If that ran
+    // during `vite build` the build process would never exit and the deploy host
+    // kills it (SIGTERM → "Exited with status 143"), even though the bundle built
+    // fine. apply:'serve' + lazy construction keeps build a pure, exiting step.
+    apply: 'serve' as const,
     configureServer(server: any) {
+      const host = new GameHost(path.resolve(__dirname, 'public', 'assets'));
       const wss = new WebSocketServer({ noServer: true });
       host.start();
 
