@@ -8,24 +8,28 @@ import { Direction } from '../types';
 // rather than baking frames into override files keeps the overrides layer
 // purely hand-painted — no ROM-derived pixels ship (CLAUDE.md).
 //
-// Output layout = sheet v3 (13 rows): walk 0-3 (copied), climb 4 (copied if
+// Output layout = sheet v4 (15 rows): walk 0-3 (copied), climb 4 (copied if
 // the source has it, else empty), attack 5-8 (generated: f0 wind-up, f1
-// swing), hurt 9-12 (generated: f0 recoil, f1 settle). Bands are proportional
-// thirds of the frame height, so any frame size works (16x16 cats included).
+// swing), hurt 9-12 (generated: f0 recoil, f1 settle), peace 13 + laying 14
+// (left empty here; composited from the hero's own pose groups in SpriteManager).
+// Bands are proportional thirds of the frame height, so any frame size works
+// (16x16 cats included).
 
-export const POSE_SHEET_ROWS = 13;
+export const POSE_SHEET_ROWS = 15;
 export const ATTACK_ROW_START = 5;
 export const HURT_ROW_START = 9;
+export const PEACE_ROW = 13;
+export const LAYING_ROW = 14;
 
 // The four walk rows' frame-pair cells with each direction's facing vector.
 const DIR_CELLS: { row: number; col: number; fx: number; fy: number }[] = [
-  { row: 0, col: 0, fx: 0, fy: -1 },  // N
-  { row: 0, col: 2, fx: 1, fy: 0 },   // E
-  { row: 1, col: 0, fx: 0, fy: 1 },   // S
-  { row: 1, col: 2, fx: -1, fy: 0 },  // W
-  { row: 2, col: 0, fx: 1, fy: -1 },  // NE
-  { row: 2, col: 2, fx: 1, fy: 1 },   // SE
-  { row: 3, col: 0, fx: -1, fy: 1 },  // SW
+  { row: 0, col: 0, fx: 0, fy: -1 }, // N
+  { row: 0, col: 2, fx: 1, fy: 0 }, // E
+  { row: 1, col: 0, fx: 0, fy: 1 }, // S
+  { row: 1, col: 2, fx: -1, fy: 0 }, // W
+  { row: 2, col: 0, fx: 1, fy: -1 }, // NE
+  { row: 2, col: 2, fx: 1, fy: 1 }, // SE
+  { row: 3, col: 0, fx: -1, fy: 1 }, // SW
   { row: 3, col: 2, fx: -1, fy: -1 }, // NW
 ];
 
@@ -47,21 +51,34 @@ function bands(h: number, sx: number, head: [number, number], torso: [number, nu
 
 // Shear shapes per pose frame. Horizontal facings lean along sx; straight
 // N/S facings (sx=0) read through vertical motion instead.
-function poseBands(h: number, sx: number, fy: number, pose: 'windup' | 'swing' | 'recoil' | 'settle'): Band[] {
+function poseBands(
+  h: number,
+  sx: number,
+  fy: number,
+  pose: 'windup' | 'swing' | 'recoil' | 'settle'
+): Band[] {
   if (sx !== 0) {
     switch (pose) {
-      case 'windup': return bands(h, sx, [-2, 0], [-1, 0]);
-      case 'swing': return bands(h, sx, [3, 1], [1, 1]);
-      case 'recoil': return bands(h, sx, [-2, 2], [-1, 1]);
-      case 'settle': return bands(h, sx, [-1, 1], [-1, 1]);
+      case 'windup':
+        return bands(h, sx, [-2, 0], [-1, 0]);
+      case 'swing':
+        return bands(h, sx, [3, 1], [1, 1]);
+      case 'recoil':
+        return bands(h, sx, [-2, 2], [-1, 1]);
+      case 'settle':
+        return bands(h, sx, [-1, 1], [-1, 1]);
     }
   }
   const lean = fy > 0 ? 1 : -1; // S leans down-screen, N reaches away
   switch (pose) {
-    case 'windup': return bands(h, 0, [0, 1], [0, 1]);
-    case 'swing': return bands(h, 0, [0, lean * 2], [0, lean]);
-    case 'recoil': return bands(h, 0, [0, 2], [0, 1]);
-    case 'settle': return bands(h, 0, [0, 1], [0, 1]);
+    case 'windup':
+      return bands(h, 0, [0, 1], [0, 1]);
+    case 'swing':
+      return bands(h, 0, [0, lean * 2], [0, lean]);
+    case 'recoil':
+      return bands(h, 0, [0, 2], [0, 1]);
+    case 'settle':
+      return bands(h, 0, [0, 1], [0, 1]);
   }
 }
 
@@ -85,7 +102,17 @@ function drawPosed(
   for (const b of bandList) {
     const bh = b.y1 - b.y0 + 1;
     if (bh <= 0) continue;
-    ctx.drawImage(src, srcCol * w, srcRow * h + b.y0, w, bh, cellX + b.dx, cellY + b.y0 + b.dy, w, bh);
+    ctx.drawImage(
+      src,
+      srcCol * w,
+      srcRow * h + b.y0,
+      w,
+      bh,
+      cellX + b.dx,
+      cellY + b.y0 + b.dy,
+      w,
+      bh
+    );
   }
   ctx.restore();
 }
@@ -95,7 +122,12 @@ function drawPosed(
  * canvas is the LIVE drawable sheet; callers may paint authored override
  * patches on top of the generated bands.
  */
-export function generatePoseSheet(src: CanvasImageSource, w: number, h: number, srcRows: number): HTMLCanvasElement {
+export function generatePoseSheet(
+  src: CanvasImageSource,
+  w: number,
+  h: number,
+  srcRows: number
+): HTMLCanvasElement {
   const sheet = document.createElement('canvas');
   sheet.width = w * 4;
   sheet.height = h * POSE_SHEET_ROWS;
@@ -109,11 +141,51 @@ export function generatePoseSheet(src: CanvasImageSource, w: number, h: number, 
   for (const d of DIR_CELLS) {
     const sx = Math.sign(d.fx);
     // Attack: wind-up (f0) + swing (f1), posed from the standing frame.
-    drawPosed(ctx, src, w, h, d.row, d.col, d.row + ATTACK_ROW_START, d.col, poseBands(h, sx, d.fy, 'windup'));
-    drawPosed(ctx, src, w, h, d.row, d.col, d.row + ATTACK_ROW_START, d.col + 1, poseBands(h, sx, d.fy, 'swing'));
+    drawPosed(
+      ctx,
+      src,
+      w,
+      h,
+      d.row,
+      d.col,
+      d.row + ATTACK_ROW_START,
+      d.col,
+      poseBands(h, sx, d.fy, 'windup')
+    );
+    drawPosed(
+      ctx,
+      src,
+      w,
+      h,
+      d.row,
+      d.col,
+      d.row + ATTACK_ROW_START,
+      d.col + 1,
+      poseBands(h, sx, d.fy, 'swing')
+    );
     // Hurt: recoil (f0) + settle (f1).
-    drawPosed(ctx, src, w, h, d.row, d.col, d.row + HURT_ROW_START, d.col, poseBands(h, sx, d.fy, 'recoil'));
-    drawPosed(ctx, src, w, h, d.row, d.col, d.row + HURT_ROW_START, d.col + 1, poseBands(h, sx, d.fy, 'settle'));
+    drawPosed(
+      ctx,
+      src,
+      w,
+      h,
+      d.row,
+      d.col,
+      d.row + HURT_ROW_START,
+      d.col,
+      poseBands(h, sx, d.fy, 'recoil')
+    );
+    drawPosed(
+      ctx,
+      src,
+      w,
+      h,
+      d.row,
+      d.col,
+      d.row + HURT_ROW_START,
+      d.col + 1,
+      poseBands(h, sx, d.fy, 'settle')
+    );
   }
   return sheet;
 }

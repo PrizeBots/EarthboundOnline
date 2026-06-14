@@ -7,12 +7,12 @@ export interface ArrangementCell {
 
 export interface Arrangement {
   cells: ArrangementCell[]; // 4x4 = 16 cells, row-major
-  collision: number[];      // 4x4 = 16 collision bytes
+  collision: number[]; // 4x4 = 16 collision bytes
 }
 
 export interface TilesetData {
   arrangements: Arrangement[];
-  palettes: number[][][];   // subpalette -> color index -> [r, g, b, a]
+  palettes: number[][][]; // subpalette -> color index -> [r, g, b, a]
   minitileImage: HTMLImageElement;
 }
 
@@ -56,7 +56,9 @@ export type CharacterAppearance = string;
 
 // Sprite poses. 'walk' covers idle (frame 0) and the 2-frame walk cycle;
 // 'attack' is a 2-frame swing; 'hurt' is a single flinch frame per facing.
-export const POSES = ['walk', 'climb', 'attack', 'hurt'] as const;
+// 'peace' (victory) and 'laying' are single-direction hero poses composited from
+// their own ROM sprite groups; only the 4 heroes have art for them.
+export const POSES = ['walk', 'climb', 'attack', 'hurt', 'peace', 'laying'] as const;
 export type Pose = (typeof POSES)[number];
 
 export interface RemotePlayer {
@@ -95,9 +97,9 @@ export const SCREEN_HEIGHT = 224;
 
 // Tile/sector sizes
 export const MINITILE_SIZE = 8;
-export const TILE_SIZE = 32;          // 4x4 minitiles
-export const SECTOR_TILES_X = 8;     // 8 tiles wide per sector
-export const SECTOR_TILES_Y = 4;     // 4 tiles tall per sector
+export const TILE_SIZE = 32; // 4x4 minitiles
+export const SECTOR_TILES_X = 8; // 8 tiles wide per sector
+export const SECTOR_TILES_Y = 4; // 4 tiles tall per sector
 
 // Full map dimensions in tiles. WIDTH is fixed (the stitched plane is 256 tiles
 // wide and all row-major indexing relies on it). HEIGHT is data-driven: the map
@@ -107,7 +109,7 @@ export const SECTOR_TILES_Y = 4;     // 4 tiles tall per sector
 // these are live `let` bindings so every importer sees the resolved height.
 export const MAP_WIDTH_TILES = 256;
 export const MAP_WIDTH_SECTORS = 32;
-export let MAP_HEIGHT_TILES = 320;     // base overworld height; grows with the interiors band
+export let MAP_HEIGHT_TILES = 320; // base overworld height; grows with the interiors band
 export let MAP_HEIGHT_SECTORS = 80;
 
 /** Set the runtime map height from the loaded data (MapManager.loadMapData). */

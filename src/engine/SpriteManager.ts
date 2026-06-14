@@ -1,5 +1,5 @@
 import { loadImage, loadJSON } from './AssetLoader';
-import { generatePoseSheet, POSE_SHEET_ROWS } from './PoseGen';
+import { generatePoseSheet, POSE_SHEET_ROWS, PEACE_ROW, LAYING_ROW } from './PoseGen';
 import { Direction, Pose, SpriteGroupMeta } from '../types';
 
 // Custom composited characters get synthetic group ids from this base up.
@@ -165,13 +165,19 @@ const romImages = new Map<number, HTMLImageElement>();
 // over a composited-in ROM climb frame and saving doesn't re-store ROM pixels.
 const pristineSheets = new Map<number, HTMLCanvasElement>();
 
-// The four playable heroes keep their ladder/rope climb art in SEPARATE sprite
-// groups (playable_char_gfx_table.yml). We composite those two source frames
-// into the reserved climb row (row 4) of each hero's pose sheet so climbing is
-// editable/exportable in one sheet and renders in-game via the 'climb' pose.
-// walk group -> { ladder group, rope group }
-const HERO_CLIMB: Record<number, { ladder: number; rope: number }> = {
-  1: { ladder: 17, rope: 21 }, // Ness
+// The playable heroes keep their non-walk poses in SEPARATE sprite groups
+// (playable_char_gfx_table.yml). We composite those source frames into the
+// reserved pose rows of each hero's sheet so they're editable/exportable in one
+// sheet and renderable via the matching Pose. walk group -> source pose groups.
+// peace/laying are Ness-only (no equivalent group identified for the others).
+interface HeroPoses {
+  ladder?: number;
+  rope?: number;
+  peace?: number;
+  laying?: number;
+}
+const HERO_POSES: Record<number, HeroPoses> = {
+  1: { ladder: 17, rope: 21, peace: 14, laying: 15 }, // Ness (laying 15 = sleeping; 16 is a crowd sprite)
   2: { ladder: 18, rope: 22 }, // Paula
   3: { ladder: 19, rope: 23 }, // Jeff
   4: { ladder: 20, rope: 24 }, // Poo
@@ -186,33 +192,64 @@ function cloneCanvas(src: HTMLCanvasElement): HTMLCanvasElement {
   return out;
 }
 
+/** Load a source pose group's PNG, or null if missing. */
+async function loadPoseSource(gid: number | undefined): Promise<HTMLImageElement | null> {
+  if (gid === undefined) return null;
+  try {
+    return await loadImage(`/assets/sprites/${gid}.png`);
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Composite a hero's ladder + rope climb frames into the reserved climb row
- * (row 4): ladder frame 0/1 -> cols 0/1, rope frame 0/1 -> cols 2/3. The source
- * groups store the climb pair in row 0 (cols 0/1). No-op for non-heroes or if a
- * climb source is missing (the row just stays blank, as before).
+ * Composite a hero's extra poses, each from its own ROM sprite group, into the
+ * reserved pose rows of the sheet:
+ *   climb  (row 4):  ladder f0/f1 -> cols 0/1, rope f0/f1 -> cols 2/3
+ *   peace  (row 13): peace  f0/f1 -> cols 0/1
+ *   laying (row 14): laying f0/f1 -> the wide 32x16 frames span cols 0-1 / 2-3
+ * Each pose's 2 frames live in its source's row 0 (cols 0/1). No-op for a hero
+ * who lacks a given pose group; the row just stays blank.
  */
-async function applyHeroClimb(
+async function applyHeroPoses(
   groupId: number,
   sheet: HTMLCanvasElement,
   frameW: number,
   frameH: number
 ): Promise<void> {
-  const map = HERO_CLIMB[groupId];
+  const map = HERO_POSES[groupId];
   if (!map) return;
   const ctx = sheet.getContext('2d')!;
-  const y = CLIMB_ROW * frameH;
-  try {
-    const [ladder, rope] = await Promise.all([
-      loadImage(`/assets/sprites/${map.ladder}.png`),
-      loadImage(`/assets/sprites/${map.rope}.png`),
-    ]);
-    ctx.drawImage(ladder, 0, 0, frameW, frameH, 0, y, frameW, frameH); // ladder f0 -> col 0
-    ctx.drawImage(ladder, frameW, 0, frameW, frameH, frameW, y, frameW, frameH); // ladder f1 -> col 1
-    ctx.drawImage(rope, 0, 0, frameW, frameH, 2 * frameW, y, frameW, frameH); // rope f0 -> col 2
-    ctx.drawImage(rope, frameW, 0, frameW, frameH, 3 * frameW, y, frameW, frameH); // rope f1 -> col 3
-  } catch {
-    // climb source missing — leave the climb row blank
+  const [ladder, rope, peace, laying] = await Promise.all([
+    loadPoseSource(map.ladder),
+    loadPoseSource(map.rope),
+    loadPoseSource(map.peace),
+    loadPoseSource(map.laying),
+  ]);
+  // climb row: ladder cols 0/1, rope cols 2/3 (source frames 16x24)
+  const cy = CLIMB_ROW * frameH;
+  if (ladder) {
+    ctx.drawImage(ladder, 0, 0, frameW, frameH, 0, cy, frameW, frameH);
+    ctx.drawImage(ladder, frameW, 0, frameW, frameH, frameW, cy, frameW, frameH);
+  }
+  if (rope) {
+    ctx.drawImage(rope, 0, 0, frameW, frameH, 2 * frameW, cy, frameW, frameH);
+    ctx.drawImage(rope, frameW, 0, frameW, frameH, 3 * frameW, cy, frameW, frameH);
+  }
+  // peace row: 2 frames in cols 0/1 (source frames 16x24)
+  if (peace) {
+    const py = PEACE_ROW * frameH;
+    ctx.drawImage(peace, 0, 0, frameW, frameH, 0, py, frameW, frameH);
+    ctx.drawImage(peace, frameW, 0, frameW, frameH, frameW, py, frameW, frameH);
+  }
+  // laying row: the source frames are WIDE (24x16); draw each at native size,
+  // top-anchored, frame 0 spanning cols 0-1 and frame 1 spanning cols 2-3.
+  if (laying) {
+    const lw = laying.width / 4; // 4-col source grid
+    const lh = laying.height / 4;
+    const ly = LAYING_ROW * frameH;
+    ctx.drawImage(laying, 0, 0, lw, lh, 0, ly, lw, lh);
+    ctx.drawImage(laying, lw, 0, lw, lh, 2 * frameW, ly, lw, lh);
   }
 }
 
@@ -285,7 +322,7 @@ export async function loadSpriteGroup(groupId: number): Promise<CanvasImageSourc
   // the player can.
   const srcRows = Math.floor(sourceHeight(img) / meta.height);
   const sheet = generatePoseSheet(img, meta.width, meta.height, srcRows);
-  await applyHeroClimb(groupId, sheet, meta.width, meta.height);
+  await applyHeroPoses(groupId, sheet, meta.width, meta.height);
   // Cache the pre-override sheet (generated bands + ROM climb) as the diff baseline.
   pristineSheets.set(groupId, cloneCanvas(sheet));
   await applySpritePatch(groupId, sheet, meta.height);
@@ -462,6 +499,12 @@ export function drawSprite(
   } else if (pose === 'climb' && rows > CLIMB_ROW) {
     row = CLIMB_ROW;
     col = frameIndex; // ladder pair; rope pair (cols 2-3) not wired up yet
+  } else if (pose === 'peace' && rows > PEACE_ROW) {
+    row = PEACE_ROW;
+    col = frameIndex; // 2-frame victory pose, single direction
+  } else if (pose === 'laying' && rows > LAYING_ROW) {
+    row = LAYING_ROW;
+    col = frameIndex * 2; // wide frames: f0 spans cols 0-1, f1 spans cols 2-3
   } else {
     [row, col] = DIRECTION_LAYOUT[dir][frameIndex];
   }

@@ -1,6 +1,7 @@
 # EarthBound Online — TODO
 
 ## Phase 1: Ness in Onett (Browser)
+
 - [x] Extract all sprites from ROM (463 sprite groups)
 - [x] Extract tilesets, arrangements, collisions, palettes
 - [x] Extract full overworld map + sector metadata
@@ -22,6 +23,7 @@
 - [x] Debug overlay (collision boxes, sector grid, FPS counter) — delivered by the dev Editor Shell HUD (F2): cursor readout shows world/tile/minitile/sector + collision byte (hex + SOLID/PRI flags, `Collision.getCollisionByteAt`), tile/minitile/sector grid overlays, room-crop preview, FPS
 
 ## Phase 2: Multiplayer (Browser)
+
 - [x] WebSocket game server (embedded Vite plugin, port 4444)
 - [x] Client network layer (join/move/leave)
 - [x] Remote player rendering
@@ -43,8 +45,10 @@
 - [ ] NPC combat — give townsfolk HP/death and AI that attacks nearby PKers (so "enemies hurt NPCs" and "NPCs attack PKers" go live)
 
 ## Dev Editor Tools (in-engine authoring layer — full checklist in EDITOR_TOOLS.md)
+
 Dev-only, never shipped (Vite-middleware save channel; excluded from prod build).
 Detailed status lives in **EDITOR_TOOLS.md** — summary only here.
+
 - [x] Editor Shell foundation (F2 / `window.__eb.admin()`): free-fly camera + zoom, cursor readout HUD, grid overlays, undo/redo, dirty tracking, save channel, Location Navigator
 - [x] Admin Hub (tool registry, launch/back, save-all, jump-to-coords)
 - [x] Placement Editor — NPCs (ghosts, drag/snap, add/delete, sprite/dir/kind/dialogue edit), Spawn point (config-driven via `overrides/spawn.json`), Doors/warps (`overrides/doors.json`; `ZONE_DOOR_OVERRIDES` migrated into data)
@@ -56,22 +60,32 @@ Detailed status lives in **EDITOR_TOOLS.md** — summary only here.
 - [ ] NPC Sprite Animator (authored attack/hurt/diagonal bands per enemy group, gated on combat)
 - [ ] Phase-1 pipeline hardening: push `extract_npcs` / `apply_map_changes` / doors / dialogue generators to ~99% before deepening matching editors
 
+## Dev Tooling & Quality Gates
+
+- [x] Quality stack: ESLint + Prettier, Vitest, Zod (validates `public/overrides/*.json`), GitHub Actions CI (`npm run verify`), Husky + lint-staged pre-commit
+- [ ] **Drop `--no-stash` from `.husky/pre-commit`** once git is upgraded. Current git is 2.31.1 (2021); its lint-staged backup-stash is broken ("Needed a single revision"), so the hook runs `lint-staged --no-stash`. After upgrading to git ≥2.35 (run `winget install --id Git.Git -e` in a normal terminal, NOT inside Claude Code — the installer needs admin + to close Git Bash), remove `--no-stash` to regain the auto-backup safety net.
+- [ ] Add Zod schemas for the other hand-edited overrides (doors, collision, npcs, dialogue, item_sprites…) — only `enemy_spawns.json` is validated so far
+- [ ] `idb`/Dexie for IndexedDB asset caching — feature-driven; pick up when the client-side ROM-extraction Web Worker starts (see Pre-Launch section)
+
 ## Pre-Launch: User-Supplied ROM Architecture (PokeMMO model — REQUIRED before going live)
+
 Goal: we distribute zero ROM-derived data; every player supplies their own
 EarthBound ROM and all assets are extracted in their browser. See CLAUDE.md
 "ROM & Asset Distribution" for the architecture.
+
 - [ ] ROM intake screen before character select (file picker, checksum-verify known dumps, ROM never uploaded)
 - [ ] Port extraction pipeline to TypeScript in a Web Worker (order: fonts/sprites → map/atlases/collision → roster)
 - [ ] Asset cache in IndexedDB/OPFS; AssetLoader reads cache instead of HTTP
 - [ ] Exclude `public/assets/` from production build (dev keeps local pre-extracted assets for speed)
 - [ ] Scrub `public/assets/` from ALL git history (`git filter-repo`), force-push
-  (also covers `tools/_*.png` debug renders — untracked + gitignored now, but
-  still present in earlier commits)
+      (also covers `tools/_*.png` debug renders — untracked + gitignored now, but
+      still present in earlier commits)
 - [ ] Redeploy Render with code only; verify nothing ROM-derived is served
 - [ ] SPC700 music sources sample/song data from the player's ROM (was the plan anyway)
 - [ ] Consider renaming the project (trademark exposure is separate from copyright)
 
 ## Phase 3: Game Server (Production)
+
 - [~] Move game server to standalone Node process (separate from Vite) — host
   logic is now unified in `GameHost` (`server/gameHost.js`); `server/index.js`
   (standalone) and `vite.config.ts` are thin transports over it. Remaining: make
@@ -85,6 +99,7 @@ EarthBound ROM and all assets are extracted in their browser. See CLAUDE.md
 - [ ] Real backend for saves + auth — DECIDED (later): **Supabase or equivalent** (managed Postgres + built-in OAuth/magic-link auth). Handles persistence + identity ONLY; the custom Node game server stays for the real-time world (Supabase can't run the 60Hz authoritative sim). Game server loads/writes saves to it; client logs in via it. Skip the flat-JSON interim and go straight here if/when building toward launch
 
 ## Phase 4: Build the Game
+
 - [ ] Real-time action combat system design doc (combat is built ahead of the doc — write it up to lock the rules)
 - [x] Hitbox/hurtbox system (server-authoritative — `npcSim.handleAttack`: directional attack box vs enemy hurtboxes; enemy swing box vs player)
 - [x] Basic melee attack (bat swing) — player swing deals `ATTACK_DAMAGE`, enemies flinch/die/respawn; attack/hurt poses synced over the wire
@@ -98,18 +113,21 @@ EarthBound ROM and all assets are extracted in their browser. See CLAUDE.md
 - [~] Sound effects / music integration — music PLAYS, but region triggers come from the ROM's per-sector musicId, which the door-stitched world often gets wrong. Fix is authoring-driven: the **Sound Manager** editor tool (`overrides/music.json` areas win over the sector lookup). Still to do: author correct regions across the map, then SFX (hit/attack/etc.)
 
 ## Backlog: Hardware Track (out of scope for now)
+
 The SNES ROM + ESP32 port is a long-term ambition, not part of the current project.
 Engine code should still be written to port cleanly (see CLAUDE.md Architecture).
+
 - [ ] ROM build pipeline (PVSnesLib): toolchain, hello-world boot, asset converters (4bpp tiles, map), Mode 1 tile renderer, movement/camera/collision on SNES, `npm run build:rom`
 - [ ] ESP32 co-processor: firmware, SPI/UART protocol, TXS0108E level-shifter bridge, 3D-printed controller-port housing, WiFi → game server link, `npm run flash:esp`
 - [ ] Real hardware integration: boot on real SNES, multiplayer state via ESP32, latency testing, multi-console stress test
 
 ## Backlog / Ideas
+
 - [ ] **Tile animation system** — EB animates tiles via palette/tile cycling (escalator
-  steps scrolling, water, sunset, waterfalls). Our renderer pre-renders STATIC atlases,
-  so escalator steps ride correctly but don't visually scroll. A tile-animation layer
-  would cover all of these. (Escalators became rideable in DoorManager/Collision/Game;
-  animation is the remaining piece.)
+      steps scrolling, water, sunset, waterfalls). Our renderer pre-renders STATIC atlases,
+      so escalator steps ride correctly but don't visually scroll. A tile-animation layer
+      would cover all of these. (Escalators became rideable in DoorManager/Collision/Game;
+      animation is the remaining piece.)
 - [ ] Combat hit-reactions (stun + knockback) — the hurt flinch no longer locks movement (mob stunlock fix). Re-introduce **stun** as a deliberate, server-authoritative status effect: a **% proc chance** per enemy/weapon (entity stat) that freezes the victim for a short, **capped/diminishing** window so it can't chain into a perma-freeze. Pair with **knockback**: on a landed hit, shove the victim away from the attacker by a distance scaled to damage dealt (collision-checked, server-authoritative; small for chip damage, bigger for heavy hits). Wire both into `npcSim.applyDamage`/`damagePlayer` and broadcast so all clients see it.
 - [ ] Player settings screen — selectable chat font (default: regular EB font; Mr. Saturn font as a fun option via ChatManager.setChatFont)
 - [ ] Build visual sprite catalog (HTML page showing all 463 groups with IDs)

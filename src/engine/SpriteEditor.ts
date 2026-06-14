@@ -78,16 +78,19 @@ import { Direction, Pose } from '../types';
 const FRAME_W = 16;
 const FRAME_H = 24;
 const SHEET_COLS = 4;
-// Sheet v3: walk rows 0-3, climb row 4 (ladder f0/f1, rope f0/f1), attack
-// rows 5-8, hurt rows 9-12 — attack and hurt share the walk direction layout
-// (8 dirs x 2 frames). Left/right are mirror-equal in EB, so the editor only
-// lets you draw N/S/E/NE/SE and auto-fills W/NW/SW as horizontal flips.
-const SHEET_ROWS = 13;
+// Sheet v4: walk rows 0-3, climb row 4 (ladder f0/f1, rope f0/f1), attack
+// rows 5-8, hurt rows 9-12, peace row 13 (2 frames), laying row 14 (2 wide
+// frames). Attack and hurt share the walk direction layout (8 dirs x 2 frames).
+// Left/right are mirror-equal in EB, so the editor only lets you draw
+// N/S/E/NE/SE and auto-fills W/NW/SW as horizontal flips.
+const SHEET_ROWS = 15;
 const SHEET_W = FRAME_W * SHEET_COLS;
 const SHEET_H = FRAME_H * SHEET_ROWS;
 const CLIMB_ROW = 4;
 const ATTACK_ROW_START = 5;
 const HURT_ROW_START = 9;
+const PEACE_ROW = 13;
+const LAYING_ROW = 14;
 
 const DEFAULT_GROUP = 1; // Ness — the screen opens on him
 const BAND_ROWS = SHEET_ROWS - ATTACK_ROW_START; // editable pose rows (attack + hurt)
@@ -222,6 +225,11 @@ const DISPLAY_ROWS: DisplaySet[][] = (() => {
   ]);
   addBlock('atk ', ATTACK_ROW_START);
   addBlock('hurt ', HURT_ROW_START);
+  // Single-direction hero poses: peace (2 frames) + laying (2 wide frames).
+  rows.push([
+    { label: 'peace', row: PEACE_ROW, col: 0 },
+    { label: 'lay', row: LAYING_ROW, col: 0 },
+  ]);
   return rows;
 })();
 const STRIP_H = DISPLAY_ROWS.length * STRIP_FRAME_H;
@@ -291,6 +299,14 @@ let walkerTimer = 0;
 let walkerPose: Pose = 'walk';
 let walkerPoseTimer = 0;
 let walkerItem: string | null = null;
+// Climb test: a ladder and a rope prop in the test pane. Walking onto one shows
+// the matching climb frames (ladder = climb cols 0/1, rope = cols 2/3). null when
+// the walker is on neither.
+let walkerClimb: 'ladder' | 'rope' | null = null;
+const LADDER_X = 44; // test-pane x of the ladder prop
+const ROPE_X = 150; // test-pane x of the rope prop
+const CLIMB_TOP = 14;
+const CLIMB_BOT = TEST_H - 4;
 
 export interface SpriteEditorCallbacks {
   /** Closed the editor (Esc) — return to character select. */
@@ -589,6 +605,7 @@ async function loadGroupIntoEditor(id: number): Promise<void> {
   selCol = DIR_BASE.S.col;
   walkerPose = 'walk';
   walkerDir = Direction.S;
+  walkerClimb = null;
   charPicker?.setValue(String(id));
   if (nameInput) nameInput.value = getSpriteName(id) ?? '';
   updateCharNote();
@@ -1454,7 +1471,8 @@ function buildTestPanel(): HTMLDivElement {
   div.appendChild(testCanvas);
 
   const note = document.createElement('div');
-  note.textContent = 'Compiled through the real game sprite path.';
+  note.textContent =
+    'Compiled through the real game sprite path. Walk onto the ladder/rope to test climb; P = peace pose, L = laying (move to exit).';
   note.style.cssText = 'color:#888;font-size:10px;max-width:' + TEST_W * TEST_SCALE + 'px;';
   div.appendChild(note);
 
@@ -1777,6 +1795,14 @@ function onKeyDown(e: KeyboardEvent): void {
   } else if (k === 'h' && walkerPose === 'walk') {
     walkerPose = 'hurt'; // preview the hurt row
     walkerPoseTimer = 0;
+  } else if (k === 'p' && walkerPose === 'walk') {
+    walkerPose = 'peace'; // hold the victory pose until you move
+    walkerClimb = null;
+    walkerPoseTimer = 0;
+  } else if (k === 'l' && walkerPose === 'walk') {
+    walkerPose = 'laying'; // hold the laying pose until you move
+    walkerClimb = null;
+    walkerPoseTimer = 0;
   } else if (k === 'g') {
     if (editMode === 'item') {
       // Cycle which item is being edited within the active tab (picker in sync).
@@ -1846,22 +1872,42 @@ function updateWalker(): void {
     }
     return;
   }
+  // Peace/laying: hold and animate the 2 frames; any movement key returns to walk.
+  if (walkerPose === 'peace' || walkerPose === 'laying') {
+    walkerPoseTimer++;
+    walkerFrame = (walkerPoseTimer >> 3) & 1; // toggle every 8 ticks
+    if (heldKeys.has('w') || heldKeys.has('a') || heldKeys.has('s') || heldKeys.has('d')) {
+      walkerPose = 'walk';
+      walkerFrame = 0;
+    }
+    return;
+  }
 
   const dx = (heldKeys.has('d') ? 1 : 0) - (heldKeys.has('a') ? 1 : 0);
   const dy = (heldKeys.has('s') ? 1 : 0) - (heldKeys.has('w') ? 1 : 0);
   if (dx === 0 && dy === 0) {
     walkerFrame = 0;
     walkerTimer = 0;
-    return;
+  } else {
+    walkerDir = DIR_FROM_DELTA[`${dx},${dy}`];
+    const speed = dx !== 0 && dy !== 0 ? 1.06 : 1.5; // EB-style diagonal slowdown
+    walkerX = clamp(walkerX + dx * speed, FRAME_W / 2, TEST_W - FRAME_W / 2);
+    walkerY = clamp(walkerY + dy * speed, FRAME_H + 2, TEST_H - 2);
+    if (++walkerTimer >= 8) {
+      walkerTimer = 0;
+      walkerFrame = walkerFrame === 0 ? 1 : 0;
+    }
   }
-  walkerDir = DIR_FROM_DELTA[`${dx},${dy}`];
-  const speed = dx !== 0 && dy !== 0 ? 1.06 : 1.5; // EB-style diagonal slowdown
-  walkerX = clamp(walkerX + dx * speed, FRAME_W / 2, TEST_W - FRAME_W / 2);
-  walkerY = clamp(walkerY + dy * speed, FRAME_H + 2, TEST_H - 2);
-  if (++walkerTimer >= 8) {
-    walkerTimer = 0;
-    walkerFrame = walkerFrame === 0 ? 1 : 0;
-  }
+  // On a ladder/rope prop -> show climb frames (animates while moving).
+  walkerClimb = climbZoneAt(walkerX, walkerY);
+}
+
+/** Which climb prop (if any) the test walker is standing on. */
+function climbZoneAt(x: number, y: number): 'ladder' | 'rope' | null {
+  if (y < CLIMB_TOP - 6 || y > CLIMB_BOT + 6) return null;
+  if (Math.abs(x - LADDER_X) <= 8) return 'ladder';
+  if (Math.abs(x - ROPE_X) <= 7) return 'rope';
+  return null;
 }
 
 function drawTestPane(): void {
@@ -1879,6 +1925,19 @@ function drawTestPane(): void {
     }
   }
 
+  drawClimbProps(ctx);
+
+  // On a climb prop: show the matching climb frame (ladder cols 0/1, rope 2/3).
+  if (walkerClimb) {
+    drawClimbCell(ctx, (walkerClimb === 'ladder' ? 0 : 2) + walkerFrame, walkerX, walkerY);
+    return;
+  }
+  // Laying frames are wide (24x16) — blit at native size so they aren't cropped.
+  if (walkerPose === 'laying') {
+    drawLayingCell(ctx, walkerFrame, walkerX, walkerY);
+    return;
+  }
+
   // Same overlay ordering as the in-game renderer: far-hand items go under
   // the body, near-hand items on top.
   const itemBehind = walkerItem !== null && isItemBehind(walkerDir);
@@ -1889,6 +1948,66 @@ function drawTestPane(): void {
   if (walkerItem && !itemBehind) {
     drawHeldItem(ctx, walkerItem, walkerDir, walkerFrame, walkerPose, walkerX, walkerY);
   }
+}
+
+/** Draw the ladder + rope props the walker can climb on, with labels. */
+function drawClimbProps(ctx: CanvasRenderingContext2D): void {
+  // Ladder: two rails + rungs.
+  ctx.fillStyle = '#9a6526';
+  ctx.fillRect(LADDER_X - 7, CLIMB_TOP, 2, CLIMB_BOT - CLIMB_TOP);
+  ctx.fillRect(LADDER_X + 5, CLIMB_TOP, 2, CLIMB_BOT - CLIMB_TOP);
+  ctx.fillStyle = '#c08a3e';
+  for (let ry = CLIMB_TOP + 3; ry < CLIMB_BOT; ry += 7) ctx.fillRect(LADDER_X - 7, ry, 14, 2);
+  // Rope: a thin wavy line with knots.
+  ctx.fillStyle = '#caa86a';
+  ctx.fillRect(ROPE_X - 1, CLIMB_TOP, 2, CLIMB_BOT - CLIMB_TOP);
+  ctx.fillStyle = '#9c7c44';
+  for (let ry = CLIMB_TOP + 4; ry < CLIMB_BOT; ry += 9) ctx.fillRect(ROPE_X - 2, ry, 4, 2);
+  // Labels.
+  ctx.fillStyle = '#000';
+  ctx.font = '7px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('ladder', LADDER_X, CLIMB_TOP - 3);
+  ctx.fillText('rope', ROPE_X, CLIMB_TOP - 3);
+}
+
+/** Blit one climb cell (row 4, given col) of the live sheet at the walker spot,
+ *  using the same foot-anchor as drawSprite. */
+function drawClimbCell(ctx: CanvasRenderingContext2D, col: number, x: number, y: number): void {
+  const live = getLiveSheet(groupId);
+  if (!live) return;
+  ctx.drawImage(
+    live,
+    col * FRAME_W,
+    CLIMB_ROW * FRAME_H,
+    FRAME_W,
+    FRAME_H,
+    Math.floor(x - FRAME_W / 2),
+    Math.floor(y - FRAME_H - 1),
+    FRAME_W,
+    FRAME_H
+  );
+}
+
+/** Blit a laying frame (row 14) at native width. The wide 24x16 frames sit at
+ *  x=0 (frame 0) and x=2*FRAME_W (frame 1), top-anchored in the row. */
+function drawLayingCell(ctx: CanvasRenderingContext2D, frame: number, x: number, y: number): void {
+  const live = getLiveSheet(groupId);
+  if (!live) return;
+  const lw = 32; // laying source frame is 32x16 — exactly 2 cells wide
+  const lh = 16;
+  const sx = frame === 0 ? 0 : 2 * FRAME_W;
+  ctx.drawImage(
+    live,
+    sx,
+    LAYING_ROW * FRAME_H,
+    lw,
+    lh,
+    Math.floor(x - lw / 2),
+    Math.floor(y - lh - 1),
+    lw,
+    lh
+  );
 }
 
 /** Edit-area stand-in for view-only groups: the sprite scaled to fit + a flag. */
