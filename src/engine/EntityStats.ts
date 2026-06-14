@@ -19,6 +19,21 @@ export interface EntityCol {
   offY: number;
 }
 
+// How a townsperson (sprite group) maneuvers when an enemy threatens it. Server
+// only (npcSim drives the behavior); assigned per entity in the Entity Manager.
+// KEEP IN SYNC with server/npcSim.js COMBAT_PERSONALITIES.
+export type CombatPersonality = 'brave' | 'skirmisher' | 'coward' | 'nervous';
+
+// Editor-facing labels + blurbs for the personality dropdown (order = dropdown
+// order). 'default' means "leave unassigned" — npcSim then seeds a pick by id.
+export const COMBAT_PERSONALITY_OPTIONS: { value: CombatPersonality | ''; label: string }[] = [
+  { value: '', label: 'default (seeded mix)' },
+  { value: 'brave', label: 'brave — close in & press' },
+  { value: 'skirmisher', label: 'skirmisher — hit & run' },
+  { value: 'coward', label: 'coward — flee, swing if cornered' },
+  { value: 'nervous', label: 'nervous — swing & shuffle' },
+];
+
 export interface EntityStats {
   hp: number;
   xp: number; // EXP a kill grants the player
@@ -29,13 +44,17 @@ export interface EntityStats {
   detectRange: number; // px — player within this aggros the enemy (separate from attack range)
   attackRange: number; // px — enemy must be this close to land a hit
   col?: EntityCol; // authored collision box; absent = kind default (see EntityCol)
+  combat?: CombatPersonality; // townsfolk threat behavior; absent = seeded default (npcSim)
 }
 
 /** sprite group id (as a string key) -> its stats. */
 export type EntityDefs = Record<string, EntityStats>;
 
 /** Authored collision box for a sprite group, or null to use the kind default. */
-export function entityColFor(defs: EntityDefs | undefined | null, sprite: number): EntityCol | null {
+export function entityColFor(
+  defs: EntityDefs | undefined | null,
+  sprite: number
+): EntityCol | null {
   return defs?.[String(sprite)]?.col ?? null;
 }
 

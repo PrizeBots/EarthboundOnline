@@ -28,13 +28,28 @@ class FakeSocket {
     this.handlers = {};
     this.readyState = 1; // OPEN — GameHost only broadcasts to readyState === 1
   }
-  send(str) { this.sent.push(JSON.parse(str)); }
-  on(ev, cb) { this.handlers[ev] = cb; }
-  recv(obj) { this.handlers.message(JSON.stringify(obj)); } // simulate a client msg
-  close() { if (this.handlers.close) this.handlers.close(); }
-  ofType(t) { return this.sent.filter((m) => m.type === t); }
-  last(t) { const a = this.ofType(t); return a[a.length - 1]; }
-  clear() { this.sent.length = 0; }
+  send(str) {
+    this.sent.push(JSON.parse(str));
+  }
+  on(ev, cb) {
+    this.handlers[ev] = cb;
+  }
+  recv(obj) {
+    this.handlers.message(JSON.stringify(obj));
+  } // simulate a client msg
+  close() {
+    if (this.handlers.close) this.handlers.close();
+  }
+  ofType(t) {
+    return this.sent.filter((m) => m.type === t);
+  }
+  last(t) {
+    const a = this.ofType(t);
+    return a[a.length - 1];
+  }
+  clear() {
+    this.sent.length = 0;
+  }
 }
 
 let pass = 0;
@@ -128,8 +143,8 @@ check('unknown message type does not throw', () => {
 // ============================ 2. Economy ============================
 // Starter gear (DEV grants): Cracked bat (weapon), Cheap bracelet (arms), Cookie.
 
-const BAT = '17';      // weapon, dev-granted on join
-const COOKIE = '88';   // consumable, dev-granted on join
+const BAT = '17'; // weapon, dev-granted on join
+const COOKIE = '88'; // consumable, dev-granted on join
 
 check('equip owned weapon → owner gets authoritative equipped set', () => {
   alice.clear();
@@ -170,7 +185,11 @@ for (const [sid, list] of Object.entries(shop.stores)) {
   if (!Array.isArray(list)) continue;
   for (const it of list) {
     const g = shop.goods[String(it)];
-    if (g && g.cost > 0 && g.cost <= 1000) { buyStore = Number(sid); buyItem = String(it); break; }
+    if (g && g.cost > 0 && g.cost <= 1000) {
+      buyStore = Number(sid);
+      buyItem = String(it);
+      break;
+    }
   }
   if (buyItem) break;
 }
@@ -182,7 +201,10 @@ check('buy stocked affordable item → money debited by catalog cost, item added
   alice.clear();
   alice.recv({ type: 'buy', store: buyStore, item: buyItem });
   assert.strictEqual(host.players.get(aliceId).money, before - cost, 'wrong money after buy');
-  assert(alice.last('inventory').items.some((i) => i.id === buyItem), 'bought item missing');
+  assert(
+    alice.last('inventory').items.some((i) => i.id === buyItem),
+    'bought item missing'
+  );
 });
 
 check('sell owned item → money credited half the catalog cost', () => {
@@ -190,7 +212,11 @@ check('sell owned item → money credited half the catalog cost', () => {
   const before = host.players.get(aliceId).money;
   alice.clear();
   alice.recv({ type: 'sell', item: buyItem });
-  assert.strictEqual(host.players.get(aliceId).money, before + Math.floor(cost / 2), 'wrong money after sell');
+  assert.strictEqual(
+    host.players.get(aliceId).money,
+    before + Math.floor(cost / 2),
+    'wrong money after sell'
+  );
 });
 
 check('buy is rejected when unaffordable (no money/inventory change)', () => {
@@ -203,7 +229,104 @@ check('buy is rejected when unaffordable (no money/inventory change)', () => {
   assert.strictEqual(p.inventory.length, invLen, 'inventory should be untouched');
 });
 
-// ============================ 3. Leave ============================
+// ===================== 3. Door-transition shield =====================
+// While a player is mid door-fade its client freezes (no moves), so the server
+// must ignore enemy hits on the motionless ghost until the fade ends.
+
+check('warp:true shields the player from enemy damage', () => {
+  const p = host.players.get(aliceId);
+  p.hp = p.maxHp;
+  alice.recv({ type: 'warp', warping: true });
+  host.damagePlayer(aliceId, 20);
+  assert.strictEqual(
+    host.players.get(aliceId).hp,
+    p.maxHp,
+    'hit should have whiffed while warping'
+  );
+});
+
+check('warp:false lifts the shield (damage lands again)', () => {
+  const p = host.players.get(aliceId);
+  p.hp = p.maxHp;
+  alice.recv({ type: 'warp', warping: false });
+  host.damagePlayer(aliceId, 20);
+  assert(host.players.get(aliceId).hp < p.maxHp, 'hit should land once the fade is over');
+});
+
+check('a move clears the shield even without a warp:false', () => {
+  const p = host.players.get(aliceId);
+  p.hp = p.maxHp;
+  alice.recv({ type: 'warp', warping: true });
+  alice.recv({ type: 'move', x: 50, y: 60, direction: 0, frame: 0, pose: 'walk' });
+  host.damagePlayer(aliceId, 20);
+  assert(host.players.get(aliceId).hp < p.maxHp, 'move should have dropped the shield');
+});
+
+// ===================== 3b. Dev editor mode =====================
+// While a client is in the editor its avatar is pulled from the world sim, so it
+// must take no damage (a death would respawn-yank the admin's free camera).
+
+check('editor:true makes the player untargetable (no damage)', () => {
+  const p = host.players.get(aliceId);
+  p.hp = p.maxHp;
+  alice.recv({ type: 'editor', on: true });
+  host.damagePlayer(aliceId, 20);
+  assert.strictEqual(host.players.get(aliceId).hp, p.maxHp, 'hit should whiff while in the editor');
+});
+
+check('editor:false rejoins the world (damage lands again)', () => {
+  const p = host.players.get(aliceId);
+  p.hp = p.maxHp;
+  alice.recv({ type: 'editor', on: false });
+  host.damagePlayer(aliceId, 20);
+  assert(host.players.get(aliceId).hp < p.maxHp, 'hit should land once the editor closes');
+});
+
+// ===================== 4. Progression / leveling =====================
+// awardXp is the server-authoritative leveling path: accrue EXP, apply level-ups
+// (geometric curve), grow stats, heal on level-up, and push a player_stats
+// payload. Driven directly — no enemy kill needed.
+
+check('XP below the threshold accrues without leveling', () => {
+  const p = host.players.get(aliceId);
+  p.level = 1;
+  p.exp = 0;
+  p.expToNext = 30; // known baseline (level-2 costs 30)
+  alice.clear();
+  host.awardXp(aliceId, 10);
+  const ps = alice.last('player_stats');
+  assert(ps, 'no player_stats broadcast');
+  assert.strictEqual(ps.leveled, false);
+  assert.strictEqual(ps.gained, 10);
+  assert.strictEqual(host.players.get(aliceId).exp, 10);
+  assert.strictEqual(host.players.get(aliceId).level, 1);
+});
+
+check('crossing the EXP threshold levels up, grows stats, and full-heals', () => {
+  const p = host.players.get(aliceId);
+  const offBefore = p.offense,
+    maxHpBefore = p.maxHp;
+  p.hp = 1; // hurt, so the level-up heal is observable
+  alice.clear();
+  host.awardXp(aliceId, 100); // well past the level-2 threshold (30)
+  const after = host.players.get(aliceId);
+  assert(after.level >= 2, `should have leveled up, got level ${after.level}`);
+  assert(after.offense > offBefore, 'offense should grow on level-up');
+  assert(after.maxHp > maxHpBefore, 'maxHp should grow on level-up');
+  assert.strictEqual(after.hp, after.maxHp, 'a level-up fully heals');
+  const ps = alice.last('player_stats');
+  assert.strictEqual(ps.leveled, true);
+  assert.strictEqual(ps.stats.level, after.level);
+});
+
+check('a level-up also broadcasts refreshed (full) HP', () => {
+  const after = host.players.get(aliceId);
+  const hpMsg = alice.last('player_hp'); // emitted by the prior level-up
+  assert(hpMsg, 'no player_hp after level-up');
+  assert.strictEqual(hpMsg.hp, after.maxHp);
+});
+
+// ============================ 5. Leave ============================
 
 alice.clear();
 bob.close();

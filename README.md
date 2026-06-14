@@ -44,15 +44,15 @@ verifiers, debug scripts). Run Python via the full interpreter path (the bare
 
 ## Project structure
 
-| Path | What |
-|------|------|
-| `src/engine/` | TypeScript Canvas game engine (renderer, collision, combat, UI) |
-| `src/editor/` | Dev-only in-engine authoring tools (F2; excluded from prod builds) |
-| `server/` | Multiplayer host — `gameHost.js` (`GameHost`, the shared logic) + `npcSim.js` + `shops.js` |
-| `tools/` | Python extraction + verification scripts |
-| `public/assets/` | Extracted game data (dev-only; never shipped to production) |
-| `public/overrides/` | Our authored data layer, applied on top of extraction |
-| `eb_project/` | CoilSnake decompile (scripts, NPC/door tables, music) — not committed |
+| Path                | What                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------ |
+| `src/engine/`       | TypeScript Canvas game engine (renderer, collision, combat, UI)                            |
+| `src/editor/`       | Dev-only in-engine authoring tools (F2; excluded from prod builds)                         |
+| `server/`           | Multiplayer host — `gameHost.js` (`GameHost`, the shared logic) + `npcSim.js` + `shops.js` |
+| `tools/`            | Python extraction + verification scripts                                                   |
+| `public/assets/`    | Extracted game data (dev-only; never shipped to production)                                |
+| `public/overrides/` | Our authored data layer, applied on top of extraction                                      |
+| `eb_project/`       | CoilSnake decompile (scripts, NPC/door tables, music) — not committed                      |
 
 The **client connects to one shared server**; all of `server/gameHost.js`'s logic
 runs identically in dev (via `vite.config.ts`) and in the standalone deploy
@@ -60,14 +60,15 @@ runs identically in dev (via `vite.config.ts`) and in the standalone deploy
 
 ## npm scripts
 
-| Script | Does |
-|--------|------|
-| `npm run dev` | Vite dev server + game server on :4444 (nodemon-restarted) |
-| `npm run build` | Production client build → `dist/` |
-| `npm start` | Standalone deploy server (serves `dist/` + multiplayer) |
-| `npm run typecheck` | `tsc --noEmit` over `src/` |
-| `npm run check:server` | Syntax-check the server modules |
-| `npm test` | GameHost smoke test — transport (join/move/chat/leave) + economy (equip/use/buy/sell) |
+| Script                 | Does                                                              |
+| ---------------------- | ----------------------------------------------------------------- |
+| `npm run dev`          | Vite dev server + game server on :4444 (nodemon-restarted)        |
+| `npm run build`        | Production client build → `dist/`                                 |
+| `npm start`            | Standalone deploy server (serves `dist/` + multiplayer)           |
+| `npm run typecheck`    | `tsc --noEmit` over `src/`                                        |
+| `npm run check:server` | Syntax-check the server modules                                   |
+| `npm test`             | GameHost transport/economy + npcSim combat resolution (22 checks) |
+| `npm run verify`       | All gates: typecheck + server syntax + tests (what CI runs)       |
 
 ## Documentation
 

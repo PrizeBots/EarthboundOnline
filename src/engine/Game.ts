@@ -17,7 +17,14 @@ import {
 import { loadMapData, getSector, getDrawTilesetId } from './MapManager';
 import { loadDoors, getDoorAt, getStairAt, getStairExit, DoorData } from './DoorManager';
 import { setActiveRoomFromPoint } from './Rooms';
-import { loadNPCs, getNearbyNPCs, applyNpcUpdates, applyNpcHp, getNpcDialogue, interpolateNpcs } from './NPCManager';
+import {
+  loadNPCs,
+  getNearbyNPCs,
+  applyNpcUpdates,
+  applyNpcHp,
+  getNpcDialogue,
+  interpolateNpcs,
+} from './NPCManager';
 import { NPC } from './NPC';
 import { loadAtlas } from './TilesetManager';
 import {
@@ -33,19 +40,28 @@ import {
   registerCustomSheet,
   CUSTOM_GROUP_BASE,
 } from './SpriteManager';
-import { connect, sendPosition, sendEquip, sendAttack } from './Network';
+import {
+  connect,
+  sendPosition,
+  sendEquip,
+  sendAttack,
+  sendWarpState,
+  sendEditorMode,
+} from './Network';
 import { loadNameOverrides, getSpriteName } from './SpriteNames';
 import { loadSongNameOverrides } from './SongNames';
 import { setStatus } from './StatusModal';
-import {
-  pushRemoteSnapshot,
-  dropRemoteBuffer,
-  interpolateRemotePlayer,
-} from './RemoteInterp';
+import { pushRemoteSnapshot, dropRemoteBuffer, interpolateRemotePlayer } from './RemoteInterp';
 import { getItemName, loadItemSprites } from './Items';
 import { itemEquip } from './Shop';
 import { getEquipped, setEquipped, setEquippedFromServer } from './Equipment';
-import { loadMusicMap, loadMusicAreas, initMusic, updateMusic, playCharSelectMusic } from './MusicManager';
+import {
+  loadMusicMap,
+  loadMusicAreas,
+  initMusic,
+  updateMusic,
+  playCharSelectMusic,
+} from './MusicManager';
 import {
   loadCharacterSelect,
   updateCharacterSelect,
@@ -54,9 +70,16 @@ import {
   handleCharSelectClick,
   getSelectedSpriteGroupId,
 } from './CharacterSelect';
-import { loadFont }                             from './TextRenderer';
-import { loadWindowStyle }                      from './WindowRenderer';
-import { initMenu, updateMenu, isMenuOpen, renderMenu, openShop, openPhoneMenu } from './MenuManager';
+import { loadFont } from './TextRenderer';
+import { loadWindowStyle } from './WindowRenderer';
+import {
+  initMenu,
+  updateMenu,
+  isMenuOpen,
+  renderMenu,
+  openShop,
+  openPhoneMenu,
+} from './MenuManager';
 import {
   initDialogue,
   openDialogue,
@@ -73,7 +96,14 @@ import {
   addRemoteBubble,
   removeBubble,
 } from './ChatManager';
-import { updateEmitters, renderEmitters, spawnDamageNumber, spawnHealNumber, spawnXpNumber, spawnLevelUp } from './Emitter';
+import {
+  updateEmitters,
+  renderEmitters,
+  spawnDamageNumber,
+  spawnHealNumber,
+  spawnXpNumber,
+  spawnLevelUp,
+} from './Emitter';
 import { setGoods, getGoods } from './Inventory';
 import { setMoney } from './Wallet';
 import {
@@ -172,6 +202,7 @@ export class Game {
           player: this.player,
           teleport: (x, y) => void this.debugTeleport(x, y),
           streamView: () => this.loadSectorsInView(),
+          setEditing: (on) => sendEditorMode(on),
           canEnter: () =>
             this.phase === 'playing' &&
             !isChatTyping() &&
@@ -368,8 +399,13 @@ export class Game {
           this.player.direction = dir;
           this.player.moving = false;
           this.player.frame = 0;
-          this.camera.follow(x, y);
-          this.updateRoomBounds(x, y);
+          // While editing (dev), the free camera owns the view — don't yank it
+          // back to the avatar. The server shouldn't respawn us at all in editor
+          // mode (we're pulled from the sim); this guards a late in-flight hit.
+          if (!this.editor?.isActive()) {
+            this.camera.follow(x, y);
+            this.updateRoomBounds(x, y);
+          }
         } else {
           const rp = this.remotePlayers.get(id);
           if (rp) {
@@ -436,7 +472,7 @@ export class Game {
       Math.floor(startCol / SECTOR_TILES_X) - 1,
       Math.floor(startRow / SECTOR_TILES_Y) - 1,
       Math.floor(endCol / SECTOR_TILES_X) + 1,
-      Math.floor(endRow / SECTOR_TILES_Y) + 1,
+      Math.floor(endRow / SECTOR_TILES_Y) + 1
     );
   }
 
@@ -517,7 +553,10 @@ export class Game {
       for (const t of b.tiles) tiles.add(t);
       for (const c of b.cells) cells.add(c);
     }
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
     for (const t of tiles) {
       const tx = t % MAP_WIDTH_TILES;
       const ty = (t - tx) / MAP_WIDTH_TILES;
@@ -566,10 +605,16 @@ export class Game {
   }
 
   private startTransition(door: DoorData) {
-    console.log(`Door: (${door.worldX},${door.worldY}) -> (${door.destX},${door.destY}) player:(${Math.round(this.player.x)},${Math.round(this.player.y)})`);
+    console.log(
+      `Door: (${door.worldX},${door.worldY}) -> (${door.destX},${door.destY}) player:(${Math.round(this.player.x)},${Math.round(this.player.y)})`
+    );
     this.transitioning = true;
     this.transitionAlpha = 0;
     this.pendingDoor = door;
+    // Shield against enemy hits while frozen: position sends stop for the whole
+    // fade, so the server would otherwise let a pursuer keep swinging at the
+    // motionless ghost we leave at the doorway. Cleared when the fade completes.
+    sendWarpState(true);
     // Keep the current room crop while fading out — the destination's bounds
     // are computed on arrival. Dropping it here would flash adjacent rooms.
   }
@@ -602,26 +647,28 @@ export class Game {
           // Now collision data is loaded — nudge out of walls
           let destX = door.destX;
           let destY = door.destY;
-          const COL_W = 14, COL_H = 8, COL_OY = -8;
+          const COL_W = 14,
+            COL_H = 8,
+            COL_OY = -8;
 
-          if (checkPlayerCollision(destX - COL_W/2, destY + COL_OY, COL_W, COL_H)) {
+          if (checkPlayerCollision(destX - COL_W / 2, destY + COL_OY, COL_W, COL_H)) {
             // Try nudging in all directions, facing direction first
             const allNudges: [number, number][] = [];
             for (let dist = 8; dist <= 32; dist += 8) {
-              if (dir === Direction.S) allNudges.push([0,dist]);
-              else if (dir === Direction.N) allNudges.push([0,-dist]);
-              else if (dir === Direction.W) allNudges.push([-dist,0]);
-              else if (dir === Direction.E) allNudges.push([dist,0]);
+              if (dir === Direction.S) allNudges.push([0, dist]);
+              else if (dir === Direction.N) allNudges.push([0, -dist]);
+              else if (dir === Direction.W) allNudges.push([-dist, 0]);
+              else if (dir === Direction.E) allNudges.push([dist, 0]);
             }
             // Also try all 4 directions
             for (let dist = 8; dist <= 32; dist += 8) {
-              allNudges.push([0,dist],[0,-dist],[dist,0],[-dist,0]);
+              allNudges.push([0, dist], [0, -dist], [dist, 0], [-dist, 0]);
             }
 
             for (const [nx, ny] of allNudges) {
               const tx = door.destX + nx;
               const ty = door.destY + ny;
-              if (!checkPlayerCollision(tx - COL_W/2, ty + COL_OY, COL_W, COL_H)) {
+              if (!checkPlayerCollision(tx - COL_W / 2, ty + COL_OY, COL_W, COL_H)) {
                 destX = tx;
                 destY = ty;
                 break;
@@ -649,6 +696,9 @@ export class Game {
       if (this.transitionAlpha <= 0) {
         this.transitionAlpha = 0;
         this.transitioning = false;
+        // Fade done — position sends resume; lift the damage shield. (A move
+        // would clear it server-side anyway; this ends it promptly.)
+        sendWarpState(false);
       }
     }
   }
@@ -757,7 +807,9 @@ export class Game {
     if (isCycleItemPressed()) {
       // Cycle through the equippable gear in your inventory (+ none). Equipping a
       // catalog item broadcasts its id so everyone renders its held sprite.
-      const weapons = getGoods().filter((g) => itemEquip(g.id)?.slot === 'weapon').map((g) => g.id);
+      const weapons = getGoods()
+        .filter((g) => itemEquip(g.id)?.slot === 'weapon')
+        .map((g) => g.id);
       const cycle: (string | null)[] = [null, ...weapons];
       const idx = cycle.indexOf(this.player.heldItemId);
       const next = cycle[(idx + 1) % cycle.length] ?? null;
@@ -849,7 +901,7 @@ export class Game {
     // reach (clears a counter) but a tight LATERAL band (stays directional, so
     // we don't grab someone standing off to the side).
     const REACH_FORWARD = 60; // how far ahead an anchor may be (≈2 tiles) — clears a counter plus a prop standing in front of the clerk
-    const REACH_BACK = 8;     // tolerate an anchor slightly behind / overlapping
+    const REACH_BACK = 8; // tolerate an anchor slightly behind / overlapping
     const REACH_LATERAL = 20; // must be roughly in line with the facing
 
     const v = DIR_VECTORS[this.player.direction] ?? DIR_VECTORS[Direction.S];
@@ -909,8 +961,8 @@ export class Game {
       const pages = bestInteractive ? bestPages : null;
       console.log(
         `Talk: npc(${Math.round(target.x)},${Math.round(target.y)}) score=${Math.round(
-          bestInteractive ? bestInteractiveScore : bestScore,
-        )} ${pages ? `"${pages[0].slice(0, 40)}..."` : 'no dialogue (Check)'}`,
+          bestInteractive ? bestInteractiveScore : bestScore
+        )} ${pages ? `"${pages[0].slice(0, 40)}..."` : 'no dialogue (Check)'}`
       );
       openDialogue(pages ?? ['There was no problem here.']);
       this.talkingNpc = target;

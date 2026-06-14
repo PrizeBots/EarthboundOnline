@@ -82,7 +82,7 @@ sector load + room crop — use it from the console or verification scripts.
   **Escalators/stairways**: EB's `EscalatorOrStairwayDoor` is NOT a warp — it
   carries only a diagonal `direction`. An escalator is a walkable diagonal RAMP
   (two landing strips joined by the ramp) bounded by solid; too narrow/corner-
-  connected for normal foot-box movement, so the player is *glided* across it
+  connected for normal foot-box movement, so the player is _glided_ across it
   (see DoorManager/Game). `isSolidAtPoint()` is the raw look-ahead the ride uses
   to find the ramp's end. The floor change is either a `door` warp at the strip
   end (fade) OR — for stacked floors with no door between them — the ride just
@@ -176,7 +176,7 @@ sector load + room crop — use it from the console or verification scripts.
   the shared sprite-preview dropdown + search, shows name/cost/type plus the
   decoded EQUIP data — slot (weapon/body/arms/other), offense/defense, and who
   may equip it — and whether each item has art yet, and hands off (`openSpriteEditor({
-  focusItem })`) to the Sprite Editor's Item mode. The Sprite Editor's item list
+focusItem })`) to the Sprite Editor's Item mode. The Sprite Editor's item list
   is split into **Weapons / Items / Custom** tabs: Weapons/Items come from the
   catalog (a weapon is gear whose equip slot is `weapon`); **Custom** holds the
   legacy seed art (bat/pan/yoyo = `HELD_ITEM_IDS`) plus admin-made items. Since
@@ -241,7 +241,19 @@ sector load + room crop — use it from the console or verification scripts.
 `if (import.meta.env.DEV)` — it does not exist in production bundles (verified:
 zero editor strings in `dist/`). F2 or `__eb.admin()` enters editor mode from
 the playing phase: gameplay input/update suspends (remote players and NPCs keep
-simulating), the camera free-flies (WASD/drag, Shift fast; mouse wheel zooms
+simulating), and the client tells the server (`sendEditorMode(true)` → `editor`
+msg) to make our avatar a **non-participant anchor**: it stays in `getPlayers()`
+(carrying an `editor` flag) so the world keeps living around the parked character
+exactly as before — area-of-interest activation and spawners still use it — but
+npcSim skips it for **targeting** (`aggroTarget`), **collision**
+(`hitsPlayer`/`carBlocked`), and **door-warp tracking**, and `damagePlayer`
+no-ops for it. So enemies ignore the avatar entirely and can't kill it; without
+this a death's `player_respawn` would yank the free camera back across the map.
+`onPlayerRespawn` also skips the self camera-follow while the editor is active
+(belt-and-suspenders). Filtering the avatar out of `getPlayers()` entirely was
+wrong — a solo admin then left the sim with zero players and the whole world
+froze. `setEditing(false)` on exit makes it a live target again. The camera
+free-flies (WASD/drag, Shift fast; mouse wheel zooms
 0.25x–2x anchored at the cursor — `Camera.zoom`, which the Renderer applies as
 one scale transform with zoom-aware culling; gameplay always runs at 1), and a
 HUD shows the
@@ -270,6 +282,7 @@ a browser refresh.
 
 **Placement Editor** (`src/editor/tools/PlacementTool.ts`, READY in the hub),
 three tabs:
+
 - **NPCs**: ghosts every placement through the real `drawSprite` at the
   authored position with color-coded foot boxes, click-select + drag with
   snap (G: free/8/32px), add person/prop, delete/restore (tombstone), edit
@@ -337,6 +350,7 @@ live via `setMusicAreas()`.
 attack/equip/use_item/buy/sell/use_psi), progression (level/exp/stats), combat
 HP, and the `npcSim` wiring. There are now TWO thin transports around it, NOT
 two copies of the logic:
+
 - `server/index.js` — standalone deploy server: Express serves `dist/`, a plain
   `ws` server hands each socket to `host.handleConnection(ws)`.
 - `vite.config.ts` `gameServerPlugin` — dev server: the `/ws` upgrade hands each
@@ -364,7 +378,7 @@ the player owns (validated against the server-side `GOODS` registry) and applies
 its effect (Cookie → +10 HP, capped), replying with an `inventory` list to the
 owner and a `heal`-tagged `player_hp` to everyone; players also carry `money`
 (start $1000), shipped in `welcome`; `attack` requests a melee swing,
-resolved server-side from the player's *tracked* position (not client coords)
+resolved server-side from the player's _tracked_ position (not client coords)
 against enemy hurtboxes. `npc_update: [[id, x, y, dir, frame], ...]` carries
 positions and `npc_hp: [[id, hp, maxHp], ...]` carries enemy HP (hp ≤ 0 =
 dead/hidden); both keyed by the shared wire id, and `welcome` ships an `npcHps`
@@ -389,18 +403,33 @@ deactivate then re-activate later; ROM-placed enemies instead revive at home
 after a delay. HP, damage, death, and respawn are all server-authoritative —
 the client only sends `attack` and renders the broadcast `npc_hp`. Hurt/hit
 box geometry is mirrored in `npcSim.handleAttack` (authoritative) and
-`Renderer` (the **B**-key debug overlay). Enemies AND townsfolk are damageable
+`Renderer` (the **B**-key debug overlay). **No melee through walls:** every swing
+(player→enemy, enemy→player/NPC, NPC→enemy) is gated by `npcSim.wallBetween`,
+which samples the collision grid along the line between the two foot positions —
+a solid tile between them blocks the hit (and an enemy so blocked drops to its
+chase, pathing around the wall instead of striking through it).
+`server/combat.test.js` (`npm test`)
+asserts the authoritative resolution — exact damage, miss, death, cooldown, and
+the wall block — aiming at a real enemy via `npcSim.enemyState()` (a positions
+accessor added for tests/debug). Enemies AND townsfolk are damageable
 (see NPC self-defense below); health bars hide at full HP, so a damaged shark or
 hurt townsperson shows its bar while the local player always sees its own.
 
 **NPC self-defense.** Every `person` carries HP (`NPC_HP`, matching the client's
-Entity default so full-HP folk need no sync) and defends itself: it HOLDS GROUND
-— never chases — and on **defend-on-sight** (no first hit needed) faces and
-swings at the nearest living enemy within `NPC_DETECT_RANGE`, dealing `NPC_DAMAGE`
-on a cooldown. A downed townsperson hides (hp 0, like a dead enemy — the client's
-`NPC.dead` getter now covers persons) and `reviveNpcs` revives it at its home
-spot after `NPC_RESPAWN_MS` (backlog: a hospital / per-entity respawn point and
-personality flags in the Entity Manager). Enemies target the nearest living
+Entity default so full-HP folk need no sync) and defends itself on
+**defend-on-sight** (no first hit needed) against the nearest living enemy within
+`NPC_DETECT_RANGE`, dealing `NPC_DAMAGE` on a cooldown. Rather than freezing in
+place, it **maneuvers per a combat personality** (`tickNpcCombat`): `brave`
+closes in and presses, `skirmisher` darts in to swing then peels off,
+`coward` flees and only swings when cornered, `nervous` trades blows while
+shuffling restlessly. The personality is assigned per sprite group in the Entity
+Manager (`entities[sprite].combat`); unassigned entities get a stable seeded pick
+by id so a crowd reacts diversely. Combat ranges up to `NPC_COMBAT_LEASH` from
+home (`NPC_FLEE_LEASH` for cowards); once the threat clears, an NPC walks back
+inside its wander `LEASH` before resuming the ambient wander. A downed
+townsperson hides (hp 0, like a dead enemy — the client's `NPC.dead` getter now
+covers persons) and `reviveNpcs` revives it at its home spot after
+`NPC_RESPAWN_MS` (backlog: a hospital / per-entity respawn point). Enemies target the nearest living
 **player** within `DETECT_RANGE`, and **only if none is in range** fall back to
 the nearest townsperson — players always take targeting priority. **Retaliation:**
 when an NPC hits an enemy it stamps itself as that enemy's `aggressor` for
@@ -459,7 +488,7 @@ Car is a fourth NPC kind. `car_traffic.json` (OUR content — committed default 
 `public/assets/map/`, editor override in `public/overrides/`) lists vehicles,
 each with a sprite group, speed, loop flag, and a hand-authored **waypoint
 route**. Client (`NPCManager`) and server (`npcSim`) build the same car **pool**
-appended *after* the enemy pool (one slot per active vehicle — `enabled` with
+appended _after_ the enemy pool (one slot per active vehicle — `enabled` with
 ≥2 waypoints — in file order) so wire ids stay aligned. The server drives each
 car along its route (`tickCar`/`dir8`), facing its travel direction, and
 broadcasts position over the existing `npc_update` channel; cars carry no HP and
@@ -530,7 +559,7 @@ wire new doors to it.
   row-major indexing is unchanged). `MAP_HEIGHT_TILES`/`MAP_HEIGHT_SECTORS` in
   `types.ts` are live bindings set by `MapManager.loadMapData` from the data;
   `server/npcSim.js` derives `mapHTiles` the same way. Width-fixed means copying a
-  room's tile *values* into a band region whose sectors share the source's
+  room's tile _values_ into a band region whose sectors share the source's
   tilesetId/paletteId reproduces rendering AND collision (collision is keyed by
   tile ARRANGEMENT, not position).
 - **Registry.** `src/engine/Rooms.ts` loads `rooms.json`

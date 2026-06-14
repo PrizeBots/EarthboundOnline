@@ -78,6 +78,10 @@ const NPC_COL_H = 8;
 const NPC_COL_OY = -8;
 
 const npcsByArea = new Map<number, NPC[]>();
+// Live static NPC instances keyed by placement key (RawNPC.k for base, "+i" for
+// the i-th editor addition) — lets editor tools hit-test the LIVE sprite (which
+// may have wandered from its spawn/home spot) and map it back to its placement.
+const npcByKey = new Map<string, NPC>();
 // JSON array index = wire id used by the server's npc_update / npc_hp messages.
 // Null slots are override-deleted placements (kept so indexes stay aligned).
 let npcsById: (NPC | null)[] = [];
@@ -106,7 +110,14 @@ interface EnemyConfig {
   // per-entity stats (Entity Manager); client needs hp + the optional collision
   // box override (col), which wins over the kind default for ANY entity.
   entities?: Record<string, { hp?: number; col?: EntityCol }>;
-  spawners?: { sprite: number; x: number; y: number; poolSize?: number; hp?: number; enabled?: boolean }[];
+  spawners?: {
+    sprite: number;
+    x: number;
+    y: number;
+    poolSize?: number;
+    hp?: number;
+    enabled?: boolean;
+  }[];
 }
 
 // Exact per-direction collision boxes for vehicles (tools/extract_vehicle_colboxes.py
@@ -140,7 +151,7 @@ export interface CarTraffic {
 /** Vehicles that produce a live car slot — KEEP IN SYNC with npcSim.js. */
 function activeVehicles(cfg: CarTraffic | null): Vehicle[] {
   return (cfg?.vehicles ?? []).filter(
-    (v) => v.enabled !== false && Array.isArray(v.waypoints) && v.waypoints.length >= 2,
+    (v) => v.enabled !== false && Array.isArray(v.waypoints) && v.waypoints.length >= 2
   );
 }
 
@@ -157,7 +168,7 @@ export interface DialogueOverrides {
 
 function mergeDialogue(
   base: Record<string, string[]>,
-  ov: DialogueOverrides | null,
+  ov: DialogueOverrides | null
 ): Record<string, string[]> {
   if (!ov?.edits) return { ...base };
   const merged = { ...base };
@@ -179,25 +190,30 @@ export async function reloadNpcText(): Promise<void> {
 
 export async function loadNPCs(): Promise<void> {
   await loadShops(); // clerk->store map must be ready before we tag NPCs below
-  const [raw, overrides, text, dialogueOv, enemyOv, enemyBase, carOv, carBase, colBoxes] = await Promise.all([
-    loadJSON<RawNPC[]>('/assets/map/npcs.json'),
-    // Editor-authored placement overrides — absent until something is authored.
-    loadJSON<NpcOverrides>('/overrides/npcs.json').catch(() => null),
-    loadJSON<Record<string, string[]>>('/assets/map/npc_text.json'),
-    // Dialogue Editor override — authored pages win over the decoded text.
-    loadJSON<DialogueOverrides>('/overrides/dialogue.json').catch(() => null),
-    // Enemy spawners: editor-authored override (Enemy Spawner tool) wins over
-    // the committed default. KEEP IN SYNC with server/npcSim.js — both build
-    // the same pool (disabled spawners skipped) so wire ids stay aligned.
-    loadJSON<EnemyConfig>('/overrides/enemy_spawns.json').catch(() => null),
-    loadJSON<EnemyConfig>('/assets/map/enemy_spawns.json').catch(() => ({}) as EnemyConfig),
-    // Traffic (Traffic Editor) — override wins over the committed default. KEEP
-    // IN SYNC with server/npcSim.js (same active-vehicle filter so ids align).
-    loadJSON<CarTraffic>('/overrides/car_traffic.json').catch(() => null),
-    loadJSON<CarTraffic>('/assets/map/car_traffic.json').catch(() => ({ version: 1 }) as CarTraffic),
-    // Precomputed per-direction vehicle collision boxes (build artifact).
-    loadJSON<Record<string, Record<string, EntityCol>>>('/assets/sprites/colboxes.json').catch(() => ({})),
-  ]);
+  const [raw, overrides, text, dialogueOv, enemyOv, enemyBase, carOv, carBase, colBoxes] =
+    await Promise.all([
+      loadJSON<RawNPC[]>('/assets/map/npcs.json'),
+      // Editor-authored placement overrides — absent until something is authored.
+      loadJSON<NpcOverrides>('/overrides/npcs.json').catch(() => null),
+      loadJSON<Record<string, string[]>>('/assets/map/npc_text.json'),
+      // Dialogue Editor override — authored pages win over the decoded text.
+      loadJSON<DialogueOverrides>('/overrides/dialogue.json').catch(() => null),
+      // Enemy spawners: editor-authored override (Enemy Spawner tool) wins over
+      // the committed default. KEEP IN SYNC with server/npcSim.js — both build
+      // the same pool (disabled spawners skipped) so wire ids stay aligned.
+      loadJSON<EnemyConfig>('/overrides/enemy_spawns.json').catch(() => null),
+      loadJSON<EnemyConfig>('/assets/map/enemy_spawns.json').catch(() => ({}) as EnemyConfig),
+      // Traffic (Traffic Editor) — override wins over the committed default. KEEP
+      // IN SYNC with server/npcSim.js (same active-vehicle filter so ids align).
+      loadJSON<CarTraffic>('/overrides/car_traffic.json').catch(() => null),
+      loadJSON<CarTraffic>('/assets/map/car_traffic.json').catch(
+        () => ({ version: 1 }) as CarTraffic
+      ),
+      // Precomputed per-direction vehicle collision boxes (build artifact).
+      loadJSON<Record<string, Record<string, EntityCol>>>('/assets/sprites/colboxes.json').catch(
+        () => ({})
+      ),
+    ]);
   const enemyCfg = enemyOv ?? enemyBase;
   carColBoxes = colBoxes ?? {};
   // Capture any manual per-sprite-group box overrides (Entity Manager).
@@ -245,7 +261,9 @@ export async function loadNPCs(): Promise<void> {
     cars.push(car);
   }
 
-  console.log(`Loaded ${npcsById.length} NPCs (${roamers.length} enemy slots, ${cars.length} cars)`);
+  console.log(
+    `Loaded ${npcsById.length} NPCs (${roamers.length} enemy slots, ${cars.length} cars)`
+  );
 }
 
 /**
@@ -256,6 +274,10 @@ export async function loadNPCs(): Promise<void> {
  */
 function buildStaticNpcs(raw: RawNPC[], overrides: NpcOverrides | null): (NPC | null)[] {
   npcsByArea.clear();
+  npcByKey.clear();
+  // Additions (no base `k`) are keyed "+i" in merge order, matching the editor's
+  // own addition numbering (PlacementTool.loadAll) so a live add maps back.
+  let addIdx = 0;
   const arr = mergeNpcOverrides(raw, overrides).map((r) => {
     if (!r) return null; // override-deleted slot
     const kind: NPCKind = enemySpriteSet.has(r.sprite) ? 'enemy' : r.kind;
@@ -264,6 +286,8 @@ function buildStaticNpcs(raw: RawNPC[], overrides: NpcOverrides | null): (NPC | 
     // Shop clerks (by ROM config id) carry the store they sell — Game.tryTalk
     // opens the shop instead of dialogue. Custom/override NPCs have no ROM id.
     if (kind === 'person') npc.shopStore = shopStoreForNpc(npcIdFromKey(r.k));
+    npc.placementKey = r.k !== undefined ? r.k : `+${addIdx++}`;
+    npcByKey.set(npc.placementKey, npc);
     return npc;
   });
   for (const npc of arr) {
@@ -378,15 +402,19 @@ export function blockedByNPC(
   w: number,
   h: number,
   curX?: number,
-  curY?: number,
+  curY?: number
 ): boolean {
   const haveCur = curX !== undefined && curY !== undefined;
   // Solid for the player: live people, live enemies (sharks), and cars. Props
   // and dead enemies don't block. A body the player ALREADY overlaps doesn't
   // block, so an embedded player can always walk back out. Cars use their full
   // sprite rect (feet-anchored) as the obstacle; people/enemies use a foot box.
-  const fromCol = (npc: NPC, c: EntityCol): [number, number, number, number] =>
-    [npc.x + c.offX - c.w / 2, npc.y + c.offY - c.h, c.w, c.h];
+  const fromCol = (npc: NPC, c: EntityCol): [number, number, number, number] => [
+    npc.x + c.offX - c.w / 2,
+    npc.y + c.offY - c.h,
+    c.w,
+    c.h,
+  ];
   const boxOf = (npc: NPC): [number, number, number, number] | null => {
     // Manual Entity Manager override wins for any entity.
     const manual = entityCols.get(npc.spriteGroupId);
@@ -411,11 +439,7 @@ export function blockedByNPC(
     if (!(x < nx + nw && x + w > nx && y < ny + nh && y + h > ny)) {
       return false;
     }
-    if (
-      haveCur &&
-      curX! < nx + nw && curX! + w > nx &&
-      curY! < ny + nh && curY! + h > ny
-    ) {
+    if (haveCur && curX! < nx + nw && curX! + w > nx && curY! < ny + nh && curY! + h > ny) {
       return false; // already inside at move start — let them leave
     }
     return true;
@@ -437,6 +461,16 @@ export function blockedByNPC(
   for (const npc of roamers) if (hits(npc)) return true;
   for (const npc of cars) if (hits(npc)) return true;
   return false;
+}
+
+/**
+ * The LIVE static NPC instance for a placement key (RawNPC.k or "+i"), or null
+ * if it isn't currently built (e.g. an unsaved editor addition, or a roamer/car
+ * which has no placement key). Editor tools use this to select the in-game
+ * instance — which may have wandered from its spawn ghost — by the same key.
+ */
+export function liveNpcForKey(key: string): NPC | null {
+  return npcByKey.get(key) ?? null;
 }
 
 /** NPCs in the player's neighborhood; kicks off sprite loads as needed. */

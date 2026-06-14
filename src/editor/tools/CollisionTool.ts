@@ -206,9 +206,10 @@ class CollisionTool implements EditorTool {
       // Bit tools OVERWRITE the cell's type: set this bit and clear the other
       // two (solid / pri-lo / pri-hi are mutually exclusive). Clear mode (a rect
       // that starts on an already-filled corner) just drops the bit.
-      else after = this.strokeSetting
-        ? (before & ~TYPE_MASK) | this.strokeBit
-        : before & ~this.strokeBit;
+      else
+        after = this.strokeSetting
+          ? (before & ~TYPE_MASK) | this.strokeBit
+          : before & ~this.strokeBit;
       if (after === before) continue;
 
       const key = cellKey(cell);
@@ -258,7 +259,9 @@ class CollisionTool implements EditorTool {
     if (this.tool === 'eyedrop') {
       this.stampByte = this.currentByte(cell);
       this.setTool('stamp');
-      this.shell?.toast(`Picked 0x${this.stampByte.toString(16).padStart(2, '0')} — stamp to paint`);
+      this.shell?.toast(
+        `Picked 0x${this.stampByte.toString(16).padStart(2, '0')} — stamp to paint`
+      );
       return true;
     }
     if (this.tool === 'rect') {
@@ -348,14 +351,19 @@ class CollisionTool implements EditorTool {
         }
         // 'rect' falls through paintCells' bit branch using strokeBit/Setting.
         this.paintCells(cells);
-        this.commitStroke(`rect ${this.strokeSetting ? 'solid' : 'clear-solid'} (${cells.length} cells)`);
+        this.commitStroke(
+          `rect ${this.strokeSetting ? 'solid' : 'clear-solid'} (${cells.length} cells)`
+        );
       }
       return;
     }
     if (this.painting) {
       this.painting = false;
       this.lastPaintPoint = null;
-      if (this.tool === 'fg') { this.refreshPanel(); return; } // FG has no per-cell stroke
+      if (this.tool === 'fg') {
+        this.refreshPanel();
+        return;
+      } // FG has no per-cell stroke
       this.commitStroke(`paint ${this.tool} (${this.strokeChanges.size} cells)`);
     }
   }
@@ -402,7 +410,9 @@ class CollisionTool implements EditorTool {
     this.roomCells = bounds?.cells ?? null;
     if (at) {
       this.shell?.toast(
-        bounds ? `Room recomputed: ${bounds.cells.size} walkable minitiles` : 'No croppable room here'
+        bounds
+          ? `Room recomputed: ${bounds.cells.size} walkable minitiles`
+          : 'No croppable room here'
       );
     }
   }
@@ -592,14 +602,8 @@ class CollisionTool implements EditorTool {
       actions.appendChild(b);
     };
     mkAction('Verify rooms', () => void this.runVerifier('rooms'));
-    mkAction('Save', () => {
-      void this.save()
-        .then(() => {
-          this.shell?.clearDirty(DOMAIN);
-          this.shell?.toast('Saved overrides/collision.json (npcSim re-applies in ~2s)');
-        })
-        .catch((err) => this.shell?.toast(String(err), true));
-    }, true);
+    // No Save button — edits auto-save via the shell (registered 'collision'
+    // handler); npcSim re-applies the override ~2s after the write.
 
     this.outputEl = document.createElement('pre');
     this.outputEl.style.cssText =

@@ -89,7 +89,12 @@ function floodReach(x: number, y: number): number {
     const [gx, gy] = stack.pop()!;
     if (isSolidSpot(gx * STEP, gy * STEP)) continue;
     count++;
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ] as const) {
       const k = `${gx + dx},${gy + dy}`;
       if (!seen.has(k)) {
         seen.add(k);
@@ -208,8 +213,14 @@ class EnemySpawnerTool implements EditorTool {
   }
 
   private hasLegacyStats(s: Partial<EntityStats>): boolean {
-    return s.hp != null || s.xp != null || s.level != null ||
-      s.damage != null || s.attackCooldownMs != null || s.speed != null;
+    return (
+      s.hp != null ||
+      s.xp != null ||
+      s.level != null ||
+      s.damage != null ||
+      s.attackCooldownMs != null ||
+      s.speed != null
+    );
   }
 
   private revalidate(sp: Spawner): void {
@@ -272,7 +283,12 @@ class EnemySpawnerTool implements EditorTool {
 
   onMouseDown(p: WorldPoint): boolean {
     if (this.placing) {
-      const sp: Spawner = { ...DEFAULTS, name: this.nextName(), x: Math.round(p.x), y: Math.round(p.y) };
+      const sp: Spawner = {
+        ...DEFAULTS,
+        name: this.nextName(),
+        x: Math.round(p.x),
+        y: Math.round(p.y),
+      };
       this.revalidate(sp);
       this.spawners.push(sp);
       this.sel = sp;
@@ -281,7 +297,10 @@ class EnemySpawnerTool implements EditorTool {
       this.refreshList();
       this.rebuildForm();
       if (sp.solid || (sp.reach ?? 0) < SEALED_MIN_CELLS) {
-        this.shell?.toast('Heads up: this spot is solid or sealed off — enemies can\'t reach the streets', true);
+        this.shell?.toast(
+          "Heads up: this spot is solid or sealed off — enemies can't reach the streets",
+          true
+        );
       }
       return true;
     }
@@ -435,14 +454,8 @@ class EnemySpawnerTool implements EditorTool {
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;gap:6px;';
     this.mkBtn('+ New spawner (N)', () => this.startPlacing(), actions);
-    // Saving is per-tool (the shell has no Ctrl+S; exiting to the game does NOT
-    // save) — without this button a freshly placed spawner is lost on exit.
-    this.mkBtn('Save', () => {
-      void this.save().catch((e) => {
-        console.error('[EnemySpawner] save failed', e);
-        this.shell?.toast(`Save failed: ${e}`, true);
-      });
-    }, actions, true);
+    // No Save button — edits (incl. a freshly placed spawner) auto-save via the
+    // shell (registered 'enemies' handler), debounced and flushed on exit.
     this.panel.appendChild(actions);
 
     this.listEl = document.createElement('div');
@@ -485,7 +498,8 @@ class EnemySpawnerTool implements EditorTool {
       dot.style.color = !s.enabled ? '#667' : bad ? '#ff5a5a' : '#e85050';
       const label = document.createElement('span');
       label.textContent = `${s.name}  (#${s.sprite})`;
-      label.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' +
+      label.style.cssText =
+        'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' +
         (s.enabled ? '' : 'color:#778;');
       row.appendChild(dot);
       row.appendChild(label);
@@ -517,13 +531,24 @@ class EnemySpawnerTool implements EditorTool {
     const form = this.formEl;
 
     // name + enabled
-    const nameIn = this.mkInput(form, 'name', 'name', (v) => {
-      s.name = v || 'spawner';
-      this.refreshList();
-    }, 120);
+    const nameIn = this.mkInput(
+      form,
+      'name',
+      'name',
+      (v) => {
+        s.name = v || 'spawner';
+        this.refreshList();
+      },
+      120,
+      'Display name for this spawner — shown on the map marker and in the list. Editor-only label.'
+    );
     nameIn.value = s.name;
 
-    const enRow = this.mkRow(form, 'on');
+    const enRow = this.mkRow(
+      form,
+      'on',
+      'Enable/disable this spawner. Disabled spawners produce no enemies and are skipped when building the live enemy groups on save.'
+    );
     const en = document.createElement('input');
     en.type = 'checkbox';
     en.checked = s.enabled;
@@ -537,7 +562,11 @@ class EnemySpawnerTool implements EditorTool {
     // enemy sprite — the shared sprite-preview dropdown (same component as the
     // Cast editor): a scrollable list of every sprite group, each row drawing
     // the real sprite next to its id + name.
-    const spriteRow = this.mkRow(form, 'enemy');
+    const spriteRow = this.mkRow(
+      form,
+      'enemy',
+      'Which enemy sprite/entity spawns here. One enemy type per spawner — mix types by adding more spawners. Combat stats come from this entity (see read-only block below).'
+    );
     spriteRow.style.alignItems = 'stretch'; // let the dropdown fill the row width
     this.spritePicker = createSpritePicker({
       sections: [{ values: listSpriteGroupIds().map(String) }],
@@ -559,28 +588,74 @@ class EnemySpawnerTool implements EditorTool {
       label: string,
       get: () => number,
       set: (n: number) => void,
-      revalidate = false,
+      tip: string,
+      revalidate = false
     ) => {
-      const i = this.mkInput(form, name, label, (v) => {
-        const n = parseFloat(v);
-        if (Number.isNaN(n)) return;
-        set(n);
-        this.shell?.markDirty('enemies');
-        if (revalidate && this.sel) {
-          this.revalidate(this.sel);
-          this.refreshList();
-          this.rebuildForm();
-        }
-      }, 64);
+      const i = this.mkInput(
+        form,
+        name,
+        label,
+        (v) => {
+          const n = parseFloat(v);
+          if (Number.isNaN(n)) return;
+          set(n);
+          this.shell?.markDirty('enemies');
+          if (revalidate && this.sel) {
+            this.revalidate(this.sel);
+            this.refreshList();
+            this.rebuildForm();
+          }
+        },
+        64,
+        tip
+      );
       i.value = String(get());
     };
 
-    numField('x', 'x', () => s.x, (n) => (s.x = Math.round(n)), true);
-    numField('y', 'y', () => s.y, (n) => (s.y = Math.round(n)), true);
-    numField('radius', 'roam', () => s.wanderRadius, (n) => (s.wanderRadius = Math.max(32, Math.round(n))));
-    numField('rate', 'rate s', () => s.spawnIntervalMs / 1000, (n) => (s.spawnIntervalMs = Math.max(200, Math.round(n * 1000))));
-    numField('max', 'max', () => s.maxActive, (n) => (s.maxActive = Math.max(1, Math.round(n))));
-    numField('respawn', 'resp s', () => s.respawnDelayMs / 1000, (n) => (s.respawnDelayMs = Math.max(0, Math.round(n * 1000))));
+    numField(
+      'x',
+      'x',
+      () => s.x,
+      (n) => (s.x = Math.round(n)),
+      'World X (pixels) of the spawn point. Tip: drag the marker on the map instead.',
+      true
+    );
+    numField(
+      'y',
+      'y',
+      () => s.y,
+      (n) => (s.y = Math.round(n)),
+      'World Y (pixels) of the spawn point. Tip: drag the marker on the map instead.',
+      true
+    );
+    numField(
+      'radius',
+      'roam',
+      () => s.wanderRadius,
+      (n) => (s.wanderRadius = Math.max(32, Math.round(n))),
+      'Wander radius in pixels — how far enemies roam from the spawn point. Shown as the ring on the map. Min 32.'
+    );
+    numField(
+      'rate',
+      'rate s',
+      () => s.spawnIntervalMs / 1000,
+      (n) => (s.spawnIntervalMs = Math.max(200, Math.round(n * 1000))),
+      'Spawn interval in seconds — how often this spawner tries to add an enemy, up to the live cap. Min 0.2s.'
+    );
+    numField(
+      'max',
+      'max',
+      () => s.maxActive,
+      (n) => (s.maxActive = Math.max(1, Math.round(n))),
+      'Live cap — the most enemies from this spawner alive at once. Min 1.'
+    );
+    numField(
+      'respawn',
+      'resp s',
+      () => s.respawnDelayMs / 1000,
+      (n) => (s.respawnDelayMs = Math.max(0, Math.round(n * 1000))),
+      'Respawn delay in seconds after an enemy dies before its slot refills toward the cap.'
+    );
 
     // Entity stats — READ-ONLY here; they live per-entity in the Entity Manager.
     this.addEntityReadout(form, s.sprite);
@@ -603,7 +678,8 @@ class EnemySpawnerTool implements EditorTool {
   private addEntityReadout(form: HTMLElement, sprite: number): void {
     const head = document.createElement('div');
     head.textContent = `entity #${sprite} stats (read-only)`;
-    head.style.cssText = 'margin-top:4px;color:#b06de8;font-size:10px;letter-spacing:1px;border-top:1px solid #2a3540;padding-top:5px;';
+    head.style.cssText =
+      'margin-top:4px;color:#b06de8;font-size:10px;letter-spacing:1px;border-top:1px solid #2a3540;padding-top:5px;';
     form.appendChild(head);
 
     const e = entityStatsFor(this.entities, sprite);
@@ -616,7 +692,8 @@ class EnemySpawnerTool implements EditorTool {
       ['speed', String(e.speed)],
     ];
     const grid = document.createElement('div');
-    grid.style.cssText = 'display:grid;grid-template-columns:auto auto;gap:1px 10px;color:#9fb8cc;font-size:11px;';
+    grid.style.cssText =
+      'display:grid;grid-template-columns:auto auto;gap:1px 10px;color:#9fb8cc;font-size:11px;';
     for (const [k, v] of rows) {
       const kl = document.createElement('span');
       kl.textContent = k;
@@ -627,10 +704,14 @@ class EnemySpawnerTool implements EditorTool {
     }
     form.appendChild(grid);
 
-    this.mkBtn('Edit entity →', () => {
-      entityManagerTool.requestEntity(sprite);
-      this.shell?.openTool('entity-manager');
-    }, form);
+    this.mkBtn(
+      'Edit entity →',
+      () => {
+        entityManagerTool.requestEntity(sprite);
+        this.shell?.openTool('entity-manager');
+      },
+      form
+    );
   }
 
   private syncPositionFields(): void {
@@ -642,7 +723,12 @@ class EnemySpawnerTool implements EditorTool {
 
   // --- small DOM helpers ---------------------------------------------------------------
 
-  private mkBtn(label: string, fn: () => void, parent: HTMLElement, accent = false): HTMLButtonElement {
+  private mkBtn(
+    label: string,
+    fn: () => void,
+    parent: HTMLElement,
+    accent = false
+  ): HTMLButtonElement {
     const b = document.createElement('button');
     b.textContent = label;
     b.style.cssText =
@@ -655,12 +741,14 @@ class EnemySpawnerTool implements EditorTool {
     return b;
   }
 
-  private mkRow(parent: HTMLElement, label: string): HTMLDivElement {
+  private mkRow(parent: HTMLElement, label: string, tip?: string): HTMLDivElement {
     const r = document.createElement('div');
     r.style.cssText = 'display:flex;align-items:center;gap:6px;';
     const l = document.createElement('span');
     l.textContent = label;
-    l.style.cssText = 'width:46px;color:#9fb8cc;';
+    l.style.cssText =
+      'width:46px;color:#9fb8cc;' + (tip ? 'cursor:help;border-bottom:1px dotted #4a5a6a;' : '');
+    if (tip) l.title = tip;
     r.appendChild(l);
     parent.appendChild(r);
     return r;
@@ -672,12 +760,14 @@ class EnemySpawnerTool implements EditorTool {
     label: string,
     onChange: (v: string) => void,
     width = 64,
+    tip?: string
   ): HTMLInputElement {
-    const r = this.mkRow(parent, label);
+    const r = this.mkRow(parent, label, tip);
     const i = document.createElement('input');
     i.style.cssText =
       `width:${width}px;font:11px monospace;background:#0c1014;color:#cde;` +
       'border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
+    if (tip) i.title = tip;
     i.onchange = () => onChange(i.value);
     r.appendChild(i);
     this.fields.set(name, i);

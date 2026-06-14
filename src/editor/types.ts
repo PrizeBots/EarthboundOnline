@@ -15,6 +15,12 @@ export interface EditorContext {
   teleport: (x: number, y: number) => void;
   /** Stream tile atlases for the camera's current view (editor free-fly). */
   streamView: () => void;
+  /**
+   * Enter (true) / leave (false) editor mode on the SERVER: our avatar is pulled
+   * out of the NPC sim while editing, so enemies don't aggro/collide with the
+   * parked character and a death can't respawn-yank the free camera.
+   */
+  setEditing: (on: boolean) => void;
   /** Gameplay states in which entering the editor is allowed. */
   canEnter: () => boolean;
   /**

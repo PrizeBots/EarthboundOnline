@@ -37,6 +37,13 @@ export class NPC extends Entity {
   pose: Pose = 'walk';
   /** Store id if this NPC is a shop clerk (set by NPCManager), else null. */
   shopStore: number | null = null;
+  /**
+   * Placement identity (RawNPC.k for ROM/base placements, "+i" for the i-th
+   * editor addition). Set by NPCManager.buildStaticNpcs so editor tools can map
+   * this LIVE, possibly-wandered instance back to the placement it came from.
+   * null for spawner-pool roamers and traffic cars (not editable placements).
+   */
+  placementKey: string | null = null;
 
   /** True if this placement is a telephone — talking to it triggers a save. */
   get isPhone(): boolean {
@@ -49,7 +56,7 @@ export class NPC extends Entity {
     spriteGroupId: number,
     direction: Direction,
     kind: NPCKind,
-    textId: number | null = null,
+    textId: number | null = null
   ) {
     super(x, y, spriteGroupId);
     this.direction = direction;
@@ -80,7 +87,7 @@ export class NPC extends Entity {
     y: number,
     direction: Direction,
     frame: number,
-    pose: Pose = 'walk',
+    pose: Pose = 'walk'
   ): void {
     this.x = x;
     this.y = y;

@@ -1,19 +1,20 @@
 # Game Editor Tools
 
 Dev-only authoring tools to build the world faster. They **augment** the Python
-pipeline with live, in-engine *admin intervention* — they do not replace it. The
+pipeline with live, in-engine _admin intervention_ — they do not replace it. The
 `tools/` scripts remain the canonical ROM→data path; the editors add a human
 authoring/override layer on top (see
 [Relationship to the Python Pipeline](#relationship-to-the-python-pipeline)).
 
 ## Goal & Sequencing
+
 Two phases, in order:
 
 1. **Phase 1 — excellent py pipeline (priority, the bulk of the work).** The
    `tools/` scripts should auto-build **~99%** of the world correctly straight
    from the ROM: placement, anchors, collision/priority, doors, dialogue, sector
    settings. The quality bar is "almost nothing needs hand-fixing." When a whole
-   *class* of things is wrong, the fix is a better py heuristic — not clicking
+   _class_ of things is wrong, the fix is a better py heuristic — not clicking
    through instances in an editor.
 2. **Phase 2 — admin editors (the last 1% + new content).** Editors exist to
    (a) tweak the residual outliers the pipeline genuinely can't infer, and
@@ -25,15 +26,17 @@ urge to bulk-fix something in the editor is a signal to improve a py tool
 instead. Editors are for the residual and the net-new, never for setup.
 
 ## Decisions
+
 - **UI: HTML/DOM overlay.** Hub and tool panels are HTML/CSS layered over the
   canvas (fast forms/lists/inputs). The live world + overlays stay on the canvas;
   editors only read/draw against the real `Renderer`/`Camera`.
-- **Save channel: Vite dev-server middleware.** The write endpoint runs *only*
+- **Save channel: Vite dev-server middleware.** The write endpoint runs _only_
   during `npm run dev` — it is not part of the production bundle and never exists
   on the deployed express/Render server, so it cannot ship by construction (no
   runtime gate to forget).
 
 ## Relationship to the Python Pipeline
+
 The editors do **not** replace `tools/`. Data flows:
 
 ```
@@ -48,24 +51,26 @@ The `tools/` scripts split into three roles:
 2. **Verifiers — keep, and surface inside the editors.** `debug_room_crop_check`
    (canonical room checker), `verify_dialogue.mjs`, `verify_props.mjs`,
    `debug_person_anchor_stats`. A tool's "Verify" button just runs these.
-3. **Ad-hoc inspectors — the live readout ends the *need to write new ones*.**
+3. **Ad-hoc inspectors — the live readout ends the _need to write new ones_.**
    `debug_find_*`, `debug_room_ascii`, `debug_room_inspect`, etc. Existing ones
    stay; the cursor readout/overlays mean the pile stops growing.
 
 **Editors write to an overrides layer, never to generated files directly.** This
 mirrors the patterns already in the codebase — `apply_map_changes.py`'s curated
 `ALLOW` table and `DoorManager`'s `ZONE_DOOR_OVERRIDES`. Consequences:
+
 - Re-extracting from the ROM never clobbers authoring (overrides re-apply on top).
 - Provenance stays clean: ROM-derived base vs. human-authored overrides are
-  separable. The overrides are *our* non-ROM data — shippable under the PokeMMO
+  separable. The overrides are _our_ non-ROM data — shippable under the PokeMMO
   model, while the base regenerates from the player's own ROM.
 
 ## Principles
+
 - **Dev-only, never shipped.** Editors and their save channel are excluded from
   production builds — the save endpoint only exists in the Vite dev server. They
   must never reach players.
 - **Edits go to the overrides layer, not generated files.** Tools read the
-  extracted data (`npcs.json`, `tiles.json`, etc.) for context but *save* to
+  extracted data (`npcs.json`, `tiles.json`, etc.) for context but _save_ to
   override files that the pipeline bakes on top — so re-extraction never clobbers
   authoring. Never ROM-derived pixels/audio — keeps the PokeMMO distribution
   model intact (see CLAUDE.md).
@@ -84,6 +89,7 @@ mirrors the patterns already in the codebase — `apply_map_changes.py`'s curate
 ---
 
 ## 0. Editor Shell (foundation — build first)
+
 Shared plumbing every tool depends on. Nothing else is cheap until this exists.
 **Built 2026-06-12** (`src/editor/EditorShell.ts`), smoke-tested via
 `tools/verify_editor.mjs` (Playwright: F2 → hub → pan → exit).
@@ -155,6 +161,7 @@ Shared plumbing every tool depends on. Nothing else is cheap until this exists.
 ---
 
 ## 1. Tool dock (persistent right column)
+
 The hub is no longer a modal — it's a **persistent right-side dock** built by the
 Editor Shell (`EditorShell.buildDock`), so the tab menu is always on screen and
 admins flip between tools without ever leaving the editor. `EditorHub.ts` is now
@@ -168,22 +175,27 @@ just a registry re-export shim.
       deselect. Self-contained tools (Sprite Editor) launch their own overlay
 - [x] The **active tool mounts its panel into the dock body** (`api.panelHost`),
       which scrolls — tools no longer float their own `position:fixed` panels
-- [x] Footer: global **Save all** (runs per-domain `registerSaveHandler` fns,
-      label shows the unsaved count), a **jump-to-px** field (wraps `goTo`/
-      `debugTeleport`), and **Back to game**. Esc deselects the current tool;
-      F2 exits the editor
+- [x] **Auto-save** — tools have no Save buttons. Every edit calls
+      `markDirty(domain)`, which debounces (~600ms) a save via that domain's
+      `registerSaveHandler` fn; pending saves also flush on tool switch and on
+      exit. Footer shows an **auto-save status** (`✓ Saved` / `💾 Saving…` /
+      `● Save now (N)`), which is also clickable to force a save immediately
+- [x] Footer also has a **jump-to-px** field (wraps `goTo`/`debugTeleport`) and
+      **Back to game**. Esc deselects the current tool; F2 exits the editor
 - [x] HTML/DOM styling kept visually distinct from in-game EB chrome so dev UI
       is never mistaken for it
 
 ---
 
 ## 2. Placement Editor — NPCs & Doors
+
 Highest leverage. Place/move/configure NPCs and doors in the live world. Replaces
-the *manual eyeballing* the `debug_npc_align` / `debug_door_align` /
+the _manual eyeballing_ the `debug_npc_align` / `debug_door_align` /
 `debug_prop_anchor` scripts did by hand, and turns `DoorManager`'s hand-coded
 `ZONE_DOOR_OVERRIDES` into edited data. Saves to the placement overrides layer.
 
 ### NPCs
+
 **Built 2026-06-12** (`src/editor/tools/PlacementTool.ts`, READY in the hub).
 Identity: `extract_npcs.py` now emits a stable `k` per placement
 ("areaIdx:npcConfigId:occurrence", counted over raw placements so keys survive
@@ -212,6 +224,7 @@ restart; props need a browser refresh (ghosts show authored truth meanwhile).
       npcs.json is never written, re-extraction re-applies cleanly
 
 ### Spawn Point
+
 **Built 2026-06-12** (SPAWN tab of the Placement Editor). Override =
 `public/overrides/spawn.json` `{x, y, dir}`; consumed by `Game.startGame`
 (client) and both servers' join handlers (which previously hardcoded the
@@ -228,6 +241,7 @@ spawn — that loose end is closed).
 - [ ] Named spawns (per area / per door) — grow when needed
 
 ### Doors / Warps
+
 **Built 2026-06-12** (DOORS tab). Identity: the base trigger anchor
 "worldX,worldY" (the key `ZONE_DOOR_OVERRIDES` already used). Override =
 `public/overrides/doors.json` `{version, edits: {key: {worldX?, worldY?,
@@ -237,8 +251,7 @@ consumed by `DoorManager.loadDoors` AND `tools/debug_room_crop_check.py`
 verified: sweep output identical to the documented baseline). Saving re-runs
 `loadDoors()` so edits apply live in the editing client.
 
-- [x] Render door triggers; selected door draws the trigger→dest dashed link
-      + dest marker (zone doors without an authored link render dimmed)
+- [x] Render door triggers; selected door draws the trigger→dest dashed link + dest marker (zone doors without an authored link render dimmed)
 - [x] Select/drag trigger position and destination position (both handles)
 - [x] Edit `destDir` (arrive facing) and style; trigger/dest also numerically.
       Event `flag` editing deferred — overrides act on flag-ACTIVE doors;
@@ -253,7 +266,8 @@ verified: sweep output identical to the documented baseline). Saving re-runs
 ---
 
 ## 3. Collision & Priority Painter
-Visual brush for the bytes behind the most bugs — replaces the *hand-inspection*
+
+Visual brush for the bytes behind the most bugs — replaces the _hand-inspection_
 the `debug_pri_flags` / `debug_solid_pri` / `debug_room_bleed` /
 `debug_sector_claims` scripts did. Keep `debug_room_crop_check` as the
 verifier this tool calls to confirm room crops after edits.
@@ -298,6 +312,7 @@ canonical sweep sees painted collision).
 ---
 
 ## 4. Dialogue Editor — v1 DONE (`src/editor/tools/DialogueTool.ts`, READY)
+
 Author the decoded NPC text. Each entry is keyed by a `textId` (the NPC config
 id; NPCs link via their `t` field) and holds ordered pages — the same shape
 `npc_text.json` / `DialogueManager` use. Client-side only (no server role), so
@@ -328,6 +343,7 @@ edits go live on save with just `reloadNpcText()`; no dev-server restart.
 ---
 
 ## 5. Cast Sprite Editor — DONE (lives in `engine/SpriteEditor.ts`, off char-select)
+
 **Built, but not as an F2 tool.** Reached from the character-select screen's
 ✎ EDIT cell. Pick any cast character from the dropdown (the `characters.json`
 roster) and hand-polish the **attack/hurt** animation bands PoseGen generates,
@@ -382,6 +398,7 @@ climb; real-time action needs attack, hurt, and full 8-direction coverage. We
 ---
 
 ## 6. Enemy Spawner Editor — DONE (`src/editor/tools/EnemySpawnerTool.ts`, READY)
+
 Place and configure the enemy spawn points (the data behind
 `enemy_spawns.json`) visually. One enemy type per spawner; mix by adding more.
 
@@ -414,6 +431,7 @@ Place and configure the enemy spawn points (the data behind
 ---
 
 ## 7. Traffic Editor — DONE (`src/editor/tools/TrafficEditorTool.ts`, READY)
+
 Place vehicles and draw the **waypoint routes** they drive around town (the data
 behind `car_traffic.json`). One car per vehicle; the server drives it.
 
@@ -452,6 +470,7 @@ behind `car_traffic.json`). One car per vehicle; the server drives it.
 ---
 
 ## 8. Sound Manager — DONE (`src/editor/tools/SoundTool.ts`, READY)
+
 The fix for **music playing in the wrong spots**. EarthBound assigns music PER
 SECTOR (`sectors.json` `musicId` → `music_map.json` → SPC song number), but the
 door-stitched open world leaves many sectors carrying the wrong (intro-state or
@@ -499,6 +518,7 @@ correct regions in OUR overrides layer.
 ---
 
 ## Save-Back Channel
+
 Shared dev-only persistence used by all tools. **Implemented as a Vite dev-server
 middleware** (`vite.config.ts` `configureServer`) — exists only under
 `npm run dev`, never in the production bundle or on the deployed express server.
@@ -528,6 +548,7 @@ Writes go to the **overrides layer**, not the generated asset files.
 ---
 
 ## Backlog (later tools)
+
 - [ ] Sector settings editor (music id, indoor/dungeon flags — pairs with
       `tools/add_sector_settings.py`)
 - [ ] Tile / map arrangement painter (overworld art)
@@ -540,8 +561,9 @@ Writes go to the **overrides layer**, not the generated asset files.
 ## Build Order
 
 **Phase 1 — get the py pipeline to ~99% (do this first).** Push each generator
-until manual fixup is rare, *before* investing in the matching editor. Editor
+until manual fixup is rare, _before_ investing in the matching editor. Editor
 work for a domain should start only once its pipeline is as good as it can get:
+
 - [ ] Placement/anchors (`extract_npcs.py`) — minimize off-anchor outliers
 - [ ] Collision & priority (`apply_map_changes.py` + extraction) — correct rooms,
       walls, depth flags out of the box
@@ -550,6 +572,7 @@ work for a domain should start only once its pipeline is as good as it can get:
 - [ ] Sector settings, atlases, music mapping
 
 **Phase 2 — admin editors (last 1% + new content):**
+
 1. **Editor Shell** + **Admin Home Screen** + **Save-Back Channel** (foundation)
 2. **Placement Editor** (NPCs first, then doors)
 3. **Collision & Priority Painter**

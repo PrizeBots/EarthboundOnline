@@ -1,9 +1,21 @@
 import { EditorTool, EditorShellApi } from '../types';
-import { listSpriteGroupIds, loadSpriteGroup, getSpriteGroupMeta, drawSprite } from '../../engine/SpriteManager';
+import {
+  listSpriteGroupIds,
+  loadSpriteGroup,
+  getSpriteGroupMeta,
+  drawSprite,
+} from '../../engine/SpriteManager';
 import { getSpriteName, setSpriteNameOverride } from '../../engine/SpriteNames';
 import { createSpritePicker, drawSpriteGroupThumb, SpritePicker } from '../../engine/SpritePicker';
 import { loadNPCs } from '../../engine/NPCManager';
-import { EntityStats, EntityDefs, EntityCol, entityStatsFor } from '../../engine/EntityStats';
+import {
+  EntityStats,
+  EntityDefs,
+  EntityCol,
+  entityStatsFor,
+  CombatPersonality,
+  COMBAT_PERSONALITY_OPTIONS,
+} from '../../engine/EntityStats';
 import { loadJSON } from '../../engine/AssetLoader';
 import { Direction } from '../../types';
 import { saveOverride, loadOverride } from '../saveOverride';
@@ -27,7 +39,11 @@ interface EnemyFile {
 // keeps fractional precision (speed); the rest are clamped positive integers.
 // Numeric stat fields only (col is edited separately, in the collision section).
 const STAT_FIELDS: {
-  key: Exclude<keyof EntityStats, 'col'>; label: string; min: number; scale?: number; float?: boolean;
+  key: Exclude<keyof EntityStats, 'col' | 'combat'>;
+  label: string;
+  min: number;
+  scale?: number;
+  float?: boolean;
 }[] = [
   { key: 'hp', label: 'HP', min: 1 },
   { key: 'level', label: 'level', min: 1 },
@@ -48,8 +64,14 @@ const COL_ANCHOR_X = 76;
 const COL_FEET_Y = 116;
 // Directions to cycle in the preview (friendly order), with their labels.
 const DIR_CYCLE: [Direction, string][] = [
-  [Direction.S, 'S'], [Direction.E, 'E'], [Direction.N, 'N'], [Direction.W, 'W'],
-  [Direction.SE, 'SE'], [Direction.SW, 'SW'], [Direction.NE, 'NE'], [Direction.NW, 'NW'],
+  [Direction.S, 'S'],
+  [Direction.E, 'E'],
+  [Direction.N, 'N'],
+  [Direction.W, 'W'],
+  [Direction.SE, 'SE'],
+  [Direction.SW, 'SW'],
+  [Direction.NE, 'NE'],
+  [Direction.NW, 'NW'],
 ];
 
 class EntityManagerTool implements EditorTool {
@@ -143,12 +165,12 @@ class EntityManagerTool implements EditorTool {
     const cfg = await this.readConfig();
     this.entities = { ...(cfg?.entities ?? {}) };
     this.colBoxes = await loadJSON<Record<string, Record<string, EntityCol>>>(
-      '/assets/sprites/colboxes.json',
+      '/assets/sprites/colboxes.json'
     ).catch(() => ({}));
     if (!this.sprite) {
       this.sprite = cfg?.spawners?.length
-        ? (cfg.spawners[0] as { sprite?: number }).sprite ?? listSpriteGroupIds()[0] ?? 1
-        : listSpriteGroupIds()[0] ?? 1;
+        ? ((cfg.spawners[0] as { sprite?: number }).sprite ?? listSpriteGroupIds()[0] ?? 1)
+        : (listSpriteGroupIds()[0] ?? 1);
     }
   }
 
@@ -171,6 +193,15 @@ class EntityManagerTool implements EditorTool {
   private setStat(sprite: number, key: keyof EntityStats, val: number): void {
     const cur = entityStatsFor(this.entities, sprite);
     this.entities[String(sprite)] = { ...cur, [key]: val };
+    this.shell?.markDirty('entities');
+  }
+
+  // Set (or clear, with '') the townsfolk combat personality for a sprite group.
+  private setCombat(sprite: number, val: CombatPersonality | ''): void {
+    const next: EntityStats = { ...entityStatsFor(this.entities, sprite) };
+    if (val) next.combat = val;
+    else delete next.combat;
+    this.entities[String(sprite)] = next;
     this.shell?.markDirty('entities');
   }
 
@@ -227,7 +258,8 @@ class EntityManagerTool implements EditorTool {
     el.addEventListener('wheel', (e) => e.stopPropagation());
 
     const head = document.createElement('div');
-    head.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #2a2438;';
+    head.style.cssText =
+      'display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #2a2438;';
     const title = document.createElement('div');
     title.textContent = 'ENTITY PREVIEW';
     title.style.cssText = 'color:#b06de8;font-weight:bold;letter-spacing:1px;';
@@ -256,11 +288,15 @@ class EntityManagerTool implements EditorTool {
       'padding:10px;display:flex;flex-wrap:wrap;gap:10px;align-content:flex-start;';
     // Scroll the gallery explicitly on wheel (and never let it reach the editor's
     // zoom handler), so it always scrolls regardless of event routing.
-    this.browserGrid.addEventListener('wheel', (e) => {
-      e.stopPropagation();
-      e.preventDefault();
-      this.browserGrid!.scrollTop += e.deltaY;
-    }, { passive: false });
+    this.browserGrid.addEventListener(
+      'wheel',
+      (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        this.browserGrid!.scrollTop += e.deltaY;
+      },
+      { passive: false }
+    );
     this.browserCells.clear();
     for (const id of listSpriteGroupIds()) {
       const cell = document.createElement('div');
@@ -269,13 +305,18 @@ class EntityManagerTool implements EditorTool {
         'display:flex;flex-direction:column;align-items:center;gap:5px;padding:6px;' +
         'box-sizing:border-box;width:108px;flex:none;' +
         'border:1px solid #2a2438;border-radius:5px;cursor:pointer;background:#12131c;';
-      cell.onmouseenter = () => { if (id !== this.sprite) cell.style.background = '#1a1b28'; };
-      cell.onmouseleave = () => { if (id !== this.sprite) cell.style.background = '#12131c'; };
+      cell.onmouseenter = () => {
+        if (id !== this.sprite) cell.style.background = '#1a1b28';
+      };
+      cell.onmouseleave = () => {
+        if (id !== this.sprite) cell.style.background = '#12131c';
+      };
       const c = document.createElement('canvas');
       c.width = 96;
       c.height = 96;
       // Big fixed square preview (94px display) — the card's main content.
-      c.style.cssText = 'width:94px;height:94px;flex:none;image-rendering:pixelated;background:#0c1014;border-radius:4px;';
+      c.style.cssText =
+        'width:94px;height:94px;flex:none;image-rendering:pixelated;background:#0c1014;border-radius:4px;';
       drawSpriteGroupThumb(c, String(id));
       const lbl = document.createElement('div');
       lbl.textContent = `${id} ${getSpriteName(id) ?? ''}`.trim();
@@ -361,10 +402,12 @@ class EntityManagerTool implements EditorTool {
       const v = this.nameInput!.value.trim();
       setSpriteNameOverride(this.sprite, v || null);
       this.shell?.markDirty('names');
-      this.picker?.refresh();             // update the dropdown's label
-      this.rebuildForm();                 // update the header
+      this.picker?.refresh(); // update the dropdown's label
+      this.rebuildForm(); // update the header
       this.refreshBrowserLabel(this.sprite); // update the center gallery tile
-      this.shell?.toast(`Renamed entity #${this.sprite} to "${v || '(default)'}" — Save all writes names.json`);
+      this.shell?.toast(
+        `Renamed entity #${this.sprite} to "${v || '(default)'}" — auto-saving names.json`
+      );
     };
     nameRow.appendChild(this.nameInput);
     this.panel.appendChild(nameRow);
@@ -379,9 +422,7 @@ class EntityManagerTool implements EditorTool {
 
     this.buildColSection();
 
-    this.mkBtn('Save', () => {
-      void this.save().catch((e) => this.shell?.toast(`Save failed: ${e}`, true));
-    }, this.panel, true);
+    // No Save button — edits auto-save via the shell (registered 'entities' handler).
 
     this.shell!.panelHost.appendChild(this.panel);
   }
@@ -408,6 +449,30 @@ class EntityManagerTool implements EditorTool {
       });
       i.value = String(shown);
     }
+
+    // Combat personality dropdown — how this entity's townsfolk maneuver when an
+    // enemy is near (server-driven; see npcSim). Unassigned = seeded mix.
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;';
+    const lbl = document.createElement('span');
+    lbl.textContent = 'combat';
+    lbl.style.cssText = 'width:56px;color:#9fb8cc;';
+    row.appendChild(lbl);
+    const sel = document.createElement('select');
+    sel.style.cssText =
+      'flex:1;min-width:0;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
+    const current = this.entities[String(this.sprite)]?.combat ?? '';
+    for (const opt of COMBAT_PERSONALITY_OPTIONS) {
+      const o = document.createElement('option');
+      o.value = opt.value;
+      o.textContent = opt.label;
+      if (opt.value === current) o.selected = true;
+      sel.appendChild(o);
+    }
+    sel.onchange = () => this.setCombat(this.sprite, sel.value as CombatPersonality | '');
+    row.appendChild(sel);
+    this.formEl.appendChild(row);
+
     this.refreshColSection();
   }
 
@@ -502,11 +567,15 @@ class EntityManagerTool implements EditorTool {
 
     const btnRow = document.createElement('div');
     btnRow.style.cssText = 'display:flex;gap:6px;';
-    this.mkBtn('Reset to art (exact)', () => {
-      this.setCol(this.sprite, null);
-      this.refreshColSection();
-      this.shell?.toast('Box reset to the exact per-direction art bounds');
-    }, btnRow);
+    this.mkBtn(
+      'Reset to art (exact)',
+      () => {
+        this.setCol(this.sprite, null);
+        this.refreshColSection();
+        this.shell?.toast('Box reset to the exact per-direction art bounds');
+      },
+      btnRow
+    );
     this.colSection.appendChild(btnRow);
 
     const hint = document.createElement('div');
@@ -529,7 +598,8 @@ class EntityManagerTool implements EditorTool {
     const override = this.hasOverride(this.sprite);
     const dirName = DIR_CYCLE.find(([d]) => d === this.previewDir)?.[1] ?? 'S';
     const dirLbl = this.colSection.querySelector<HTMLSpanElement>('[data-role=col-dir]');
-    if (dirLbl) dirLbl.textContent = `facing ${dirName}${override ? '  ·  override (all dirs)' : ''}`;
+    if (dirLbl)
+      dirLbl.textContent = `facing ${dirName}${override ? '  ·  override (all dirs)' : ''}`;
     const box = this.effectiveBox(this.sprite, this.previewDir);
     for (const [k, input] of this.colFields) {
       if (document.activeElement !== input) input.value = String(box[k]);
@@ -542,7 +612,9 @@ class EntityManagerTool implements EditorTool {
           ? 'exact per-direction box from the art (step ◀▶) · drag to override'
           : 'foot box default (non-vehicle) · drag to set a custom box';
     }
-    void loadSpriteGroup(this.sprite).then(() => this.drawColPreview()).catch(() => this.drawColPreview());
+    void loadSpriteGroup(this.sprite)
+      .then(() => this.drawColPreview())
+      .catch(() => this.drawColPreview());
   }
 
   private drawColPreview(): void {
@@ -552,7 +624,14 @@ class EntityManagerTool implements EditorTool {
     ctx.imageSmoothingEnabled = false;
     ctx.save();
     ctx.scale(COL_SCALE, COL_SCALE);
-    drawSprite(ctx, this.sprite, this.previewDir, 0, COL_ANCHOR_X / COL_SCALE, COL_FEET_Y / COL_SCALE);
+    drawSprite(
+      ctx,
+      this.sprite,
+      this.previewDir,
+      0,
+      COL_ANCHOR_X / COL_SCALE,
+      COL_FEET_Y / COL_SCALE
+    );
     ctx.restore();
 
     const override = this.hasOverride(this.sprite);
@@ -626,7 +705,12 @@ class EntityManagerTool implements EditorTool {
 
   // --- small DOM helpers ---------------------------------------------------------------
 
-  private mkBtn(label: string, fn: () => void, parent: HTMLElement, accent = false): HTMLButtonElement {
+  private mkBtn(
+    label: string,
+    fn: () => void,
+    parent: HTMLElement,
+    accent = false
+  ): HTMLButtonElement {
     const b = document.createElement('button');
     b.textContent = label;
     b.style.cssText =
@@ -639,7 +723,12 @@ class EntityManagerTool implements EditorTool {
     return b;
   }
 
-  private mkInput(parent: HTMLElement, name: string, label: string, onChange: (v: string) => void): HTMLInputElement {
+  private mkInput(
+    parent: HTMLElement,
+    name: string,
+    label: string,
+    onChange: (v: string) => void
+  ): HTMLInputElement {
     const r = document.createElement('div');
     r.style.cssText = 'display:flex;align-items:center;gap:6px;';
     const l = document.createElement('span');

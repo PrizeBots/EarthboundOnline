@@ -5,8 +5,12 @@ import { drawText } from '../../engine/TextRenderer';
 import { wrapText } from '../../engine/ChatManager';
 import { getSpriteGroupMeta } from '../../engine/SpriteManager';
 import {
-  mergeNpcOverrides, reloadNpcText, reloadNpcsLive,
-  RawNPC, NpcOverrides, DialogueOverrides,
+  mergeNpcOverrides,
+  reloadNpcText,
+  reloadNpcsLive,
+  RawNPC,
+  NpcOverrides,
+  DialogueOverrides,
 } from '../../engine/NPCManager';
 import { saveOverride, loadOverride } from '../saveOverride';
 import { registerSaveHandler } from '../registry';
@@ -150,18 +154,34 @@ class DialogueTool implements EditorTool {
         // edit (keep a prior move); a null edit means deleted, so skip it.
         const cur = ov.edits[npc.k];
         if (cur === null) continue;
-        const fields = cur ?? { x: npc.x, y: npc.y, sprite: npc.sprite, dir: npc.dir, kind: npc.kind };
+        const fields = cur ?? {
+          x: npc.x,
+          y: npc.y,
+          sprite: npc.sprite,
+          dir: npc.dir,
+          kind: npc.kind,
+        };
         ov.edits[npc.k] = { ...fields, t: npc.t };
       } else {
         // Added NPC: find its entry in the additions array by identity, or add it.
         const a = ov.additions.find(
-          (x) => x.x === npc.x && x.y === npc.y && x.sprite === npc.sprite &&
-                 x.dir === npc.dir && x.kind === npc.kind,
+          (x) =>
+            x.x === npc.x &&
+            x.y === npc.y &&
+            x.sprite === npc.sprite &&
+            x.dir === npc.dir &&
+            x.kind === npc.kind
         );
         if (a) a.t = npc.t;
-        else ov.additions.push({
-          x: npc.x, y: npc.y, sprite: npc.sprite, dir: npc.dir, kind: npc.kind, t: npc.t,
-        });
+        else
+          ov.additions.push({
+            x: npc.x,
+            y: npc.y,
+            sprite: npc.sprite,
+            dir: npc.dir,
+            kind: npc.kind,
+            t: npc.t,
+          });
       }
     }
     await saveOverride('npcs.json', ov);
@@ -233,7 +253,12 @@ class DialogueTool implements EditorTool {
   private focusEntry(id: string, ref?: Ref): void {
     let e = this.entries.get(id);
     if (!e) {
-      e = { textId: id, pages: [''], base: null, refs: ref ? [ref] : (this.refsById.get(id) ?? []) };
+      e = {
+        textId: id,
+        pages: [''],
+        base: null,
+        refs: ref ? [ref] : (this.refsById.get(id) ?? []),
+      };
       this.entries.set(id, e);
       this.order = [...this.entries.keys()].sort((a, b) => Number(a) - Number(b));
       this.shell?.markDirty('dialogue');
@@ -260,7 +285,9 @@ class DialogueTool implements EditorTool {
 
   private async load(): Promise<void> {
     const fetchJSON = <T>(url: string): Promise<T | null> =>
-      fetch(url).then((r) => (r.ok ? (r.json() as Promise<T>) : null)).catch(() => null);
+      fetch(url)
+        .then((r) => (r.ok ? (r.json() as Promise<T>) : null))
+        .catch(() => null);
 
     const [base, ov, npcsBase, npcsOv] = await Promise.all([
       fetchJSON<Record<string, string[]>>('/assets/map/npc_text.json'),
@@ -271,9 +298,7 @@ class DialogueTool implements EditorTool {
 
     // Merged NPC placements (base + overrides). Kept whole for click-to-target,
     // and grouped by the textId they speak for the reference counts/markers.
-    this.npcs = mergeNpcOverrides(npcsBase ?? [], npcsOv ?? null).filter(
-      (n): n is RawNPC => !!n,
-    );
+    this.npcs = mergeNpcOverrides(npcsBase ?? [], npcsOv ?? null).filter((n): n is RawNPC => !!n);
     this.refsById.clear();
     for (const n of this.npcs) {
       if (n.t == null) continue;
@@ -330,7 +355,7 @@ class DialogueTool implements EditorTool {
     this.shell?.clearDirty('dialogue');
     if (dropped) this.refreshList();
     this.shell?.toast(
-      `Saved dialogue (${Object.keys(edits).length} authored${dropped ? `, ${dropped} orphan(s) removed` : ''})`,
+      `Saved dialogue (${Object.keys(edits).length} authored${dropped ? `, ${dropped} orphan(s) removed` : ''})`
     );
   }
 
@@ -388,7 +413,7 @@ class DialogueTool implements EditorTool {
     const shown = this.order.filter((id) => {
       if (!f) return true;
       if (id.includes(f)) return true;
-      return (this.entries.get(id)?.pages.join(' ').toLowerCase().includes(f)) ?? false;
+      return this.entries.get(id)?.pages.join(' ').toLowerCase().includes(f) ?? false;
     });
     if (shown.length === 0) {
       const e = document.createElement('div');
@@ -410,7 +435,8 @@ class DialogueTool implements EditorTool {
       idEl.style.cssText = `color:${authored ? '#e8a33d' : '#6db3e8'};min-width:46px;`;
       const snip = document.createElement('span');
       snip.textContent = (e.pages[0] ?? '').replace(/\n/g, ' ').slice(0, 28);
-      snip.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9fb8cc;';
+      snip.style.cssText =
+        'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9fb8cc;';
       const refs = document.createElement('span');
       refs.textContent = e.refs.length ? `👤${e.refs.length}` : '';
       refs.style.cssText = 'color:#667;font-size:10px;';
@@ -440,15 +466,21 @@ class DialogueTool implements EditorTool {
     }
 
     const header = document.createElement('div');
-    header.textContent = `textId ${e.textId}` + (e.refs.length ? `  ·  spoken by ${e.refs.length} NPC(s)` : '  ·  no NPC references');
+    header.textContent =
+      `textId ${e.textId}` +
+      (e.refs.length ? `  ·  spoken by ${e.refs.length} NPC(s)` : '  ·  no NPC references');
     header.style.cssText = 'color:#9fb8cc;font-size:11px;';
     this.formEl.appendChild(header);
 
     if (e.refs.length) {
-      this.mkBtn('Go to speaker', () => {
-        const r = e.refs[0];
-        this.shell?.context.teleport(r.x, r.y);
-      }, this.formEl);
+      this.mkBtn(
+        'Go to speaker',
+        () => {
+          const r = e.refs[0];
+          this.shell?.context.teleport(r.x, r.y);
+        },
+        this.formEl
+      );
     }
 
     // One textarea per page.
@@ -462,7 +494,8 @@ class DialogueTool implements EditorTool {
       const del = document.createElement('button');
       del.textContent = '✕';
       del.title = 'remove page';
-      del.style.cssText = 'background:none;border:none;color:#c66;cursor:pointer;font:10px monospace;';
+      del.style.cssText =
+        'background:none;border:none;color:#c66;cursor:pointer;font:10px monospace;';
       del.onclick = () => {
         e.pages.splice(i, 1);
         if (e.pages.length === 0) e.pages.push('');
@@ -496,24 +529,36 @@ class DialogueTool implements EditorTool {
 
     const addRow = document.createElement('div');
     addRow.style.cssText = 'display:flex;gap:6px;';
-    this.mkBtn('+ page', () => {
-      e.pages.push('');
-      this.pageIdx = e.pages.length - 1;
-      this.shell?.markDirty('dialogue');
-      this.rebuildForm();
-    }, addRow);
-    this.mkBtn('Revert to base', () => {
-      if (!e.base) { this.shell?.toast('No decoded base for this entry', true); return; }
-      e.pages = e.base.slice();
-      this.shell?.markDirty('dialogue');
-      this.refreshList();
-      this.rebuildForm();
-    }, addRow);
+    this.mkBtn(
+      '+ page',
+      () => {
+        e.pages.push('');
+        this.pageIdx = e.pages.length - 1;
+        this.shell?.markDirty('dialogue');
+        this.rebuildForm();
+      },
+      addRow
+    );
+    this.mkBtn(
+      'Revert to base',
+      () => {
+        if (!e.base) {
+          this.shell?.toast('No decoded base for this entry', true);
+          return;
+        }
+        e.pages = e.base.slice();
+        this.shell?.markDirty('dialogue');
+        this.refreshList();
+        this.rebuildForm();
+      },
+      addRow
+    );
     this.formEl.appendChild(addRow);
 
     // Live preview in the real EB text window.
     const pvLabel = document.createElement('div');
-    pvLabel.style.cssText = 'display:flex;align-items:center;gap:8px;color:#778;font-size:10px;margin-top:2px;';
+    pvLabel.style.cssText =
+      'display:flex;align-items:center;gap:8px;color:#778;font-size:10px;margin-top:2px;';
     this.mkBtn('◀', () => this.flipPage(-1), pvLabel);
     this.pageLabel = document.createElement('span');
     pvLabel.appendChild(this.pageLabel);
@@ -523,12 +568,11 @@ class DialogueTool implements EditorTool {
     this.preview = document.createElement('canvas');
     this.preview.width = BOX_W;
     this.preview.height = BOX_H;
-    this.preview.style.cssText = 'image-rendering:pixelated;width:100%;background:#000;border:1px solid #243;';
+    this.preview.style.cssText =
+      'image-rendering:pixelated;width:100%;background:#000;border:1px solid #243;';
     this.formEl.appendChild(this.preview);
 
-    this.mkBtn('Save', () => {
-      void this.save().catch((err) => this.shell?.toast(`Save failed: ${err}`, true));
-    }, this.formEl, true);
+    // No Save button — edits auto-save via the shell (registered 'dialogue' handler).
 
     this.updatePageLabel();
     this.drawPreview();
@@ -544,7 +588,8 @@ class DialogueTool implements EditorTool {
 
   private updatePageLabel(): void {
     const e = this.selId ? this.entries.get(this.selId) : null;
-    if (this.pageLabel && e) this.pageLabel.textContent = `preview — page ${this.pageIdx + 1}/${e.pages.length}`;
+    if (this.pageLabel && e)
+      this.pageLabel.textContent = `preview — page ${this.pageIdx + 1}/${e.pages.length}`;
   }
 
   /** Render the selected page in the actual EB dialogue window. */

@@ -25,6 +25,10 @@ const PLAYER_MAX_HP = 60;
 const MAX_SLOTS = 14; // EarthBound's Goods menu holds 14 items per character
 const STARTING_MONEY = 1000; // every player joins with $1000
 const EQUIP_SLOTS = ['weapon', 'body', 'arms', 'other'];
+// Max lifetime of the door-transition damage shield (see player.warping). A
+// door fade + interior asset load is well under this; the cap only guards
+// against a dropped 'warp' end signal leaving a player permanently invulnerable.
+const WARP_SHIELD_MAX_MS = 8000;
 
 // PSI abilities (server-authoritative). `pp` is the cost; `heal` restores HP.
 // Lifeup α heal amount is a placeholder — set it to the exact EarthBound value
@@ -38,14 +42,33 @@ const PSI = {
 // matches before the first server stats arrive. No persistence yet, so every
 // join starts at level 1 (a save system is a separate TODO).
 const BASE_STATS = {
-  level: 1, hp: PLAYER_MAX_HP, maxHp: PLAYER_MAX_HP, pp: 7, ppMax: 7, exp: 0,
-  offense: 7, defense: 3, speed: 8, guts: 7, vitality: 6, iq: 9, luck: 9,
+  level: 1,
+  hp: PLAYER_MAX_HP,
+  maxHp: PLAYER_MAX_HP,
+  pp: 7,
+  ppMax: 7,
+  exp: 0,
+  offense: 7,
+  defense: 3,
+  speed: 8,
+  guts: 7,
+  vitality: 6,
+  iq: 9,
+  luck: 9,
 };
 // Per-level stat gains (tunable). HP/maxHp, offense and defense are wired into
 // combat today; speed/guts/vitality/iq/luck grow and show on the Status screen
 // but aren't mechanically hooked up yet.
 const GROWTH = {
-  maxHp: 8, ppMax: 2, offense: 2, defense: 1, speed: 1, guts: 1, vitality: 1, iq: 1, luck: 1,
+  maxHp: 8,
+  ppMax: 2,
+  offense: 2,
+  defense: 1,
+  speed: 1,
+  guts: 1,
+  vitality: 1,
+  iq: 1,
+  luck: 1,
 };
 // EXP to go from `level` to `level+1` (geometric ramp: 30, 45, 67, 101, …).
 const expCost = (level) => Math.floor(30 * Math.pow(1.5, level - 1));
@@ -72,10 +95,20 @@ function levelUp(p) {
 // StatusModal-shaped payload (field names match PlayerStats: hpMax/ppMax).
 function statsPayload(p) {
   return {
-    level: p.level, hp: p.hp, hpMax: p.maxHp, pp: p.pp, ppMax: p.ppMax,
-    exp: p.exp, expToNext: p.expToNext,
-    offense: p.offense, defense: p.defense, speed: p.speed, guts: p.guts,
-    vitality: p.vitality, iq: p.iq, luck: p.luck,
+    level: p.level,
+    hp: p.hp,
+    hpMax: p.maxHp,
+    pp: p.pp,
+    ppMax: p.ppMax,
+    exp: p.exp,
+    expToNext: p.expToNext,
+    offense: p.offense,
+    defense: p.defense,
+    speed: p.speed,
+    guts: p.guts,
+    vitality: p.vitality,
+    iq: p.iq,
+    luck: p.luck,
   };
 }
 
@@ -116,7 +149,18 @@ class GameHost {
   /** Start the NPC simulation. Call once after construction. */
   start() {
     this.npcSim.start(
-      () => [...this.players.values()].map((p) => ({ id: p.id, x: p.x, y: p.y, level: p.level, hp: p.hp })),
+      () =>
+        [...this.players.values()].map((p) => ({
+          // editor players stay in the list as a sim ANCHOR (the world keeps
+          // living around the parked avatar), but carry `editor` so npcSim skips
+          // them for targeting/collision/damage — see npcSim aggroTarget/hitsPlayer.
+          id: p.id,
+          x: p.x,
+          y: p.y,
+          level: p.level,
+          hp: p.hp,
+          editor: !!p.editor,
+        })),
       (data) => this.broadcastAll(data),
       (playerId, dmg) => this.damagePlayer(playerId, dmg),
       (playerId, xp) => this.awardXp(playerId, xp)
@@ -126,7 +170,9 @@ class GameHost {
   // Project an inventory (array of ids) to the wire shape the client renders:
   // [{ id, name }]. Unknown ids are dropped rather than sent nameless.
   inventoryView(inventory) {
-    return inventory.filter((id) => this.GOODS[id]).map((id) => ({ id, name: this.GOODS[id].name }));
+    return inventory
+      .filter((id) => this.GOODS[id])
+      .map((id) => ({ id, name: this.GOODS[id].name }));
   }
 
   broadcastAll(data) {
@@ -150,12 +196,12 @@ class GameHost {
   recomputeEquipStats(entry) {
     const w = entry.equipped.weapon;
     const we = w ? this.GOODS[w] && this.GOODS[w].equip : null;
-    entry.weaponOffense = we && we.slot === 'weapon' ? (we.offense | 0) : 0;
+    entry.weaponOffense = we && we.slot === 'weapon' ? we.offense | 0 : 0;
     let def = 0;
     for (const s of ['body', 'arms', 'other']) {
       const id = entry.equipped[s];
       const e = id ? this.GOODS[id] && this.GOODS[id].equip : null;
-      if (e && e.slot === s) def += (e.defense | 0);
+      if (e && e.slot === s) def += e.defense | 0;
     }
     entry.armorDefense = def;
     entry.itemId = entry.equipped.weapon; // held sprite = weapon
@@ -167,6 +213,10 @@ class GameHost {
   damagePlayer(playerId, dmg) {
     const p = this.players.get(playerId);
     if (!p || p.hp <= 0) return;
+    if (p.editor) return; // out of the world in the dev editor — untargetable
+    // Shielded mid door-transition: the player is a frozen ghost at the doorway
+    // and can't move or defend, so enemy swings whiff (see player.warping).
+    if (p.warping && Date.now() < p.warpUntil) return;
     // Defense softens incoming hits (stat defense + equipped armor); always at
     // least 1 so leveling/gear never makes a player untouchable.
     const eff = Math.max(1, dmg - Math.floor(((p.defense || 0) + (p.armorDefense || 0)) / 2));
@@ -192,10 +242,20 @@ class GameHost {
     if (!p || xp <= 0) return;
     p.exp += xp;
     let leveled = false;
-    while (p.exp >= expToReach(p.level + 1)) { levelUp(p); leveled = true; }
+    while (p.exp >= expToReach(p.level + 1)) {
+      levelUp(p);
+      leveled = true;
+    }
     p.expToNext = expToReach(p.level + 1) - p.exp;
-    this.broadcastAll({ type: 'player_stats', id: playerId, stats: statsPayload(p), leveled, gained: xp });
-    if (leveled) this.broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: 0 });
+    this.broadcastAll({
+      type: 'player_stats',
+      id: playerId,
+      stats: statsPayload(p),
+      leveled,
+      gained: xp,
+    });
+    if (leveled)
+      this.broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: 0 });
   }
 
   /**
@@ -209,7 +269,11 @@ class GameHost {
 
     ws.on('message', (raw) => {
       let msg;
-      try { msg = JSON.parse(raw); } catch { return; }
+      try {
+        msg = JSON.parse(raw);
+      } catch {
+        return;
+      }
       this._handleMessage(playerId, ws, msg);
     });
 
@@ -234,21 +298,36 @@ class GameHost {
             typeof msg.appearance === 'string' && msg.appearance.length <= 65536
               ? msg.appearance
               : null,
-          x: this.SPAWN.x, y: this.SPAWN.y,
-          direction: this.SPAWN.dir || 0, frame: 0,
+          x: this.SPAWN.x,
+          y: this.SPAWN.y,
+          direction: this.SPAWN.dir || 0,
+          frame: 0,
           pose: 'walk',
           itemId: null, // held item (equipped weapon's sprite), set by 'equip'
           // EarthBound equip slots. Server-authoritative; offense/defense from
           // these apply to combat (see recomputeEquipStats).
           equipped: { weapon: null, body: null, arms: null, other: null },
           weaponOffense: 0, // offense from the equipped weapon
-          armorDefense: 0,  // total defense from equipped body/arms/other
+          armorDefense: 0, // total defense from equipped body/arms/other
           inventory: [...this.STARTING_INVENTORY], // Goods slots, mutated by 'use_item'
           money: STARTING_MONEY, // starting cash, shown in the menu
           // PK (player-kill) flag — see npcSim canHurt. All players start
           // non-PK; a per-player toggle is backlogged (TODO). A PK player can
           // hurt anyone; anyone can hurt a PK player.
           pk: false,
+          // Door-transition shield: true while the client is mid door-fade. The
+          // client freezes its reported position for the whole fade, so without
+          // this an enemy that chased you to the doorway gets free swings on the
+          // motionless ghost you left behind. Set by 'warp', cleared by 'warp'
+          // end or the next 'move'; warpUntil backstops a lost end signal.
+          warping: false,
+          warpUntil: 0,
+          // Dev editor: true while this client is in the editor. The avatar stays
+          // in the sim as an anchor (the world keeps living around it) but is
+          // flagged so npcSim ignores it for targeting/collision/damage — enemies
+          // can't aggro or kill it, so a death can't respawn-yank the admin's free
+          // camera. Set by the 'editor' msg; cleared on exit.
+          editor: false,
           // Full server-authoritative progression (level/hp/exp/stats).
           ...newProgression(),
         };
@@ -262,15 +341,17 @@ class GameHost {
             otherPlayers.push(data);
           }
         }
-        ws.send(JSON.stringify({
-          type: 'welcome',
-          playerId,
-          players: otherPlayers,
-          npcs: this.npcSim.snapshot(),
-          npcHps: this.npcSim.hpSnapshot(),
-          inventory: this.inventoryView(playerData.inventory), // own Goods
-          money: playerData.money,                             // own balance
-        }));
+        ws.send(
+          JSON.stringify({
+            type: 'welcome',
+            playerId,
+            players: otherPlayers,
+            npcs: this.npcSim.snapshot(),
+            npcHps: this.npcSim.hpSnapshot(),
+            inventory: this.inventoryView(playerData.inventory), // own Goods
+            money: playerData.money, // own balance
+          })
+        );
 
         // Tell everyone else about the new player.
         const { _ws, ...publicData } = this.players.get(playerId);
@@ -278,18 +359,48 @@ class GameHost {
         break;
       }
 
+      case 'warp': {
+        // Client entered (warping:true) or finished (false) a door transition.
+        const entry = this.players.get(playerId);
+        if (!entry) break;
+        entry.warping = !!msg.warping;
+        entry.warpUntil = entry.warping ? Date.now() + WARP_SHIELD_MAX_MS : 0;
+        break;
+      }
+
+      case 'editor': {
+        // Dev editor opened (on:true) / closed (false). While on, this player is
+        // pulled from the NPC sim so its parked avatar can't be aggroed, hit, or
+        // killed (which would respawn-yank the admin's free camera).
+        const entry = this.players.get(playerId);
+        if (!entry) break;
+        entry.editor = !!msg.on;
+        break;
+      }
+
       case 'move': {
         const entry = this.players.get(playerId);
         if (!entry) break;
+        // A move means the client is live again — the fade is over, drop the
+        // shield (fallback in case the 'warp' end signal was missed).
+        entry.warping = false;
         entry.x = msg.x;
         entry.y = msg.y;
         entry.direction = msg.direction;
         entry.frame = msg.frame;
         entry.pose = POSES.includes(msg.pose) ? msg.pose : 'walk';
-        this.broadcastExcept({
-          type: 'player_move', id: playerId,
-          x: msg.x, y: msg.y, direction: msg.direction, frame: msg.frame, pose: entry.pose,
-        }, playerId);
+        this.broadcastExcept(
+          {
+            type: 'player_move',
+            id: playerId,
+            x: msg.x,
+            y: msg.y,
+            direction: msg.direction,
+            frame: msg.frame,
+            pose: entry.pose,
+          },
+          playerId
+        );
         break;
       }
 
@@ -299,8 +410,12 @@ class GameHost {
         // Server-authoritative: resolve from the tracked position so reach can't
         // be spoofed. Damage scales with the player's Offense stat + weapon.
         this.npcSim.handleAttack(
-          entry.x, entry.y, msg.dir | 0, playerId,
-          entry.offense + (entry.weaponOffense || 0), entry.pk
+          entry.x,
+          entry.y,
+          msg.dir | 0,
+          playerId,
+          entry.offense + (entry.weaponOffense || 0),
+          entry.pk
         );
         break;
       }
@@ -347,13 +462,19 @@ class GameHost {
           const healed = Math.min(entry.maxHp, entry.hp + def.heal) - entry.hp;
           entry.hp += healed;
           this.broadcastAll({
-            type: 'player_hp', id: playerId,
-            hp: entry.hp, maxHp: entry.maxHp, dmg: 0, heal: healed,
+            type: 'player_hp',
+            id: playerId,
+            hp: entry.hp,
+            maxHp: entry.maxHp,
+            dmg: 0,
+            heal: healed,
           });
         }
 
         entry.inventory.splice(slot, 1);
-        entry._ws.send(JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) }));
+        entry._ws.send(
+          JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) })
+        );
         break;
       }
 
@@ -370,7 +491,9 @@ class GameHost {
         if (entry.money < def.cost) break;
         entry.money -= def.cost;
         entry.inventory.push(itemId);
-        entry._ws.send(JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) }));
+        entry._ws.send(
+          JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) })
+        );
         entry._ws.send(JSON.stringify({ type: 'money', money: entry.money }));
         break;
       }
@@ -384,7 +507,9 @@ class GameHost {
         if (!def || slot === -1) break; // must own a slot of a known item
         entry.inventory.splice(slot, 1);
         entry.money += Math.floor(def.cost / 2); // EB buys back at half price
-        entry._ws.send(JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) }));
+        entry._ws.send(
+          JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) })
+        );
         entry._ws.send(JSON.stringify({ type: 'money', money: entry.money }));
         break;
       }
@@ -400,21 +525,30 @@ class GameHost {
           const healed = Math.min(entry.maxHp, entry.hp + def.heal) - entry.hp;
           entry.hp += healed;
           this.broadcastAll({
-            type: 'player_hp', id: playerId,
-            hp: entry.hp, maxHp: entry.maxHp, dmg: 0, heal: healed,
+            type: 'player_hp',
+            id: playerId,
+            hp: entry.hp,
+            maxHp: entry.maxHp,
+            dmg: 0,
+            heal: healed,
           });
         }
         // PP changed — push updated stats so the caster's PSI bar redraws.
         this.broadcastAll({
-          type: 'player_stats', id: playerId,
-          stats: statsPayload(entry), leveled: false, gained: 0,
+          type: 'player_stats',
+          id: playerId,
+          stats: statsPayload(entry),
+          leveled: false,
+          gained: 0,
         });
         break;
       }
 
       case 'chat': {
         if (!this.players.has(playerId)) break;
-        const text = String(msg.text || '').slice(0, 100).trim();
+        const text = String(msg.text || '')
+          .slice(0, 100)
+          .trim();
         if (!text) break;
         // Broadcast to everyone else; the sender shows its own bubble locally.
         this.broadcastExcept({ type: 'chat', id: playerId, text }, playerId);

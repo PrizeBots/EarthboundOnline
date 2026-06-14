@@ -43,27 +43,33 @@ const BROADCAST_HZ = 10;
 const ACTIVE_RADIUS = 512; // px from any player
 
 const CARDINALS = [
-  { dir: 0, dx: 0, dy: 1 },  // S
+  { dir: 0, dx: 0, dy: 1 }, // S
   { dir: 1, dx: 0, dy: -1 }, // N
   { dir: 2, dx: -1, dy: 0 }, // W
-  { dir: 3, dx: 1, dy: 0 },  // E
+  { dir: 3, dx: 1, dy: 0 }, // E
 ];
 
 // --- Combat tuning ---
 // Facing unit vectors indexed by Direction (src/types.ts): S,N,W,E,NW,SW,SE,NE.
 const DIAG = Math.SQRT1_2;
 const DIR_VEC = [
-  [0, 1], [0, -1], [-1, 0], [1, 0],
-  [-DIAG, -DIAG], [-DIAG, DIAG], [DIAG, DIAG], [DIAG, -DIAG],
+  [0, 1],
+  [0, -1],
+  [-1, 0],
+  [1, 0],
+  [-DIAG, -DIAG],
+  [-DIAG, DIAG],
+  [DIAG, DIAG],
+  [DIAG, -DIAG],
 ];
-const ATTACK_REACH = 14;   // px the hitbox sits in front of the attacker's feet
-const ATTACK_HALF = 8;     // half-size of the (square) attack hitbox
-const HURT_W = 14;         // enemy hurtbox, anchored on the feet (center-bottom)
+const ATTACK_REACH = 14; // px the hitbox sits in front of the attacker's feet
+const ATTACK_HALF = 8; // half-size of the (square) attack hitbox
+const HURT_W = 14; // enemy hurtbox, anchored on the feet (center-bottom)
 const HURT_H = 18;
 const HURT_OY = -18;
 const ATTACK_DAMAGE = 6;
 const ATTACK_COOLDOWN_MS = 250; // min time between a player's resolved attacks
-const HURT_MS = 300;            // how long a struck enemy shows its flinch pose
+const HURT_MS = 300; // how long a struck enemy shows its flinch pose
 
 // --- Enemy aggression (Heavy) ---
 // Enemies have a level (set from the spawner / a default) and so do players, so
@@ -71,21 +77,21 @@ const HURT_MS = 300;            // how long a struck enemy shows its flinch pose
 // For now level is just tracked; aggro is unconditional: any enemy chases and
 // hits the nearest living player it can see.
 const DEFAULT_ENEMY_LEVEL = 4;
-const DETECT_RANGE = 220;          // px — default aggro radius; per-entity `detectRange` (Entity Manager) overrides it
-const ATTACK_RANGE = 24;           // px — enemy must be this close to land a hit
-const ENEMY_CHASE_SPEED = 1.6;     // px/frame while pursuing (player is 2.0) — fast enough to be a real threat, slow enough to outrun
+const DETECT_RANGE = 220; // px — default aggro radius; per-entity `detectRange` (Entity Manager) overrides it
+const ATTACK_RANGE = 24; // px — enemy must be this close to land a hit
+const ENEMY_CHASE_SPEED = 1.6; // px/frame while pursuing (player is 2.0) — fast enough to be a real threat, slow enough to outrun
 const ENEMY_ATTACK_COOLDOWN_MS = 700; // min time between one enemy's swings
-const ENEMY_ATTACK_POSE_MS = 250;  // how long the swing pose shows
-const ENEMY_DAMAGE = 7;            // HP per landed hit
-const DEFAULT_ENEMY_XP = 5;        // EXP a kill grants the killer (spawners override)
+const ENEMY_ATTACK_POSE_MS = 250; // how long the swing pose shows
+const ENEMY_DAMAGE = 7; // HP per landed hit
+const DEFAULT_ENEMY_XP = 5; // EXP a kill grants the killer (spawners override)
 
 // --- Pursuit steering (anti-clump + obstacle routing) ---
 // Separation spreads pursuers around the target instead of stacking; angled
 // steering lets a blocked enemy fan out around a wall/each other rather than
 // stalling in a line. STEER_ANGLES (radians) are tried in order — straight
 // first, then alternating left/right by widening angles.
-const SEP_RADIUS = 24;   // px — other actors within this push the enemy away
-const SEP_WEIGHT = 0.8;  // separation strength vs the (unit) pursue vector
+const SEP_RADIUS = 24; // px — other actors within this push the enemy away
+const SEP_WEIGHT = 0.8; // separation strength vs the (unit) pursue vector
 const STEER_ANGLES = [0, 0.5, -0.5, 1.0, -1.0, 1.6, -1.6, 2.4, -2.4];
 
 // --- Pursuit into buildings + regroup-at-spawn ---
@@ -94,11 +100,25 @@ const STEER_ANGLES = [0, 0.5, -0.5, 1.0, -1.0, 1.6, -1.6, 2.4, -2.4];
 // door warp reaches us as a one-tick jump in the reported position. Enemies use
 // that to follow a player they're chasing through the door, then once they lose
 // the target they retrace their way out and head back to the spawn point.
-const PURSUIT_LEASH_MULT = 3;   // chase reaches this * wanderRadius from home (the patrol leash) before dropping a heading
-const WARP_DELTA = 96;          // a one-tick player jump bigger than this is a door warp (players move ~2px/tick)
+const PURSUIT_LEASH_MULT = 3; // chase reaches this * wanderRadius from home (the patrol leash) before dropping a heading
+const WARP_DELTA = 96; // a one-tick player jump bigger than this is a door warp (players move ~2px/tick)
 const WARP_FOLLOW_RANGE = DETECT_RANGE; // an enemy this close to the door the player took follows it through
-const RETURN_ARRIVE = 24;       // px from the spawn point / a retraced door counted as "arrived"
-const RETURN_GIVEUP_MS = 8000;  // can't path back in this long -> snap to spawn so the pack always regroups
+// A detected warp stays followable for this long, NOT just the one tick it
+// fired on. The client freezes a player's reported position for the whole door
+// fade, so a chasing enemy reaches the doorway and is usually mid-swing at the
+// frozen player when the warp finally lands — a single-tick window dropped the
+// follow ~1/3 of the time (the enemy was inside its attack/hurt pose, which
+// early-returns tickEnemy). The window lets it take the follow once its pose
+// clears, and outlasts a townsperson briefly stealing aggro at the doorway.
+const WARP_FOLLOW_MS = 900;
+const RETURN_ARRIVE = 24; // px from the spawn point / a retraced door counted as "arrived"
+const RETURN_GIVEUP_MS = 8000; // can't path back in this long -> snap to spawn so the pack always regroups
+// Enemies/NPCs use doors like players: instead of teleporting across the room
+// the instant the player warps, a chaser walks to the doorway and warps through
+// on contact. Once it commits to a door it heads there at its normal pace even
+// after the player's warp record expires.
+const DOOR_TRIGGER_REACH = 12; // px from the doorway feet-anchor that warps a chaser through
+const DOOR_GIVEUP_MS = 6000; // can't reach the doorway in this long -> give up and regroup
 
 // --- NPC self-defense (townsfolk fight back) ---
 // Every 'person' can defend itself: it HOLDS GROUND (never chases) and swings at
@@ -108,13 +128,28 @@ const RETURN_GIVEUP_MS = 8000;  // can't path back in this long -> snap to spawn
 // townsperson hides (hp 0) and revives at its home spot after a delay (backlog:
 // a hospital / per-entity chosen respawn point + personality flags in the
 // Entity Manager). Whether an NPC may damage an enemy still goes through canHurt.
-const NPC_HP = 30;                  // townsfolk max HP (matches client Entity default)
-const NPC_DAMAGE = 5;               // HP an NPC's swing takes off an enemy
-const NPC_DETECT_RANGE = 96;        // px — an enemy this close makes an NPC defend
-const NPC_ATTACK_RANGE = 24;        // px — NPC must be this close to land a hit
+const NPC_HP = 30; // townsfolk max HP (matches client Entity default)
+const NPC_DAMAGE = 5; // HP an NPC's swing takes off an enemy
+const NPC_DETECT_RANGE = 96; // px — an enemy this close makes an NPC defend
+const NPC_ATTACK_RANGE = 24; // px — NPC must be this close to land a hit
 const NPC_ATTACK_COOLDOWN_MS = 800; // min time between one townsperson's swings
-const NPC_ATTACK_POSE_MS = 250;     // how long the NPC's swing pose shows
-const NPC_RESPAWN_MS = 12000;       // a downed townsperson revives at home after this
+const NPC_ATTACK_POSE_MS = 250; // how long the NPC's swing pose shows
+const NPC_RESPAWN_MS = 12000; // a downed townsperson revives at home after this
+
+// --- NPC combat personality (lifelike movement under threat) ---
+// Townsfolk no longer freeze and trade blows in place. Each one has a combat
+// personality (assigned per sprite group in the Entity Manager; unassigned ones
+// get a stable seeded pick so a crowd reacts diversely):
+//   brave      — close in and press the attack like a guard
+//   skirmisher — dart in to swing, then back off / sidestep (hit-and-run)
+//   coward     — run from the enemy; only swing when cornered
+//   nervous    — keep swinging but shuffle restlessly in place
+// KEEP IN SYNC with src/engine/EntityStats.ts CombatPersonality.
+const COMBAT_PERSONALITIES = ['brave', 'skirmisher', 'coward', 'nervous'];
+const NPC_COMBAT_SPEED = 0.8; // px/tick while maneuvering in a fight (wander is 0.5)
+const NPC_FLEE_SPEED = 1.1; // a fleeing coward moves with real urgency
+const NPC_COMBAT_LEASH = 112; // px from home a fighter may range while engaged
+const NPC_FLEE_LEASH = 220; // a coward may run further before the home leash bites
 // When an NPC hits an enemy, the enemy remembers its attacker this long and (if
 // no player is in range — players keep priority) turns to retaliate against it.
 const ENEMY_AGGRO_MEMORY_MS = 4000;
@@ -126,7 +161,7 @@ function poseCode(n) {
   return POSE_CODE[n.pose] || 0;
 }
 const STATIC_RESPAWN_MS = 12000; // ROM-placed enemies revive at home after this
-const ENEMY_SPEED = 0.7;   // roamers move a touch faster than ambling townsfolk
+const ENEMY_SPEED = 0.7; // roamers move a touch faster than ambling townsfolk
 // Chase speed scales with the spawner's wander speed by this ratio, so the
 // per-spawner `speed` field controls both (chase stays proportionally faster).
 const CHASE_RATIO = ENEMY_CHASE_SPEED / ENEMY_SPEED;
@@ -156,13 +191,12 @@ function aabb(ax, ay, aw, ah, bx, by, bw, bh) {
 function canHurt(attacker, target) {
   if (!attacker || !target || attacker === target) return false;
   if (attacker.isEnemy) return !target.isEnemy; // enemies hurt all non-enemies
-  if (attacker.pk) return true;                  // PK players hurt everything
-  return !!target.pk;                            // others hurt only PKers
+  if (attacker.pk) return true; // PK players hurt everything
+  return !!target.pk; // others hurt only PKers
 }
 
 function createNpcSim(assetsDir) {
-  const readJSON = (rel) =>
-    JSON.parse(fs.readFileSync(path.join(assetsDir, rel), 'utf8'));
+  const readJSON = (rel) => JSON.parse(fs.readFileSync(path.join(assetsDir, rel), 'utf8'));
 
   const sectors = readJSON('map/sectors.json');
   const tiles = readJSON('map/tiles.json');
@@ -246,6 +280,123 @@ function createNpcSim(assetsDir) {
     return false;
   }
 
+  // True if a solid wall sits on the straight line between two actors' foot
+  // positions. Melee can't reach through walls — this gates every swing
+  // (player→enemy in handleAttack, enemy→player/NPC in tickEnemy, NPC→enemy in
+  // tickNpcCombat). Samples the collision grid at sub-minitile steps so even a
+  // one-tile-thick wall between the bodies blocks the hit. Endpoints are skipped:
+  // an actor pressed flush against a wall must still be hittable from the open side.
+  function wallBetween(x0, y0, x1, y1) {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const dist = Math.hypot(dx, dy);
+    if (dist < MINITILE) return false; // adjacent — no wall can fit between them
+    const steps = Math.ceil(dist / 4); // 4px < MINITILE(8): no wall slips through
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      const px = x0 + dx * t;
+      const py = y0 + dy * t + COL_OY; // sample at foot-box height, where walls block
+      if (blocked(px, py, 1, 1)) return true;
+    }
+    return false;
+  }
+
+  // --- Door triggers (mirror src/engine/DoorManager.ts loadDoors) ---
+  // So enemies/NPCs chase players THROUGH doors the way players use them: walk to
+  // the doorway and warp on contact, never teleport across a room. We only need
+  // each ACTIVE door's trigger position here — the warp destination comes from
+  // the chased player's observed landing spot. KEEP IN SYNC with DoorManager:
+  // trigger anchoring, flag gating, the zone-door skip, and the overrides layer.
+  const DOOR_GRID_COLS = 32;
+  const DOOR_AREA_PX = 256;
+  const DOORS_FILE = 'map/doors.json';
+  const DOORS_OV_PATH = path.join(assetsDir, '..', 'overrides', 'doors.json');
+  // getDoorAt tests the player's MIDSECTION (feet - 12) against the anchor, so a
+  // body's feet trigger a door at worldY + 12.
+  const DOOR_FOOT_OFFSET = 12;
+  let WORLD_SET_FLAGS = new Set();
+  try {
+    const wf = JSON.parse(
+      fs.readFileSync(path.join(assetsDir, '..', '..', 'src', 'world_flags.json'), 'utf8')
+    );
+    WORLD_SET_FLAGS = new Set((wf.setFlags || []).map((f) => parseInt(f, 16)));
+  } catch {
+    /* no flag file — every flag-gated door is treated as usable */
+  }
+  // EB doors carry an event-flag condition: plain flag = usable while SET, the
+  // 0x8000 bit = usable while UNSET (mirror of DoorManager.isDoorActive).
+  function isDoorActive(flag) {
+    if (!flag) return true;
+    const needSet = (flag & 0x8000) === 0;
+    return needSet === WORLD_SET_FLAGS.has(flag & 0x7fff);
+  }
+  let doorTriggers = []; // [{x, y}] feet positions that warp a body through
+
+  function loadDoorTriggers() {
+    let raw;
+    try {
+      raw = readJSON(DOORS_FILE);
+    } catch {
+      doorTriggers = [];
+      return;
+    }
+    let ov = null;
+    try {
+      ov = JSON.parse(fs.readFileSync(DOORS_OV_PATH, 'utf8'));
+    } catch {
+      /* none authored */
+    }
+    const edits = (ov && ov.edits) || {};
+    const additions = (ov && ov.additions) || [];
+    const out = [];
+    raw.forEach((area, idx) => {
+      const originX = (idx % DOOR_GRID_COLS) * DOOR_AREA_PX;
+      const originY = Math.floor(idx / DOOR_GRID_COLS) * DOOR_AREA_PX;
+      for (const d of area) {
+        if (d.type !== 'door') continue;
+        if (!isDoorActive(d.flag || 0)) continue;
+        const baseX = originX + d.x * MINITILE + MINITILE;
+        const baseY = originY + d.y * MINITILE + 4;
+        const destPx = (d.destX || 0) * MINITILE;
+        const destPy = (d.destY || 0) * MINITILE;
+        // style=0 short-range zone doors warp onto themselves unless an override
+        // links them somewhere real — skip the unlinked ones (DoorManager does).
+        const zone =
+          (d.style || 0) === 0 &&
+          Math.abs(destPx - (baseX - MINITILE)) + Math.abs(destPy - (baseY - 4)) < 128;
+        const o = edits[`${baseX},${baseY}`];
+        if (o === null) continue; // override-disabled door
+        if (zone && !o) continue; // zone door with no authored link
+        const wx = o && o.worldX != null ? o.worldX : baseX;
+        const wy = o && o.worldY != null ? o.worldY : baseY;
+        out.push({ x: wx, y: wy + DOOR_FOOT_OFFSET });
+      }
+    });
+    for (const a of additions) out.push({ x: a.worldX, y: a.worldY + DOOR_FOOT_OFFSET });
+    doorTriggers = out;
+    console.log(`[npcSim] loaded ${out.length} door triggers`);
+  }
+  loadDoorTriggers();
+  fs.watchFile(path.join(assetsDir, DOORS_FILE), { interval: 2000 }, loadDoorTriggers);
+  fs.watchFile(DOORS_OV_PATH, { interval: 2000 }, loadDoorTriggers);
+
+  // Nearest door trigger to (x,y) within DOOR_MATCH_RADIUS, or null. A warping
+  // player's last pre-warp position sits on the trigger it stepped through, so
+  // this tells a chaser which doorway to walk to and warp through.
+  const DOOR_MATCH_RADIUS = 28;
+  function resolveDoor(x, y) {
+    let best = null;
+    let bestD = DOOR_MATCH_RADIUS;
+    for (const t of doorTriggers) {
+      const d = Math.hypot(t.x - x, t.y - y);
+      if (d <= bestD) {
+        bestD = d;
+        best = t;
+      }
+    }
+    return best;
+  }
+
   // --- Enemy config (our own content — see public/assets/map/enemy_spawns.json) ---
   // The Enemy Spawner editor writes the WHOLE file to the overrides layer; it
   // wins over the committed default. KEEP IN SYNC with NPCManager.loadNPCs —
@@ -312,7 +463,20 @@ function createNpcSim(assetsDir) {
   const OVERRIDES_PATH = path.join(assetsDir, '..', 'overrides', 'npcs.json');
   const lastAttackAt = {}; // playerId -> ms, for the per-player attack cooldown
   const prevPlayerPos = new Map(); // playerId -> last {x,y}, to detect door warps
-  const warpSuppressed = new Set(); // ids whose next position jump is a respawn, not a door (host flags via noteRespawn)
+  // playerId -> {fromX,fromY,toX,toY,until} of a recently detected door warp.
+  // Kept for WARP_FOLLOW_MS (not one tick) so a chasing enemy can still follow
+  // through after a mid-swing pose clears. Pruned each tick.
+  const recentWarps = new Map();
+  // playerId -> ms until warp-detection is paused for that player after a
+  // respawn. A respawn teleports a full-HP player to the spawn point, which
+  // looks exactly like a door warp, so the host flags it (noteRespawn) and we
+  // ignore jumps for a short window. A WINDOW, not a one-shot "next jump": the
+  // dying client keeps sending its pre-death position for a beat (it hasn't
+  // processed the respawn yet), so the real jump to spawn can land several
+  // ticks later — a single-tick exemption was consumed early and chasers
+  // teleported to the respawned player. KEEP > the worst-case client catch-up.
+  const respawnGuard = new Map();
+  const RESPAWN_GUARD_MS = 1500;
   let onEnemyKillCb = null; // set in start(): (playerId, xp, enemy) => void
 
   function readOverrides() {
@@ -343,43 +507,52 @@ function createNpcSim(assetsDir) {
   }
 
   function baseActor(fields) {
-    return Object.assign({
-      frame: 0,
-      life: 'idle',
-      timer: rand(60, 300),
-      walkDx: 0,
-      walkDy: 0,
-      animTimer: 0,
-      dirty: false,
-      // combat
-      isEnemy: false,
-      pk: false, // PK flag (see canHurt). Enemies set true in build*; people false.
-      roam: false,
-      hp: 0,
-      maxHp: 0,
-      level: 1,
-      xp: 0, // EXP granted on death (enemies only; set in build*)
-      // Per-enemy combat tuning (defaults; spawners override in buildPool).
-      damage: ENEMY_DAMAGE,
-      attackCooldown: ENEMY_ATTACK_COOLDOWN_MS,
-      speed: ENEMY_SPEED,
-      chaseSpeed: ENEMY_CHASE_SPEED,
-      detectRange: DETECT_RANGE, // px the player must be within to aggro this enemy
-      attackRange: ATTACK_RANGE, // px the enemy must be within to land a hit
-      dead: false,
-      hpDirty: false,
-      respawnAt: 0,
-      lastSwing: 0,  // ms of this enemy's last attack (per-enemy cooldown)
-      poseStart: 0,  // ms a transient pose (attack/hurt) began — drives frame anim
-      aggressor: null, // the NPC that most recently hit this enemy (retaliation)
-      aggroUntil: 0,   // ms until that grudge expires
-      spawner: null,
-      // Pursuit / regroup state machine (enemies only):
-      mode: 'patrol',   // 'patrol' wander | 'chase' a target | 'return' to spawn
-      targetId: null,   // id of the player being chased (for door-follow matching)
-      warpStack: [],     // doors warped through while chasing, retraced on return
-      returnSince: 0,    // ms the current regroup began (RETURN_GIVEUP_MS timer)
-    }, fields);
+    return Object.assign(
+      {
+        frame: 0,
+        life: 'idle',
+        timer: rand(60, 300),
+        walkDx: 0,
+        walkDy: 0,
+        animTimer: 0,
+        dirty: false,
+        // combat
+        isEnemy: false,
+        pk: false, // PK flag (see canHurt). Enemies set true in build*; people false.
+        roam: false,
+        hp: 0,
+        maxHp: 0,
+        level: 1,
+        xp: 0, // EXP granted on death (enemies only; set in build*)
+        // Per-enemy combat tuning (defaults; spawners override in buildPool).
+        damage: ENEMY_DAMAGE,
+        attackCooldown: ENEMY_ATTACK_COOLDOWN_MS,
+        speed: ENEMY_SPEED,
+        chaseSpeed: ENEMY_CHASE_SPEED,
+        detectRange: DETECT_RANGE, // px the player must be within to aggro this enemy
+        attackRange: ATTACK_RANGE, // px the enemy must be within to land a hit
+        dead: false,
+        hpDirty: false,
+        respawnAt: 0,
+        lastSwing: 0, // ms of this enemy's last attack (per-enemy cooldown)
+        poseStart: 0, // ms a transient pose (attack/hurt) began — drives frame anim
+        aggressor: null, // the NPC that most recently hit this enemy (retaliation)
+        aggroUntil: 0, // ms until that grudge expires
+        spawner: null,
+        // Pursuit / regroup state machine (enemies only):
+        mode: 'patrol', // 'patrol' wander | 'chase' a target | 'door' walk-to-doorway | 'return' to spawn
+        targetId: null, // id of the player being chased (for door-follow matching)
+        warpStack: [], // doors warped through while chasing, retraced on return
+        returnSince: 0, // ms the current regroup began (RETURN_GIVEUP_MS timer)
+        pendingDoor: null, // {triggerX,triggerY,destX,destY} the chaser is walking to and will warp through
+        doorSince: 0, // ms the walk-to-doorway began (DOOR_GIVEUP_MS timer)
+        // NPC combat-maneuver state (townsfolk): a 'nervous' shuffle heading that
+        // refreshes on a timer so the shuffle reads as restless, not twitchy.
+        jitterAng: 0,
+        jitterUntil: 0,
+      },
+      fields
+    );
   }
 
   // ROM placements (+ merged overrides). Sprite groups listed in
@@ -391,9 +564,17 @@ function createNpcSim(assetsDir) {
     return raw.map((r, id) => {
       if (!r) {
         return baseActor({
-          id, kind: 'deleted', sprite: 0,
-          x: 0, y: 0, homeX: 0, homeY: 0, dir: 0, homeDir: 0,
-          indoor: false, dead: true,
+          id,
+          kind: 'deleted',
+          sprite: 0,
+          x: 0,
+          y: 0,
+          homeX: 0,
+          homeY: 0,
+          dir: 0,
+          homeDir: 0,
+          indoor: false,
+          dead: true,
         });
       }
       const enemy = ENEMY_SPRITES.has(r.sprite);
@@ -402,13 +583,17 @@ function createNpcSim(assetsDir) {
         id,
         kind: enemy ? 'enemy' : r.kind,
         sprite: r.sprite,
-        x: r.x, y: r.y, homeX: r.x, homeY: r.y,
-        dir: r.dir, homeDir: r.dir,
+        x: r.x,
+        y: r.y,
+        homeX: r.x,
+        homeY: r.y,
+        dir: r.dir,
+        homeDir: r.dir,
         indoor: !!(sectorForTile(Math.floor(r.x / TILE), Math.floor(r.y / TILE)) || {}).indoor,
         isEnemy: enemy,
         pk: enemy, // enemies are always PK; townsfolk never are
-        hp: enemy ? STATIC_ENEMY_HP : (person ? NPC_HP : 0),
-        maxHp: enemy ? STATIC_ENEMY_HP : (person ? NPC_HP : 0),
+        hp: enemy ? STATIC_ENEMY_HP : person ? NPC_HP : 0,
+        maxHp: enemy ? STATIC_ENEMY_HP : person ? NPC_HP : 0,
         level: enemy ? DEFAULT_ENEMY_LEVEL : 1,
         xp: enemy ? DEFAULT_ENEMY_XP : 0,
       });
@@ -434,28 +619,34 @@ function createNpcSim(assetsDir) {
     for (const sp of SPAWNERS) {
       const speed = spawnerStat(sp, 'speed', ENEMY_SPEED);
       for (let i = 0; i < (sp.poolSize || 0); i++) {
-        out.push(baseActor({
-          id: id++,
-          kind: 'enemy',
-          sprite: sp.sprite,
-          x: sp.x, y: sp.y, homeX: sp.x, homeY: sp.y,
-          dir: 1, homeDir: 1,
-          indoor: false,
-          isEnemy: true,
-          pk: true, // pooled enemies are PK
-          roam: true,
-          maxHp: spawnerStat(sp, 'hp', 24),
-          level: spawnerStat(sp, 'level', DEFAULT_ENEMY_LEVEL),
-          xp: spawnerStat(sp, 'xp', DEFAULT_ENEMY_XP),
-          damage: spawnerStat(sp, 'damage', ENEMY_DAMAGE),
-          attackCooldown: spawnerStat(sp, 'attackCooldownMs', ENEMY_ATTACK_COOLDOWN_MS),
-          speed,
-          chaseSpeed: speed * CHASE_RATIO,
-          detectRange: spawnerStat(sp, 'detectRange', DETECT_RANGE),
-          attackRange: spawnerStat(sp, 'attackRange', ATTACK_RANGE),
-          dead: true, // inactive until the spawner wakes it
-          spawner: sp,
-        }));
+        out.push(
+          baseActor({
+            id: id++,
+            kind: 'enemy',
+            sprite: sp.sprite,
+            x: sp.x,
+            y: sp.y,
+            homeX: sp.x,
+            homeY: sp.y,
+            dir: 1,
+            homeDir: 1,
+            indoor: false,
+            isEnemy: true,
+            pk: true, // pooled enemies are PK
+            roam: true,
+            maxHp: spawnerStat(sp, 'hp', 24),
+            level: spawnerStat(sp, 'level', DEFAULT_ENEMY_LEVEL),
+            xp: spawnerStat(sp, 'xp', DEFAULT_ENEMY_XP),
+            damage: spawnerStat(sp, 'damage', ENEMY_DAMAGE),
+            attackCooldown: spawnerStat(sp, 'attackCooldownMs', ENEMY_ATTACK_COOLDOWN_MS),
+            speed,
+            chaseSpeed: speed * CHASE_RATIO,
+            detectRange: spawnerStat(sp, 'detectRange', DETECT_RANGE),
+            attackRange: spawnerStat(sp, 'attackRange', ATTACK_RANGE),
+            dead: true, // inactive until the spawner wakes it
+            spawner: sp,
+          })
+        );
       }
     }
     return out;
@@ -474,12 +665,16 @@ function createNpcSim(assetsDir) {
           id: id++,
           kind: 'car',
           sprite: v.sprite,
-          x: sx, y: sy, homeX: sx, homeY: sy,
-          dir: 0, homeDir: 0,
+          x: sx,
+          y: sy,
+          homeX: sx,
+          homeY: sy,
+          dir: 0,
+          homeDir: 0,
           indoor: false,
           waypoints: v.waypoints,
           wpIndex: 1, // heading toward the second waypoint
-          step: 1,    // ping-pong direction for non-looping routes
+          step: 1, // ping-pong direction for non-looping routes
           loop: v.loop !== false,
           speed: v.speed || 1,
           carW: v.w || 40,
@@ -540,8 +735,8 @@ function createNpcSim(assetsDir) {
         n.timer = rand(60, 300);
         n.isEnemy = enemy;
         n.pk = enemy;
-        n.maxHp = enemy ? STATIC_ENEMY_HP : (person ? NPC_HP : 0);
-        n.hp = enemy ? STATIC_ENEMY_HP : (person ? NPC_HP : 0);
+        n.maxHp = enemy ? STATIC_ENEMY_HP : person ? NPC_HP : 0;
+        n.hp = enemy ? STATIC_ENEMY_HP : person ? NPC_HP : 0;
         n.level = enemy ? DEFAULT_ENEMY_LEVEL : 1;
         n.xp = enemy ? DEFAULT_ENEMY_XP : 0;
         n.dead = false;
@@ -560,7 +755,9 @@ function createNpcSim(assetsDir) {
     }
     actors = npcs.filter((n) => n.kind === 'person' || n.isEnemy || n.kind === 'car');
     enemies = npcs.filter((n) => n.isEnemy);
-    console.log(`[npcSim] reloaded ${NPCS_FILE} (${actors.length} actors, ${enemies.length} enemies)`);
+    console.log(
+      `[npcSim] reloaded ${NPCS_FILE} (${actors.length} actors, ${enemies.length} enemies)`
+    );
   }
 
   // Hot-reload enemy spawners when the Enemy Spawner editor saves
@@ -581,7 +778,9 @@ function createNpcSim(assetsDir) {
     for (const n of npcs) if (n.kind === 'person' || n.isEnemy) n.dirty = true;
     actors = npcs.filter((n) => n.kind === 'person' || n.isEnemy || n.kind === 'car');
     enemies = npcs.filter((n) => n.isEnemy);
-    console.log(`[npcSim] reloaded enemy spawners (${enemies.length} enemies, ${SPAWNERS.length} spawners)`);
+    console.log(
+      `[npcSim] reloaded enemy spawners (${enemies.length} enemies, ${SPAWNERS.length} spawners)`
+    );
   }
 
   // Hot-reload traffic when the Traffic Editor saves overrides/car_traffic.json.
@@ -628,6 +827,7 @@ function createNpcSim(assetsDir) {
   // client treats NPC positions as authoritative and can't push back.
   function hitsPlayer(x, y, w, h, ppos) {
     for (const p of ppos) {
+      if (p.editor) continue; // editor avatar is non-solid — actors walk through it
       const px = p.x - COL_W / 2;
       const py = p.y + COL_OY;
       if (x < px + COL_W && x + w > px && y < py + COL_H && y + h > py) return true;
@@ -682,6 +882,7 @@ function createNpcSim(assetsDir) {
   function carBlocked(c, nx, ny, players) {
     const [bx, by, bw, bh] = actorBox(c, nx, ny);
     for (const p of players) {
+      if (p.editor) continue; // cars drive through the parked editor avatar
       if (aabb(bx, by, bw, bh, p.x - COL_W / 2, p.y + COL_OY, COL_W, COL_H)) return true;
     }
     for (const o of actors) {
@@ -698,8 +899,13 @@ function createNpcSim(assetsDir) {
     const n = c.waypoints.length;
     if (c.loop) return (c.wpIndex + 1) % n;
     let i = c.wpIndex + c.step;
-    if (i >= n) { c.step = -1; i = n - 2; }
-    else if (i < 0) { c.step = 1; i = 1; }
+    if (i >= n) {
+      c.step = -1;
+      i = n - 2;
+    } else if (i < 0) {
+      c.step = 1;
+      i = 1;
+    }
     return i;
   }
 
@@ -740,39 +946,151 @@ function createNpcSim(assetsDir) {
     if (Math.hypot(tgt[0] - c.x, tgt[1] - c.y) < 0.5) c.wpIndex = nextWp(c);
   }
 
+  // The combat personality for a townsperson: the Entity Manager assignment for
+  // its sprite group (entities[sprite].combat), else a stable seeded pick by id
+  // so an unconfigured crowd still reacts diversely. KEEP IN SYNC with
+  // EntityStats.CombatPersonality / EntityManagerTool's dropdown.
+  function npcCombatPersonality(n) {
+    const c =
+      enemyCfg &&
+      enemyCfg.entities &&
+      enemyCfg.entities[n.sprite] &&
+      enemyCfg.entities[n.sprite].combat;
+    if (c && COMBAT_PERSONALITIES.includes(c)) return c;
+    return COMBAT_PERSONALITIES[n.id % COMBAT_PERSONALITIES.length];
+  }
+
+  // Step away from (fx,fy): route to a point opposite the threat (moveToward
+  // fans around walls/actors). Returns whether it actually moved.
+  function fleeFrom(n, fx, fy, speed, players, leash) {
+    const dx = n.x - fx;
+    const dy = n.y - fy;
+    const len = Math.hypot(dx, dy) || 1;
+    return moveToward(n, n.x + (dx / len) * 40, n.y + (dy / len) * 40, speed, players, leash);
+  }
+
+  // Sidestep perpendicular to the threat (side seeded by id so a crowd splits
+  // both ways instead of all sliding the same direction).
+  function strafe(n, fx, fy, players, leash) {
+    const dx = n.x - fx;
+    const dy = n.y - fy;
+    const len = Math.hypot(dx, dy) || 1;
+    const side = n.id & 1 ? 1 : -1;
+    return moveToward(
+      n,
+      n.x + (-dy / len) * side * 36,
+      n.y + (dx / len) * side * 36,
+      NPC_COMBAT_SPEED,
+      players,
+      leash
+    );
+  }
+
+  // Restless shuffle: a short step along a heading that only re-rolls every few
+  // hundred ms, so a 'nervous' NPC fidgets rather than vibrating every tick.
+  function jitter(n, players, leash, now) {
+    if (now >= n.jitterUntil) {
+      n.jitterAng = Math.random() * Math.PI * 2;
+      n.jitterUntil = now + rand(250, 600);
+    }
+    moveToward(
+      n,
+      n.x + Math.cos(n.jitterAng) * 20,
+      n.y + Math.sin(n.jitterAng) * 20,
+      NPC_COMBAT_SPEED,
+      players,
+      leash
+    );
+  }
+
+  // Townsfolk combat: maneuver per personality instead of standing still, then
+  // swing on cooldown when the enemy is in range. Damage is applied directly
+  // (NPC self-defense isn't a hitbox), so facing is purely cosmetic — we point
+  // at the threat (or away, when fleeing) for readability.
+  function tickNpcCombat(n, foe, players, now) {
+    const e = foe.enemy;
+    const dist = foe.dist;
+    n.life = 'idle'; // drop any leftover wander leg without resetting the anim timer
+
+    const canSwing =
+      dist <= NPC_ATTACK_RANGE &&
+      now - n.lastSwing >= NPC_ATTACK_COOLDOWN_MS &&
+      n.pose !== 'hurt' &&
+      !wallBetween(n.x, n.y, e.x, e.y);
+    const swing = () => {
+      n.dir = faceDir(e.x - n.x, e.y - n.y);
+      n.lastSwing = now;
+      n.pose = 'attack';
+      n.poseStart = now;
+      n.poseUntil = now + NPC_ATTACK_POSE_MS;
+      n.frame = 0;
+      n.dirty = true;
+      applyDamage(e, NPC_DAMAGE, now, null);
+      e.aggressor = n; // the enemy remembers (and may turn on) whoever hit it
+      e.aggroUntil = now + ENEMY_AGGRO_MEMORY_MS;
+    };
+
+    n.dir = faceDir(e.x - n.x, e.y - n.y); // watch the threat by default
+
+    switch (npcCombatPersonality(n)) {
+      case 'brave':
+        // Press the attack: close the gap, stand and swing once adjacent.
+        if (dist > NPC_ATTACK_RANGE)
+          moveToward(n, e.x, e.y, NPC_COMBAT_SPEED, players, NPC_COMBAT_LEASH);
+        else if (canSwing) swing();
+        break;
+
+      case 'coward': {
+        // Run; face the way we're fleeing. Swing only if cornered (can't move).
+        const fled = fleeFrom(n, e.x, e.y, NPC_FLEE_SPEED, players, NPC_FLEE_LEASH);
+        if (fled) n.dir = faceDir(n.x - e.x, n.y - e.y);
+        else if (canSwing) swing();
+        break;
+      }
+
+      case 'nervous':
+        // Trade blows but never settle — shuffle restlessly between swings.
+        if (canSwing) swing();
+        else jitter(n, players, NPC_COMBAT_LEASH, now);
+        break;
+
+      case 'skirmisher':
+      default:
+        // Hit-and-run: close in, swing when ready, then peel off (back/strafe).
+        if (dist > NPC_ATTACK_RANGE)
+          moveToward(n, e.x, e.y, NPC_COMBAT_SPEED, players, NPC_COMBAT_LEASH);
+        else if (canSwing) swing();
+        else if (!fleeFrom(n, e.x, e.y, NPC_COMBAT_SPEED, players, NPC_COMBAT_LEASH))
+          strafe(n, e.x, e.y, players, NPC_COMBAT_LEASH);
+        break;
+    }
+  }
+
   function tickNpc(n, ppos, now) {
     // Hold position while a swing or flinch is playing so its generated frames
     // show (movement would overwrite the frame via stepAnimation).
     if ((n.pose === 'attack' || n.pose === 'hurt') && now < n.poseUntil) return;
 
-    // Self-defense (defend on sight, hold ground): if a living enemy is within
-    // NPC_DETECT_RANGE, the townsperson stops wandering, faces it, and swings
-    // when it's adjacent — it never chases. Players are never targeted (only
-    // enemies, gated by canHurt). Props/0-HP people can't fight.
+    // Self-defense (defend on sight): if a living enemy is within
+    // NPC_DETECT_RANGE the townsperson maneuvers per its combat personality
+    // (tickNpcCombat) and swings when in range — no longer a frozen statue.
+    // Players are never targeted (only enemies, gated by canHurt). Props/0-HP
+    // people can't fight.
     if (n.hp > 0) {
       const foe = nearestEnemyTo(n, NPC_DETECT_RANGE);
       if (foe) {
-        if (n.life === 'walk') startIdle(n); // plant and stand firm
-        const nd = faceDir(foe.enemy.x - n.x, foe.enemy.y - n.y);
-        if (nd !== n.dir) { n.dir = nd; n.dirty = true; }
-        if (
-          foe.dist <= NPC_ATTACK_RANGE &&
-          now - n.lastSwing >= NPC_ATTACK_COOLDOWN_MS &&
-          n.pose !== 'hurt'
-        ) {
-          n.lastSwing = now;
-          n.pose = 'attack';
-          n.poseStart = now;
-          n.poseUntil = now + NPC_ATTACK_POSE_MS;
-          n.frame = 0; // start on the wind-up frame
-          n.dirty = true;
-          applyDamage(foe.enemy, NPC_DAMAGE, now, null);
-          // Make the enemy remember (and turn on) whoever just hit it.
-          foe.enemy.aggressor = n;
-          foe.enemy.aggroUntil = now + ENEMY_AGGRO_MEMORY_MS;
-        }
-        return; // hold ground — skip the wander AI this tick
+        tickNpcCombat(n, foe, ppos, now);
+        return; // combat owns this tick — skip the wander AI
       }
+    }
+
+    // No threat, but a fight may have carried us off our home spot: walk back
+    // before resuming the leashed wander (the wander itself can't path beyond
+    // LEASH, so it would otherwise stay stranded out in the street).
+    if (Math.hypot(n.x - n.homeX, n.y - n.homeY) > LEASH) {
+      n.dir = faceDir(n.homeX - n.x, n.homeY - n.y);
+      if (moveToward(n, n.homeX, n.homeY, SPEED, ppos, Infinity)) return;
+      // Wedged on the way home — fall through to the normal AI and try again.
     }
 
     if (n.life === 'walk') {
@@ -830,7 +1148,7 @@ function createNpcSim(assetsDir) {
   // Cardinal Direction (src/types.ts) facing the vector (dx,dy), dominant axis.
   function faceDir(dx, dy) {
     if (Math.abs(dx) > Math.abs(dy)) return dx < 0 ? 2 : 3; // W : E
-    return dy < 0 ? 1 : 0;                                  // N : S
+    return dy < 0 ? 1 : 0; // N : S
   }
 
   // The enemy's target within DETECT_RANGE, or null. PLAYERS ALWAYS WIN: any
@@ -843,6 +1161,7 @@ function createNpcSim(assetsDir) {
     let target = null;
     let best = range;
     for (const p of players) {
+      if (p.editor) continue; // editor avatar is untargetable (out of the fight)
       if (p.hp !== undefined && p.hp <= 0) continue;
       const d = Math.hypot(p.x - n.x, p.y - n.y);
       if (d <= best) {
@@ -988,7 +1307,9 @@ function createNpcSim(assetsDir) {
   // regroups even if greedy steering wedges it.
   function tickReturn(n, players, now) {
     if (now - n.returnSince > RETURN_GIVEUP_MS) {
-      n.x = n.homeX; n.y = n.homeY; n.dir = n.homeDir;
+      n.x = n.homeX;
+      n.y = n.homeY;
+      n.dir = n.homeDir;
       n.warpStack.length = 0;
       n.dirty = true;
       return false;
@@ -999,7 +1320,10 @@ function createNpcSim(assetsDir) {
       if (Math.hypot(n.x - top.inX, n.y - top.inY) <= RETURN_ARRIVE) {
         // Reached the inside of the door we came through — warp back out.
         const spot = findFreeNear(top.outX, top.outY, n, players) || { x: top.outX, y: top.outY };
-        n.x = spot.x; n.y = spot.y; n.dir = n.homeDir; n.dirty = true;
+        n.x = spot.x;
+        n.y = spot.y;
+        n.dir = n.homeDir;
+        n.dirty = true;
         stack.pop();
         return true;
       }
@@ -1013,6 +1337,37 @@ function createNpcSim(assetsDir) {
     return true;
   }
 
+  // Walk a committed chaser to the doorway its target warped through and warp it
+  // through on contact — the enemy uses the door at its own movement rate, never
+  // teleporting across the room. Records the door on warpStack so the regroup
+  // retraces back out. Gives up (and regroups) if it can't reach the doorway.
+  function tickDoorSeek(n, players, now) {
+    const d = n.pendingDoor;
+    if (!d) {
+      n.mode = 'chase';
+      return;
+    }
+    // Reached the doorway — warp through, just like the player did.
+    if (Math.hypot(n.x - d.triggerX, n.y - d.triggerY) <= DOOR_TRIGGER_REACH) {
+      const spot = findFreeNear(d.destX, d.destY, n, players) || { x: d.destX, y: d.destY };
+      n.warpStack.push({ outX: d.triggerX, outY: d.triggerY, inX: d.destX, inY: d.destY });
+      n.x = spot.x;
+      n.y = spot.y;
+      n.dirty = true;
+      n.pendingDoor = null;
+      n.mode = 'chase'; // re-acquire the target on the far side next tick
+      return;
+    }
+    // Walk to the doorway at the normal chase pace; bail if we get wedged.
+    n.dir = faceDir(d.triggerX - n.x, d.triggerY - n.y);
+    moveToward(n, d.triggerX, d.triggerY, n.chaseSpeed, players, Infinity);
+    if (now - n.doorSince > DOOR_GIVEUP_MS) {
+      n.pendingDoor = null;
+      n.mode = 'return';
+      n.returnSince = now;
+    }
+  }
+
   // Roamers wander town-wide (bounded by spawner.wanderRadius from the spawn
   // point), unlike townsfolk leashed to a 32px home. With a player in sight
   // they break off and pursue, swinging when they get in range.
@@ -1020,6 +1375,47 @@ function createNpcSim(assetsDir) {
     // Hold position while a swing or flinch is playing so its generated frames
     // show (movement would overwrite the frame via stepAnimation).
     if ((n.pose === 'attack' || n.pose === 'hurt') && now < n.poseUntil) return;
+
+    // Already walking to a doorway: finish that before anything else, so a
+    // townsperson at the door can't steal the chase and an interior stamped
+    // close by can't re-lock aggro into a wall.
+    if (n.mode === 'door') {
+      tickDoorSeek(n, players, now);
+      return;
+    }
+
+    // Door-follow has top priority. If the player we're chasing warped through a
+    // door recently (within WARP_FOLLOW_MS) and we're still close to where it
+    // stood, COMMIT to that doorway: walk there and warp through on contact (see
+    // tickDoorSeek) rather than teleporting across the room. The warp outlives
+    // one tick, so an enemy mid-swing when the player vanished commits the moment
+    // its pose clears (see WARP_FOLLOW_MS); once committed it heads to the door
+    // at its own pace even after the warp record expires.
+    if (n.mode === 'chase' && n.targetId != null) {
+      const w = warps.get(n.targetId);
+      const top = n.warpStack[n.warpStack.length - 1];
+      const already = top && top.inX === (w && w.toX) && top.inY === (w && w.toY);
+      if (w && !already && Math.hypot(n.x - w.fromX, n.y - w.fromY) <= WARP_FOLLOW_RANGE) {
+        if (w.door) {
+          // Walk to the resolved doorway and warp there ourselves.
+          n.pendingDoor = { triggerX: w.door.x, triggerY: w.door.y, destX: w.toX, destY: w.toY };
+          n.doorSince = now;
+          n.mode = 'door';
+          tickDoorSeek(n, players, now);
+          return;
+        }
+        // No door trigger resolved (a zone seam / scripted warp): fall back to
+        // the legacy instant follow so those transitions still work.
+        const spot = findFreeNear(w.toX, w.toY, n, players);
+        if (spot) {
+          n.warpStack.push({ outX: w.fromX, outY: w.fromY, inX: w.toX, inY: w.toY });
+          n.x = spot.x;
+          n.y = spot.y;
+          n.dirty = true;
+          return; // landed inside — aggro re-acquires the target next tick
+        }
+      }
+    }
 
     const aggro = aggroTarget(n, players, now);
     if (aggro) {
@@ -1030,9 +1426,11 @@ function createNpcSim(assetsDir) {
       const dy = target.y - n.y;
       n.dir = faceDir(dx, dy);
 
-      // In striking range: stand and swing on cooldown (the hit is resolved
-      // server-side; the pose broadcasts so every client sees the attack).
-      if (dist <= (n.attackRange || ATTACK_RANGE)) {
+      // In striking range AND with a clear line (no wall between): stand and
+      // swing on cooldown (resolved server-side; the pose broadcasts so every
+      // client sees the attack). A wall between them drops to the chase below,
+      // so the enemy paths around it instead of hitting through it.
+      if (dist <= (n.attackRange || ATTACK_RANGE) && !wallBetween(n.x, n.y, target.x, target.y)) {
         if (now - n.lastSwing >= n.attackCooldown && n.pose !== 'hurt') {
           n.lastSwing = now;
           n.pose = 'attack';
@@ -1060,22 +1458,10 @@ function createNpcSim(assetsDir) {
       return;
     }
 
-    // No target this tick.
+    // No target this tick. A door-follow chance was already taken at the top of
+    // the tick if the chased player warped; reaching here means there's no live
+    // warp to follow — the target is genuinely gone, so regroup at spawn.
     if (n.mode === 'chase') {
-      // The player we were chasing may have just stepped through a door — its
-      // reported position jumped this tick (see warp detection in start()). If
-      // we're right behind it, follow through: drop beside where it landed and
-      // keep the chase going inside, recording the door so we can retrace out.
-      const w = n.targetId != null && warps && warps.find((e) => e.id === n.targetId);
-      if (w && Math.hypot(n.x - w.fromX, n.y - w.fromY) <= WARP_FOLLOW_RANGE) {
-        const spot = findFreeNear(w.toX, w.toY, n, players);
-        if (spot) {
-          n.warpStack.push({ outX: w.fromX, outY: w.fromY, inX: w.toX, inY: w.toY });
-          n.x = spot.x; n.y = spot.y; n.dirty = true;
-          return; // still 'chase' — aggro should re-acquire inside next tick
-        }
-      }
-      // Lost the target for real — head back to the spawn area to regroup.
       n.mode = 'return';
       n.returnSince = now;
       n.targetId = null;
@@ -1083,7 +1469,7 @@ function createNpcSim(assetsDir) {
 
     if (n.mode === 'return') {
       if (tickReturn(n, players, now)) return; // still en route
-      n.mode = 'patrol';                       // arrived — resume wandering
+      n.mode = 'patrol'; // arrived — resume wandering
       startIdle(n);
     }
 
@@ -1160,12 +1546,26 @@ function createNpcSim(assetsDir) {
       // enemy the moment a spot opens up.
       const spot = findSpawnSpot(sp, ppos, cand);
       if (!spot) continue;
-      cand.x = spot.x; cand.y = spot.y; cand.homeX = sp.x; cand.homeY = sp.y;
-      cand.dir = 1; cand.frame = 0; cand.life = 'idle'; cand.timer = rand(20, 60);
-      cand.hp = cand.maxHp; cand.dead = false;
-      cand.pose = 'walk'; cand.aggressor = null; cand.aggroUntil = 0;
-      cand.mode = 'patrol'; cand.targetId = null; cand.warpStack.length = 0;
-      cand.dirty = true; cand.hpDirty = true;
+      cand.x = spot.x;
+      cand.y = spot.y;
+      cand.homeX = sp.x;
+      cand.homeY = sp.y;
+      cand.dir = 1;
+      cand.frame = 0;
+      cand.life = 'idle';
+      cand.timer = rand(20, 60);
+      cand.hp = cand.maxHp;
+      cand.dead = false;
+      cand.pose = 'walk';
+      cand.aggressor = null;
+      cand.aggroUntil = 0;
+      cand.mode = 'patrol';
+      cand.targetId = null;
+      cand.warpStack.length = 0;
+      cand.pendingDoor = null;
+      cand.doorSince = 0;
+      cand.dirty = true;
+      cand.hpDirty = true;
       sp._lastSpawn = now;
     }
   }
@@ -1174,12 +1574,24 @@ function createNpcSim(assetsDir) {
   function reviveStatics(now) {
     for (const n of enemies) {
       if (n.spawner || !n.dead || now < n.respawnAt) continue;
-      n.x = n.homeX; n.y = n.homeY; n.dir = n.homeDir; n.frame = 0;
-      n.life = 'idle'; n.timer = rand(60, 300);
-      n.hp = n.maxHp; n.dead = false;
-      n.pose = 'walk'; n.aggressor = null; n.aggroUntil = 0;
-      n.mode = 'patrol'; n.targetId = null; n.warpStack.length = 0;
-      n.dirty = true; n.hpDirty = true;
+      n.x = n.homeX;
+      n.y = n.homeY;
+      n.dir = n.homeDir;
+      n.frame = 0;
+      n.life = 'idle';
+      n.timer = rand(60, 300);
+      n.hp = n.maxHp;
+      n.dead = false;
+      n.pose = 'walk';
+      n.aggressor = null;
+      n.aggroUntil = 0;
+      n.mode = 'patrol';
+      n.targetId = null;
+      n.warpStack.length = 0;
+      n.pendingDoor = null;
+      n.doorSince = 0;
+      n.dirty = true;
+      n.hpDirty = true;
     }
   }
 
@@ -1188,10 +1600,17 @@ function createNpcSim(assetsDir) {
   function reviveNpcs(now) {
     for (const n of actors) {
       if (n.kind !== 'person' || !n.dead || now < n.respawnAt) continue;
-      n.x = n.homeX; n.y = n.homeY; n.dir = n.homeDir; n.frame = 0;
-      n.pose = 'walk'; n.life = 'idle'; n.timer = rand(60, 300);
-      n.hp = n.maxHp; n.dead = false;
-      n.dirty = true; n.hpDirty = true;
+      n.x = n.homeX;
+      n.y = n.homeY;
+      n.dir = n.homeDir;
+      n.frame = 0;
+      n.pose = 'walk';
+      n.life = 'idle';
+      n.timer = rand(60, 300);
+      n.hp = n.maxHp;
+      n.dead = false;
+      n.dirty = true;
+      n.hpDirty = true;
     }
   }
 
@@ -1215,7 +1634,8 @@ function createNpcSim(assetsDir) {
       if (target.isEnemy) {
         target.respawnAt =
           now + (target.spawner ? target.spawner.respawnDelayMs || 9000 : STATIC_RESPAWN_MS);
-        if (killerPlayerId != null && onEnemyKillCb) onEnemyKillCb(killerPlayerId, target.xp || 0, target);
+        if (killerPlayerId != null && onEnemyKillCb)
+          onEnemyKillCb(killerPlayerId, target.xp || 0, target);
       } else {
         target.respawnAt = now + NPC_RESPAWN_MS;
       }
@@ -1246,6 +1666,7 @@ function createNpcSim(assetsDir) {
       if (n.dead) continue;
       if (!canHurt(attacker, n)) continue; // PK rules decide if this lands
       if (!aabb(hx, hy, hw, hh, n.x - HURT_W / 2, n.y + HURT_OY, HURT_W, HURT_H)) continue;
+      if (wallBetween(x, y, n.x, n.y)) continue; // no reaching through a wall
       // Shared death path: flinch, HP broadcast, respawn, and EXP to the killer.
       applyDamage(n, dmg, now, playerId);
     }
@@ -1274,18 +1695,37 @@ function createNpcSim(assetsDir) {
         updateSpawners(now, players);
         // Detect door warps: a player whose reported position jumped > WARP_DELTA
         // in one tick teleported (the client warps on a door and sends the new
-        // coords). Enemies chasing that player use these to follow it through.
-        const warps = [];
+        // coords). Recorded into recentWarps with an expiry; enemies chasing that
+        // player follow it through for WARP_FOLLOW_MS, not just this one tick.
         for (const p of players) {
+          if (p.editor) continue; // parked editor avatar isn't warping; never chase it
           const prev = prevPlayerPos.get(p.id);
-          if (prev && Math.hypot(p.x - prev.x, p.y - prev.y) > WARP_DELTA && !warpSuppressed.has(p.id)) {
-            warps.push({ id: p.id, fromX: prev.x, fromY: prev.y, toX: p.x, toY: p.y });
+          const guarded = now < (respawnGuard.get(p.id) || 0); // mid respawn window
+          if (!guarded && prev && Math.hypot(p.x - prev.x, p.y - prev.y) > WARP_DELTA) {
+            // Resolve which doorway the player stepped through (its last pre-warp
+            // position sits on the trigger) so chasers can walk to it and warp.
+            recentWarps.set(p.id, {
+              fromX: prev.x,
+              fromY: prev.y,
+              toX: p.x,
+              toY: p.y,
+              until: now + WARP_FOLLOW_MS,
+              door: resolveDoor(prev.x, prev.y),
+            });
           }
-          warpSuppressed.delete(p.id); // one-shot: only the immediate respawn jump is exempt
+          // Always track position (even while guarded) so the moment the window
+          // ends prev == current and no stale jump is mistaken for a warp.
           prevPlayerPos.set(p.id, { x: p.x, y: p.y });
         }
         for (const id of prevPlayerPos.keys()) {
-          if (!players.some((p) => p.id === id)) prevPlayerPos.delete(id);
+          if (!players.some((p) => p.id === id)) {
+            prevPlayerPos.delete(id);
+            respawnGuard.delete(id);
+          }
+        }
+        // Expire stale warps and drop any whose player left.
+        for (const [id, w] of recentWarps) {
+          if (now > w.until || !players.some((p) => p.id === id)) recentWarps.delete(id);
         }
         for (const n of actors) {
           if (n.dead) continue;
@@ -1315,13 +1755,13 @@ function createNpcSim(assetsDir) {
           }
           if (near) {
             if (n.kind === 'car') tickCar(n, players);
-            else if (n.roam) tickEnemy(n, players, now, onEnemyHit, warps);
+            else if (n.roam) tickEnemy(n, players, now, onEnemyHit, recentWarps);
             else tickNpc(n, players, now);
           } else if (n.roam && n.mode !== 'patrol') {
             // Off-station with no player nearby (the target fled far): keep
             // ticking so it finishes heading back to spawn instead of freezing
             // out of position.
-            tickEnemy(n, players, now, onEnemyHit, warps);
+            tickEnemy(n, players, now, onEnemyHit, recentWarps);
           }
         }
       }, 1000 / TICK_HZ);
@@ -1332,7 +1772,14 @@ function createNpcSim(assetsDir) {
         for (const n of actors) {
           if (n.dirty && !n.dead) {
             n.dirty = false;
-            moved.push([n.id, Math.round(n.x * 2) / 2, Math.round(n.y * 2) / 2, n.dir, n.frame, poseCode(n)]);
+            moved.push([
+              n.id,
+              Math.round(n.x * 2) / 2,
+              Math.round(n.y * 2) / 2,
+              n.dir,
+              n.frame,
+              poseCode(n),
+            ]);
           }
           if (n.hpDirty) {
             n.hpDirty = false;
@@ -1351,7 +1798,14 @@ function createNpcSim(assetsDir) {
         if (n.dead) continue;
         const hurt = n.pose === 'hurt';
         if (n.x !== n.homeX || n.y !== n.homeY || n.dir !== n.homeDir || n.frame !== 0 || hurt) {
-          out.push([n.id, Math.round(n.x * 2) / 2, Math.round(n.y * 2) / 2, n.dir, n.frame, poseCode(n)]);
+          out.push([
+            n.id,
+            Math.round(n.x * 2) / 2,
+            Math.round(n.y * 2) / 2,
+            n.dir,
+            n.frame,
+            poseCode(n),
+          ]);
         }
       }
       return out;
@@ -1371,17 +1825,45 @@ function createNpcSim(assetsDir) {
       return out;
     },
 
+    /**
+     * Live enemy snapshot WITH positions: [{id, x, y, hp, maxHp, dead}, ...].
+     * Unlike snapshot() (moved actors only) this returns every enemy's current
+     * spot, so tests/debug tools can aim at one. Read-only — a copy per row.
+     */
+    enemyState() {
+      return enemies.map((n) => ({
+        id: n.id,
+        x: n.x,
+        y: n.y,
+        hp: n.hp,
+        maxHp: n.maxHp,
+        dead: !!n.dead,
+      }));
+    },
+
     /** Resolve a player's melee swing (server-authoritative). */
     handleAttack,
 
     /**
-     * Tell the sim a player just respawn-teleported to the spawn point. Its next
-     * position jump is exempt from door-warp detection, so a chasing enemy won't
-     * follow the (revived, full-HP) player back to spawn — death looks identical
-     * to a door warp otherwise (full HP + a big position jump in one tick).
+     * True if a solid wall sits on the line between two actor foot positions —
+     * the line-of-sight gate every melee swing uses (no reaching through walls).
+     * Exposed for combat tests and any future host-side LoS check.
+     */
+    wallBetween,
+
+    /**
+     * Tell the sim a player just respawn-teleported to the spawn point. Pauses
+     * door-warp detection for that player for RESPAWN_GUARD_MS, so a chasing
+     * enemy won't follow the (revived, full-HP) player back to spawn — death
+     * looks identical to a door warp otherwise (full HP + a big position jump).
+     * A window, not a one-shot: the dying client keeps reporting its pre-death
+     * position for a beat, so the real jump to spawn can land a few ticks late.
+     * Also drops any warp already queued for this player (e.g. a real door warp
+     * the instant before death) so it can't be followed to the spawn point.
      */
     noteRespawn(id) {
-      warpSuppressed.add(id);
+      respawnGuard.set(id, Date.now() + RESPAWN_GUARD_MS);
+      recentWarps.delete(id);
     },
 
     stop() {
@@ -1392,6 +1874,8 @@ function createNpcSim(assetsDir) {
       fs.unwatchFile(ENEMY_OV_PATH, reloadEnemies);
       fs.unwatchFile(CAR_OV_PATH, reloadTraffic);
       fs.unwatchFile(COLLISION_OV_PATH, loadCollisionWithOverrides);
+      fs.unwatchFile(path.join(assetsDir, DOORS_FILE), loadDoorTriggers);
+      fs.unwatchFile(DOORS_OV_PATH, loadDoorTriggers);
     },
   };
 }

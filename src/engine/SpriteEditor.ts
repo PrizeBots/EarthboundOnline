@@ -1,15 +1,36 @@
 import { loadJSON, primeJSONCache } from './AssetLoader';
 import {
-  drawSprite, getSpriteGroupMeta, loadSpriteGroup,
-  getLiveSheet, getPristineSheet, getSourceSheet, refreshDiagSupport, SpriteOverrides,
+  drawSprite,
+  getSpriteGroupMeta,
+  loadSpriteGroup,
+  getLiveSheet,
+  getPristineSheet,
+  getSourceSheet,
+  refreshDiagSupport,
+  SpriteOverrides,
 } from './SpriteManager';
 import { getSpriteName, setSpriteNameOverride, getNameOverrides } from './SpriteNames';
 import { createSpritePicker, drawSpriteGroupThumb, SpritePicker } from './SpritePicker';
 import {
-  drawHeldItem, isItemBehind, nextHeldItem, getItemName,
-  ITEM_W, ITEM_H, ITEM_PALETTE, HELD_ITEM_IDS, setItemOverride, renderItemArt,
-  loadItemSprites, getItemSpriteData, setItemSpriteData, canvasToItemPixels, itemSpriteIds,
-  loadCustomItems, customItemIds, addCustomItem, customItemsDoc,
+  drawHeldItem,
+  isItemBehind,
+  nextHeldItem,
+  getItemName,
+  ITEM_W,
+  ITEM_H,
+  ITEM_PALETTE,
+  HELD_ITEM_IDS,
+  setItemOverride,
+  renderItemArt,
+  loadItemSprites,
+  getItemSpriteData,
+  setItemSpriteData,
+  canvasToItemPixels,
+  itemSpriteIds,
+  loadCustomItems,
+  customItemIds,
+  addCustomItem,
+  customItemsDoc,
 } from './Items';
 import { allItems, itemEquip } from './Shop';
 
@@ -28,7 +49,9 @@ type ItemTab = 'weapons' | 'items' | 'custom';
 function idsForTab(tab: ItemTab): string[] {
   if (tab === 'custom') {
     const seen = new Set<string>();
-    return [...HELD_ITEM_IDS, ...customItemIds()].filter((id) => (seen.has(id) ? false : seen.add(id)));
+    return [...HELD_ITEM_IDS, ...customItemIds()].filter((id) =>
+      seen.has(id) ? false : seen.add(id)
+    );
   }
   const isWeapon = (id: string) => itemEquip(id)?.slot === 'weapon';
   return allItems()
@@ -74,18 +97,22 @@ const BAND_ROWS = SHEET_ROWS - ATTACK_ROW_START; // editable pose rows (attack +
 // band. Selecting one shows it in the preview + test pane (view-only). Mirrors
 // the Traffic Editor's VEHICLE_SPRITES list.
 const VEHICLE_GROUPS: { id: number; name: string }[] = [
-  { id: 255, name: 'Car' },            { id: 206, name: 'Taxi' },
-  { id: 459, name: 'Truck' },          { id: 207, name: 'Delivery Truck' },
-  { id: 460, name: 'Moving Van' },     { id: 208, name: 'Camper Van' },
-  { id: 243, name: 'Tour Bus' },       { id: 254, name: 'Bulldozer' },
+  { id: 255, name: 'Car' },
+  { id: 206, name: 'Taxi' },
+  { id: 459, name: 'Truck' },
+  { id: 207, name: 'Delivery Truck' },
+  { id: 460, name: 'Moving Van' },
+  { id: 208, name: 'Camper Van' },
+  { id: 243, name: 'Tour Bus' },
+  { id: 254, name: 'Bulldozer' },
 ];
 function vehicleName(id: number): string | null {
   return VEHICLE_GROUPS.find((v) => v.id === id)?.name ?? null;
 }
 
-const ZOOM = 16;            // edit canvas: 1 sprite pixel = 16 screen pixels
-const STRIP_SCALE = 2;      // frame-strip preview scale (13 rows, overlay scrolls)
-const TEST_W = 192;         // WASD test pane, logical pixels
+const ZOOM = 16; // edit canvas: 1 sprite pixel = 16 screen pixels
+const STRIP_SCALE = 2; // frame-strip preview scale (13 rows, overlay scrolls)
+const TEST_W = 192; // WASD test pane, logical pixels
 const TEST_H = 144;
 const TEST_SCALE = 2;
 
@@ -94,8 +121,8 @@ const TEST_SCALE = 2;
 // STRIP_H is derived from the display row count below.
 const STRIP_FRAME_W = FRAME_W * STRIP_SCALE;
 const STRIP_FRAME_H = FRAME_H * STRIP_SCALE;
-const STRIP_SET_W = 2 * STRIP_FRAME_W;        // a 2-frame set
-const STRIP_GUTTER = 54;                       // label column width (fits "hurt NE")
+const STRIP_SET_W = 2 * STRIP_FRAME_W; // a 2-frame set
+const STRIP_GUTTER = 54; // label column width (fits "hurt NE")
 const STRIP_W = 2 * (STRIP_GUTTER + STRIP_SET_W);
 
 // Light checkerboard tones for the sprite surfaces (strip + edit canvas). A
@@ -132,15 +159,19 @@ const DIR_BASE: Record<string, { row: number; col: number }> = {
   NW: { row: 3, col: 2 },
 };
 // canonical (drawn) -> derived (auto-mirrored) direction.
-const MIRROR: [string, string][] = [['E', 'W'], ['NE', 'NW'], ['SE', 'SW']];
+const MIRROR: [string, string][] = [
+  ['E', 'W'],
+  ['NE', 'NW'],
+  ['SE', 'SW'],
+];
 // Canonical (editable + shown) directions.
 const CANON_DIRS = ['N', 'S', 'E', 'NE', 'SE'];
 
 // Per-block layout: which sheet rows it occupies and the label prefix.
 const BLOCKS = [
-  { offset: 0, prefix: '' },               // walk, rows 0-3
+  { offset: 0, prefix: '' }, // walk, rows 0-3
   { offset: ATTACK_ROW_START, prefix: 'atk ' }, // rows 5-8
-  { offset: HURT_ROW_START, prefix: 'hurt ' },  // rows 9-12
+  { offset: HURT_ROW_START, prefix: 'hurt ' }, // rows 9-12
 ];
 
 /** The block (row offset) a sheet row belongs to, or null for climb / off-grid. */
@@ -180,7 +211,7 @@ const DISPLAY_ROWS: DisplaySet[][] = (() => {
           label: prefix + d,
           row: DIR_BASE[d].row + off,
           col: DIR_BASE[d].col,
-        })),
+        }))
       );
     }
   };
@@ -215,7 +246,7 @@ let colorIndex = 1;
 // --- Item-editing mode ---
 let editMode: EditMode = 'char';
 let itemEditId: string = HELD_ITEM_IDS[0] ?? '';
-let itemCanvas: HTMLCanvasElement | null = null;   // 16x16 edit buffer
+let itemCanvas: HTMLCanvasElement | null = null; // 16x16 edit buffer
 let itemCtx: CanvasRenderingContext2D | null = null;
 let itemUndo: ImageData[] = [];
 // ITEM_PALETTE parsed to RGB for the eyedropper's nearest-color match.
@@ -235,15 +266,15 @@ let stripCanvas: HTMLCanvasElement;
 let testCanvas: HTMLCanvasElement;
 let itemNote: HTMLDivElement | null = null;
 let copyNote: HTMLDivElement | null = null;
-let toolButtons = new Map<Tool, HTMLButtonElement>();
+const toolButtons = new Map<Tool, HTMLButtonElement>();
 let swatchEls: HTMLDivElement[] = [];
 let paletteGrid: HTMLDivElement | null = null;
-let modeButtons = new Map<EditMode, HTMLButtonElement>();
+const modeButtons = new Map<EditMode, HTMLButtonElement>();
 // Custom sprite-preview dropdowns: the trigger AND every option row render the
 // real sprite (a native <option> can't). See createSpritePicker.
 let charPicker: SpritePicker | null = null;
 let itemPicker: SpritePicker | null = null;
-let itemRow: HTMLDivElement | null = null;       // the whole item UI (tabs + picker + new)
+let itemRow: HTMLDivElement | null = null; // the whole item UI (tabs + picker + new)
 let itemPickerHost: HTMLDivElement | null = null; // the picker is rebuilt in here per tab
 let itemTab: ItemTab = 'weapons';
 let charNote: HTMLDivElement | null = null;
@@ -287,7 +318,11 @@ export async function openSpriteEditor(callbacks: SpriteEditorCallbacks = {}): P
   // Make sure itemEditId is a real, selectable item across the three tabs (the
   // module default is a legacy seed id). If it isn't, fall back to the first
   // weapon/item/custom available. Then open on the tab that holds it.
-  const allTabIds = new Set([...idsForTab('weapons'), ...idsForTab('items'), ...idsForTab('custom')]);
+  const allTabIds = new Set([
+    ...idsForTab('weapons'),
+    ...idsForTab('items'),
+    ...idsForTab('custom'),
+  ]);
   if (!itemEditId || !allTabIds.has(itemEditId)) {
     itemEditId = idsForTab('weapons')[0] ?? idsForTab('items')[0] ?? idsForTab('custom')[0] ?? '';
   }
@@ -400,7 +435,10 @@ function persistItem(): void {
 }
 
 /** The whole authored item-art map, for the overrides/item_sprites.json file. */
-function buildItemSpriteDoc(): Record<string, { pixels: string[]; grip?: { x: number; y: number } }> {
+function buildItemSpriteDoc(): Record<
+  string,
+  { pixels: string[]; grip?: { x: number; y: number } }
+> {
   const doc: Record<string, { pixels: string[]; grip?: { x: number; y: number } }> = {};
   for (const id of itemSpriteIds()) {
     const d = getItemSpriteData(id);
@@ -569,12 +607,26 @@ function drawItemThumb(canvas: HTMLCanvasElement, v: string): void {
   const ctx = canvas.getContext('2d')!;
   ctx.imageSmoothingEnabled = false;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  const src: CanvasImageSource | null = v === itemEditId && itemCanvas ? itemCanvas : renderItemArt(v);
+  const src: CanvasImageSource | null =
+    v === itemEditId && itemCanvas ? itemCanvas : renderItemArt(v);
   if (!src) return;
-  const s = Math.max(1, Math.floor(Math.min(canvas.width / (ITEM_W + 2), canvas.height / (ITEM_H + 2))));
+  const s = Math.max(
+    1,
+    Math.floor(Math.min(canvas.width / (ITEM_W + 2), canvas.height / (ITEM_H + 2)))
+  );
   const dw = ITEM_W * s;
   const dh = ITEM_H * s;
-  ctx.drawImage(src, 0, 0, ITEM_W, ITEM_H, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
+  ctx.drawImage(
+    src,
+    0,
+    0,
+    ITEM_W,
+    ITEM_H,
+    (canvas.width - dw) / 2,
+    (canvas.height - dh) / 2,
+    dw,
+    dh
+  );
 }
 
 // Thin shims so existing call sites keep working: point the picker at the
@@ -675,20 +727,53 @@ async function postOverride(name: string, data: unknown): Promise<void> {
  * art (localStorage) and confirms on the item note. In Character mode it diffs
  * the attack/hurt bands vs pristine into overrides/sprites.json.
  */
+// Transient save notification — a brief banner pinned to the top of the editor
+// overlay (Ctrl+S has no shell toast of its own). Auto-fades; removed with the
+// overlay on close. Green for success, red for failure.
+let saveFlashTimer = 0;
+function flashSaved(msg: string, isError = false): void {
+  if (!overlay) return;
+  let el = overlay.querySelector<HTMLDivElement>('[data-role=save-flash]');
+  if (!el) {
+    el = document.createElement('div');
+    el.dataset.role = 'save-flash';
+    el.style.cssText =
+      'position:fixed;top:74px;left:50%;transform:translateX(-50%);z-index:99;' +
+      'padding:6px 16px;border-radius:5px;font:bold 13px monospace;pointer-events:none;' +
+      'box-shadow:0 4px 16px rgba(0,0,0,.5);transition:opacity .3s;';
+    overlay.appendChild(el);
+  }
+  el.textContent = msg;
+  el.style.background = isError ? '#3a1f1f' : '#1f3a26';
+  el.style.color = isError ? '#f99' : '#9f9';
+  el.style.border = `1px solid ${isError ? '#a44' : '#4a6'}`;
+  el.style.opacity = '1';
+  clearTimeout(saveFlashTimer);
+  saveFlashTimer = window.setTimeout(() => {
+    if (el) el.style.opacity = '0';
+  }, 1400);
+}
+
 function saveCurrentGroup(): void {
   if (!open || painting) return;
   if (editMode === 'item') {
     commitItemEdit();
     persistItem();
-    if (itemNote) itemNote.textContent = `Item saved: ${getItemName(itemEditId) ?? itemEditId}`;
+    const label = `Item saved: ${getItemName(itemEditId) ?? itemEditId}`;
+    if (itemNote) itemNote.textContent = label;
+    flashSaved(`💾 ${label}`);
     return;
   }
   if (!sheetReady()) return;
   captureGroupDiff();
   void postOverride('sprites.json', overridesDoc)
-    .then(() => updateCharNote(' — saved'))
+    .then(() => {
+      updateCharNote(' — saved');
+      flashSaved('💾 Saved');
+    })
     .catch((err) => {
       if (charNote) charNote.textContent = `save failed: ${String(err)}`;
+      flashSaved(`⚠ Save failed: ${String(err)}`, true);
     });
 }
 
@@ -724,6 +809,320 @@ function resetSelectedFrame(): void {
   dirty = true;
 }
 
+// ---------------------------------------------------------------------------
+// PNG export / import (artist handoff). Export the active surface as a 1x PNG;
+// import an edited PNG back in. Imported colors snap to the active palette
+// (nearest index), so off-palette art an artist introduced is pulled back onto
+// legal colors and the result stays SNES-correct. Character import lands in the
+// LIVE sheet — the existing Save still diffs vs the generated/ROM pristine, so
+// only hand-painted deltas persist and no ROM pixels leak. Import does NOT save;
+// the admin reviews in the test pane, then hits Ctrl+S.
+// ---------------------------------------------------------------------------
+
+/** Filesystem-safe slug for an export filename. */
+function safeName(s: string): string {
+  return s.replace(/[^a-z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '') || 'sprite';
+}
+
+/** Trigger a browser download of a canvas as a native-size (1x) PNG. */
+function downloadCanvasPNG(canvas: HTMLCanvasElement, filename: string): void {
+  const a = document.createElement('a');
+  a.href = canvas.toDataURL('image/png');
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+/** Nearest palette index (>=1; index 0 is reserved transparent) to an RGB. */
+function nearestIndexIn(pal: [number, number, number][], r: number, g: number, b: number): number {
+  let best = 1;
+  let bestDist = Infinity;
+  for (let i = 1; i < pal.length; i++) {
+    const [pr, pg, pb] = pal[i];
+    const d = (pr - r) ** 2 + (pg - g) ** 2 + (pb - b) ** 2;
+    if (d < bestDist) {
+      bestDist = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/** Snap an imported image to the palette: transparent stays transparent, every
+ *  opaque pixel becomes its nearest palette color. */
+function snapImageToPalette(src: ImageData, pal: [number, number, number][]): ImageData {
+  const out = new ImageData(src.width, src.height);
+  for (let i = 0; i < src.data.length; i += 4) {
+    if (src.data[i + 3] < 128) {
+      out.data[i + 3] = 0;
+      continue;
+    } // transparent
+    const idx = nearestIndexIn(pal, src.data[i], src.data[i + 1], src.data[i + 2]);
+    const [r, g, b] = pal[idx];
+    out.data[i] = r;
+    out.data[i + 1] = g;
+    out.data[i + 2] = b;
+    out.data[i + 3] = 255;
+  }
+  return out;
+}
+
+/** Copy a sub-rectangle out of an ImageData (used to pull one band out of the
+ *  labeled export sheet on import, skipping the header margins). */
+function cropImageData(src: ImageData, x: number, y: number, w: number, h: number): ImageData {
+  const out = new ImageData(w, h);
+  for (let row = 0; row < h; row++) {
+    const s = ((y + row) * src.width + x) * 4;
+    out.data.set(src.data.subarray(s, s + w * 4), row * w * 4);
+  }
+  return out;
+}
+
+/** True if any pixel in the (col,row) sheet cell of ctx is non-transparent. */
+function cellHasContent(ctx: CanvasRenderingContext2D, col: number, row: number): boolean {
+  const d = ctx.getImageData(col * FRAME_W, row * FRAME_H, FRAME_W, FRAME_H).data;
+  for (let i = 3; i < d.length; i += 4) if (d[i] !== 0) return true;
+  return false;
+}
+
+// Labeled comparison export — ONE character per sheet (Ness never appears on
+// another character's sheet; open his export alongside as the master reference).
+// Two stacked bands, split by what the data IS:
+//   ORIGINAL band = the game movement frames (walk rows 0-3 + climb row 4).
+//   CUSTOM band   = the combat poses we generate/hand-paint (attack 5-8, hurt 9-12).
+// Every slot this character lacks but Ness has is drawn as a faint blank guide-box
+// in either band, so the artist can fill in the missing frames by eye.
+// Each band is wrapped in label margins: A B C … across the top for columns, and
+// the sheet's row number (1-based) down the left, so any frame names uniquely
+// ("frame B7" = col B, sheet row 7 = an attack frame).
+//
+// The label margins are EXTRA pixels. Import reads BOTH sprite bands back (skipping
+// the margins) and writes each onto its rows. Untouched ROM frames re-import equal
+// to pristine, so Save still won't re-save them — only hand-painted blanks persist.
+const EXPORT_ORIG_ROWS = ATTACK_ROW_START; // walk + climb (rows 0-4)
+const EXPORT_CUST_ROWS = SHEET_ROWS - ATTACK_ROW_START; // attack + hurt (rows 5-12)
+const EXPORT_ORIG_H = EXPORT_ORIG_ROWS * FRAME_H;
+const EXPORT_CUST_H = EXPORT_CUST_ROWS * FRAME_H;
+const EXPORT_CUST_SRC_Y = ATTACK_ROW_START * FRAME_H; // attack/hurt start in the sheet
+const EXPORT_HDR_W = 16; // left margin: row numbers
+const EXPORT_HDR_H = 14; // header strip: column letters
+const EXPORT_ORIG_Y = EXPORT_HDR_H; // original sprites start
+const EXPORT_MID_Y = EXPORT_HDR_H + EXPORT_ORIG_H; // custom band's header strip
+const EXPORT_CUST_Y = EXPORT_MID_Y + EXPORT_HDR_H; // custom sprites start
+const EXPORT_W = EXPORT_HDR_W + SHEET_W;
+const EXPORT_H = EXPORT_HDR_H * 2 + EXPORT_ORIG_H + EXPORT_CUST_H;
+
+/** Y of a sheet row inside the export canvas (walk/climb → top band, attack/hurt
+ *  → bottom band, both offset past their header strip). */
+function exportRowY(row: number): number {
+  return row < ATTACK_ROW_START
+    ? EXPORT_ORIG_Y + row * FRAME_H
+    : EXPORT_CUST_Y + (row - ATTACK_ROW_START) * FRAME_H;
+}
+
+/**
+ * Faint EMPTY BOX outlining every slot — in EITHER band — that this character is
+ * missing but Ness (the master) has. The artist opens Ness's export alongside,
+ * reads the matching frame, and paints the blank in so we can complete every
+ * frame for every character. Boxes are low alpha (<128); import treats alpha <128
+ * as transparent, so untouched guides are never saved as art.
+ */
+function drawMissingFrameBoxes(ctx: CanvasRenderingContext2D): void {
+  const ness = groupId === DEFAULT_GROUP ? null : getLiveSheet(DEFAULT_GROUP);
+  const nessCtx = ness?.getContext('2d', { willReadFrequently: true }) ?? null;
+  if (!nessCtx) return;
+  ctx.fillStyle = 'rgba(120,150,200,0.30)'; // ~76 alpha — visible, dropped on import
+  for (let r = 0; r < SHEET_ROWS; r++) {
+    for (let c = 0; c < SHEET_COLS; c++) {
+      if (cellHasContent(sheetCtx!, c, r)) continue; // char already has this frame
+      if (!cellHasContent(nessCtx, c, r)) continue; // Ness lacks it too — not a "missing" frame
+      const x = EXPORT_HDR_W + c * FRAME_W;
+      const y = exportRowY(r);
+      ctx.fillRect(x, y, FRAME_W, 1); // top
+      ctx.fillRect(x, y + FRAME_H - 1, FRAME_W, 1); // bottom
+      ctx.fillRect(x, y, 1, FRAME_H); // left
+      ctx.fillRect(x + FRAME_W - 1, y, 1, FRAME_H); // right
+    }
+  }
+}
+
+/** Paint the A/B/C column letters + row numbers into the margins. Only the margins
+ *  are filled; the sprite bands stay transparent for a clean re-import. */
+function drawExportLabels(ctx: CanvasRenderingContext2D): void {
+  ctx.fillStyle = '#16161e';
+  ctx.fillRect(0, 0, EXPORT_HDR_W, EXPORT_H); // left row-number column
+  ctx.fillRect(0, 0, EXPORT_W, EXPORT_HDR_H); // original band header strip
+  ctx.fillRect(0, EXPORT_MID_Y, EXPORT_W, EXPORT_HDR_H); // custom band header strip
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  // column letters A B C … across both header strips
+  ctx.fillStyle = '#9af';
+  ctx.font = 'bold 11px monospace';
+  for (let c = 0; c < SHEET_COLS; c++) {
+    const x = EXPORT_HDR_W + c * FRAME_W + FRAME_W / 2;
+    const letter = String.fromCharCode(65 + c);
+    ctx.fillText(letter, x, EXPORT_HDR_H / 2);
+    ctx.fillText(letter, x, EXPORT_MID_Y + EXPORT_HDR_H / 2);
+  }
+
+  // row numbers — the sheet's real 1-based row index, so a frame names uniquely
+  ctx.fillStyle = '#ddd';
+  ctx.font = 'bold 10px monospace';
+  for (let r = 0; r < EXPORT_ORIG_ROWS; r++) {
+    ctx.fillText(String(r + 1), EXPORT_HDR_W / 2, EXPORT_ORIG_Y + r * FRAME_H + FRAME_H / 2);
+  }
+  for (let r = 0; r < EXPORT_CUST_ROWS; r++) {
+    const sheetRow = ATTACK_ROW_START + r;
+    ctx.fillText(String(sheetRow + 1), EXPORT_HDR_W / 2, EXPORT_CUST_Y + r * FRAME_H + FRAME_H / 2);
+  }
+
+  // band tags in the corner cells
+  ctx.fillStyle = '#6c8';
+  ctx.font = 'bold 7px monospace';
+  ctx.fillText('ORIG', EXPORT_HDR_W / 2, EXPORT_HDR_H / 2);
+  ctx.fillText('CUST', EXPORT_HDR_W / 2, EXPORT_MID_Y + EXPORT_HDR_H / 2);
+}
+
+/** Build the labeled comparison export: ROM frames (walk/climb) on top, editable
+ *  attack/hurt frames below, with column-letter / row-number headers in the margins. */
+function buildExportSheet(): HTMLCanvasElement {
+  const out = document.createElement('canvas');
+  out.width = EXPORT_W;
+  out.height = EXPORT_H;
+  const ctx = out.getContext('2d', { willReadFrequently: true })!;
+  ctx.imageSmoothingEnabled = false;
+
+  // Both bands come from the LIVE sheet so any frame the artist has already added
+  // (in either band) shows on re-export. Sprite cells stay transparent — import
+  // reads both bands back verbatim; blank cells stay blank.
+  // ORIGINAL band: walk + climb (rows 0-4)
+  ctx.drawImage(
+    sheet!,
+    0,
+    0,
+    SHEET_W,
+    EXPORT_ORIG_H,
+    EXPORT_HDR_W,
+    EXPORT_ORIG_Y,
+    SHEET_W,
+    EXPORT_ORIG_H
+  );
+  // CUSTOM band: attack + hurt (rows 5-12)
+  ctx.drawImage(
+    sheet!,
+    0,
+    EXPORT_CUST_SRC_Y,
+    SHEET_W,
+    EXPORT_CUST_H,
+    EXPORT_HDR_W,
+    EXPORT_CUST_Y,
+    SHEET_W,
+    EXPORT_CUST_H
+  );
+  drawMissingFrameBoxes(ctx);
+
+  drawExportLabels(ctx);
+  return out;
+}
+
+/** Export the active surface (character sheet or item buffer) as a 1x PNG. */
+function exportPNG(): void {
+  if (editMode === 'item') {
+    if (!itemCanvas) return;
+    downloadCanvasPNG(itemCanvas, `${safeName(itemEditId)}_item.png`);
+    if (itemNote)
+      itemNote.textContent = `Exported ${ITEM_W}×${ITEM_H} PNG: ${getItemName(itemEditId) ?? itemEditId}`;
+    return;
+  }
+  if (!sheet) {
+    if (charNote) charNote.textContent = 'Nothing to export (view-only group)';
+    return;
+  }
+  const name = safeName(getSpriteName(groupId) ?? `char_${groupId}`);
+  downloadCanvasPNG(buildExportSheet(), `${name}_${groupId}_sheet.png`);
+  updateCharNote(
+    ` — exported ${EXPORT_W}×${EXPORT_H} PNG (original top · custom bottom · A–D cols · 1–${SHEET_ROWS} rows)`
+  );
+}
+
+/** Open a file picker and import a PNG back into the active surface. */
+function importPNG(): void {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/png,image/*';
+  input.onchange = () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      applyImportedImage(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      const note = editMode === 'item' ? itemNote : charNote;
+      if (note) note.textContent = 'Import failed: not a readable image';
+    };
+    img.src = url;
+  };
+  input.click();
+}
+
+/** Snap + write a loaded image into the active surface (dimensions must match). */
+function applyImportedImage(img: HTMLImageElement): void {
+  if (editMode === 'item') {
+    if (img.width !== ITEM_W || img.height !== ITEM_H) {
+      if (itemNote)
+        itemNote.textContent = `Import needs ${ITEM_W}×${ITEM_H} PNG (got ${img.width}×${img.height})`;
+      return;
+    }
+    const data = imageToData(img, ITEM_W, ITEM_H);
+    pushUndo();
+    itemCtx!.putImageData(snapImageToPalette(data, itemPaletteRGB), 0, 0);
+    commitItemEdit();
+    if (itemNote)
+      itemNote.textContent = `Imported ${getItemName(itemEditId) ?? itemEditId} — Save to persist`;
+    dirty = true;
+    return;
+  }
+  if (!sheetReady()) {
+    if (charNote) charNote.textContent = 'Select an editable character first';
+    return;
+  }
+  if (img.width !== EXPORT_W || img.height !== EXPORT_H) {
+    if (charNote)
+      charNote.textContent = `Import needs ${EXPORT_W}×${EXPORT_H} sheet (got ${img.width}×${img.height})`;
+    return;
+  }
+  // Pull both sprite bands out of the labeled sheet (skipping the header margins)
+  // and write each onto its rows. ROM frames re-imported match pristine, so Save
+  // still won't re-save them — only the artist's hand-painted blanks persist.
+  const full = imageToData(img, EXPORT_W, EXPORT_H);
+  const origBand = cropImageData(full, EXPORT_HDR_W, EXPORT_ORIG_Y, SHEET_W, EXPORT_ORIG_H);
+  const custBand = cropImageData(full, EXPORT_HDR_W, EXPORT_CUST_Y, SHEET_W, EXPORT_CUST_H);
+  pushUndo();
+  sheetCtx!.putImageData(snapImageToPalette(origBand, palette), 0, 0);
+  sheetCtx!.putImageData(snapImageToPalette(custBand, palette), 0, EXPORT_CUST_SRC_Y);
+  refreshDiagSupport(groupId); // import may add/remove diagonal frames
+  updateCharNote(' — imported (Ctrl+S to save)');
+  dirty = true;
+}
+
+/** Rasterize an image to raw RGBA pixels at the given native size. */
+function imageToData(img: HTMLImageElement, w: number, h: number): ImageData {
+  const tmp = document.createElement('canvas');
+  tmp.width = w;
+  tmp.height = h;
+  const ctx = tmp.getContext('2d', { willReadFrequently: true })!;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(img, 0, 0);
+  return ctx.getImageData(0, 0, w, h);
+}
+
 function cancelEditor(): void {
   if (!open) return;
   const cb = editorCallbacks.onCancel;
@@ -747,7 +1146,8 @@ function buildDom(): void {
     'overflow:auto;user-select:none;';
 
   const title = document.createElement('div');
-  title.textContent = 'SPRITE EDITOR — attack/hurt frames + held items   (pick a character · Character/Item modes · WASD: test walk · F attack · H hurt · 1/2/3 or Q/E: tools · Alt+click: eyedrop · G: cycle item · Ctrl+C/V: copy/paste frame · Ctrl+Z: undo · Ctrl+S: save · Esc: back)';
+  title.textContent =
+    'SPRITE EDITOR — attack/hurt frames + held items   (pick a character · Character/Item modes · WASD: test walk · F attack · H hurt · 1/2/3 or Q/E: tools · Alt+click: eyedrop · G: cycle item · Ctrl+C/V: copy/paste frame · Ctrl+Z: undo · Ctrl+S: save · Export/Import PNG for artists · Esc: back)';
   title.style.cssText = 'padding:10px;color:#fff;letter-spacing:1px;';
   overlay.appendChild(title);
 
@@ -829,7 +1229,10 @@ function buildToolPanel(): HTMLDivElement {
   // Edit-target toggle: the character sheet, or a held-item sprite.
   const modeRow = document.createElement('div');
   modeRow.style.cssText = 'display:flex;gap:6px;';
-  const modes: [EditMode, string][] = [['char', 'Character'], ['item', 'Item']];
+  const modes: [EditMode, string][] = [
+    ['char', 'Character'],
+    ['item', 'Item'],
+  ];
   for (const [m, label] of modes) {
     const btn = document.createElement('button');
     btn.textContent = label;
@@ -849,7 +1252,11 @@ function buildToolPanel(): HTMLDivElement {
 
   const itemTabs = document.createElement('div');
   itemTabs.style.cssText = 'display:flex;gap:4px;';
-  for (const [t, label] of [['weapons', 'Weapons'], ['items', 'Items'], ['custom', 'Custom']] as [ItemTab, string][]) {
+  for (const [t, label] of [
+    ['weapons', 'Weapons'],
+    ['items', 'Items'],
+    ['custom', 'Custom'],
+  ] as [ItemTab, string][]) {
     const b = document.createElement('button');
     b.textContent = label;
     b.dataset.itab = t;
@@ -914,12 +1321,38 @@ function buildToolPanel(): HTMLDivElement {
 
   const save = document.createElement('button');
   save.textContent = '💾 Save (Ctrl+S)';
-  save.title = 'Write this character\'s attack/hurt edits to overrides/sprites.json';
+  save.title = "Write this character's attack/hurt edits to overrides/sprites.json";
   save.style.cssText =
     'margin-top:4px;font:12px monospace;padding:6px 8px;background:#1f3a26;' +
     'color:#9f9;border:1px solid #4a6;border-radius:3px;cursor:pointer;';
   save.onclick = saveCurrentGroup;
   div.appendChild(save);
+
+  // Artist handoff: export the current sheet/item as a 1x PNG, import it back
+  // (colors snap to palette). Acts on whichever surface (char vs item) is active.
+  const ioRow = document.createElement('div');
+  ioRow.style.cssText = 'display:flex;gap:6px;margin-top:8px;';
+  const mkIoBtn = (label: string, title: string, fn: () => void) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.title = title;
+    b.style.cssText =
+      'flex:1;font:11px monospace;padding:5px 6px;background:#23304a;color:#bcd;' +
+      'border:1px solid #456;border-radius:3px;cursor:pointer;';
+    b.onclick = fn;
+    return b;
+  };
+  ioRow.appendChild(
+    mkIoBtn('⬇ Export PNG', 'Download the current sheet/item as a 1× PNG for an artist', exportPNG)
+  );
+  ioRow.appendChild(
+    mkIoBtn(
+      '⬆ Import PNG',
+      'Load an edited PNG back in (colors snap to palette). Ctrl+S to persist.',
+      importPNG
+    )
+  );
+  div.appendChild(ioRow);
 
   setTool('pencil');
   setColor(colorIndex);
@@ -1055,7 +1488,8 @@ function renderSwatches(): void {
   const count = editMode === 'item' ? ITEM_PALETTE.length : palette.length;
   for (let i = 0; i < count; i++) {
     const sw = document.createElement('div');
-    sw.style.cssText = 'width:24px;height:24px;border:2px solid #444;cursor:pointer;border-radius:2px;';
+    sw.style.cssText =
+      'width:24px;height:24px;border:2px solid #444;cursor:pointer;border-radius:2px;';
     const color = colorFor(i);
     if (color === null) {
       // Color 0 is hardware-transparent on the SNES — painting it erases.
@@ -1107,7 +1541,13 @@ function parseHexColor(hex: string): [number, number, number] {
 
 // The canvas + cell origin + dimensions currently being painted. Character mode
 // targets the selected sheet cell (16x24); item mode targets the 16x16 buffer.
-function activeTarget(): { ctx: CanvasRenderingContext2D; w: number; h: number; ox: number; oy: number } {
+function activeTarget(): {
+  ctx: CanvasRenderingContext2D;
+  w: number;
+  h: number;
+  ox: number;
+  oy: number;
+} {
   if (editMode === 'item') return { ctx: itemCtx!, w: ITEM_W, h: ITEM_H, ox: 0, oy: 0 };
   return { ctx: sheetCtx!, w: FRAME_W, h: FRAME_H, ox: selCol * FRAME_W, oy: selRow * FRAME_H };
 }
@@ -1159,7 +1599,6 @@ function applyToolAt(e: MouseEvent): void {
     if (tool === 'eyedrop') setTool('pencil');
     return;
   }
-
 
   const color = colorFor(colorIndex);
   if (erase || color === null) {
@@ -1349,7 +1788,8 @@ function onKeyDown(e: KeyboardEvent): void {
       dirty = true;
     } else {
       walkerItem = nextHeldItem(walkerItem); // preview held-item overlays
-      if (itemNote) itemNote.textContent = `Item: ${walkerItem ? getItemName(walkerItem) : 'none'} (G cycles)`;
+      if (itemNote)
+        itemNote.textContent = `Item: ${walkerItem ? getItemName(walkerItem) : 'none'} (G cycles)`;
     }
   }
 }
@@ -1505,7 +1945,7 @@ function drawEditCanvas(): void {
   ctx.fillRect(0, 0, editCanvas.width, editCanvas.height);
   ctx.fillStyle = CHECKER_B;
   for (let y = 0; y < gh; y++) {
-    for (let x = (y % 2 === 0 ? 0 : 1); x < gw; x += 2) {
+    for (let x = y % 2 === 0 ? 0 : 1; x < gw; x += 2) {
       ctx.fillRect(x * ZOOM, y * ZOOM, ZOOM, ZOOM);
     }
   }
@@ -1515,8 +1955,14 @@ function drawEditCanvas(): void {
   } else {
     ctx.drawImage(
       sheet!,
-      selCol * FRAME_W, selRow * FRAME_H, FRAME_W, FRAME_H,
-      0, 0, gw * ZOOM, gh * ZOOM
+      selCol * FRAME_W,
+      selRow * FRAME_H,
+      FRAME_W,
+      FRAME_H,
+      0,
+      0,
+      gw * ZOOM,
+      gh * ZOOM
     );
   }
 
@@ -1532,11 +1978,17 @@ function drawEditCanvas(): void {
 }
 
 /** Light transparency checker filling a device-pixel rect of the strip. */
-function fillChecker(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number): void {
+function fillChecker(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number
+): void {
   const C = 8;
   for (let yy = 0; yy < h; yy += C) {
     for (let xx = 0; xx < w; xx += C) {
-      ctx.fillStyle = (((xx / C) + (yy / C)) & 1) ? CHECKER_B : CHECKER_A;
+      ctx.fillStyle = (xx / C + yy / C) & 1 ? CHECKER_B : CHECKER_A;
       ctx.fillRect(x + xx, y + yy, Math.min(C, w - xx), Math.min(C, h - yy));
     }
   }
@@ -1636,14 +2088,17 @@ function vehicleStripCells(): StripCell[] {
 
 /** The current held item's single frame (its live edit buffer or base art). */
 function itemStripCells(): StripCell[] {
-  const art: CanvasImageSource | null = itemEditId && itemCanvas ? itemCanvas : renderItemArt(itemEditId);
+  const art: CanvasImageSource | null =
+    itemEditId && itemCanvas ? itemCanvas : renderItemArt(itemEditId);
   if (!art) return [];
-  return [{
-    label: getItemName(itemEditId) ?? itemEditId,
-    w: ITEM_W,
-    h: ITEM_H,
-    draw: (ctx, dx, dy, dw, dh) => ctx.drawImage(art, 0, 0, ITEM_W, ITEM_H, dx, dy, dw, dh),
-  }];
+  return [
+    {
+      label: getItemName(itemEditId) ?? itemEditId,
+      w: ITEM_W,
+      h: ITEM_H,
+      draw: (ctx, dx, dy, dw, dh) => ctx.drawImage(art, 0, 0, ITEM_W, ITEM_H, dx, dy, dw, dh),
+    },
+  ];
 }
 
 function drawStrip(): void {
@@ -1691,8 +2146,14 @@ function drawStrip(): void {
       for (let i = 0; i < 2; i++) {
         ctx.drawImage(
           sheet!,
-          (set.col + i) * FRAME_W, set.row * FRAME_H, FRAME_W, FRAME_H,
-          fx + i * STRIP_FRAME_W, y, STRIP_FRAME_W, STRIP_FRAME_H
+          (set.col + i) * FRAME_W,
+          set.row * FRAME_H,
+          FRAME_W,
+          FRAME_H,
+          fx + i * STRIP_FRAME_W,
+          y,
+          STRIP_FRAME_W,
+          STRIP_FRAME_H
         );
       }
 

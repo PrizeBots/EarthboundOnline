@@ -1,10 +1,6 @@
 import { loadJSON } from './AssetLoader';
 import { getSector } from './MapManager';
-import {
-  SECTOR_TILES_X,
-  SECTOR_TILES_Y,
-  TILE_SIZE,
-} from '../types';
+import { SECTOR_TILES_X, SECTOR_TILES_Y, TILE_SIZE } from '../types';
 
 // asm.js SPC engine globals (loaded via <script> tag)
 declare function _my_init(spcPtr: number, length: number): void;
@@ -27,8 +23,11 @@ let musicMap: Record<string, number> = {};
 // on SNES these bake back down to per-sector musicId.
 export interface MusicArea {
   name: string;
-  x: number; y: number; w: number; h: number; // world pixels
-  song: number;                                // SPC song number (what plays)
+  x: number;
+  y: number;
+  w: number;
+  h: number; // world pixels
+  song: number; // SPC song number (what plays)
 }
 let musicAreas: MusicArea[] = [];
 
@@ -76,7 +75,7 @@ let muted = false;
 
 // SPC decode state
 let bufPtr = 0;
-let frameSize = 16384;
+const frameSize = 16384;
 let ratio = 1;
 let lastSample = 0;
 

@@ -82,12 +82,14 @@ export function connect(
     // Level is NOT sent: the server is authoritative on progression (every join
     // starts at level 1 until the save system lands) and ignores client-supplied
     // levels, so sending one would only imply a control the client doesn't have.
-    ws!.send(JSON.stringify({
-      type: 'join',
-      spriteGroupId,
-      name,
-      appearance,
-    }));
+    ws!.send(
+      JSON.stringify({
+        type: 'join',
+        spriteGroupId,
+        name,
+        appearance,
+      })
+    );
   };
 
   ws.onmessage = (ev) => {
@@ -157,14 +159,38 @@ export function sendPosition(
   pose: Pose
 ) {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: 'move',
-      x: Math.round(x),
-      y: Math.round(y),
-      direction,
-      frame,
-      pose,
-    }));
+    ws.send(
+      JSON.stringify({
+        type: 'move',
+        x: Math.round(x),
+        y: Math.round(y),
+        direction,
+        frame,
+        pose,
+      })
+    );
+  }
+}
+
+/**
+ * Tell the server we entered (true) or finished (false) a door transition.
+ * While warping the client freezes its reported position for the whole fade, so
+ * the server shields the motionless player from enemy hits (see GameHost).
+ */
+export function sendWarpState(warping: boolean) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'warp', warping }));
+  }
+}
+
+/**
+ * Dev editor only: tell the server we entered (true) / left (false) editor mode.
+ * The server then pulls our avatar out of the NPC sim — enemies ignore it and no
+ * death can respawn-yank our free camera. No-op in production (editor never loads).
+ */
+export function sendEditorMode(on: boolean) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'editor', on }));
   }
 }
 

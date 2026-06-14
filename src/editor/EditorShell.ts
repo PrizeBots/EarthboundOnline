@@ -43,6 +43,14 @@ export class EditorShell {
   private readonly dirtyDomains = new Set<string>();
   private readonly heldKeys = new Set<string>();
 
+  // Auto-save: every tool funnels edits through markDirty(domain), which
+  // debounces a save via the domain's registered handler — no per-tool Save
+  // buttons. `autoSaveTimers` holds the pending debounce per domain;
+  // `savingDomains` guards against overlapping in-flight saves for one domain.
+  private readonly autoSaveTimers = new Map<string, number>();
+  private readonly savingDomains = new Set<string>();
+  private readonly AUTOSAVE_MS = 600;
+
   private activeTool: EditorTool | null = null;
   private savedRoomBounds: RoomBounds | null = null;
   // Mute state to restore on exit — the editor force-mutes the game while active.
@@ -88,7 +96,7 @@ export class EditorShell {
   private panelHost: HTMLDivElement | null = null;
   private toolHint: HTMLDivElement | null = null;
   private readonly toolTabs = new Map<string, HTMLButtonElement>();
-  private saveAllBtn: HTMLButtonElement | null = null;
+  private saveStatusBtn: HTMLButtonElement | null = null;
   private hotReloadBtn: HTMLButtonElement | null = null;
   private hotReloadOn = false;
 
@@ -108,6 +116,11 @@ export class EditorShell {
   enter(): void {
     if (this.active) return;
     this.active = true;
+
+    // Pull our avatar out of the server's world sim while editing: enemies stop
+    // aggroing/colliding with the parked character, so nothing can kill it and
+    // respawn-yank the free camera back across the map.
+    this.context.setEditing(true);
 
     // Editor camera starts where the gameplay camera was; room crop is
     // released by default so packed interiors are visible while flying.
@@ -182,6 +195,11 @@ export class EditorShell {
     if (!this.active) return;
     this.active = false;
 
+    this.flushPending(); // persist any debounced edits before tearing down
+
+    // Rejoin the world sim — the avatar is a live, damageable target again.
+    this.context.setEditing(false);
+
     // Restore the player's pre-editor mute preference and bring the button back.
     setMusicMuted(this.mutedBeforeEditor);
     setMuteButtonHidden(false);
@@ -207,7 +225,7 @@ export class EditorShell {
     this.dock = null;
     this.panelHost = null;
     this.toolHint = null;
-    this.saveAllBtn = null;
+    this.saveStatusBtn = null;
     this.toolTabs.clear();
     this.bar?.remove();
     this.bar = null;
@@ -219,6 +237,7 @@ export class EditorShell {
 
   setTool(tool: EditorTool | null): void {
     if (this.activeTool === tool) return;
+    this.flushPending(); // persist the outgoing tool's edits before swapping panels
     this.activeTool?.deactivate?.();
     this.activeTool = tool;
     tool?.activate?.(this.api()); // tools mount their panel into the dock's panelHost
@@ -271,24 +290,85 @@ export class EditorShell {
 
   markDirty(domain: string): void {
     this.dirtyDomains.add(domain);
-    this.updateDirtyDot();
+    this.updateSaveStatus();
+    this.scheduleAutoSave(domain); // persist shortly after edits settle
   }
 
   clearDirty(domain: string): void {
     this.dirtyDomains.delete(domain);
-    this.updateDirtyDot();
+    this.updateSaveStatus();
   }
 
   get dirty(): ReadonlySet<string> {
     return this.dirtyDomains;
   }
 
-  private updateDirtyDot(): void {
-    const n = this.dirtyDomains.size;
-    if (this.dirtyDot) {
-      this.dirtyDot.textContent = n > 0 ? `● unsaved: ${[...this.dirtyDomains].join(', ')}` : '';
+  // --- auto-save -----------------------------------------------------------
+
+  /** (Re)start the debounce for a domain; the timer fires one save once edits pause. */
+  private scheduleAutoSave(domain: string): void {
+    const prev = this.autoSaveTimers.get(domain);
+    if (prev) clearTimeout(prev);
+    this.autoSaveTimers.set(
+      domain,
+      window.setTimeout(() => {
+        this.autoSaveTimers.delete(domain);
+        void this.autoSaveDomain(domain);
+      }, this.AUTOSAVE_MS)
+    );
+  }
+
+  /** Run a domain's registered save handler, guarding overlapping saves. The
+   *  handler clears its own dirty flag and toasts (that's the save notification);
+   *  on failure we keep the domain dirty and retry after the next change. */
+  private async autoSaveDomain(domain: string): Promise<void> {
+    if (!this.dirtyDomains.has(domain)) return; // nothing pending
+    if (this.savingDomains.has(domain)) {
+      this.scheduleAutoSave(domain); // a save is in flight — retry after it settles
+      return;
     }
-    if (this.saveAllBtn) this.saveAllBtn.textContent = `💾 Save all${n ? ` (${n})` : ''}`;
+    const save = getSaveHandler(domain);
+    if (!save) return; // no handler registered (shouldn't happen)
+    this.savingDomains.add(domain);
+    this.updateSaveStatus();
+    try {
+      await save();
+      this.dirtyDomains.delete(domain);
+    } catch (err) {
+      this.toast(`Auto-save failed (${domain}) — will retry: ${err}`, true);
+      this.scheduleAutoSave(domain);
+    } finally {
+      this.savingDomains.delete(domain);
+      this.updateSaveStatus();
+    }
+  }
+
+  /** Force every dirty domain to save NOW (skip the debounce) — used on tool
+   *  switch, on exit, and when the status button is clicked. */
+  private flushPending(): void {
+    for (const domain of [...this.dirtyDomains]) {
+      const prev = this.autoSaveTimers.get(domain);
+      if (prev) {
+        clearTimeout(prev);
+        this.autoSaveTimers.delete(domain);
+      }
+      void this.autoSaveDomain(domain);
+    }
+  }
+
+  private updateSaveStatus(): void {
+    const dirty = this.dirtyDomains.size;
+    const saving = this.savingDomains.size;
+    if (this.dirtyDot) {
+      this.dirtyDot.textContent = dirty ? `● unsaved: ${[...this.dirtyDomains].join(', ')}` : '';
+    }
+    if (this.saveStatusBtn) {
+      this.saveStatusBtn.textContent = saving
+        ? '💾 Saving…'
+        : dirty
+          ? `● Save now (${dirty})`
+          : '✓ Saved';
+    }
   }
 
   // --- right tool dock -------------------------------------------------------
@@ -335,13 +415,14 @@ export class EditorShell {
     this.dock.appendChild(this.buildDockFooter());
     document.body.appendChild(this.dock);
     this.syncToolTabs();
-    this.updateDirtyDot();
+    this.updateSaveStatus();
   }
 
   private tabStyle(active: boolean, ready: boolean): string {
     const base =
       'font:11px monospace;padding:4px 8px;text-align:left;border-radius:3px;cursor:pointer;';
-    if (!ready) return base + 'background:#11161c;color:#8899aa;border:1px solid #2a3340;opacity:.7;';
+    if (!ready)
+      return base + 'background:#11161c;color:#8899aa;border:1px solid #2a3340;opacity:.7;';
     return active
       ? base + 'background:#3d2f14;color:#e8a33d;border:1px solid #e8a33d;'
       : base + 'background:#1d2530;color:#cde;border:1px solid #3a4a5a;';
@@ -389,12 +470,15 @@ export class EditorShell {
 
     const btnRow = document.createElement('div');
     btnRow.style.cssText = 'display:flex;gap:6px;';
-    this.saveAllBtn = this.mkDockBtn('💾 Save all', () => void this.saveAll(), true);
-    this.saveAllBtn.style.flex = '1';
-    btnRow.appendChild(this.saveAllBtn);
+    // Auto-save status — edits persist automatically; click to force a save now.
+    this.saveStatusBtn = this.mkDockBtn('✓ Saved', () => this.flushPending(), true);
+    this.saveStatusBtn.style.flex = '1';
+    this.saveStatusBtn.title = 'Changes auto-save. Click to save immediately.';
+    btnRow.appendChild(this.saveStatusBtn);
     const back = this.mkDockBtn('Back to game', () => this.exit());
     btnRow.appendChild(back);
     footer.appendChild(btnRow);
+    this.updateSaveStatus();
     return footer;
   }
 
@@ -408,29 +492,6 @@ export class EditorShell {
         : 'background:#1d2530;color:#cde;border:1px solid #3a4a5a;');
     b.onclick = onClick;
     return b;
-  }
-
-  /** Run every dirty domain's registered save handler (moved off the old hub). */
-  private async saveAll(): Promise<void> {
-    if (this.dirtyDomains.size === 0) {
-      this.toast('Nothing to save');
-      return;
-    }
-    for (const domain of [...this.dirtyDomains]) {
-      const save = getSaveHandler(domain);
-      if (!save) {
-        this.toast(`No save handler for '${domain}'`, true);
-        continue;
-      }
-      try {
-        await save();
-        this.clearDirty(domain);
-        this.toast(`Saved ${domain}`);
-      } catch (err) {
-        this.toast(String(err), true);
-        return;
-      }
-    }
   }
 
   private onBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -511,8 +572,12 @@ export class EditorShell {
     }
     if (this.showSectorGrid) {
       this.drawGrid(
-        ctx, camX, camY,
-        SECTOR_TILES_X * TILE_SIZE, 'rgba(255,190,40,0.55)', lw,
+        ctx,
+        camX,
+        camY,
+        SECTOR_TILES_X * TILE_SIZE,
+        'rgba(255,190,40,0.55)',
+        lw,
         SECTOR_TILES_Y * TILE_SIZE
       );
     }
@@ -584,20 +649,27 @@ export class EditorShell {
   // --- input ----------------------------------------------------------------
 
   private onKeyDown = (e: KeyboardEvent) => {
-    // The Sprite Editor (docked left) owns the keyboard while open — bail
-    // BEFORE stopPropagation so its own listeners still receive the event.
-    if (isSpriteEditorOpen()) return;
-    // Typing into a panel input must not pan the camera / trigger tools.
+    // Typing into a panel input must not pan the camera / trigger tools (or exit).
     const focused = document.activeElement?.tagName;
-    if (focused === 'INPUT' || focused === 'SELECT' || focused === 'TEXTAREA') return;
-    e.stopPropagation();
-    const k = e.key.toLowerCase();
+    const typing = focused === 'INPUT' || focused === 'SELECT' || focused === 'TEXTAREA';
 
-    if (e.key === 'F2') {
+    // F2 exits editor mode back to the game from ANYWHERE — including the Sprite
+    // Editor overlay, which otherwise owns the keyboard (its own listener never
+    // gets a chance to exit). Handle it BEFORE the sprite-editor bail below;
+    // close that overlay first, then exit the shell.
+    if (e.key === 'F2' && !typing) {
       e.preventDefault();
+      if (isSpriteEditorOpen()) closeSpriteEditor();
       this.exit();
       return;
     }
+
+    // The Sprite Editor (docked left) owns the rest of the keyboard while open —
+    // bail BEFORE stopPropagation so its own listeners still receive the event.
+    if (isSpriteEditorOpen()) return;
+    if (typing) return;
+    e.stopPropagation();
+    const k = e.key.toLowerCase();
     // The active tool gets Escape first (e.g. closing its own overlay); otherwise
     // Esc deselects the current tool (the dock stays — no modal to close).
     if (k === 'escape') {
@@ -778,7 +850,8 @@ export class EditorShell {
     // (so you stay in the editor); when ON, changes to override files reload the
     // page. Talks to the dev server's /__editor/hotreload endpoint.
     this.hotReloadBtn = mkBtn('🔄 Reload: …', () => void this.toggleHotReload());
-    this.hotReloadBtn.title = 'Auto-refresh the page when override files change (off = stay in the editor)';
+    this.hotReloadBtn.title =
+      'Auto-refresh the page when override files change (off = stay in the editor)';
     void this.refreshHotReload();
 
     this.readout = document.createElement('span');
@@ -793,7 +866,7 @@ export class EditorShell {
 
     document.body.appendChild(this.bar);
     this.syncToggleButtons();
-    this.updateDirtyDot();
+    this.updateSaveStatus();
 
     this.toastEl = document.createElement('div');
     this.toastEl.style.cssText =
@@ -834,7 +907,7 @@ export class EditorShell {
     this.toast(
       this.hotReloadOn
         ? 'Hot-reload ON — the page refreshes when override files change'
-        : 'Hot-reload OFF — saves keep you in the editor',
+        : 'Hot-reload OFF — saves keep you in the editor'
     );
   }
 

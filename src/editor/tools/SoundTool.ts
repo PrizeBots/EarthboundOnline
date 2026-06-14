@@ -32,7 +32,7 @@ import { registerSaveHandler } from '../registry';
 // aligned to the native music unit.
 const SECTOR_W = SECTOR_TILES_X * TILE_SIZE; // 64
 const SECTOR_H = SECTOR_TILES_Y * TILE_SIZE; // 32
-const MIN_SIZE = SECTOR_W;                   // ignore accidental micro-drags
+const MIN_SIZE = SECTOR_W; // ignore accidental micro-drags
 
 interface MusicFile {
   version?: number;
@@ -106,7 +106,10 @@ class SoundTool implements EditorTool {
       const cfg = await loadOverride<MusicFile>('music.json');
       this.areas = (cfg?.areas ?? []).map((a) => ({
         name: a.name ?? 'area',
-        x: a.x ?? 0, y: a.y ?? 0, w: a.w ?? SECTOR_W, h: a.h ?? SECTOR_H,
+        x: a.x ?? 0,
+        y: a.y ?? 0,
+        w: a.w ?? SECTOR_W,
+        h: a.h ?? SECTOR_H,
         song: a.song ?? 0,
       }));
     } catch (e) {
@@ -124,8 +127,10 @@ class SoundTool implements EditorTool {
       version: 1,
       areas: this.areas.map((a) => ({
         name: a.name,
-        x: Math.round(a.x), y: Math.round(a.y),
-        w: Math.round(a.w), h: Math.round(a.h),
+        x: Math.round(a.x),
+        y: Math.round(a.y),
+        w: Math.round(a.w),
+        h: Math.round(a.h),
         song: a.song,
       })),
     };
@@ -138,16 +143,21 @@ class SoundTool implements EditorTool {
   // --- input -----------------------------------------------------------------
 
   onKey(key: string): boolean {
-    if (key === 'n') { this.startPlacing(); return true; }
+    if (key === 'n') {
+      this.startPlacing();
+      return true;
+    }
     if ((key === 'delete' || key === 'backspace') && this.sel) {
-      this.deleteSelected(); return true;
+      this.deleteSelected();
+      return true;
     }
     return false;
   }
 
   onMouseDown(p: WorldPoint): boolean {
     if (this.placing) {
-      this.ax = p.x; this.ay = p.y;
+      this.ax = p.x;
+      this.ay = p.y;
       this.drawing = true;
       return true;
     }
@@ -159,13 +169,17 @@ class SoundTool implements EditorTool {
     let target: MusicArea | null = this.sel;
     if (corner < 0) {
       const found = this.cornerAtAny(p, grab);
-      if (found) { target = found.area; corner = found.corner; }
+      if (found) {
+        target = found.area;
+        corner = found.corner;
+      }
     }
     if (corner >= 0 && target) {
       this.sel = target;
       this.resizing = true;
       const [ax, ay] = this.oppositeCorner(target, corner);
-      this.anchorX = ax; this.anchorY = ay;
+      this.anchorX = ax;
+      this.anchorY = ay;
       this.refreshList();
       this.rebuildForm();
       return true;
@@ -176,8 +190,10 @@ class SoundTool implements EditorTool {
     if (hit) {
       this.sel = hit;
       this.moving = true;
-      this.mx = p.x; this.my = p.y;
-      this.ox = hit.x; this.oy = hit.y;
+      this.mx = p.x;
+      this.my = p.y;
+      this.ox = hit.x;
+      this.oy = hit.y;
       this.refreshList();
       this.rebuildForm();
       return true;
@@ -190,7 +206,10 @@ class SoundTool implements EditorTool {
     if (this.drawing) return; // rect tracked from anchor → hover in the overlay
     if (this.resizing && dragging && this.sel) {
       const r = this.normRect(this.anchorX, this.anchorY, p.x, p.y);
-      this.sel.x = r.x; this.sel.y = r.y; this.sel.w = r.w; this.sel.h = r.h;
+      this.sel.x = r.x;
+      this.sel.y = r.y;
+      this.sel.w = r.w;
+      this.sel.h = r.h;
       this.shell?.markDirty('music');
       this.syncForm();
       return;
@@ -198,8 +217,12 @@ class SoundTool implements EditorTool {
     if (this.moving && dragging && this.sel) {
       let nx = this.ox + (p.x - this.mx);
       let ny = this.oy + (p.y - this.my);
-      if (this.snap) { nx = snapTo(nx, SECTOR_W); ny = snapTo(ny, SECTOR_H); }
-      this.sel.x = nx; this.sel.y = ny;
+      if (this.snap) {
+        nx = snapTo(nx, SECTOR_W);
+        ny = snapTo(ny, SECTOR_H);
+      }
+      this.sel.x = nx;
+      this.sel.y = ny;
       this.shell?.markDirty('music');
       this.syncForm();
     }
@@ -272,13 +295,23 @@ class SoundTool implements EditorTool {
     return this.corners(a)[3 - corner];
   }
 
-  private normRect(x0: number, y0: number, x1: number, y1: number): { x: number; y: number; w: number; h: number } {
-    let x = Math.min(x0, x1), y = Math.min(y0, y1);
-    let w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
+  private normRect(
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number
+  ): { x: number; y: number; w: number; h: number } {
+    let x = Math.min(x0, x1),
+      y = Math.min(y0, y1);
+    let w = Math.abs(x1 - x0),
+      h = Math.abs(y1 - y0);
     if (this.snap) {
-      const x2 = snapTo(x + w, SECTOR_W), y2 = snapTo(y + h, SECTOR_H);
-      x = snapTo(x, SECTOR_W); y = snapTo(y, SECTOR_H);
-      w = Math.max(SECTOR_W, x2 - x); h = Math.max(SECTOR_H, y2 - y);
+      const x2 = snapTo(x + w, SECTOR_W),
+        y2 = snapTo(y + h, SECTOR_H);
+      x = snapTo(x, SECTOR_W);
+      y = snapTo(y, SECTOR_H);
+      w = Math.max(SECTOR_W, x2 - x);
+      h = Math.max(SECTOR_H, y2 - y);
     }
     return { x, y, w, h };
   }
@@ -320,9 +353,10 @@ class SoundTool implements EditorTool {
     const camX = Math.round(camera.x);
     const camY = Math.round(camera.y);
     const zoom = camera.zoom || 1;
-    const lw = 1 / zoom;          // keep borders ~1 device px at any zoom
+    const lw = 1 / zoom; // keep borders ~1 device px at any zoom
     const fontPx = Math.max(7, Math.round(9 / zoom));
-    const vw = camera.viewW, vh = camera.viewH;
+    const vw = camera.viewW,
+      vh = camera.viewH;
 
     // Animated "marching ants": a dashed border whose dash offset scrolls every
     // frame, so each zone reads as a live selection marquee (like Placement's
@@ -335,8 +369,8 @@ class SoundTool implements EditorTool {
     // Animated dashes + a dark underlay + a big label per zone get expensive, and
     // none of it is legible at that scale — so below these zooms draw a plain
     // solid border and drop labels. Keeps far-out panning smooth.
-    const fancyBorders = zoom >= 0.3;   // animated marching-ants vs. plain stroke
-    const showLabels = zoom >= 0.5;     // text is unreadable smaller than this
+    const fancyBorders = zoom >= 0.3; // animated marching-ants vs. plain stroke
+    const showLabels = zoom >= 0.5; // text is unreadable smaller than this
     if (showLabels) {
       ctx.font = `${fontPx}px monospace`;
       ctx.textAlign = 'left';
@@ -344,7 +378,8 @@ class SoundTool implements EditorTool {
 
     for (let i = 0; i < this.areas.length; i++) {
       const a = this.areas[i];
-      const sx = a.x - camX, sy = a.y - camY;
+      const sx = a.x - camX,
+        sy = a.y - camY;
       // Cull zones outside the (zoomed) view — there are hundreds.
       if (sx + a.w < 0 || sx > vw || sy + a.h < 0 || sy > vh) continue;
       const on = a === this.sel;
@@ -383,12 +418,13 @@ class SoundTool implements EditorTool {
 
     // Corner handles on the SELECTED zone — grab to resize.
     if (this.sel) {
-      const h = this.handleRadius();   // world-px half-size (~8 device px)
+      const h = this.handleRadius(); // world-px half-size (~8 device px)
       ctx.fillStyle = '#fff';
       ctx.strokeStyle = '#101418';
       ctx.lineWidth = lw;
       for (const [cx, cy] of this.corners(this.sel)) {
-        const hx = cx - camX - h, hy = cy - camY - h;
+        const hx = cx - camX - h,
+          hy = cy - camY - h;
         ctx.fillRect(hx, hy, h * 2, h * 2);
         ctx.strokeRect(hx, hy, h * 2, h * 2);
       }
@@ -424,9 +460,7 @@ class SoundTool implements EditorTool {
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
     this.mkBtn('+ New area (N)', () => this.startPlacing(), actions);
-    this.mkBtn('Save', () => {
-      void this.save().catch((e) => this.shell?.toast(`Save failed: ${e}`, true));
-    }, actions, true);
+    // No Save button — edits auto-save via the shell (registered handler).
     this.panel.appendChild(actions);
 
     const snapRow = document.createElement('label');
@@ -449,7 +483,8 @@ class SoundTool implements EditorTool {
     this.panel.appendChild(this.formEl);
 
     const hint = document.createElement('div');
-    hint.textContent = 'drag center to move · drag a corner to resize · Del to remove · wheel zooms out to see all';
+    hint.textContent =
+      'drag center to move · drag a corner to resize · Del to remove · wheel zooms out to see all';
     hint.style.cssText = 'color:#667;font-size:10px;';
     this.panel.appendChild(hint);
 
@@ -501,27 +536,53 @@ class SoundTool implements EditorTool {
     const a = this.sel;
     const form = this.formEl;
 
-    const nameIn = this.mkInput(form, 'name', (v) => {
-      a.name = v || 'area';
-      this.shell?.markDirty('music');
-      this.refreshList();
-    }, 120);
+    const nameIn = this.mkInput(
+      form,
+      'name',
+      (v) => {
+        a.name = v || 'area';
+        this.shell?.markDirty('music');
+        this.refreshList();
+      },
+      120
+    );
     nameIn.value = a.name;
 
     const numField = (label: string, get: () => number, set: (n: number) => void) => {
-      const i = this.mkInput(form, label, (v) => {
-        const n = parseFloat(v);
-        if (Number.isNaN(n)) return;
-        set(n);
-        this.shell?.markDirty('music');
-      }, 64);
+      const i = this.mkInput(
+        form,
+        label,
+        (v) => {
+          const n = parseFloat(v);
+          if (Number.isNaN(n)) return;
+          set(n);
+          this.shell?.markDirty('music');
+        },
+        64
+      );
       i.value = String(get());
       return i;
     };
-    numField('x', () => a.x, (n) => (a.x = Math.round(n)));
-    numField('y', () => a.y, (n) => (a.y = Math.round(n)));
-    numField('w', () => a.w, (n) => (a.w = Math.max(SECTOR_W, Math.round(n))));
-    numField('h', () => a.h, (n) => (a.h = Math.max(SECTOR_H, Math.round(n))));
+    numField(
+      'x',
+      () => a.x,
+      (n) => (a.x = Math.round(n))
+    );
+    numField(
+      'y',
+      () => a.y,
+      (n) => (a.y = Math.round(n))
+    );
+    numField(
+      'w',
+      () => a.w,
+      (n) => (a.w = Math.max(SECTOR_W, Math.round(n)))
+    );
+    numField(
+      'h',
+      () => a.h,
+      (n) => (a.h = Math.max(SECTOR_H, Math.round(n)))
+    );
 
     // Song picker — a searchable dropdown of real track titles (same component
     // as the other editor pickers, minus the sprite thumbnail). Type to filter
@@ -552,14 +613,20 @@ class SoundTool implements EditorTool {
     // Rename the SONG itself (global — like renaming an entity). Writes the
     // song-name override, which the dropdown/overlay/list all read back.
     const renameRow = this.mkRow(form, 'rename');
-    const renameIn = this.mkBareInput(renameRow, (v) => {
-      const name = v.trim();
-      setSongNameOverride(a.song, name || null);
-      this.shell?.markDirty('song_names');
-      this.songPicker?.refresh(); // relabel the picker with the new name
-      this.refreshList();
-      this.shell?.toast(`Renamed song ${a.song} to "${name || '(default)'}" — Save all writes song_names.json`);
-    }, 150);
+    const renameIn = this.mkBareInput(
+      renameRow,
+      (v) => {
+        const name = v.trim();
+        setSongNameOverride(a.song, name || null);
+        this.shell?.markDirty('song_names');
+        this.songPicker?.refresh(); // relabel the picker with the new name
+        this.refreshList();
+        this.shell?.toast(
+          `Renamed song ${a.song} to "${name || '(default)'}" — auto-saving song_names.json`
+        );
+      },
+      150
+    );
     this.songNameInput = renameIn;
     this.syncSongName();
 
@@ -590,7 +657,12 @@ class SoundTool implements EditorTool {
 
   // --- small DOM helpers -----------------------------------------------------
 
-  private mkBtn(label: string, fn: () => void, parent: HTMLElement, accent = false): HTMLButtonElement {
+  private mkBtn(
+    label: string,
+    fn: () => void,
+    parent: HTMLElement,
+    accent = false
+  ): HTMLButtonElement {
     const b = document.createElement('button');
     b.textContent = label;
     b.style.cssText =
@@ -614,12 +686,21 @@ class SoundTool implements EditorTool {
     return r;
   }
 
-  private mkInput(parent: HTMLElement, label: string, onChange: (v: string) => void, width = 64): HTMLInputElement {
+  private mkInput(
+    parent: HTMLElement,
+    label: string,
+    onChange: (v: string) => void,
+    width = 64
+  ): HTMLInputElement {
     const r = this.mkRow(parent, label);
     return this.mkBareInput(r, onChange, width);
   }
 
-  private mkBareInput(parent: HTMLElement, onChange: (v: string) => void, width = 64): HTMLInputElement {
+  private mkBareInput(
+    parent: HTMLElement,
+    onChange: (v: string) => void,
+    width = 64
+  ): HTMLInputElement {
     const i = document.createElement('input');
     i.style.cssText =
       `width:${width}px;font:11px monospace;background:#0c1014;color:#cde;` +

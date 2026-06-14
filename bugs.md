@@ -6,6 +6,7 @@ history is the documentation (several of these systems have failed the same
 way more than once).
 
 Format:
+
 ```
 ## <short title>            (OPEN | FIXED <date>)
 - **Symptom:** what the player sees, where to reproduce
@@ -17,28 +18,10 @@ Format:
 
 ## Open
 
-### Floating health bars over invisible person NPCs (OPEN, minor)
-- **Symptom:** Green health bars hover over empty floor (e.g. Onett drugstore)
-  or at a traffic light's base at the Onett intersection — with no sprite
-  under them.
-- **Root cause (likely):** Health bars draw for every `person` NPC regardless
-  of whether its sprite frame has pixels. `extract_npcs.py` filters persons
-  whose CONFIGURED direction frame is blank, but the server wander/glance sim
-  turns NPCs to other directions at runtime, and single-pose person sheets
-  have empty frames for those directions — the sprite vanishes, the bar stays.
-- **Fix idea:** skip the health bar (and ideally the turn, server-side) when
-  the current frame has no art; needs a per-direction visibility table shipped
-  with sprite metadata.
-
-### Indoor room with large walkable spill to outdoor filler (OPEN, minor)
-- **Symptom:** The interior at dest px (5480, 6864) (sector 21,53, tileset
-  21) has a 21-minitile walkable seam into non-croppable sectors — wider
-  than a normal door threshold. The flood correctly stops there, so up to
-  21 walkable minitiles at the room edge render black. Pre-existing
-  (mask identical before/after the dungeon-crop fix); needs a visual check
-  to see whether anything looks cut off in practice.
+## Fixed
 
 ### NPCs don't respect room seals (OPEN, minor)
+
 - **Symptom (theoretical):** server-side NPC wander (`server/npcSim.js`) uses
   plain collision, so an NPC near a room edge could wander onto the shared
   under-wall strip into a neighboring room (where the local player now sees
@@ -46,9 +29,59 @@ Format:
 - **Fix idea:** mirror the room-cell constraint in npcSim, or clamp wander
   to the NPC's home room mask.
 
-## Fixed
+### Indoor room with large walkable spill to outdoor filler (OPEN, minor)
 
-### Black shroud riding an escalator DOWN between stacked floors (FIXED 2026-06-14)
+- **Symptom:** The interior at dest px (5480, 6864) (sector 21,53, tileset 21) has a 21-minitile walkable seam into non-croppable sectors — wider
+  than a normal door threshold. The flood correctly stops there, so up to
+  21 walkable minitiles at the room edge render black. Pre-existing
+  (mask identical before/after the dungeon-crop fix); needs a visual check
+  to see whether anything looks cut off in practice.
+
+### Free enemy hits on the player during a door transition (FIXED 2026-06-14)
+
+- **Symptom:** Taking a door with an enemy on your tail, you lose HP during the
+  fade — you can't move or defend while the screen is black.
+- **Root cause:** The client freezes its reported position for the whole door
+  fade (`Game.update` early-returns while `transitioning`, suppressing
+  `sendPosition`). The server keeps simulating, so the pursuer reaches the
+  doorway and swings at the motionless "ghost" left at the player's last sent
+  position; each swing applied real damage.
+- **Fix:** A door-transition damage shield. The client sends `{type:'warp',
+warping}` on transition start/end (`Network.sendWarpState`, wired in
+  `Game.startTransition` / `updateTransition`); `GameHost` marks the player
+  `warping` and `damagePlayer` ignores hits while it's set. Cleared by the
+  `warp` end signal OR the next `move` (fallback), with an 8s `warpUntil`
+  backstop against a dropped end signal. The player stays in the sim's target
+  list so the enemy keeps chasing (and the door-follow above still fires) — only
+  the damage whiffs. Covered by 3 new cases in `gameHost.test.js`.
+- **Verified:** `npm run verify` green (25 server tests incl. the new shield
+  cases).
+
+### Enemies only sometimes pursue a player through a door (FIXED 2026-06-14)
+
+- **Symptom:** A player "hot on their tail" can sometimes lure an enemy into a
+  room through a door, but it's unreliable — most attempts the enemy stops at
+  the doorway and walks back to spawn.
+- **Root cause:** The follow-through depended on a ONE-TICK signal. The client
+  freezes a player's reported position for the whole door fade (`Game.update`
+  early-returns while `transitioning`, so `sendPosition` is suppressed), so the
+  warp reaches the server as a single big position jump when the fade ends. The
+  chasing enemy reaches the doorway during the freeze and is usually standing
+  there _swinging_ at the frozen player. `tickEnemy` early-returns while an
+  attack/hurt pose is playing (~250ms of every ~700ms ≈ a third of the time), so
+  if the one-tick warp landed mid-swing the follow chance was eaten. A
+  townsperson stealing aggro at the doorway, or an interior stamped close enough
+  to re-lock aggro through the wall, dropped it on other ticks.
+- **Fix:** `server/npcSim.js` — a detected warp is now stored in `recentWarps`
+  (playerId → from/to + expiry) and stays followable for `WARP_FOLLOW_MS` (900ms)
+  instead of one tick, and the door-follow check runs at the TOP of `tickEnemy`
+  with priority over the aggro re-scan (so townsfolk/short warps can't preempt
+  it). A `warpStack`-top guard stops an enemy re-following the same door. The
+  freeze is intentionally left alone — it's what lets the pursuer catch up to the
+  doorway.
+- **Verified:** `npm run verify` (typecheck + `node --check` + gameHost/combat
+  tests) green. Behavioural check is in-game (no timer-free unit hook for the
+  chase loop yet).
 - **Symptom:** Going UP the dept-store escalators was fine, but turning around to
   ride DOWN, a black shroud covered the escalator/landing and the player got
   stuck at the bottom, unable to reach the floor below (and the next escalator
@@ -74,6 +107,7 @@ Format:
   `STAIR_DIR_VEC` (meaning unknown — not yet decoded). Neither blocks the fix.
 
 ### Black box over shop counters (Twoson dept-store 3F register) (FIXED 2026-06-14)
+
 - **Symptom:** A black rectangle sat over the counter/register on the dept-store
   3rd floor (and the same class of black box on other shop counters) — same look
   as the cycle-shop floor holes.
@@ -92,12 +126,13 @@ Format:
   fully; a +40-tile room (a cafe whose stage was being cut off) renders as one
   coherent room. Canonical sweep: 23 indoor rooms change, all pure additions
   (0 removals), indoor multi-style still 0 (no merges), 0 NO-CROP nulls.
-- **NOT this fix:** the black areas to the *sides* of dept-store escalators are
+- **NOT this fix:** the black areas to the _sides_ of dept-store escalators are
   the boundary to the adjacent FLOOR (a separate room, correctly masked) and
   some `arr=0` empty map tiles — a multi-floor-building/escalator-handoff matter,
   not a counter pocket.
 
 ### Black squares in the Twoson cycle shop floor (FIXED 2026-06-14)
+
 - **Symptom:** The cycle shop interior was missing pieces of its floor —
   black squares ate the lower-left corner (under the bicycles), beneath the
   shop's shelving/counter.
@@ -125,6 +160,7 @@ Format:
   nulls. Other shops with the same furniture layout were silently fixed too.
 
 ### Escalators dead — black/uncrossable, can't reach the next floor (FIXED 2026-06-14)
+
 - **Symptom:** In the Twoson dept store the escalators showed as black squares
   and the player could not climb them to the 2nd floor ("can't even get half
   way up it").
@@ -133,12 +169,12 @@ Format:
      `type:"stair"` in `doors.json`) is NOT a warp — it carries only a diagonal
      `direction` (CoilSnake `StairDirection`: NW=0, NE=0x100, SW=0x200,
      SE=0x300), no destination. `DoorManager` did `if (type !== 'door')
-     continue`, so stairs did nothing.
+continue`, so stairs did nothing.
   2. **The escalator is a walkable diagonal RAMP** (bottom landing strip →
      diagonal ramp → top landing strip), bounded by SOLID at each end. It's
      corner-connected and only ~2 minitiles wide, so the 14px player foot-box
      can't walk up it, and the room-seal's anti-under-wall gate compounds it.
-     Real EB *glides* you along the ramp, ignoring collision. The floor change
+     Real EB _glides_ you along the ramp, ignoring collision. The floor change
      itself is a normal `door` at the strip ends (those already worked).
   3. The shaft is its own room; the camera crop already spans the whole shaft
      (gated flood = full 66-cell shaft for Twoson), so the "black around" is
@@ -171,6 +207,7 @@ Format:
   (`RopeOrLadderDoor`) are vertical climbs with the same gap — not yet handled.
 
 ### Head floats in front of stop signs / poles everywhere — priority bit semantics (FIXED 2026-06-12, supersedes the bench entry below)
+
 - **Symptom:** Standing behind a stop sign (and "wherever I try" — any sign,
   pole, or 0x03-flagged surface map-wide): body hidden behind the object but
   the HEAD drawn in front of it.
@@ -200,6 +237,7 @@ Format:
   unchanged. `npx tsc --noEmit` clean. Screenshots deleted (ROM pixels).
 
 ### Bench sitters' torso swallowed by the bench (Onett hospital) (FIXED 2026-06-12 — SUPERSEDED by the entry above; its 0x03→lower-only rule was wrong)
+
 - **Symptom:** Two people sitting on the bench inside the Onett hospital showed
   only their head and feet — the torso was hidden behind the bench. Same for any
   NPC seated on a tile flagged this way (5 indoor persons map-wide).
@@ -222,6 +260,7 @@ Format:
   by replaying `getSpritePriority` over `npcs.json`; all now render lower-behind.
 
 ### Props AND people misplaced (drugstore ATM/phone, NPCs inside shelves) — anchor wrong AGAIN (FIXED 2026-06-12)
+
 - **Symptom:** Reported in the Onett drugstore: ATM and phone off their
   spots, and the room's people wrong too — the dog and a kid embedded in
   the shelf units, clerks standing in the counter footprint. THIRD round
@@ -253,11 +292,12 @@ Format:
   `person` in the ROM config, so it shifted too). npcSim now hot-reloads
   npcs.json on change (fs.watchFile, 2s poll) and re-broadcasts all persons;
   clients still need a browser refresh for props. (The watcher code itself
-  went live automatically — nodemon watches server/*.js and restarts the dev
+  went live automatically — nodemon watches server/\*.js and restarts the dev
   server on CODE changes; it deliberately ignores data files, which is
   exactly why this in-process hot-reload is needed for npcs.json.)
 
 ### Visible + walkable neighbor rooms inside buildings — arcade/Tracy's room (FIXED 2026-06-11)
+
 - **Symptom:** Standing in one Onett interior (reported as "arcade 1st
   floor"), the neighboring rooms of OTHER buildings (Tracy's room, the
   bakery, etc.) were visible and physically enterable by walking — no door
@@ -299,6 +339,7 @@ Format:
   "blocked".
 
 ### "Magicant" door lands inside solid rock (FIXED 2026-06-11)
+
 - **Symptom:** The door pair at world px (6440/6448, 4808) targets dest
   (3192, 1152) — every minitile within 48px of the destination is solid.
   A player taking that door would be stuck in the wall, and no room crop
@@ -330,6 +371,7 @@ Format:
   minitiles). `npx tsc --noEmit` clean.
 
 ### Props placed wrong: ATM/phone off the wall, traffic lights in the grass (FIXED 2026-06-11 — INCOMPLETE, superseded by the 2026-06-12 entry above)
+
 - **Symptom:** Most `object`/`item` props sat down-right of where the real
   game puts them: the Onett drugstore ATM stood mid-floor instead of against
   the back wall, the phone hotspot was off its counter, and Onett's traffic
@@ -354,6 +396,7 @@ Format:
   hotspot for a misplacement.
 
 ### Neighboring map areas visible inside caves/dungeons (FIXED 2026-06-11)
+
 - **Symptom:** Standing in any cave or dungeon room (e.g. the cave north of
   Onett, room with the present, door dest ≈ pixel 1080,2136), the camera
   freely shows unrelated map chunks packed next to the dungeon on the big
@@ -361,13 +404,13 @@ Format:
   for caves nothing was cropped at all.
 - **Root cause:** Room cropping (`Collision.computeRoomBounds`) only ran for
   sectors flagged `Setting: indoors` in `map_sectors.yml`. EarthBound flags
-  caves/dungeons with a *different* setting — `exit mouse usable` (650
+  caves/dungeons with a _different_ setting — `exit mouse usable` (650
   sectors) — so `isIndoorTile()` returned false and `computeRoomBounds`
   bailed with null: no camera clamp, no mask, no black-out.
 - **Fix:** `tools/add_sector_settings.py` now emits `dungeon: true` for EVERY
   special (non-"none", non-"indoors") setting — `exit mouse usable` plus the
   magicant/robot/lost-underworld sprite modes, since all mark off-overworld
-  chunks (and a robot-sprites column sits *inside* the Cave of the Past
+  chunks (and a robot-sprites column sits _inside_ the Cave of the Past
   cluster, so floods must cross settings or rooms split mid-cave). The
   engine treats `indoor || dungeon` as room-croppable
   (`MapManager.isRoomCroppableTile`, used by both the computeRoomBounds

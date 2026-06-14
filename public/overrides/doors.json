@@ -244,8 +244,8 @@
       "worldY": 1520
     },
     "8088,1356": {
-      "destX": 2016,
-      "destY": 664,
+      "destX": 2032,
+      "destY": 672,
       "destDir": 0,
       "style": 1,
       "worldX": 8080,
@@ -454,6 +454,22 @@
       "worldY": 216,
       "destX": 7976,
       "destY": 104,
+      "destDir": 0,
+      "style": 1
+    },
+    {
+      "worldX": 2144,
+      "worldY": 1416,
+      "destX": 136,
+      "destY": 10456,
+      "destDir": 0,
+      "style": 1
+    },
+    {
+      "worldX": 152,
+      "worldY": 10456,
+      "destX": 2144,
+      "destY": 1432,
       "destDir": 0,
       "style": 1
     }

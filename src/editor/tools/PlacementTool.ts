@@ -1,8 +1,20 @@
 import { loadJSON } from '../../engine/AssetLoader';
-import { drawSprite, loadSpriteGroup, getSpriteGroupMeta, listSpriteGroupIds } from '../../engine/SpriteManager';
+import {
+  drawSprite,
+  loadSpriteGroup,
+  getSpriteGroupMeta,
+  listSpriteGroupIds,
+} from '../../engine/SpriteManager';
 import { createSpritePicker, drawSpriteGroupThumb, SpritePicker } from '../../engine/SpritePicker';
 import { getSpriteName, setSpriteNameOverride } from '../../engine/SpriteNames';
-import { RawNPC, NpcOverrides, reloadNpcsLive, Vehicle, CarTraffic } from '../../engine/NPCManager';
+import {
+  RawNPC,
+  NpcOverrides,
+  reloadNpcsLive,
+  Vehicle,
+  CarTraffic,
+  liveNpcForKey,
+} from '../../engine/NPCManager';
 import { DoorOverrides, EditorDoor, getEditorDoorBase, loadDoors } from '../../engine/DoorManager';
 import { checkCollision } from '../../engine/Collision';
 import { Camera } from '../../engine/Camera';
@@ -28,8 +40,14 @@ const FOOT_H = 8;
 const VIEW_MARGIN = 48;
 
 const DIR_NAMES: [Direction, string][] = [
-  [Direction.S, 'S'], [Direction.N, 'N'], [Direction.W, 'W'], [Direction.E, 'E'],
-  [Direction.NW, 'NW'], [Direction.SW, 'SW'], [Direction.SE, 'SE'], [Direction.NE, 'NE'],
+  [Direction.S, 'S'],
+  [Direction.N, 'N'],
+  [Direction.W, 'W'],
+  [Direction.E, 'E'],
+  [Direction.NW, 'NW'],
+  [Direction.SW, 'SW'],
+  [Direction.SE, 'SE'],
+  [Direction.NE, 'NE'],
 ];
 
 /** Heading vector -> 8-way Direction, for facing a vehicle marker down its route. */
@@ -150,7 +168,9 @@ class PlacementTool implements EditorTool {
       // Traffic vehicles (override wins over the committed default) — shown as
       // read-only markers so a vehicle can jump to the Traffic Editor.
       loadJSON<CarTraffic>('/overrides/car_traffic.json').catch(() => null),
-      loadJSON<CarTraffic>('/assets/map/car_traffic.json').catch(() => ({ version: 1 }) as CarTraffic),
+      loadJSON<CarTraffic>('/assets/map/car_traffic.json').catch(
+        () => ({ version: 1 }) as CarTraffic
+      ),
     ]);
     this.vehicles = ((carOv ?? carBase)?.vehicles ?? []).filter((v) => v.waypoints?.length);
 
@@ -220,9 +240,7 @@ class PlacementTool implements EditorTool {
       });
     }
 
-    this.shell?.toast(
-      `Placement: ${this.npcs.length} NPCs, ${this.doors.length} doors loaded`
-    );
+    this.shell?.toast(`Placement: ${this.npcs.length} NPCs, ${this.doors.length} doors loaded`);
     this.refreshPanel();
   }
 
@@ -239,8 +257,12 @@ class PlacementTool implements EditorTool {
       const b = this.npcBase.get(e.k)!;
       if (e.deleted) edits![e.k] = null;
       else if (
-        e.x !== b.x || e.y !== b.y || e.sprite !== b.sprite ||
-        e.dir !== b.dir || e.kind !== b.kind || e.t !== (b.t ?? null)
+        e.x !== b.x ||
+        e.y !== b.y ||
+        e.sprite !== b.sprite ||
+        e.dir !== b.dir ||
+        e.kind !== b.kind ||
+        e.t !== (b.t ?? null)
       ) {
         edits![e.k] = this.npcToRaw(e);
       }
@@ -261,22 +283,33 @@ class PlacementTool implements EditorTool {
       if (e.added) {
         if (!e.deleted) {
           additions!.push({
-            worldX: e.worldX, worldY: e.worldY,
-            destX: e.destX, destY: e.destY, destDir: e.destDir, style: e.style,
+            worldX: e.worldX,
+            worldY: e.worldY,
+            destX: e.destX,
+            destY: e.destY,
+            destDir: e.destDir,
+            style: e.style,
           });
         }
         continue;
       }
       const b = this.doorBase.get(e.key)!;
       const changed =
-        e.worldX !== b.worldX || e.worldY !== b.worldY || e.destX !== b.destX ||
-        e.destY !== b.destY || e.destDir !== b.destDir || e.style !== b.style;
+        e.worldX !== b.worldX ||
+        e.worldY !== b.worldY ||
+        e.destX !== b.destX ||
+        e.destY !== b.destY ||
+        e.destDir !== b.destDir ||
+        e.style !== b.style;
       if (e.deleted) {
         // Disabling a zone door = just don't author a link for it.
         if (!e.zone) edits![e.key] = null;
       } else if (changed) {
         const o: NonNullable<DoorOverrides['edits']>[string] = {
-          destX: e.destX, destY: e.destY, destDir: e.destDir, style: e.style,
+          destX: e.destX,
+          destY: e.destY,
+          destDir: e.destDir,
+          style: e.style,
         };
         if (e.worldX !== b.worldX || e.worldY !== b.worldY) {
           o!.worldX = e.worldX;
@@ -304,7 +337,12 @@ class PlacementTool implements EditorTool {
 
   // --- generic undoable mutation -------------------------------------------------
 
-  private mutate<T extends object>(label: string, target: T, change: Partial<T>, domain: string): void {
+  private mutate<T extends object>(
+    label: string,
+    target: T,
+    change: Partial<T>,
+    domain: string
+  ): void {
     const before: Partial<T> = {};
     for (const key of Object.keys(change) as (keyof T)[]) before[key] = target[key];
     this.shell!.run({
@@ -372,7 +410,12 @@ class PlacementTool implements EditorTool {
   }
 
   /** Record an already-applied drag as an undoable step. */
-  private commitDrag<T extends object>(label: string, target: T, applied: Partial<T>, domain: string): void {
+  private commitDrag<T extends object>(
+    label: string,
+    target: T,
+    applied: Partial<T>,
+    domain: string
+  ): void {
     const before: Partial<T> = {};
     let moved = false;
     for (const key of Object.keys(applied) as (keyof T)[]) {
@@ -472,7 +515,8 @@ class PlacementTool implements EditorTool {
     this.dragNpc = hit;
     this.dragStart = { x: hit.x, y: hit.y };
     this.grabOffset = { x: hit.x - p.x, y: hit.y - p.y };
-    if (wasVehicle) this.rebuildForm(); // back from vehicle form to the NPC form
+    if (wasVehicle)
+      this.rebuildForm(); // back from vehicle form to the NPC form
     else this.refreshPanel();
     return true;
   }
@@ -498,14 +542,32 @@ class PlacementTool implements EditorTool {
 
   private npcHitTest(p: WorldPoint): NpcEntry | null {
     let best: NpcEntry | null = null;
+    let bestY = -Infinity;
     for (const e of this.npcs) {
+      if (e.deleted) continue;
       const meta = getSpriteGroupMeta(e.sprite);
       const w = meta?.width ?? 16;
       const h = meta?.height ?? 24;
-      if (p.x < e.x - w / 2 || p.x > e.x + w / 2 || p.y < e.y - h || p.y > e.y) continue;
-      if (!best || e.y > best.y) best = e;
+      // Two ways to grab the same placement: its spawn ghost (home x/y) AND the
+      // live in-game instance, which may have wandered off (persons/enemies).
+      for (const [hx, hy] of this.npcHitSpots(e)) {
+        if (p.x < hx - w / 2 || p.x > hx + w / 2 || p.y < hy - h || p.y > hy) continue;
+        if (hy > bestY) {
+          bestY = hy;
+          best = e;
+        } // front-most by feet-Y wins
+      }
     }
     return best;
+  }
+
+  /** Click targets for a placement: its ghost (home), plus the live instance if
+   *  it has moved away from home. */
+  private npcHitSpots(e: NpcEntry): [number, number][] {
+    const spots: [number, number][] = [[e.x, e.y]];
+    const live = liveNpcForKey(e.k);
+    if (live && !live.dead && (live.x !== e.x || live.y !== e.y)) spots.push([live.x, live.y]);
+    return spots;
   }
 
   private addNpc(p: WorldPoint, kind: 'person' | 'prop'): void {
@@ -565,7 +627,10 @@ class PlacementTool implements EditorTool {
     // that reach can trap the player against a moving body.
     for (const e of this.npcs) {
       if (e.deleted || e.kind !== 'person') continue;
-      if (Math.abs(e.x - this.spawn.x) <= 32 + FOOT_W && Math.abs(e.y - this.spawn.y) <= 32 + FOOT_H) {
+      if (
+        Math.abs(e.x - this.spawn.x) <= 32 + FOOT_W &&
+        Math.abs(e.y - this.spawn.y) <= 32 + FOOT_H
+      ) {
         warnings.push(`⚠ inside person ${e.k}'s wander leash`);
         break;
       }
@@ -582,7 +647,11 @@ class PlacementTool implements EditorTool {
       return true;
     }
     // Dest handle of the selected door has priority (it can sit under other triggers).
-    if (this.selDoor && Math.abs(p.x - this.selDoor.destX) <= 6 && Math.abs(p.y - this.selDoor.destY) <= 6) {
+    if (
+      this.selDoor &&
+      Math.abs(p.x - this.selDoor.destX) <= 6 &&
+      Math.abs(p.y - this.selDoor.destY) <= 6
+    ) {
       this.doorDragPart = 'dest';
       this.dragStart = { destX: this.selDoor.destX, destY: this.selDoor.destY };
       return true;
@@ -644,7 +713,13 @@ class PlacementTool implements EditorTool {
     else this.drawDoors(ctx, camX, camY, camera.viewW, camera.viewH);
   }
 
-  private drawNpcs(ctx: CanvasRenderingContext2D, camX: number, camY: number, vw: number, vh: number): void {
+  private drawNpcs(
+    ctx: CanvasRenderingContext2D,
+    camX: number,
+    camY: number,
+    vw: number,
+    vh: number
+  ): void {
     for (const e of this.npcs) {
       const sx = e.x - camX;
       const sy = e.y - camY;
@@ -673,12 +748,56 @@ class PlacementTool implements EditorTool {
         ctx.strokeRect(sx - w / 2 - 1.5, sy - h - 1.5, w + 3, h + 3);
       }
     }
+    if (this.selNpc) this.drawLiveLink(ctx, this.selNpc, camX, camY);
     this.drawVehicles(ctx, camX, camY, vw, vh);
     if (this.placingKind) this.drawPlaceCursor(ctx, camX, camY);
   }
 
+  /**
+   * When the selected placement's live in-game instance has wandered off its
+   * spawn ghost, mark the live body and dash a link to the ghost — so it's clear
+   * the two are one NPC, and that clicking either selects it.
+   */
+  private drawLiveLink(
+    ctx: CanvasRenderingContext2D,
+    e: NpcEntry,
+    camX: number,
+    camY: number
+  ): void {
+    const live = liveNpcForKey(e.k);
+    if (!live || live.dead || (live.x === e.x && live.y === e.y)) return;
+    const gx = e.x - camX;
+    const gy = e.y - camY;
+    const lx = live.x - camX;
+    const ly = live.y - camY;
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(gx, gy);
+    ctx.lineTo(lx, ly);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Box the live body (white, like the ghost selection box).
+    const meta = getSpriteGroupMeta(e.sprite);
+    const w = meta?.width ?? 16;
+    const h = meta?.height ?? 24;
+    ctx.strokeStyle = '#fff';
+    ctx.strokeRect(lx - w / 2 - 1.5, ly - h - 1.5, w + 3, h + 3);
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.font = '8px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('live', lx, ly - h - 4);
+    ctx.textAlign = 'left';
+  }
+
   /** Traffic vehicles as read-only markers (green) at their first waypoint. */
-  private drawVehicles(ctx: CanvasRenderingContext2D, camX: number, camY: number, vw: number, vh: number): void {
+  private drawVehicles(
+    ctx: CanvasRenderingContext2D,
+    camX: number,
+    camY: number,
+    vw: number,
+    vh: number
+  ): void {
     for (const v of this.vehicles) {
       const wp = v.waypoints[0];
       if (!wp) continue;
@@ -702,7 +821,11 @@ class PlacementTool implements EditorTool {
       const w = meta?.width ?? v.w ?? 40;
       const h = meta?.height ?? v.h ?? 28;
       const sel = v === this.selVehicle;
-      ctx.strokeStyle = sel ? '#fff' : v.enabled === false ? 'rgba(150,150,150,0.7)' : 'rgba(106,208,138,0.9)';
+      ctx.strokeStyle = sel
+        ? '#fff'
+        : v.enabled === false
+          ? 'rgba(150,150,150,0.7)'
+          : 'rgba(106,208,138,0.9)';
       ctx.strokeRect(sx - w / 2 + 0.5, sy - h + 0.5, w, h);
       ctx.fillStyle = ctx.strokeStyle;
       ctx.font = '8px monospace';
@@ -720,8 +843,14 @@ class PlacementTool implements EditorTool {
     ctx.strokeRect(sx - 8.5, sy - 24.5, 17, 25);
     ctx.strokeRect(sx - FOOT_W / 2 + 0.5, sy - FOOT_H + 0.5, FOOT_W, FOOT_H);
     const ARROWS: Record<number, [number, number]> = {
-      0: [0, 1], 1: [0, -1], 2: [-1, 0], 3: [1, 0],
-      4: [-0.7, -0.7], 5: [-0.7, 0.7], 6: [0.7, 0.7], 7: [0.7, -0.7],
+      0: [0, 1],
+      1: [0, -1],
+      2: [-1, 0],
+      3: [1, 0],
+      4: [-0.7, -0.7],
+      5: [-0.7, 0.7],
+      6: [0.7, 0.7],
+      7: [0.7, -0.7],
     };
     const [ax, ay] = ARROWS[this.spawn.dir] ?? [0, 1];
     ctx.beginPath();
@@ -735,7 +864,13 @@ class PlacementTool implements EditorTool {
     ctx.textAlign = 'left';
   }
 
-  private drawDoors(ctx: CanvasRenderingContext2D, camX: number, camY: number, vw: number, vh: number): void {
+  private drawDoors(
+    ctx: CanvasRenderingContext2D,
+    camX: number,
+    camY: number,
+    vw: number,
+    vh: number
+  ): void {
     for (const d of this.doors) {
       // Deleted doors are GONE — not drawn at all. The entry is kept (so Save
       // writes the deletion and Ctrl+Z can restore it), but invisible.
@@ -743,8 +878,10 @@ class PlacementTool implements EditorTool {
       const sx = d.worldX - camX;
       const sy = d.worldY - camY;
       const onScreen =
-        sx >= -VIEW_MARGIN && sx <= vw + VIEW_MARGIN &&
-        sy >= -VIEW_MARGIN && sy <= vh + VIEW_MARGIN;
+        sx >= -VIEW_MARGIN &&
+        sx <= vw + VIEW_MARGIN &&
+        sy >= -VIEW_MARGIN &&
+        sy <= vh + VIEW_MARGIN;
       if (onScreen) {
         if (d.zone && !this.isDoorAuthored(d)) {
           ctx.strokeStyle = 'rgba(140,140,140,0.5)'; // inactive zone door
@@ -790,8 +927,12 @@ class PlacementTool implements EditorTool {
     const b = this.doorBase.get(d.key);
     if (!b) return true;
     return (
-      d.worldX !== b.worldX || d.worldY !== b.worldY || d.destX !== b.destX ||
-      d.destY !== b.destY || d.destDir !== b.destDir || d.style !== b.style
+      d.worldX !== b.worldX ||
+      d.worldY !== b.worldY ||
+      d.destX !== b.destX ||
+      d.destY !== b.destY ||
+      d.destDir !== b.destDir ||
+      d.style !== b.style
     );
   }
 
@@ -837,7 +978,12 @@ class PlacementTool implements EditorTool {
     this.rebuildForm();
   }
 
-  private mkBtn(label: string, fn: () => void, parent: HTMLElement, accent = false): HTMLButtonElement {
+  private mkBtn(
+    label: string,
+    fn: () => void,
+    parent: HTMLElement,
+    accent = false
+  ): HTMLButtonElement {
     const b = document.createElement('button');
     b.textContent = label;
     b.style.cssText =
@@ -861,7 +1007,13 @@ class PlacementTool implements EditorTool {
     return r;
   }
 
-  private mkInput(parent: HTMLElement, name: string, label: string, onChange: (v: string) => void, width = 64): HTMLInputElement {
+  private mkInput(
+    parent: HTMLElement,
+    name: string,
+    label: string,
+    onChange: (v: string) => void,
+    width = 64
+  ): HTMLInputElement {
     const r = this.mkRow(parent, label);
     const i = document.createElement('input');
     i.style.cssText =
@@ -873,7 +1025,13 @@ class PlacementTool implements EditorTool {
     return i;
   }
 
-  private mkSelect(parent: HTMLElement, name: string, label: string, options: [string, string][], onChange: (v: string) => void): HTMLSelectElement {
+  private mkSelect(
+    parent: HTMLElement,
+    name: string,
+    label: string,
+    options: [string, string][],
+    onChange: (v: string) => void
+  ): HTMLSelectElement {
     const r = this.mkRow(parent, label);
     const s = document.createElement('select');
     s.style.cssText =
@@ -926,19 +1084,29 @@ class PlacementTool implements EditorTool {
     form.appendChild(note);
 
     const actions = document.createElement('div');
-    actions.style.cssText = 'display:flex;gap:6px;border-top:1px solid #243;padding-top:7px;flex-wrap:wrap;';
+    actions.style.cssText =
+      'display:flex;gap:6px;border-top:1px solid #243;padding-top:7px;flex-wrap:wrap;';
     form.appendChild(actions);
-    this.mkBtn('🚗 Edit route in Traffic →', () => {
-      trafficEditorTool.requestVehicle(v.id);
-      this.shell?.openTool('traffic');
-    }, actions, true);
-    this.mkBtn('Center view', () => {
-      const wp = v.waypoints[0];
-      if (!wp) return;
-      const cam = this.shell!.context.camera;
-      cam.x = wp[0] - cam.viewW / 2;
-      cam.y = wp[1] - cam.viewH / 2;
-    }, actions);
+    this.mkBtn(
+      '🚗 Edit route in Traffic →',
+      () => {
+        trafficEditorTool.requestVehicle(v.id);
+        this.shell?.openTool('traffic');
+      },
+      actions,
+      true
+    );
+    this.mkBtn(
+      'Center view',
+      () => {
+        const wp = v.waypoints[0];
+        if (!wp) return;
+        const cam = this.shell!.context.camera;
+        cam.x = wp[0] - cam.viewW / 2;
+        cam.y = wp[1] - cam.viewH / 2;
+      },
+      actions
+    );
   }
 
   private buildNpcForm(): void {
@@ -946,14 +1114,22 @@ class PlacementTool implements EditorTool {
     const btns = document.createElement('div');
     btns.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
     form.appendChild(btns);
-    this.mkBtn('+ person', () => {
-      this.placingKind = 'person';
-      this.shell?.toast('Click the map to place a person');
-    }, btns);
-    this.mkBtn('+ prop', () => {
-      this.placingKind = 'prop';
-      this.shell?.toast('Click the map to place a prop');
-    }, btns);
+    this.mkBtn(
+      '+ person',
+      () => {
+        this.placingKind = 'person';
+        this.shell?.toast('Click the map to place a person');
+      },
+      btns
+    );
+    this.mkBtn(
+      '+ prop',
+      () => {
+        this.placingKind = 'prop';
+        this.shell?.toast('Click the map to place a prop');
+      },
+      btns
+    );
     this.mkBtn('snap (G)', () => this.onKey('g'), btns);
 
     const sel = (fn: (e: NpcEntry) => void) => () => {
@@ -967,8 +1143,12 @@ class PlacementTool implements EditorTool {
     keySpan.style.cssText = 'color:#778;font-size:10px;';
     keyRow.appendChild(keySpan);
 
-    this.mkInput(form, 'x', 'x', (v) => sel((e) => !Number.isNaN(num(v)) && this.mutate('x', e, { x: num(v) }, 'npcs'))());
-    this.mkInput(form, 'y', 'y', (v) => sel((e) => !Number.isNaN(num(v)) && this.mutate('y', e, { y: num(v) }, 'npcs'))());
+    this.mkInput(form, 'x', 'x', (v) =>
+      sel((e) => !Number.isNaN(num(v)) && this.mutate('x', e, { x: num(v) }, 'npcs'))()
+    );
+    this.mkInput(form, 'y', 'y', (v) =>
+      sel((e) => !Number.isNaN(num(v)) && this.mutate('y', e, { y: num(v) }, 'npcs'))()
+    );
 
     // Sprite picker — the shared dropdown with a pixel preview per row + a
     // quick-search box (same component as the Cast / Entity / Spawner tools).
@@ -979,7 +1159,8 @@ class PlacementTool implements EditorTool {
       initial: String(this.selNpc?.sprite ?? 1),
       labelFor: (v) => `${v} ${getSpriteName(Number(v)) ?? ''}`.trim(),
       drawThumb: drawSpriteGroupThumb,
-      onSelect: (v) => sel((e) => this.mutate('sprite', e, { sprite: Math.max(0, num(v)) }, 'npcs'))(),
+      onSelect: (v) =>
+        sel((e) => this.mutate('sprite', e, { sprite: Math.max(0, num(v)) }, 'npcs'))(),
     });
     this.spritePicker.el.style.flex = '1';
     spriteRow.appendChild(this.spritePicker.el);
@@ -997,48 +1178,67 @@ class PlacementTool implements EditorTool {
     nameEl.dataset.role = 'sprite-name';
     nameEl.style.cssText = 'text-align:center;color:#7fd0ff;font-size:11px;min-height:13px;';
     nameRow.appendChild(nameEl);
-    this.mkBtn('✎', () => {
-      const e = this.selNpc;
-      if (!e) return;
-      const current = getSpriteName(e.sprite) ?? '';
-      const name = window.prompt(
-        `Rename sprite group #${e.sprite} (renames every NPC using this sprite)`,
-        current
-      );
-      if (name === null) return;
-      setSpriteNameOverride(e.sprite, name.trim() || null);
-      this.shell?.markDirty('names');
-      this.spritePicker?.refresh(); // relabel the dropdown rows with the new name
-      this.refreshPanel();
-      this.shell?.toast(`Renamed to "${name.trim() || '(default)'}" — Save-all writes names.json`);
-    }, nameRow);
+    this.mkBtn(
+      '✎',
+      () => {
+        const e = this.selNpc;
+        if (!e) return;
+        const current = getSpriteName(e.sprite) ?? '';
+        const name = window.prompt(
+          `Rename sprite group #${e.sprite} (renames every NPC using this sprite)`,
+          current
+        );
+        if (name === null) return;
+        setSpriteNameOverride(e.sprite, name.trim() || null);
+        this.shell?.markDirty('names');
+        this.spritePicker?.refresh(); // relabel the dropdown rows with the new name
+        this.refreshPanel();
+        this.shell?.toast(
+          `Renamed to "${name.trim() || '(default)'}" — Save-all writes names.json`
+        );
+      },
+      nameRow
+    );
     form.appendChild(nameRow);
 
-    this.mkSelect(form, 'dir', 'facing', DIR_NAMES.map(([d, n]) => [String(d), n] as [string, string]),
-      (v) => sel((e) => this.mutate('facing', e, { dir: num(v) }, 'npcs'))());
-    this.mkSelect(form, 'kind', 'kind', [['person', 'person'], ['prop', 'prop']],
-      (v) => sel((e) => this.mutate('kind', e, { kind: v === 'person' ? 'person' : 'prop' }, 'npcs'))());
+    this.mkSelect(
+      form,
+      'dir',
+      'facing',
+      DIR_NAMES.map(([d, n]) => [String(d), n] as [string, string]),
+      (v) => sel((e) => this.mutate('facing', e, { dir: num(v) }, 'npcs'))()
+    );
+    this.mkSelect(
+      form,
+      'kind',
+      'kind',
+      [
+        ['person', 'person'],
+        ['prop', 'prop'],
+      ],
+      (v) =>
+        sel((e) => this.mutate('kind', e, { kind: v === 'person' ? 'person' : 'prop' }, 'npcs'))()
+    );
     this.mkInput(form, 't', 'text id', (v) =>
       sel((e) => {
         const t = v.trim() === '' ? null : num(v);
         if (t === null || !Number.isNaN(t)) this.mutate('text id', e, { t }, 'npcs');
-      })());
+      })()
+    );
 
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;gap:6px;border-top:1px solid #243;padding-top:7px;';
     form.appendChild(actions);
-    this.mkBtn('Dialogue ✎', () => {
-      if (this.selNpc) void this.authorDialogue(this.selNpc);
-    }, actions);
+    this.mkBtn(
+      'Dialogue ✎',
+      () => {
+        if (this.selNpc) void this.authorDialogue(this.selNpc);
+      },
+      actions
+    );
     this.mkBtn('Delete (Del)', () => this.deleteSelected(), actions);
-    this.mkBtn('Save', () => {
-      void this.saveNpcs()
-        .then(() => {
-          this.shell?.clearDirty('npcs');
-          this.shell?.toast('Saved npcs — applied live; persons start moving in ~2s');
-        })
-        .catch((err) => this.shell?.toast(String(err), true));
-    }, actions, true);
+    // No Save button — NPC edits auto-save via the shell (registered 'npcs'
+    // handler); applied live, persons start moving in ~2s.
   }
 
   /** Lowest unused textId in the authored range (kept clear of ROM config ids). */
@@ -1074,7 +1274,8 @@ class PlacementTool implements EditorTool {
     const form = this.formEl!;
     const note = document.createElement('div');
     note.style.cssText = 'color:#9fb8cc;font-size:11px;';
-    note.textContent = 'Drag the green marker, or edit below. Saved spawn applies to new sessions (client + server join).';
+    note.textContent =
+      'Drag the green marker, or edit below. Saved spawn applies to new sessions (client + server join).';
     form.appendChild(note);
 
     const num = (v: string) => parseInt(v, 10);
@@ -1084,8 +1285,13 @@ class PlacementTool implements EditorTool {
     this.mkInput(form, 'sy', 'y', (v) => {
       if (!Number.isNaN(num(v))) this.mutate('spawn y', this.spawn, { y: num(v) }, 'spawn');
     });
-    this.mkSelect(form, 'sdir', 'facing', DIR_NAMES.map(([d, n]) => [String(d), n] as [string, string]),
-      (v) => this.mutate('spawn facing', this.spawn, { dir: num(v) }, 'spawn'));
+    this.mkSelect(
+      form,
+      'sdir',
+      'facing',
+      DIR_NAMES.map(([d, n]) => [String(d), n] as [string, string]),
+      (v) => this.mutate('spawn facing', this.spawn, { dir: num(v) }, 'spawn')
+    );
 
     const warn = document.createElement('div');
     warn.dataset.role = 'spawn-warn';
@@ -1093,25 +1299,27 @@ class PlacementTool implements EditorTool {
     form.appendChild(warn);
 
     const actions = document.createElement('div');
-    actions.style.cssText = 'display:flex;gap:6px;border-top:1px solid #243;padding-top:7px;flex-wrap:wrap;';
+    actions.style.cssText =
+      'display:flex;gap:6px;border-top:1px solid #243;padding-top:7px;flex-wrap:wrap;';
     form.appendChild(actions);
-    this.mkBtn('Center view', () => {
-      const cam = this.shell!.context.camera;
-      cam.x = this.spawn.x - cam.viewW / 2;
-      cam.y = this.spawn.y - cam.viewH / 2;
-    }, actions);
-    this.mkBtn('Test spawn', () => {
-      this.shell!.context.teleport(this.spawn.x, this.spawn.y);
-      this.shell?.toast('Teleported to spawn');
-    }, actions);
-    this.mkBtn('Save', () => {
-      void this.saveSpawn()
-        .then(() => {
-          this.shell?.clearDirty('spawn');
-          this.shell?.toast('Saved overrides/spawn.json');
-        })
-        .catch((err) => this.shell?.toast(String(err), true));
-    }, actions, true);
+    this.mkBtn(
+      'Center view',
+      () => {
+        const cam = this.shell!.context.camera;
+        cam.x = this.spawn.x - cam.viewW / 2;
+        cam.y = this.spawn.y - cam.viewH / 2;
+      },
+      actions
+    );
+    this.mkBtn(
+      'Test spawn',
+      () => {
+        this.shell!.context.teleport(this.spawn.x, this.spawn.y);
+        this.shell?.toast('Teleported to spawn');
+      },
+      actions
+    );
+    // No Save button — spawn point auto-saves via the shell (registered 'spawn' handler).
   }
 
   private buildDoorForm(): void {
@@ -1119,10 +1327,14 @@ class PlacementTool implements EditorTool {
     const btns = document.createElement('div');
     btns.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
     form.appendChild(btns);
-    this.mkBtn('+ door', () => {
-      this.placingDoor = true;
-      this.shell?.toast('Click the map to place a door trigger');
-    }, btns);
+    this.mkBtn(
+      '+ door',
+      () => {
+        this.placingDoor = true;
+        this.shell?.toast('Click the map to place a door trigger');
+      },
+      btns
+    );
     this.mkBtn('snap (G)', () => this.onKey('g'), btns);
 
     const sel = (fn: (e: DoorEntry) => void) => () => {
@@ -1136,35 +1348,57 @@ class PlacementTool implements EditorTool {
     keySpan.style.cssText = 'color:#778;font-size:10px;';
     keyRow.appendChild(keySpan);
 
-    this.mkInput(form, 'dwx', 'trig x', (v) => sel((e) => !Number.isNaN(num(v)) && this.mutate('trigger x', e, { worldX: num(v) }, 'doors'))());
-    this.mkInput(form, 'dwy', 'trig y', (v) => sel((e) => !Number.isNaN(num(v)) && this.mutate('trigger y', e, { worldY: num(v) }, 'doors'))());
-    this.mkInput(form, 'ddx', 'dest x', (v) => sel((e) => !Number.isNaN(num(v)) && this.mutate('dest x', e, { destX: num(v) }, 'doors'))());
-    this.mkInput(form, 'ddy', 'dest y', (v) => sel((e) => !Number.isNaN(num(v)) && this.mutate('dest y', e, { destY: num(v) }, 'doors'))());
-    this.mkSelect(form, 'ddir', 'arrive', DIR_NAMES.map(([d, n]) => [String(d), n] as [string, string]),
-      (v) => sel((e) => this.mutate('arrive dir', e, { destDir: num(v) }, 'doors'))());
-    this.mkInput(form, 'dstyle', 'style', (v) => sel((e) => !Number.isNaN(num(v)) && this.mutate('style', e, { style: num(v) }, 'doors'))());
+    this.mkInput(form, 'dwx', 'trig x', (v) =>
+      sel(
+        (e) => !Number.isNaN(num(v)) && this.mutate('trigger x', e, { worldX: num(v) }, 'doors')
+      )()
+    );
+    this.mkInput(form, 'dwy', 'trig y', (v) =>
+      sel(
+        (e) => !Number.isNaN(num(v)) && this.mutate('trigger y', e, { worldY: num(v) }, 'doors')
+      )()
+    );
+    this.mkInput(form, 'ddx', 'dest x', (v) =>
+      sel((e) => !Number.isNaN(num(v)) && this.mutate('dest x', e, { destX: num(v) }, 'doors'))()
+    );
+    this.mkInput(form, 'ddy', 'dest y', (v) =>
+      sel((e) => !Number.isNaN(num(v)) && this.mutate('dest y', e, { destY: num(v) }, 'doors'))()
+    );
+    this.mkSelect(
+      form,
+      'ddir',
+      'arrive',
+      DIR_NAMES.map(([d, n]) => [String(d), n] as [string, string]),
+      (v) => sel((e) => this.mutate('arrive dir', e, { destDir: num(v) }, 'doors'))()
+    );
+    this.mkInput(form, 'dstyle', 'style', (v) =>
+      sel((e) => !Number.isNaN(num(v)) && this.mutate('style', e, { style: num(v) }, 'doors'))()
+    );
 
     const actions = document.createElement('div');
-    actions.style.cssText = 'display:flex;gap:6px;border-top:1px solid #243;padding-top:7px;flex-wrap:wrap;';
+    actions.style.cssText =
+      'display:flex;gap:6px;border-top:1px solid #243;padding-top:7px;flex-wrap:wrap;';
     form.appendChild(actions);
-    this.mkBtn('Go to dest', sel((e) => {
-      const cam = this.shell!.context.camera;
-      cam.x = e.destX - cam.viewW / 2;
-      cam.y = e.destY - cam.viewH / 2;
-    }), actions);
-    this.mkBtn('Walk-test', sel((e) => {
-      this.shell!.context.teleport(e.destX, e.destY);
-      this.shell?.toast(`Teleported through ${e.key}`);
-    }), actions);
+    this.mkBtn(
+      'Go to dest',
+      sel((e) => {
+        const cam = this.shell!.context.camera;
+        cam.x = e.destX - cam.viewW / 2;
+        cam.y = e.destY - cam.viewH / 2;
+      }),
+      actions
+    );
+    this.mkBtn(
+      'Walk-test',
+      sel((e) => {
+        this.shell!.context.teleport(e.destX, e.destY);
+        this.shell?.toast(`Teleported through ${e.key}`);
+      }),
+      actions
+    );
     this.mkBtn('Delete (Del)', () => this.deleteSelected(), actions);
-    this.mkBtn('Save', () => {
-      void this.saveDoors()
-        .then(() => {
-          this.shell?.clearDirty('doors');
-          this.shell?.toast('Saved overrides/doors.json — applied live');
-        })
-        .catch((err) => this.shell?.toast(String(err), true));
-    }, actions, true);
+    // No Save button — door edits auto-save via the shell (registered 'doors'
+    // handler); applied live.
   }
 
   /** Light refresh: only positional fields (used during drags). */
@@ -1247,7 +1481,9 @@ class PlacementTool implements EditorTool {
         setVal('ddir', String(e.destDir));
         setVal('dstyle', String(e.style));
       }
-      const authored = this.doors.filter((d) => d.deleted || d.added || this.isDoorAuthored(d)).length;
+      const authored = this.doors.filter(
+        (d) => d.deleted || d.added || this.isDoorAuthored(d)
+      ).length;
       const zones = this.doors.filter((d) => d.zone).length;
       this.infoEl.textContent =
         `${this.doors.length} doors (${zones} zone) · ${authored} authored · snap ${snapLabel}` +
@@ -1264,8 +1500,12 @@ class PlacementTool implements EditorTool {
     const b = this.npcBase.get(e.k);
     if (!b) return false;
     return (
-      e.x !== b.x || e.y !== b.y || e.sprite !== b.sprite ||
-      e.dir !== b.dir || e.kind !== b.kind || e.t !== (b.t ?? null)
+      e.x !== b.x ||
+      e.y !== b.y ||
+      e.sprite !== b.sprite ||
+      e.dir !== b.dir ||
+      e.kind !== b.kind ||
+      e.t !== (b.t ?? null)
     );
   }
 }

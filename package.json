@@ -8,24 +8,57 @@
     "start": "node server/index.js",
     "typecheck": "tsc --noEmit",
     "check:server": "node --check server/gameHost.js && node --check server/npcSim.js && node --check server/shops.js && node --check server/index.js",
-    "test": "node server/gameHost.test.js",
-    "verify": "npm run typecheck && npm run check:server && npm test",
-    "extract": "python tools/convert_all.py"
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test:server": "node server/gameHost.test.js && node server/combat.test.js",
+    "test:unit": "vitest run",
+    "test": "npm run test:unit && npm run test:server",
+    "verify": "npm run typecheck && npm run lint && npm run check:server && npm test",
+    "extract": "python tools/convert_all.py",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "src/**/*.ts": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "server/**/*.js": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,mjs}": [
+      "prettier --write"
+    ],
+    "{test,public/overrides}/**/*.{ts,json}": [
+      "prettier --write"
+    ]
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/express": "^5.0.6",
     "@types/ws": "^8.18.1",
+    "@vitest/ui": "^4.1.8",
+    "eslint": "^10.5.0",
+    "eslint-config-prettier": "^10.1.8",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
     "nodemon": "^3.1.14",
+    "prettier": "^3.8.4",
     "typescript": "^5.9.3",
-    "vite": "^7.3.1"
+    "typescript-eslint": "^8.61.0",
+    "vite": "^7.3.1",
+    "vitest": "^4.1.8"
   },
   "dependencies": {
     "@smwcentral/spc-player": "^2.0.2",
     "express": "^5.2.1",
-    "ws": "^8.19.0"
+    "ws": "^8.19.0",
+    "zod": "^4.4.3"
   }
 }

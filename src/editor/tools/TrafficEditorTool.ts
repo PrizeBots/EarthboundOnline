@@ -27,7 +27,7 @@ const VEHICLE_SPRITES: { id: number; name: string }[] = [
   { id: 254, name: 'Bulldozer' },
 ];
 const DEFAULT_SPRITE = VEHICLE_SPRITES[0].id; // Car
-const WP_PICK = 9;          // world-px pick radius for a waypoint dot
+const WP_PICK = 9; // world-px pick radius for a waypoint dot
 
 let idCounter = 0;
 
@@ -48,8 +48,8 @@ class TrafficEditorTool implements EditorTool {
   private vehicles: Vehicle[] = [];
   private sel: Vehicle | null = null;
   private selWp: number | null = null;
-  private placing = false;     // next click drops a brand-new vehicle
-  private addWp = false;       // clicks append waypoints to the selected vehicle
+  private placing = false; // next click drops a brand-new vehicle
+  private addWp = false; // clicks append waypoints to the selected vehicle
   private pendingSelectId: string | null = null; // select-on-open (Placement handoff)
   private dragging = false;
   private hover: WorldPoint = { x: 0, y: 0 };
@@ -144,7 +144,9 @@ class TrafficEditorTool implements EditorTool {
       speed: v.speed ?? 1,
       loop: v.loop !== false,
       enabled: v.enabled !== false,
-      waypoints: Array.isArray(v.waypoints) ? v.waypoints.map(([x, y]) => [x, y] as [number, number]) : [],
+      waypoints: Array.isArray(v.waypoints)
+        ? v.waypoints.map(([x, y]) => [x, y] as [number, number])
+        : [],
       t: v.t ?? null,
     }));
   }
@@ -169,7 +171,9 @@ class TrafficEditorTool implements EditorTool {
           speed: v.speed,
           loop: v.loop,
           enabled: v.enabled,
-          waypoints: v.waypoints.map(([x, y]) => [Math.round(x), Math.round(y)] as [number, number]),
+          waypoints: v.waypoints.map(
+            ([x, y]) => [Math.round(x), Math.round(y)] as [number, number]
+          ),
           ...(v.t != null ? { t: v.t } : {}),
         };
       }),
@@ -282,7 +286,9 @@ class TrafficEditorTool implements EditorTool {
     let best: { veh: Vehicle; idx: number } | null = null;
     let bestD = WP_PICK;
     // Prefer the selected vehicle's points, then everyone else's.
-    const order = this.sel ? [this.sel, ...this.vehicles.filter((v) => v !== this.sel)] : this.vehicles;
+    const order = this.sel
+      ? [this.sel, ...this.vehicles.filter((v) => v !== this.sel)]
+      : this.vehicles;
     for (const veh of order) {
       for (let i = 0; i < veh.waypoints.length; i++) {
         const [wx, wy] = veh.waypoints[i];
@@ -362,7 +368,11 @@ class TrafficEditorTool implements EditorTool {
       const wps = v.waypoints;
       if (wps.length === 0) continue;
       const on = v === this.sel;
-      const base = !v.enabled ? 'rgba(150,150,150,0.6)' : on ? 'rgba(127,224,160,0.95)' : 'rgba(232,163,61,0.8)';
+      const base = !v.enabled
+        ? 'rgba(150,150,150,0.6)'
+        : on
+          ? 'rgba(127,224,160,0.95)'
+          : 'rgba(232,163,61,0.8)';
 
       // Route polyline (closed if looping).
       if (wps.length >= 2) {
@@ -393,7 +403,8 @@ class TrafficEditorTool implements EditorTool {
       }
       const sx = wps[0][0] - camX;
       const sy = wps[0][1] - camY;
-      const face = wps.length >= 2 ? dir8(wps[1][0] - wps[0][0], wps[1][1] - wps[0][1]) : Direction.S;
+      const face =
+        wps.length >= 2 ? dir8(wps[1][0] - wps[0][0], wps[1][1] - wps[0][1]) : Direction.S;
       ctx.globalAlpha = v.enabled ? 0.6 : 0.3;
       drawSprite(ctx, v.sprite, face, 0, sx, sy);
       ctx.globalAlpha = 1;
@@ -430,7 +441,11 @@ class TrafficEditorTool implements EditorTool {
 
   private drawArrow(
     ctx: CanvasRenderingContext2D,
-    ax: number, ay: number, bx: number, by: number, color: string,
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+    color: string
   ): void {
     const mx = (ax + bx) / 2;
     const my = (ay + by) / 2;
@@ -464,16 +479,18 @@ class TrafficEditorTool implements EditorTool {
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
     this.mkBtn('+ New vehicle (N)', () => this.startPlacing(), actions);
-    this.addBtn = this.mkBtn('Add waypoints', () => {
-      if (!this.sel) {
-        this.shell?.toast('Select or place a vehicle first', true);
-        return;
-      }
-      this.setAddWp(!this.addWp);
-    }, actions);
-    this.mkBtn('Save', () => {
-      void this.save().catch((e) => this.shell?.toast(`Save failed: ${e}`, true));
-    }, actions, true);
+    this.addBtn = this.mkBtn(
+      'Add waypoints',
+      () => {
+        if (!this.sel) {
+          this.shell?.toast('Select or place a vehicle first', true);
+          return;
+        }
+        this.setAddWp(!this.addWp);
+      },
+      actions
+    );
+    // No Save button — edits auto-save via the shell (registered 'traffic' handler).
     this.panel.appendChild(actions);
 
     this.listEl = document.createElement('div');
@@ -515,7 +532,8 @@ class TrafficEditorTool implements EditorTool {
       dot.style.color = !v.enabled ? '#667' : v.waypoints.length >= 2 ? '#6ad08a' : '#e8a33d';
       const label = document.createElement('span');
       label.textContent = `${v.name}  (#${v.sprite}, ${v.waypoints.length}wp)`;
-      label.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' +
+      label.style.cssText =
+        'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' +
         (v.enabled ? '' : 'color:#778;');
       row.appendChild(dot);
       row.appendChild(label);
@@ -546,11 +564,17 @@ class TrafficEditorTool implements EditorTool {
     const v = this.sel;
     const form = this.formEl;
 
-    const nameIn = this.mkInput(form, 'name', 'name', (val) => {
-      v.name = val || 'car';
-      this.shell?.markDirty('traffic');
-      this.refreshList();
-    }, 120);
+    const nameIn = this.mkInput(
+      form,
+      'name',
+      'name',
+      (val) => {
+        v.name = val || 'car';
+        this.shell?.markDirty('traffic');
+        this.refreshList();
+      },
+      120
+    );
     nameIn.value = v.name;
 
     // vehicle picker — restricted to the vehicle sprite groups only
@@ -608,7 +632,10 @@ class TrafficEditorTool implements EditorTool {
     const loopHint = document.createElement('span');
     loopHint.textContent = v.loop ? 'circuit' : 'back-and-forth';
     loopHint.style.cssText = 'color:#778;font-size:10px;';
-    loop.addEventListener('change', () => (loopHint.textContent = loop.checked ? 'circuit' : 'back-and-forth'));
+    loop.addEventListener(
+      'change',
+      () => (loopHint.textContent = loop.checked ? 'circuit' : 'back-and-forth')
+    );
     loopRow.appendChild(loopHint);
 
     const enRow = this.mkRow(form, 'on');
@@ -634,14 +661,20 @@ class TrafficEditorTool implements EditorTool {
     // A vehicle is an NPC that drives — it can also be talkable. Author/edit its
     // line in the Dialogue Editor, same handoff the Placement Editor uses.
     const actions = document.createElement('div');
-    actions.style.cssText = 'display:flex;gap:6px;border-top:1px solid #243;padding-top:7px;flex-wrap:wrap;';
+    actions.style.cssText =
+      'display:flex;gap:6px;border-top:1px solid #243;padding-top:7px;flex-wrap:wrap;';
     form.appendChild(actions);
-    this.mkBtn(v.t != null ? 'Dialogue ✎' : '+ Dialogue', () => void this.authorDialogue(v), actions);
+    this.mkBtn(
+      v.t != null ? 'Dialogue ✎' : '+ Dialogue',
+      () => void this.authorDialogue(v),
+      actions
+    );
     this.mkBtn('Delete vehicle', () => this.deleteVehicle(), actions);
 
     const talk = document.createElement('div');
     talk.style.cssText = 'font-size:10px;color:#778;';
-    talk.textContent = v.t != null ? `talkable · textId ${v.t}` : 'silent — add dialogue to make it talkable';
+    talk.textContent =
+      v.t != null ? `talkable · textId ${v.t}` : 'silent — add dialogue to make it talkable';
     form.appendChild(talk);
   }
 
@@ -678,7 +711,9 @@ class TrafficEditorTool implements EditorTool {
     c.clearRect(0, 0, this.thumb.width, this.thumb.height);
     const meta = getSpriteGroupMeta(this.sel.sprite);
     if (!meta) {
-      loadSpriteGroup(this.sel.sprite).then(() => this.drawThumb()).catch(() => {});
+      loadSpriteGroup(this.sel.sprite)
+        .then(() => this.drawThumb())
+        .catch(() => {});
       return;
     }
     drawSprite(c, this.sel.sprite, Direction.E, 0, this.thumb.width / 2, this.thumb.height - 6);
@@ -686,7 +721,12 @@ class TrafficEditorTool implements EditorTool {
 
   // --- small DOM helpers ---------------------------------------------------------------
 
-  private mkBtn(label: string, fn: () => void, parent: HTMLElement, accent = false): HTMLButtonElement {
+  private mkBtn(
+    label: string,
+    fn: () => void,
+    parent: HTMLElement,
+    accent = false
+  ): HTMLButtonElement {
     const b = document.createElement('button');
     b.textContent = label;
     b.style.cssText =
@@ -715,7 +755,7 @@ class TrafficEditorTool implements EditorTool {
     name: string,
     label: string,
     onChange: (v: string) => void,
-    width = 64,
+    width = 64
   ): HTMLInputElement {
     const r = this.mkRow(parent, label);
     const i = document.createElement('input');
