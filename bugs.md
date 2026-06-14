@@ -48,6 +48,71 @@ Format:
 
 ## Fixed
 
+### Black squares in the Twoson cycle shop floor (FIXED 2026-06-14)
+- **Symptom:** The cycle shop interior was missing pieces of its floor —
+  black squares ate the lower-left corner (under the bicycles), beneath the
+  shop's shelving/counter.
+- **Root cause:** Those floor minitiles sit on the parasitic walkable strip
+  that EB packs under in-room furniture — the strip has a SOLID cell directly
+  above it (the shelf), which is exactly the signature the room flood's
+  anti-slip-under-a-wall guard refuses to cross (it can't tell "under my own
+  shelf" from "under the wall into the next room"). So the guarded flood never
+  reached the floor's lower edge, and the door-aware pocket merge couldn't
+  rescue it either: that same bottom strip runs straight into the packed
+  NEIGHBOUR room's sector (a different tileset/palette), so the pocket leaked
+  out of `floodSectors` and was rejected wholesale. The orphaned cells
+  rendered black.
+- **Fix:** A guard-free fill pass after the pocket merge
+  (`Collision.computeRoomBounds`): grow outward from `visited`, but refuse to
+  leave `floodSectors` and never step onto a door cell. That fills the room's
+  OWN floor (same sectors, no door between) while making a neighbour-room merge
+  structurally impossible — neighbours always live in a different sector or
+  behind a door mat. Mirrored in `tools/debug_room_crop_check.py` and
+  `tools/extract_rooms.py` (KEEP IN SYNC).
+- **Verified:** in-game screenshot (floor now complete, no black squares) and
+  the canonical sweep — only 6 indoor rooms change, all pure additions (0
+  removals), indoor multi-style rooms still 0 (no building merges), 0 NO-CROP
+  nulls. Other shops with the same furniture layout were silently fixed too.
+
+### Escalators dead — black/uncrossable, can't reach the next floor (FIXED 2026-06-14)
+- **Symptom:** In the Twoson dept store the escalators showed as black squares
+  and the player could not climb them to the 2nd floor ("can't even get half
+  way up it").
+- **Root cause:** Three stacked issues.
+  1. **Never implemented.** EB's `EscalatorOrStairwayDoor` (extracted as
+     `type:"stair"` in `doors.json`) is NOT a warp — it carries only a diagonal
+     `direction` (CoilSnake `StairDirection`: NW=0, NE=0x100, SW=0x200,
+     SE=0x300), no destination. `DoorManager` did `if (type !== 'door')
+     continue`, so stairs did nothing.
+  2. **The escalator is a walkable diagonal RAMP** (bottom landing strip →
+     diagonal ramp → top landing strip), bounded by SOLID at each end. It's
+     corner-connected and only ~2 minitiles wide, so the 14px player foot-box
+     can't walk up it, and the room-seal's anti-under-wall gate compounds it.
+     Real EB *glides* you along the ramp, ignoring collision. The floor change
+     itself is a normal `door` at the strip ends (those already worked).
+  3. The shaft is its own room; the camera crop already spans the whole shaft
+     (gated flood = full 66-cell shaft for Twoson), so the "black around" is
+     just the isolated pocket's walls — not a missing-tile bug.
+- **Fix:** Implemented an escalator **ride** (glide):
+  - `DoorManager.getStairAt()` returns the trigger's diagonal vector
+    (`STAIR_DIR_VEC`).
+  - `Player.rideStep()` moves diagonally one frame, bypassing collision.
+  - `Game.updateRide()` glides until the minitile one step ahead along the ramp
+    is solid (the landing), then re-crops. The active-room crop is left intact
+    during the ride (an earlier attempt nulled it → free-camera black void).
+  - `Collision.isSolidAtPoint()` is the raw look-ahead used for arrival.
+- **Verified:** Replayed the glide against real collision for both Twoson
+  escalators — up lands on the top strip, down on the bottom strip, foot on
+  walkable both ways. No `doors.json` re-extraction needed (data was already
+  present, just ignored).
+- **Known limits / follow-ups:** (a) Fourside's dense multi-escalator banks
+  have a more complex layout — one trigger insta-stops in simulation (harmless:
+  player keeps control); needs in-game testing. (b) Steps don't visually scroll
+  — EB animates them via tile/palette cycling, which our static-atlas renderer
+  doesn't do yet (TODO: tile-animation system). (c) Ladders/ropes
+  (`RopeOrLadderDoor`, extracted as `type:"ladder"`/`"rope"`) are vertical
+  climbs with the same "not implemented" gap — not yet handled.
+
 ### Head floats in front of stop signs / poles everywhere — priority bit semantics (FIXED 2026-06-12, supersedes the bench entry below)
 - **Symptom:** Standing behind a stop sign (and "wherever I try" — any sign,
   pole, or 0x03-flagged surface map-wide): body hidden behind the object but

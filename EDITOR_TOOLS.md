@@ -452,7 +452,9 @@ neighbouring) musicId. Rather than re-tag the ROM extraction, the admin paints
 correct regions in OUR overrides layer.
 
 - [x] Draw rectangular **trigger areas** on the map: "+ New area" (N) then drag
-      a box; drag inside an existing area to move it; Del removes the selected one
+      a box. Every zone is a **marquee**: drag its center to move it, drag any
+      **corner handle to resize** (the opposite corner anchors; snaps to grid).
+      The selected zone shows white corner handles; Del removes it
 - [x] Per-area fields: name, x/y/w/h (numeric), and a **song** picker — a
       **dropdown of real track titles** (`SongNames`, pulled from the SPC ID666
       tags by `tools/extract_song_names.py` → `src/data/songNames.json`). **▶ Test /
@@ -466,8 +468,11 @@ correct regions in OUR overrides layer.
       `loadSongNameOverrides()`
 - [x] **Snap to sector grid** (64×32 px) toggle, default on — keeps areas aligned
       to EB's native music unit so they bake back to per-sector musicId on SNES
-- [x] Live overlay: each area as a translucent hued box + border, labelled with
-      the **song title** (`♪ name`); selected one highlighted white; the in-progress drag drawn dashed
+- [x] Live overlay: every zone drawn as an animated **marching-ants marquee**
+      (scrolling dashed border over a dark underlay + translucent hued fill),
+      labelled with the **song title** (`♪ name`); selected one highlighted white
+      with grab handles; culled to the view (hundreds of zones); the in-progress
+      drag drawn dashed
 - [x] Saves the WHOLE file to `public/overrides/music.json`
       (`{version, areas:[{name,x,y,w,h,song}]}` — OUR authored content, ships like
       other overrides). `MusicManager.songForPoint` checks areas first (last match
@@ -476,7 +481,8 @@ correct regions in OUR overrides layer.
       live via `setMusicAreas()` (other clients refresh)
 - [x] **Seeded from the ROM** — `tools/seed_music_areas.py` materializes the
       current per-sector music as editable rectangles (merges same-song
-      neighbours; 456 areas covering the map) so the tool opens with everything
+      neighbours; ~507 areas covering the map at the engine's 256x128-px sector
+      scale) so the tool opens with everything
       listed instead of blank. Re-run to regenerate from `sectors.json`
 - [ ] Author CORRECT regions over the seed (fix the wrong-music spots in place —
       the content pass this tool enables)

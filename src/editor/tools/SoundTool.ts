@@ -6,6 +6,7 @@ import {
   setMusicAreas,
   previewSong,
   stopMusic,
+  setMusicMuted,
 } from '../../engine/MusicManager';
 import {
   getSongName,
@@ -71,12 +72,17 @@ class SoundTool implements EditorTool {
   private anchorX = 0;
   private anchorY = 0;
 
+  private tick = 0; // advances per draw to scroll the marching-ants marquee
+
   private panel: HTMLDivElement | null = null;
   private listEl: HTMLDivElement | null = null;
   private formEl: HTMLDivElement | null = null;
 
   activate(shell: EditorShellApi): void {
     this.shell = shell;
+    // The editor mutes music on entry (so other tools edit in silence); the
+    // Sound Manager is the exception — unmute so Test/auditioning is audible.
+    setMusicMuted(false);
     registerSaveHandler('music', () => this.save());
     this.buildPanel();
     this.refreshList();
@@ -86,6 +92,7 @@ class SoundTool implements EditorTool {
 
   deactivate(): void {
     stopMusic(); // drop any preview before leaving the tool
+    setMusicMuted(true); // restore the editor's edit-in-silence state
     this.panel?.remove();
     this.panel = null;
     this.placing = this.drawing = this.moving = this.resizing = false;
@@ -313,22 +320,64 @@ class SoundTool implements EditorTool {
     const zoom = camera.zoom || 1;
     const lw = 1 / zoom;          // keep borders ~1 device px at any zoom
     const fontPx = Math.max(7, Math.round(9 / zoom));
+    const vw = camera.viewW, vh = camera.viewH;
+
+    // Animated "marching ants": a dashed border whose dash offset scrolls every
+    // frame, so each zone reads as a live selection marquee (like Placement's
+    // boxes, but moving). A dark underlay keeps the light dashes legible on any
+    // tile. `tick` advances per draw — no Date.now needed.
+    this.tick++;
+    const dash = 5 * lw;
+    const off = (this.tick * 0.4 * lw) % (dash * 2);
+    // Level-of-detail: when zoomed out, hundreds of zones are on screen at once.
+    // Animated dashes + a dark underlay + a big label per zone get expensive, and
+    // none of it is legible at that scale — so below these zooms draw a plain
+    // solid border and drop labels. Keeps far-out panning smooth.
+    const fancyBorders = zoom >= 0.3;   // animated marching-ants vs. plain stroke
+    const showLabels = zoom >= 0.5;     // text is unreadable smaller than this
+    if (showLabels) {
+      ctx.font = `${fontPx}px monospace`;
+      ctx.textAlign = 'left';
+    }
 
     for (let i = 0; i < this.areas.length; i++) {
       const a = this.areas[i];
       const sx = a.x - camX, sy = a.y - camY;
+      // Cull zones outside the (zoomed) view — there are hundreds.
+      if (sx + a.w < 0 || sx > vw || sy + a.h < 0 || sy > vh) continue;
       const on = a === this.sel;
       const hue = (i * 47) % 360;
-      ctx.fillStyle = `hsla(${hue},70%,55%,${on ? 0.28 : 0.16})`;
+
+      // Subtle fill so the zone's footprint reads at a glance.
+      ctx.fillStyle = `hsla(${hue},70%,55%,${on ? 0.26 : 0.12})`;
       ctx.fillRect(sx, sy, a.w, a.h);
-      ctx.strokeStyle = on ? '#fff' : `hsla(${hue},80%,70%,0.95)`;
-      ctx.lineWidth = on ? lw * 2 : lw;
-      ctx.strokeRect(sx, sy, a.w, a.h);
-      ctx.fillStyle = on ? '#fff' : `hsla(${hue},85%,80%,1)`;
-      ctx.font = `${fontPx}px monospace`;
-      ctx.textAlign = 'left';
-      ctx.fillText(`♪ ${getSongName(a.song) ?? a.song}`, sx + 3 * lw, sy + fontPx + lw);
+
+      if (fancyBorders || on) {
+        // Dark solid underlay, then the scrolling light dashes on top.
+        ctx.setLineDash([]);
+        ctx.lineWidth = lw * (on ? 3 : 2);
+        ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+        ctx.strokeRect(sx, sy, a.w, a.h);
+        ctx.setLineDash([dash, dash]);
+        ctx.lineDashOffset = -off;
+        ctx.lineWidth = lw * (on ? 2 : 1);
+        ctx.strokeStyle = on ? '#ffffff' : `hsla(${hue},90%,72%,1)`;
+        ctx.strokeRect(sx, sy, a.w, a.h);
+        ctx.setLineDash([]);
+      } else {
+        // Cheap plain border for the zoomed-out survey view.
+        ctx.lineWidth = lw;
+        ctx.strokeStyle = `hsla(${hue},90%,72%,1)`;
+        ctx.strokeRect(sx, sy, a.w, a.h);
+      }
+
+      if (showLabels) {
+        ctx.fillStyle = on ? '#fff' : `hsla(${hue},85%,82%,1)`;
+        ctx.fillText(`♪ ${getSongName(a.song) ?? a.song}`, sx + 3 * lw, sy + fontPx + lw);
+      }
     }
+    ctx.setLineDash([]);
+    ctx.lineDashOffset = 0;
 
     // Corner handles on the SELECTED zone — grab to resize.
     if (this.sel) {
@@ -427,7 +476,9 @@ class SoundTool implements EditorTool {
       row.appendChild(label);
       row.onclick = () => {
         this.sel = a;
-        this.shell?.context.teleport(a.x + a.w / 2, a.y + a.h / 2);
+        // Free-fly to the zone (goTo undoes the room crop); context.teleport
+        // would crop to the landed room and black out the rest of the map.
+        this.shell?.goTo(a.x + a.w / 2, a.y + a.h / 2);
         this.refreshList();
         this.rebuildForm();
       };

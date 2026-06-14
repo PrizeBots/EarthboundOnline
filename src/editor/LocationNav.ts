@@ -561,7 +561,9 @@ export class LocationNav {
     );
 
     try {
-      [this.derivedTree, this.doc] = await Promise.all([buildTree(), loadPlaces()]);
+      const [derived, doc, roomList] = await Promise.all([buildTree(), loadPlaces(), loadRoomsJson()]);
+      this.derivedTree = injectInstancedRooms(derived, roomList);
+      this.doc = doc;
       // Seed expansion: auto-open the town the player is standing in.
       const here = this.currentTown();
       const hereLabel = (TOWN_LABEL[here] ?? '').toLowerCase();
@@ -862,6 +864,65 @@ export class LocationNav {
 }
 
 // ── overrides load / save / compose ──────────────────────────────────────────
+
+// ── authored rooms (public/assets/map/rooms.json) ────────────────────────────
+// Custom rooms (copied from an interior template into the appended "interiors
+// band", then edited and wired to new doors) live off the door-derived tree, so
+// we list them here directly: grouped by town, under a synthetic "Custom Rooms"
+// building, each flying to the room's spawn. Absent rooms.json ⇒ nothing added.
+interface RoomJson {
+  id: string;
+  label: string;
+  town?: string | null;
+  type?: string | null;
+  spawn?: { x: number; y: number; dir: number };
+  rect: { x: number; y: number; w: number; h: number };
+}
+
+async function loadRoomsJson(): Promise<RoomJson[]> {
+  try {
+    const d = await loadJSON<{ rooms: RoomJson[] }>('/assets/map/rooms.json');
+    return Array.isArray(d.rooms) ? d.rooms : [];
+  } catch {
+    return []; // not extracted yet
+  }
+}
+
+function injectInstancedRooms(tree: LocNode[], rooms: RoomJson[]): LocNode[] {
+  if (rooms.length === 0) return tree;
+  const byTown = new Map<string, RoomJson[]>();
+  for (const r of rooms) {
+    const town = r.town && r.town !== '(unsorted)' ? r.town : 'other';
+    (byTown.get(town) ?? byTown.set(town, []).get(town)!).push(r);
+  }
+  for (const [town, list] of byTown) {
+    let tnode = tree.find((n) => n.townKey === town);
+    const at = (r: RoomJson) => ({ x: r.spawn?.x ?? r.rect.x, y: r.spawn?.y ?? r.rect.y });
+    if (!tnode) {
+      const a = at(list[0]);
+      tnode = {
+        label: TOWN_LABEL[town] ?? town, title: `${list.length} instanced rooms`,
+        x: a.x, y: a.y, kind: 'town', key: `t:${town}`, townKey: town, children: [],
+      };
+      tree.push(tnode);
+    }
+    tnode.children ??= [];
+    const a0 = at(list[0]);
+    tnode.children.push({
+      label: `Custom Rooms (${list.length})`,
+      title: 'authored room copies',
+      x: a0.x, y: a0.y, kind: 'building', key: `t:${town}|instanced`,
+      children: list.map((r) => {
+        const a = at(r);
+        return {
+          label: r.label, title: `${r.id} · spawn (${a.x},${a.y})`,
+          x: a.x, y: a.y, kind: 'room' as const, key: `room:${r.id}`,
+        };
+      }),
+    });
+  }
+  return tree;
+}
 
 async function loadPlaces(): Promise<PlacesDoc> {
   try {

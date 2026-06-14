@@ -11,9 +11,10 @@ import {
   isHurtPressed,
   isToggleBoxesPressed,
   getKeySet,
+  consumePointerClick,
 } from './Input';
 import { loadMapData, getSector, getDrawTilesetId } from './MapManager';
-import { loadDoors, getDoorAt, DoorData } from './DoorManager';
+import { loadDoors, getDoorAt, getStairAt, DoorData } from './DoorManager';
 import { loadRooms, setActiveRoomFromPoint } from './Rooms';
 import { loadNPCs, getNearbyNPCs, applyNpcUpdates, applyNpcHp, getNpcDialogue, interpolateNpcs } from './NPCManager';
 import { NPC } from './NPC';
@@ -21,6 +22,7 @@ import { loadAtlas } from './TilesetManager';
 import {
   loadCollision,
   checkPlayerCollision,
+  isSolidAtPoint,
   computeRoomBounds,
   setActiveRoom,
 } from './Collision';
@@ -39,14 +41,16 @@ import {
   dropRemoteBuffer,
   interpolateRemotePlayer,
 } from './RemoteInterp';
-import { getItemName, loadItemSprites, isEquippable } from './Items';
-import { itemType } from './Shop';
-import { loadMusicMap, loadMusicAreas, initMusic, updateMusic } from './MusicManager';
+import { getItemName, loadItemSprites } from './Items';
+import { itemEquip } from './Shop';
+import { getEquipped, setEquipped, setEquippedFromServer } from './Equipment';
+import { loadMusicMap, loadMusicAreas, initMusic, updateMusic, playCharSelectMusic } from './MusicManager';
 import {
   loadCharacterSelect,
   updateCharacterSelect,
   drawCharacterSelect,
   handleCharSelectInput,
+  handleCharSelectClick,
   getSelectedSpriteGroupId,
 } from './CharacterSelect';
 import { loadFont }                             from './TextRenderer';
@@ -82,6 +86,7 @@ import {
   MAP_WIDTH_SECTORS,
   MAP_HEIGHT_SECTORS,
   TILE_SIZE,
+  MINITILE_SIZE,
 } from '../types';
 
 type GamePhase = 'loading' | 'charselect' | 'playing';
@@ -118,6 +123,10 @@ export class Game {
   private pendingDoor: DoorData | null = null;
   private waitingForSectors = false;
   private doorSuppressed = false;
+  // Active escalator/stairway ride: the player glides this diagonal along the
+  // walkable ramp until it ends at the landing on the next floor.
+  private riding: { dx: number; dy: number; dist: number } | null = null;
+  private stairSuppressed = false;
   private talkingNpc: NPC | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -143,7 +152,10 @@ export class Game {
       loadWindowStyle(0),
     ]);
 
-    // Set up character select input
+    // Set up character select input. initInput here (idempotent) attaches the
+    // pointer listeners NOW so clicks work on the character-select screen, not
+    // just after the game starts.
+    initInput(this.canvasEl);
     window.addEventListener('keydown', (e) => this.onKeyDown(e));
 
     // Dev-only editor tools — the dynamic import inside a DEV guard compiles
@@ -174,6 +186,8 @@ export class Game {
 
   private onKeyDown(e: KeyboardEvent) {
     if (this.phase === 'charselect') {
+      // First key press is a user gesture — start the naming-screen music.
+      playCharSelectMusic();
       const result = handleCharSelectInput(e.key);
       if (result === 'confirm') {
         initMusic(); // Must be called from user gesture for AudioContext
@@ -255,13 +269,16 @@ export class Game {
     setStatus({ name: getSpriteName(spriteGroupId) ?? 'Player' });
 
     initInput(this.canvasEl);
-    // Hotbar/Equip hooks: the menu toggles the local player's weapon (held
-    // sprite) and tells the server, which applies the weapon's offense.
+    // Equip/hotbar hooks: the menu equips gear per EB slot. We update the local
+    // mirror optimistically (so the screen reflects it at once), set the held
+    // sprite for a weapon change, and tell the server (which applies the
+    // equipped offense/defense to combat and echoes back the authoritative set).
     initMenu(getKeySet(), {
-      getHeldItem: () => this.player.heldItemId,
-      equipWeapon: (id) => {
-        this.player.heldItemId = id;
-        sendEquip(id);
+      getEquipped: (slot) => getEquipped(slot),
+      equip: (slot, id) => {
+        setEquipped(slot, id);
+        if (slot === 'weapon') this.player.heldItemId = id;
+        sendEquip(slot, id);
       },
     });
     initChat(getKeySet());
@@ -302,6 +319,12 @@ export class Game {
       onEquip: (id, itemId) => {
         const rp = this.remotePlayers.get(id);
         if (rp) rp.itemId = itemId;
+      },
+      onEquipped: (slots) => {
+        // Authoritative equipped set for the local player — re-sync the mirror
+        // and the held-weapon sprite.
+        setEquippedFromServer(slots);
+        this.player.heldItemId = slots.weapon ?? null;
       },
       onNpcUpdate: (rows) => {
         applyNpcUpdates(rows);
@@ -457,6 +480,36 @@ export class Game {
     setActiveRoomFromPoint(worldX, worldY);
   }
 
+  /**
+   * Advance an active escalator/stairway ride one frame. EB escalators are a
+   * walkable diagonal ramp bounded by SOLID at each landing strip; the ramp is
+   * too narrow (and corner-connected) for normal foot-box movement, so we glide
+   * the player along it ignoring collision. The ride ends when the next minitile
+   * ahead along the ramp is solid — i.e. we've reached the landing strip. The
+   * room crop already spans the whole shaft, so we don't touch it mid-ride.
+   */
+  private updateRide() {
+    const r = this.riding!;
+    const RIDE_MAX = 256; // pixels; a ramp spans only a few tiles — runaway guard
+
+    r.dist += this.player.rideStep(r.dx, r.dy);
+    this.camera.follow(this.player.x, this.player.y);
+
+    // Look one minitile ahead from the foot point along the ramp direction.
+    const footY = this.player.y - MINITILE_SIZE / 2;
+    const aheadSolid = isSolidAtPoint(
+      this.player.x + r.dx * MINITILE_SIZE,
+      footY + r.dy * MINITILE_SIZE
+    );
+    if (aheadSolid || r.dist >= RIDE_MAX) {
+      this.riding = null;
+      this.stairSuppressed = true;
+      this.player.moving = false;
+      // Re-crop/re-seal to the landing (usually the same shaft room).
+      this.updateRoomBounds(this.player.x, this.player.y);
+    }
+  }
+
   private startTransition(door: DoorData) {
     console.log(`Door: (${door.worldX},${door.worldY}) -> (${door.destX},${door.destY}) player:(${Math.round(this.player.x)},${Math.round(this.player.y)})`);
     this.transitioning = true;
@@ -573,6 +626,16 @@ export class Game {
   private update() {
     if (this.phase === 'charselect') {
       updateCharacterSelect();
+      // Mouse: a click selects a character; clicking the selected one confirms.
+      // The click is also a user gesture, so it can start the naming music.
+      const click = consumePointerClick();
+      if (click) {
+        playCharSelectMusic();
+        if (handleCharSelectClick(click.x, click.y) === 'confirm') {
+          initMusic();
+          void this.startGame();
+        }
+      }
       return;
     }
 
@@ -598,6 +661,12 @@ export class Game {
     // Handle door transition animation
     if (this.transitioning) {
       this.updateTransition();
+      return;
+    }
+
+    // Riding an escalator/stairway: auto-walk takes over until the far landing.
+    if (this.riding) {
+      this.updateRide();
       return;
     }
 
@@ -633,20 +702,33 @@ export class Game {
     if (isCycleItemPressed()) {
       // Cycle through the equippable gear in your inventory (+ none). Equipping a
       // catalog item broadcasts its id so everyone renders its held sprite.
-      const gear = getGoods().filter((g) => isEquippable(itemType(g.id))).map((g) => g.id);
-      const cycle: (string | null)[] = [null, ...gear];
+      const weapons = getGoods().filter((g) => itemEquip(g.id)?.slot === 'weapon').map((g) => g.id);
+      const cycle: (string | null)[] = [null, ...weapons];
       const idx = cycle.indexOf(this.player.heldItemId);
-      this.player.heldItemId = cycle[(idx + 1) % cycle.length] ?? null;
-      sendEquip(this.player.heldItemId);
-      console.log(
-        `Equip: ${this.player.heldItemId ? getItemName(this.player.heldItemId) : 'none'}`
-      );
+      const next = cycle[(idx + 1) % cycle.length] ?? null;
+      this.player.heldItemId = next;
+      setEquipped('weapon', next);
+      sendEquip('weapon', next);
+      console.log(`Equip weapon: ${next ? getItemName(next) : 'none'}`);
     }
 
     this.player.update();
     // NPC simulation is server-authoritative; getNearbyNPCs (in render) still
     // triggers lazy sprite-sheet loads as NPCs come into range.
     this.camera.follow(this.player.x, this.player.y);
+
+    // Escalator/stairway: step the trigger to start a ride (suppress until the
+    // player has fully left the trigger, so the arrival landing — often next to
+    // the paired down-escalator — doesn't immediately bounce them back).
+    const stair = getStairAt(this.player.x, this.player.y);
+    if (this.stairSuppressed) {
+      if (!stair) this.stairSuppressed = false;
+    } else if (stair && this.player.moving) {
+      // Glide the ramp. The shaft is already the active room crop, so leave it
+      // alone; updateRide bypasses collision to cross the narrow diagonal.
+      this.riding = { dx: stair.dx, dy: stair.dy, dist: 0 };
+      return;
+    }
 
     // Suppress doors until player has fully left all trigger zones
     const door = getDoorAt(this.player.x, this.player.y);

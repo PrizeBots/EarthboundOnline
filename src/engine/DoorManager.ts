@@ -1,6 +1,7 @@
 import { loadJSON } from './AssetLoader';
 import { RoomBounds } from './Camera';
-import { checkCollision, setDoorCells } from './Collision';
+import { checkCollision, setDoorCells, isSolidAtPoint } from './Collision';
+import { isRoomCroppableTile } from './MapManager';
 import { MINITILE_SIZE, TILE_SIZE, MAP_WIDTH_TILES } from '../types';
 import worldFlags from '../world_flags.json';
 
@@ -68,6 +69,28 @@ export interface EditorDoor {
   zone: boolean;
 }
 
+/**
+ * An escalator/stairway trigger. EB's `EscalatorOrStairwayDoor` is NOT a warp —
+ * it carries no destination, only a diagonal `direction` (CoilSnake
+ * StairDirection: NW=0, NE=0x100, SW=0x200, SE=0x300). The floors are stacked
+ * in the tilemap and the steps are SOLID; stepping a trigger auto-walks the
+ * player diagonally across the (solid) steps to the landing on the next floor.
+ */
+export interface StairData {
+  worldX: number;
+  worldY: number;
+  dx: -1 | 1; // diagonal step vector
+  dy: -1 | 1;
+}
+
+// StairDirection value -> diagonal unit vector.
+const STAIR_DIR_VEC: Record<number, { dx: -1 | 1; dy: -1 | 1 }> = {
+  0x000: { dx: -1, dy: -1 }, // NW
+  0x100: { dx: 1, dy: -1 }, // NE
+  0x200: { dx: -1, dy: 1 }, // SW
+  0x300: { dx: 1, dy: 1 }, // SE
+};
+
 // Raw JSON format from extraction
 interface RawDoor {
   x: number; // minitile offset within door area
@@ -87,6 +110,8 @@ const DOOR_AREA_PX = 256; // each door area is 256x256 pixels
 
 // All warpable doors indexed by door area
 let doorsByArea: DoorData[][] = [];
+// Escalator/stairway triggers indexed by door area (same 32-col grid).
+let stairsByArea: StairData[][] = [];
 // Pre-override view of every flag-active door, for the editor (incl. zone
 // doors that are inactive without an override).
 let editorBase: EditorDoor[] = [];
@@ -178,10 +203,24 @@ export async function loadDoors(): Promise<void> {
   const MAP_W_MT = MAP_WIDTH_TILES * 4;
   const AREA_MT = DOOR_AREA_PX / MINITILE_SIZE;
   const cells = new Set<number>();
+  // Escalator/stairway triggers: a diagonal `direction` and NO destination —
+  // the player rides the (walkable) ramp; Game owns the ride (see getStairAt).
+  stairsByArea = raw.map(() => []);
   raw.forEach((area, idx) => {
     const ox = (idx % DOOR_GRID_COLS) * AREA_MT;
     const oy = Math.floor(idx / DOOR_GRID_COLS) * AREA_MT;
     for (const d of area) {
+      if (d.type === 'stair') {
+        const vec = STAIR_DIR_VEC[d.direction ?? -1];
+        if (!vec) continue; // NOWHERE / invalid direction
+        stairsByArea[idx].push({
+          worldX: (ox + d.x) * MINITILE_SIZE + MINITILE_SIZE / 2,
+          worldY: (oy + d.y) * MINITILE_SIZE + MINITILE_SIZE / 2,
+          dx: vec.dx,
+          dy: vec.dy,
+        });
+        continue;
+      }
       if (d.type !== 'door') continue;
       // The ROM cell is the LEFT minitile of a 16px-wide doorway.
       cells.add((oy + d.y) * MAP_W_MT + ox + d.x);
@@ -202,7 +241,8 @@ export async function loadDoors(): Promise<void> {
   setDoorCells(cells);
 
   const total = doorsByArea.reduce((n, a) => n + a.length, 0);
-  console.log(`Loaded ${total} doors across ${doorsByArea.length} areas`);
+  const stairTotal = stairsByArea.reduce((n, a) => n + a.length, 0);
+  console.log(`Loaded ${total} doors, ${stairTotal} stairs across ${doorsByArea.length} areas`);
 }
 
 /** Pre-override base doors for the editor (loadDoors must have run). */
@@ -244,5 +284,36 @@ export function getDoorAt(px: number, py: number): DoorData | null {
     }
   }
 
+  return null;
+}
+
+// Stair triggers are single minitiles; a tight box avoids snagging the player
+// on the adjacent escalator of an up/down pair while walking past.
+const STAIR_TRIGGER = 5;
+
+/**
+ * Check if the player's feet overlap an escalator/stairway trigger.
+ * Returns its diagonal step vector, or null. px, py = feet position.
+ */
+export function getStairAt(px: number, py: number): StairData | null {
+  const ax = Math.floor(px / DOOR_AREA_PX);
+  const ay = Math.floor(py / DOOR_AREA_PX);
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const cx = ax + dx;
+      const cy = ay + dy;
+      if (cx < 0 || cy < 0 || cx >= DOOR_GRID_COLS) continue;
+      const idx = cy * DOOR_GRID_COLS + cx;
+      if (idx < 0 || idx >= stairsByArea.length) continue;
+      for (const stair of stairsByArea[idx]) {
+        if (
+          Math.abs(px - stair.worldX) <= STAIR_TRIGGER &&
+          Math.abs(py - stair.worldY) <= STAIR_TRIGGER
+        ) {
+          return stair;
+        }
+      }
+    }
+  }
   return null;
 }

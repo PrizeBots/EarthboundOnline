@@ -34,7 +34,8 @@ eb_project/  (CoilSnake decompile: scripts, NPC/door tables, music) ──┘   
 4. `tools/build_atlases.py` — pre-renders BG + FG tile atlases per palette
 5. `tools/extract_npcs.py` — NPC/prop placements (`npcs.json`) **and dialogue**
    (`npc_text.json`), see below
-6. `npm run dev` — Vite on port 4444 (game WebSocket server attaches to Vite
+6. `tools/extract_shops.py` — shop catalog + clerk→store map (`shops.json`)
+7. `npm run dev` — Vite on port 4444 (game WebSocket server attaches to Vite
    in dev; `server/index.js` is the standalone deployment)
 
 The event-flag state for the open world lives in `src/world_flags.json` — the
@@ -61,15 +62,33 @@ sector load + room crop — use it from the console or verification scripts.
   chunks on the stitched map and must be masked to the current room. Rooms
   are SEALED (bugs.md, arcade/Tracy's-room): the flood won't slip under
   walls in indoor sectors, pocket-merge skips regions containing doors
-  (DoorManager registers mat+dest cells via `setDoorCells`), and the local
+  (DoorManager registers mat+dest cells via `setDoorCells`). A final
+  guard-free fill then reclaims floor minitiles the guarded flood skipped on
+  the parasitic strip UNDER in-room furniture (shop counters/shelves) — it
+  grows from `visited` but never leaves the room's own `floodSectors` and
+  never steps on a door cell, so it fills the room's own floor (else black
+  squares — bugs.md, cycle shop) while a neighbour-room merge stays
+  impossible. The local
   player moves through `checkPlayerCollision`, which treats minitiles
   outside the active room (`setActiveRoom`/`RoomBounds.cells`) as solid —
-  only doors move you between rooms.
+  only doors (and escalators) move you between rooms.
   `tools/debug_room_crop_check.py` replays the exact algorithm in Python
   over all door destinations; keep it in sync when changing the algorithm.
+  **Escalators/stairways**: EB's `EscalatorOrStairwayDoor` is NOT a warp — it
+  carries only a diagonal `direction`. An escalator is a walkable diagonal RAMP
+  (two landing strips joined by the ramp) bounded by solid; too narrow/corner-
+  connected for normal foot-box movement, so the player is *glided* across it
+  (see DoorManager/Game). The crop already spans the whole shaft, so it needs
+  no special handling; `isSolidAtPoint()` is the raw look-ahead the ride uses
+  to find the ramp's end. The floor change itself is a normal `door` at a strip
+  end. See bugs.md (escalators) for the full mechanic.
 - **Entity.ts** — base class for Player and NPC (position = sprite center-x /
   feet-y, 2-frame walk cycle). Remote players share the drawable shape only.
-- **DoorManager** — door triggers + fade transitions.
+- **DoorManager** — door triggers + fade transitions; also loads escalator/
+  stairway triggers (`getStairAt` → diagonal vector). Game drives the ride:
+  stepping a trigger glides the player diagonally along the ramp (collision +
+  room-seal bypassed) until the cell ahead is solid (the landing), then
+  re-crops. Steps don't animate yet (no tile-animation system).
 - **NPCManager / NPC.ts** — loads placements, buckets them into the ROM's
   256px area grid, lazy-loads sprite sheets, applies server `npc_update` rows.
   `blockedByNPC` makes `person` NPCs solid for the player (the player's move
@@ -157,6 +176,28 @@ sector load + room crop — use it from the console or verification scripts.
   `player_hp` carrying `heal` (the owner pops a green heal number). Items are
   identified on the wire by their numeric id as a STRING (e.g. `"88"` = Cookie),
   the same id the catalog names from.
+- **Equip screen + quick-select hotbar** (MenuManager, `Equipment.ts`) — the
+  **Equip** command opens an item-centric screen: ONE list of the 4 slots
+  (**Weapon / Body / Arms / Other**, each showing its equipped item) then the
+  player's UNEQUIPPED gear (with `+off`/`+def` tags). Selecting a gear row
+  equips it into its slot; selecting an occupied slot takes it off; equipped
+  items drop out of the list. A live **status panel** (Offense/Defense incl.
+  gear via `equipStats()` = `getStatus()` base + `itemOffense`/`itemDefense`)
+  sits to the right so changes show immediately. Selecting an equippable item in
+  the **Goods** list auto-equips it and pops the new stat. Equipping is
+  server-authoritative: the client mirrors the set in `Equipment.ts`
+  (optimistic + re-synced by the server's `equipped` message) and sends
+  `equip {slot, itemId}`; the server validates ownership+slot, recomputes
+  **weapon offense** (→ attack damage) and **total armor defense** (→ damage
+  taken in `damagePlayer`), sets the held-weapon sprite, and echoes the
+  authoritative `equipped` set. The held-weapon sprite is broadcast to others
+  via the old `equip {itemId}` message. A **2-slot hotbar** at bottom-center is
+  drawn in EVERY open menu state: drag a **Goods** row onto a box (the new
+  `isPointerDown`/`consumePointerPress`/`consumePointerRelease` Input latches; a
+  press-then-release on the same row is a plain use), and number keys **1–2** or
+  a click trigger a slot — toggle-equip gear into its slot, or use a consumable.
+  Hotbar slots + equipped gear are in-memory (more slots + a save system are
+  TODO). Mirrored equip model in `vite.config.ts` and `server/index.js`.
 - **Wallet.ts + money window** — the server-authoritative money ($). Every
   player joins with $1000; the balance ships in `welcome` and every `money`
   delta (shop buy/sell). `Wallet.ts` mirrors it so MenuManager can
@@ -383,11 +424,35 @@ appended *after* the enemy pool (one slot per active vehicle — `enabled` with
 car along its route (`tickCar`/`dir8`), facing its travel direction, and
 broadcasts position over the existing `npc_update` channel; cars carry no HP and
 aren't attackable. Cars are solid to **everything**: a car waits in place when a
-player or any actor overlaps its body box (`carBlocked`), `hitsActor` treats a
-car as a full-rect obstacle for townsfolk/enemies, and `blockedByNPC` makes cars
-solid for the local player. Routes are authored in the **Traffic Editor**
-(`src/editor/tools/TrafficEditorTool.ts`). No road data exists in the ROM, so
-routes are entirely hand-placed on the streets.
+player or any actor overlaps its body box (`carBlocked`), `hitsActor`/`blockedByNPC`
+make cars solid for other actors and the local player. Routes are authored in the
+**Traffic Editor** (`src/editor/tools/TrafficEditorTool.ts`). No road data exists
+in the ROM, so routes are entirely hand-placed on the streets.
+
+**Entity collision boxes.** A car's footprint differs by facing and the sprite
+cell is transparent-padded, so a car collides by the **exact per-direction box**
+of the frame it's facing, not the padded cell. `tools/extract_vehicle_colboxes.py`
+precomputes the tight opaque-pixel bounds of each direction's drive frames into
+`public/assets/sprites/colboxes.json` (`spriteId → dir(0-7) → {w,h,offX,offY}`,
+feet-anchored). Client (`NPCManager.blockedByNPC`) and server (`npcSim.actorBox`)
+load the SAME file and pick the box by the car's current `dir` — keep them in
+sync. Precedence for any entity's box: a manual per-sprite-group override
+(`enemy_spawns.json` `entities[sprite].col`, authored in the **Entity Manager**'s
+Collision section — a direction-cycling preview with a draggable box) wins; else
+the precomputed per-direction box for cars; else the kind default (full cell for
+cars not in colboxes.json, the 14×8 foot box for people/enemies). People keep the
+foot box by default — collision is by their feet, not their whole body.
+
+EarthBound's static vehicle-sprite placements (cars/taxis/trucks placed as
+`prop` NPCs) are linked to traffic instances by `tools/gen_vehicle_traffic.py`:
+it appends one named, enabled vehicle per prop to the `car_traffic.json` override
+(default route running ±96px along the prop's facing — the road it sat on) and
+removes the now-duplicate static placement via an `npcs.json` `edits[k]=null`
+(talkable `person` cars are skipped so their dialogue survives). The script is
+idempotent (deterministic `v_npc_<k>` ids). The **Placement Editor** surfaces all
+traffic vehicles as read-only green markers in its NPCs tab; selecting one shows
+an "Edit route in Traffic →" button that opens the Traffic Editor preselected on
+that vehicle (`TrafficEditorTool.requestVehicle`).
 
 ## NPC system
 
@@ -403,6 +468,30 @@ must stand on walkable ground map-wide; single-prop spot checks have
 mis-"verified" this twice). Some props are invisible interaction hotspots
 (phones, signs): the visible object is map tiles, the NPC only carries the
 check text.
+
+## Rooms (custom room authoring)
+
+EB does NOT reuse interiors between separate buildings — verified by tracing the
+door table AND the script-`{warp(N)}` doors with their real origins: every shop
+and house has its own dedicated interior region (the only multi-entrance
+interiors are caves, i.e. one dungeon with several mouths). So there is nothing
+to "de-duplicate." Instead, this is the substrate for AUTHORING **custom** rooms
+that don't exist in the ROM — copy an interior as a template, edit its tiles, and
+wire new doors to it.
+
+- **Extendable map.** New rooms are stamped into an "interiors band" appended
+  BELOW the overworld; the plane grows in HEIGHT only (width fixed at 256, so all
+  row-major indexing is unchanged). `MAP_HEIGHT_TILES`/`MAP_HEIGHT_SECTORS` in
+  `types.ts` are live bindings set by `MapManager.loadMapData` from the data;
+  `server/npcSim.js` derives `mapHTiles` the same way. Width-fixed means copying a
+  room's tile *values* into a band region whose sectors share the source's
+  tilesetId/paletteId reproduces rendering AND collision (collision is keyed by
+  tile ARRANGEMENT, not position).
+- **Registry.** `src/engine/Rooms.ts` loads `rooms.json`
+  (`{id,label,town,type,rect,spawn}`), maps a point→room, and tracks the active
+  room (`Game.updateRoomBounds`). The editor's **Places** column
+  (`LocationNav.injectInstancedRooms`) lists authored rooms under their town.
+  Absent `rooms.json` ⇒ overworld-only, no behavior change (current state).
 
 ## NPC dialogue (talk/check)
 

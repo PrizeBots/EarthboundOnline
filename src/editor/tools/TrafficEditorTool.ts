@@ -49,6 +49,7 @@ class TrafficEditorTool implements EditorTool {
   private selWp: number | null = null;
   private placing = false;     // next click drops a brand-new vehicle
   private addWp = false;       // clicks append waypoints to the selected vehicle
+  private pendingSelectId: string | null = null; // select-on-open (Placement handoff)
   private dragging = false;
   private hover: WorldPoint = { x: 0, y: 0 };
   private requestedSheets = new Set<number>();
@@ -76,6 +77,39 @@ class TrafficEditorTool implements EditorTool {
       this.shell?.toast(`Couldn't load traffic: ${e}`, true);
       return;
     }
+    this.refreshList();
+    this.rebuildForm();
+    this.applyPendingSelect();
+  }
+
+  /**
+   * Jump to a vehicle by id when this tool opens — the Placement Editor's
+   * "Edit route in Traffic" handoff for a selected vehicle NPC. Applied now if
+   * the panel is up, else after the next load().
+   */
+  requestVehicle(id: string): void {
+    if (this.panel) this.selectVehicle(id);
+    else this.pendingSelectId = id;
+  }
+
+  private applyPendingSelect(): void {
+    const id = this.pendingSelectId;
+    if (id == null) return;
+    this.pendingSelectId = null;
+    this.selectVehicle(id);
+  }
+
+  /** Select a vehicle by id, center the view on it, and show its form. */
+  private selectVehicle(id: string): void {
+    const v = this.vehicles.find((veh) => veh.id === id);
+    if (!v) {
+      this.shell?.toast(`Vehicle ${id} not found`, true);
+      return;
+    }
+    this.sel = v;
+    this.selWp = null;
+    this.setAddWp(false);
+    if (v.waypoints[0]) this.shell?.context.teleport(v.waypoints[0][0], v.waypoints[0][1]);
     this.refreshList();
     this.rebuildForm();
   }

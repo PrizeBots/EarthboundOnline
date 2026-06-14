@@ -28,6 +28,12 @@ export function setDebugBoxes(on: boolean): void {
 export function debugBoxesOn(): boolean {
   return debugBoxes;
 }
+// Below this editor zoom the world is so shrunk that foreground tiles (canopies,
+// sign tops) are a pixel or two — invisible. Skip the two FG tile passes there
+// to cut the per-frame drawImage count by ~2/3, keeping far-out panning smooth.
+// Gameplay (zoom 1) and normal editor zoom are unaffected.
+const FG_PASS_MIN_ZOOM = 0.18;
+
 const HURT_W = 14;
 const HURT_H = 18;
 const HURT_OY = -18;
@@ -379,16 +385,20 @@ export class Renderer {
     behindFG.sort((a, b) => a.sortY - b.sortY);
     for (const item of behindFG) item.draw();
 
-    // Pass 3: the FG layer (flat, like a high-priority SNES BG layer)
-    for (let row = startRow; row <= endRow; row++) {
-      for (let col = startCol; col <= endCol; col++) {
-        const sector = getSectorForTile(col, row);
-        if (!sector) continue;
-        if (!hasForegroundTile(sector.tilesetId, sector.paletteId)) continue;
-        const arrangementId = getTileAt(col, row);
-        const screenX = col * TILE_SIZE - camX;
-        const screenY = row * TILE_SIZE - camY;
-        drawForegroundTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, screenX, screenY);
+    // Pass 3: the FG layer (flat, like a high-priority SNES BG layer).
+    // Skipped when zoomed far out in the editor — FG detail is sub-pixel there.
+    const drawFG = camera.zoom >= FG_PASS_MIN_ZOOM;
+    if (drawFG) {
+      for (let row = startRow; row <= endRow; row++) {
+        for (let col = startCol; col <= endCol; col++) {
+          const sector = getSectorForTile(col, row);
+          if (!sector) continue;
+          if (!hasForegroundTile(sector.tilesetId, sector.paletteId)) continue;
+          const arrangementId = getTileAt(col, row);
+          const screenX = col * TILE_SIZE - camX;
+          const screenY = row * TILE_SIZE - camY;
+          drawForegroundTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, screenX, screenY);
+        }
       }
     }
 
@@ -406,7 +416,7 @@ export class Renderer {
     const REVEAL_OUT = 108;  // back to fully solid past this radius
     const MIN_ALPHA = 0.1;   // building opacity at the centre of the reveal (~10%)
     const playerHidden = getSpritePriority(player.x, player.y) !== 0;
-    for (let row = startRow; row <= endRow; row++) {
+    for (let row = startRow; drawFG && row <= endRow; row++) {
       for (let col = startCol; col <= endCol; col++) {
         if (!isForegroundPromoted(col, row)) continue;
         const sector = getSectorForTile(col, row);

@@ -32,6 +32,286 @@
           1143
         ]
       ]
+    },
+    {
+      "id": "v_npc_16_1199_0",
+      "name": "taxi-1",
+      "sprite": 206,
+      "w": 48,
+      "h": 32,
+      "speed": 1,
+      "loop": true,
+      "enabled": true,
+      "waypoints": [
+        [
+          4128,
+          160
+        ],
+        [
+          4320,
+          160
+        ]
+      ]
+    },
+    {
+      "id": "v_npc_135_175_0",
+      "name": "camper-van-1",
+      "sprite": 208,
+      "w": 64,
+      "h": 48,
+      "speed": 1,
+      "loop": true,
+      "enabled": true,
+      "waypoints": [
+        [
+          2120,
+          1176
+        ],
+        [
+          1928,
+          1176
+        ]
+      ]
+    },
+    {
+      "id": "v_npc_168_186_0",
+      "name": "taxi-2",
+      "sprite": 206,
+      "w": 48,
+      "h": 32,
+      "speed": 1,
+      "loop": true,
+      "enabled": true,
+      "waypoints": [
+        [
+          1992,
+          1504
+        ],
+        [
+          2184,
+          1504
+        ]
+      ]
+    },
+    {
+      "id": "v_npc_199_176_0",
+      "name": "delivery-truck-1",
+      "sprite": 207,
+      "w": 64,
+      "h": 48,
+      "speed": 1,
+      "loop": true,
+      "enabled": true,
+      "waypoints": [
+        [
+          1912,
+          1776
+        ],
+        [
+          1720,
+          1776
+        ]
+      ]
+    },
+    {
+      "id": "v_npc_337_1079_0",
+      "name": "taxi-3",
+      "sprite": 206,
+      "w": 48,
+      "h": 32,
+      "speed": 1,
+      "loop": true,
+      "enabled": true,
+      "waypoints": [
+        [
+          4376,
+          2800
+        ],
+        [
+          4568,
+          2800
+        ]
+      ]
+    },
+    {
+      "id": "v_npc_340_1081_0",
+      "name": "delivery-truck-2",
+      "sprite": 207,
+      "w": 64,
+      "h": 48,
+      "speed": 1,
+      "loop": true,
+      "enabled": true,
+      "waypoints": [
+        [
+          5232,
+          2712
+        ],
+        [
+          5232,
+          2904
+        ]
+      ]
+    },
+    {
+      "id": "v_npc_805_360_0",
+      "name": "taxi-4",
+      "sprite": 206,
+      "w": 48,
+      "h": 32,
+      "speed": 1,
+      "loop": true,
+      "enabled": true,
+      "waypoints": [
+        [
+          1272,
+          6592
+        ],
+        [
+          1464,
+          6592
+        ]
+      ]
+    },
+    {
+      "id": "v_npc_807_358_0",
+      "name": "camper-van-2",
+      "sprite": 208,
+      "w": 64,
+      "h": 48,
+      "speed": 1,
+      "loop": true,
+      "enabled": true,
+      "waypoints": [
+        [
+          1896,
+          6576
+        ],
+        [
+          2088,
+          6576
+        ]
+      ]
+    },
+    {
+      "id": "v_npc_809_374_0",
+      "name": "tour-bus-1",
+      "sprite": 243,
+      "w": 64,
+      "h": 48,
+      "speed": 1,
+      "loop": true,
+      "enabled": true,
+      "waypoints": [
+        [
+          2304,
+          6432
+        ],
+        [
+          2304,
+          6624
+        ]
+      ]
+    },
+    {
+      "id": "v_npc_1198_793_0",
+      "name": "bulldozer-1",
+      "sprite": 254,
+      "w": 48,
+      "h": 48,
+      "speed": 1,
+      "loop": true,
+      "enabled": true,
+      "waypoints": [
+        [
+          3616,
+          9608
+        ],
+        [
+          3616,
+          9800
+        ]
+      ]
+    },
+    {
+      "id": "v_npc_1255_786_0",
+      "name": "truck-1",
+      "sprite": 459,
+      "w": 64,
+      "h": 48,
+      "speed": 1,
+      "loop": true,
+      "enabled": true,
+      "waypoints": [
+        [
+          1880,
+          9912
+        ],
+        [
+          1880,
+          10104
+        ]
+      ]
+    },
+    {
+      "id": "v_npc_1255_785_0",
+      "name": "taxi-5",
+      "sprite": 206,
+      "w": 48,
+      "h": 32,
+      "speed": 1,
+      "loop": true,
+      "enabled": true,
+      "waypoints": [
+        [
+          1856,
+          10008
+        ],
+        [
+          2048,
+          10008
+        ]
+      ]
+    },
+    {
+      "id": "v_npc_1255_787_0",
+      "name": "moving-van-1",
+      "sprite": 460,
+      "w": 64,
+      "h": 48,
+      "speed": 1,
+      "loop": true,
+      "enabled": true,
+      "waypoints": [
+        [
+          1912,
+          9952
+        ],
+        [
+          1912,
+          10144
+        ]
+      ]
+    },
+    {
+      "id": "v_npc_1255_789_0",
+      "name": "delivery-truck-3",
+      "sprite": 207,
+      "w": 64,
+      "h": 48,
+      "speed": 1,
+      "loop": true,
+      "enabled": true,
+      "waypoints": [
+        [
+          2000,
+          9952
+        ],
+        [
+          2000,
+          10144
+        ]
+      ]
     }
   ]
 }

@@ -233,6 +233,24 @@ def compute_room(px, py, croppable):
                 if inside and not has_door:
                     visited.update(region)
 
+    # Guard-free fill bounded to flood_sectors, stopped by door mats: reclaims
+    # floor cells orphaned on parasitic walkable strips under in-room furniture
+    # (shop counters/shelves) that the guarded flood skipped, without crossing
+    # into a packed neighbor room. Mirror of Collision.ts. KEEP IN SYNC.
+    fill = list(visited)
+    while fill:
+        fx, fy = fill.pop()
+        for nx, ny in ((fx + 1, fy), (fx - 1, fy), (fx, fy + 1), (fx, fy - 1)):
+            if (nx, ny) in visited or solid(nx, ny):
+                continue
+            ks = (ny // SEC_MTY) * MAP_W_SEC + (nx // SEC_MTX)
+            if ks not in flood_sectors:
+                continue
+            if (nx, ny) in DOOR_CELLS:
+                continue
+            visited.add((nx, ny))
+            fill.append((nx, ny))
+
     tiles = {(x >> 2, y >> 2) for (x, y) in visited}
 
     def is_own_wall(tx, ty):

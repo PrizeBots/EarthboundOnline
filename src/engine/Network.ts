@@ -22,8 +22,10 @@ type NetworkCallback = {
   ) => void;
   onPlayerLeave: (id: string) => void;
   onChat: (id: string, text: string) => void;
-  /** A player equipped (or unequipped) a held item. */
+  /** A player equipped (or unequipped) a held item (the weapon, for the sprite). */
   onEquip: (id: string, itemId: string | null) => void;
+  /** The LOCAL player's full equipped set (server-authoritative, per slot). */
+  onEquipped: (slots: Record<string, string | null>) => void;
   /** Authoritative NPC positions (welcome snapshot + periodic deltas). */
   onNpcUpdate: (npcs: NpcUpdate[]) => void;
   /** Authoritative enemy HP (welcome snapshot + on-damage deltas). */
@@ -127,6 +129,9 @@ export function connect(
       case 'equip':
         callbacks?.onEquip(msg.id, msg.itemId ?? null);
         break;
+      case 'equipped':
+        callbacks?.onEquipped(msg.slots ?? {});
+        break;
       case 'player_hp':
         callbacks?.onPlayerHp(msg.id, msg.hp, msg.maxHp, msg.dmg ?? 0, msg.heal ?? 0);
         break;
@@ -171,9 +176,10 @@ export function sendAttack(x: number, y: number, dir: Direction) {
   }
 }
 
-export function sendEquip(itemId: string | null) {
+/** Equip (or unequip with null) an item into one of the 4 EB slots. */
+export function sendEquip(slot: string, itemId: string | null) {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'equip', itemId }));
+    ws.send(JSON.stringify({ type: 'equip', slot, itemId }));
   }
 }
 

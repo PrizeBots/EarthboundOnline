@@ -28,9 +28,10 @@ import { EditorContext, EditorShellApi, EditorTool, WorldPoint } from './types';
 const MINITILE = 8;
 const PAN_SPEED = 4;
 const PAN_FAST = 12;
-// Wheel zoom: out to 0.25x (4x the world on screen) and in to 2x for
-// pixel-level placement nudging. Gameplay always runs at 1.
-const ZOOM_MIN = 0.25;
+// Wheel zoom: out to 0.0625x (16x the world on screen — for surveying whole
+// regions, e.g. all the music zones at once) and in to 2x for pixel-level
+// placement nudging. Gameplay always runs at 1.
+const ZOOM_MIN = 0.0625;
 const ZOOM_MAX = 2;
 const ZOOM_STEP = 1.25;
 
@@ -58,6 +59,13 @@ export class EditorShell {
   private showMiniGrid = false;
   private showSectorGrid = true;
   private applyRoomCrop = false;
+
+  // Atlas streaming throttle: re-stream only when the view shifts a chunk or
+  // the zoom changes, not every frame (the per-frame sector sweep is wasted work
+  // while the camera sits still, and murders the framerate when zoomed way out).
+  private lastStreamX = NaN;
+  private lastStreamY = NaN;
+  private lastStreamZoom = NaN;
 
   // Mouse state (world coords; hover survives while the mouse is off-canvas)
   private hover: WorldPoint = { x: 0, y: 0 };
@@ -248,6 +256,7 @@ export class EditorShell {
       toast: (msg, isError) => this.toast(msg, isError),
       markDirty: (d) => this.markDirty(d),
       clearDirty: (d) => this.clearDirty(d),
+      goTo: (x, y) => this.goTo(x, y),
       openTool: (toolId) => {
         const tool = findEditorTool(toolId);
         if (tool && tool.status === 'ready') this.setTool(tool);
@@ -443,8 +452,21 @@ export class EditorShell {
 
     // Stream atlases for whatever the free camera now shows — gameplay only
     // loads around the (frozen) player, so panned/zoomed-out areas would
-    // otherwise render black with doors/NPCs floating on them.
-    this.context.streamView();
+    // otherwise render black with doors/NPCs floating on them. Throttled: only
+    // re-sweep when the view has shifted ~a third of a screen or the zoom
+    // changed (the sweep itself is cheap per sector, but at 16x out it touches
+    // hundreds of them, so doing it every frame is what stutters the pan).
+    const stepX = cam.viewW / 3;
+    const stepY = cam.viewH / 3;
+    if (
+      cam.zoom !== this.lastStreamZoom ||
+      !(Math.abs(cam.x - this.lastStreamX) < stepX && Math.abs(cam.y - this.lastStreamY) < stepY)
+    ) {
+      this.lastStreamX = cam.x;
+      this.lastStreamY = cam.y;
+      this.lastStreamZoom = cam.zoom;
+      this.context.streamView();
+    }
 
     const now = performance.now();
     this.frames++;

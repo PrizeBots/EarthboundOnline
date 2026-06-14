@@ -24,6 +24,7 @@ const OVERRIDE_ALLOW = new Set([
   'car_traffic.json',
   'music.json',
   'item_sprites.json',
+  'custom_items.json',
 ]);
 const SAVE_BODY_LIMIT = 8 * 1024 * 1024; // sprite overrides carry data URLs
 
@@ -243,15 +244,33 @@ function gameServerPlugin() {
     }
   }
 
+  // Recompute the combat bonuses from a player's equipped gear: weapon offense
+  // (added to attack damage) and total armor defense (subtracted from hits). The
+  // held-item sprite is always the equipped weapon. Mirror in server/index.js.
+  const EQUIP_SLOTS = ['weapon', 'body', 'arms', 'other'];
+  function recomputeEquipStats(entry: any) {
+    const w = entry.equipped.weapon;
+    const we = w ? GOODS[w]?.equip : null;
+    entry.weaponOffense = we && we.slot === 'weapon' ? (we.offense | 0) : 0;
+    let def = 0;
+    for (const s of ['body', 'arms', 'other']) {
+      const id = entry.equipped[s];
+      const e = id ? GOODS[id]?.equip : null;
+      if (e && e.slot === s) def += (e.defense | 0);
+    }
+    entry.armorDefense = def;
+    entry.itemId = entry.equipped.weapon; // held sprite = weapon
+  }
+
   // Apply an enemy's landed hit to a player (server-authoritative HP). Broadcast
   // the new HP so every client updates that player's bar; the victim's own
   // client plays the hurt pose. At 0 HP the player respawns at the spawn point.
   function damagePlayer(playerId: string, dmg: number) {
     const p = players.get(playerId);
     if (!p || p.hp <= 0) return;
-    // Defense softens incoming hits (always at least 1 so leveling never makes
-    // a player untouchable).
-    const eff = Math.max(1, dmg - Math.floor((p.defense || 0) / 2));
+    // Defense softens incoming hits (stat defense + equipped armor); always at
+    // least 1 so leveling/gear never makes a player untouchable.
+    const eff = Math.max(1, dmg - Math.floor(((p.defense || 0) + (p.armorDefense || 0)) / 2));
     p.hp = Math.max(0, p.hp - eff);
     broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: eff });
     if (p.hp <= 0) {
@@ -315,7 +334,11 @@ function gameServerPlugin() {
                 direction: SPAWN.dir || 0, frame: 0,
                 pose: 'walk',
                 itemId: null, // held item (equipped weapon's sprite), set by 'equip'
-                weaponOffense: 0, // offense bonus from the equipped weapon (server-applied)
+                // EarthBound equip slots. Server-authoritative; offense/defense
+                // from these apply to combat (see recomputeEquipStats).
+                equipped: { weapon: null, body: null, arms: null, other: null },
+                weaponOffense: 0, // offense from the equipped weapon
+                armorDefense: 0,  // total defense from equipped body/arms/other
                 inventory: [...STARTING_INVENTORY], // Goods slots, mutated by 'use_item'
                 money: STARTING_MONEY, // starting cash, shown in the menu
                 // PK (player-kill) flag — see npcSim canHurt. All players start
@@ -387,23 +410,25 @@ function gameServerPlugin() {
             case 'equip': {
               const entry = players.get(playerId);
               if (!entry) break;
-              // Item ids are short slugs; clients ignore unknown ids.
-              entry.itemId =
+              // Per-slot equip: { slot, itemId|null }. Authoritative — equipping
+              // requires owning the item and it fitting that slot (no spoofing);
+              // null unequips. Offense/defense recompute from the whole set.
+              const slot = typeof msg.slot === 'string' ? msg.slot : null;
+              const itemId =
                 typeof msg.itemId === 'string' && msg.itemId.length <= 24 ? msg.itemId : null;
-              // Weapon offense is server-authoritative: it only counts if the
-              // equipped item is a weapon the player actually owns (no spoofing
-              // a strong weapon you don't have). Armor slots don't show a held
-              // sprite, so the held item is always the (optional) weapon.
-              const eq = entry.itemId ? GOODS[entry.itemId]?.equip : null;
-              const owns = entry.itemId ? entry.inventory.includes(entry.itemId) : false;
-              entry.weaponOffense = eq && eq.slot === 'weapon' && owns ? (eq.offense | 0) : 0;
-              const equipMsg = JSON.stringify({
-                type: 'equip', id: playerId, itemId: entry.itemId,
-              });
+              if (!slot || !EQUIP_SLOTS.includes(slot)) break;
+              if (itemId !== null) {
+                const eq = GOODS[itemId]?.equip;
+                if (!eq || eq.slot !== slot || !entry.inventory.includes(itemId)) break;
+              }
+              entry.equipped[slot] = itemId;
+              recomputeEquipStats(entry);
+              // The owner gets their authoritative equipped set...
+              entry._ws.send(JSON.stringify({ type: 'equipped', slots: entry.equipped }));
+              // ...everyone else just needs the held-weapon sprite.
+              const equipMsg = JSON.stringify({ type: 'equip', id: playerId, itemId: entry.itemId });
               for (const [id, p] of players) {
-                if (id !== playerId && p._ws.readyState === 1) {
-                  p._ws.send(equipMsg);
-                }
+                if (id !== playerId && p._ws.readyState === 1) p._ws.send(equipMsg);
               }
               break;
             }

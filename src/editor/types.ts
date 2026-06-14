@@ -48,6 +48,12 @@ export interface EditorShellApi {
   toast(message: string, isError?: boolean): void;
   markDirty(domain: string): void;
   clearDirty(domain: string): void;
+  /**
+   * Free-fly navigate the editor camera to a world point (centers the view).
+   * Unlike `context.teleport`, this respects the editor's Crop toggle — it
+   * undoes the landed room crop so the broader map stays visible.
+   */
+  goTo(x: number, y: number): void;
   /** Switch to another registered tool by id (tool-to-tool handoff). */
   openTool(toolId: string): void;
 }

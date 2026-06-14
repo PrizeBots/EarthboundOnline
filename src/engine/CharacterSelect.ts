@@ -121,6 +121,8 @@ export function handleCharSelectInput(key: string): 'confirm' | null {
       break;
     case 'Enter':
     case ' ':
+    case 'e': // E — the action/confirm button (matches the in-game E binding)
+    case 'E':
       return 'confirm';
   }
 
@@ -136,6 +138,28 @@ export function handleCharSelectInput(key: string): 'confirm' | null {
   return null;
 }
 
+/**
+ * Click handling for the grid. A single click on a character selects AND
+ * confirms it (one click to pick your character and start — same as pressing E
+ * / Enter on it). Coords are game-space pixels (256x224), matching the draw
+ * layout. Returns 'confirm' to start the game, else null.
+ */
+export function handleCharSelectClick(gx: number, gy: number): 'confirm' | null {
+  // Only the clipped grid band is clickable (mirror drawCharacterSelect's clip).
+  if (gy < GRID_Y - 2 || gy > SCREEN_HEIGHT - 38) return null;
+  for (let i = 0; i < characters.length; i++) {
+    const row = Math.floor(i / COLS);
+    const col = i % COLS;
+    const x = GRID_X + col * (CELL_W + PADDING);
+    const y = GRID_Y + row * (CELL_H + PADDING) - scrollY;
+    if (gx >= x && gx < x + CELL_W && gy >= y && gy < y + CELL_H) {
+      selectedIndex = i;
+      return 'confirm'; // pick-and-start in one click
+    }
+  }
+  return null;
+}
+
 export function drawCharacterSelect(ctx: CanvasRenderingContext2D) {
   ctx.fillStyle = '#111';
   ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
@@ -145,9 +169,17 @@ export function drawCharacterSelect(ctx: CanvasRenderingContext2D) {
   ctx.font = '10px monospace';
   ctx.textAlign = 'center';
   ctx.fillText('SELECT YOUR CHARACTER', SCREEN_WIDTH / 2, 14);
-  ctx.font = '8px monospace';
+  // Auto-shrink the hint so it never runs off the 256px screen (the wording
+  // gets tweaked; this keeps it from being cut off regardless of length).
+  const hint = 'Arrow keys to browse · E / Enter to select · or click a character';
+  let hintSize = 8;
+  ctx.font = `${hintSize}px monospace`;
+  while (hintSize > 5 && ctx.measureText(hint).width > SCREEN_WIDTH - 8) {
+    ctx.font = `${--hintSize}px monospace`;
+  }
   ctx.fillStyle = '#888';
-  ctx.fillText('Arrow keys to browse, Enter to confirm', SCREEN_WIDTH / 2, 24);
+  ctx.fillText(hint, SCREEN_WIDTH / 2, 24);
+  ctx.font = '8px monospace';
 
   // Grid of south-facing sprites
   ctx.save();

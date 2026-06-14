@@ -140,6 +140,22 @@ export class Player extends Entity {
     );
   }
 
+  /**
+   * Auto-walk one frame along an escalator/stairway. Movement is diagonal and
+   * bypasses collision entirely — the steps are solid and the engine carries
+   * you across them. Returns the distance moved this frame (the ride state
+   * machine in Game uses it to detect arrival at the far landing).
+   */
+  rideStep(dx: number, dy: number): number {
+    const moveSpeed = SPEED * Math.SQRT1_2; // escalators always run diagonally
+    this.x += dx * moveSpeed;
+    this.y += dy * moveSpeed;
+    this.direction = this.dirFromInput(dx, dy);
+    this.moving = true;
+    this.stepAnimation();
+    return moveSpeed;
+  }
+
   private dirFromInput(dx: number, dy: number): Direction {
     if (dx === 0 && dy < 0) return Direction.N;
     if (dx === 0 && dy > 0) return Direction.S;

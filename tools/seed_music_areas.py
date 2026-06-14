@@ -24,14 +24,22 @@ SECTORS = os.path.join(ROOT, "public", "assets", "map", "sectors.json")
 MUSIC_MAP = os.path.join(ROOT, "public", "assets", "music", "music_map.json")
 OUT = os.path.join(ROOT, "public", "overrides", "music.json")
 
-W, H = 32, 80          # map is 32 sectors wide, 80 tall (2560 total)
-SECTOR_W, SECTOR_H = 64, 32  # px per sector (8x4 tiles * 8px)
+W = 32                 # map is 32 sectors wide; height grows with the interiors band
+# Sector pixel size MUST match the engine's units (src/types.ts): a tile is
+# TILE_SIZE=32 px (4x4 minitiles of 8 px), a sector is 8x4 tiles → 256x128 px.
+# (Was 64x32, assuming 8-px tiles — that put every zone at 1/4 scale, crammed
+# into the top-left corner and misaligned with the world / MusicManager.)
+SECTOR_W, SECTOR_H = 8 * 32, 4 * 32  # 256 x 128 px per sector
 
 
 def main():
     sectors = json.load(open(SECTORS))
     music_map = json.load(open(MUSIC_MAP))
-    assert len(sectors) == W * H, f"expected {W*H} sectors, got {len(sectors)}"
+    # Height is derived: the stitched map gains rows as interiors are appended,
+    # so don't hardcode it (was 80; now grows). Must divide evenly by width.
+    assert len(sectors) % W == 0, f"{len(sectors)} sectors not divisible by width {W}"
+    H = len(sectors) // W
+    print(f"map: {W}x{H} sectors ({len(sectors)} total)")
 
     # Per-sector final song number (what actually plays); 0 = silence/none.
     song = [[0] * W for _ in range(H)]

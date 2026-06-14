@@ -262,6 +262,16 @@ export function setDoorCells(cells: ReadonlySet<number>): void {
   doorCells = cells;
 }
 
+/**
+ * Is the minitile at a world-pixel point solid? Used by the escalator/stairway
+ * ride to detect the ramp's end (the walkable diagonal is bounded by solid at
+ * each landing). The ride glides the player across, bypassing the room seal,
+ * so it needs raw world collision, not `checkPlayerCollision`.
+ */
+export function isSolidAtPoint(worldX: number, worldY: number): boolean {
+  return isMinitileSolid(Math.floor(worldX / MINITILE_SIZE), Math.floor(worldY / MINITILE_SIZE));
+}
+
 // The room the local player currently occupies. While set, walkable minitiles
 // OUTSIDE the room act as solid for the player — packed interiors share
 // walkable under-wall strips with their neighbors (see bugs.md, arcade/
@@ -590,6 +600,41 @@ export function computeRoomBounds(worldX: number, worldY: number): RoomBounds | 
           for (const k of region) visited.add(k);
         }
       }
+    }
+  }
+
+  // Guard-free fill, bounded strictly to the room's own sectors and stopped by
+  // door mats: reclaims floor minitiles the guarded flood skipped because they
+  // lie on a parasitic walkable strip BENEATH in-room furniture (shop counters,
+  // shelves) — those strips have a solid cell above, which trips the
+  // anti-slip-under-a-wall guard, so the flood never reaches the floor's lower
+  // edge and it renders as black squares (bugs.md, twoson cycle shop). The
+  // pocket merge can't help: the strip leaks into the packed NEIGHBOR room's
+  // sector, so it's rejected wholesale. Growing guard-free from `visited` but
+  // refusing to leave `floodSectors` (and never stepping onto a door cell)
+  // fills the room's own floor while making it impossible to cross into a
+  // neighbor — which always lives in a different sector or behind a door mat.
+  const fillStack: number[] = [...visited];
+  while (fillStack.length > 0) {
+    const key = fillStack.pop()!;
+    const x = key % MAP_WIDTH_MT;
+    const y = (key - x) / MAP_WIDTH_MT;
+    const neighbors: [number, number][] = [
+      [x + 1, y],
+      [x - 1, y],
+      [x, y + 1],
+      [x, y - 1],
+    ];
+    for (const [nx, ny] of neighbors) {
+      if (isMinitileSolid(nx, ny)) continue;
+      const nk = ny * MAP_WIDTH_MT + nx;
+      if (visited.has(nk)) continue;
+      const nSec =
+        Math.floor(ny / SECTOR_MT_Y) * MAP_WIDTH_SECTORS + Math.floor(nx / SECTOR_MT_X);
+      if (!floodSectors.has(nSec)) continue;
+      if (doorCells.has(nk)) continue;
+      visited.add(nk);
+      fillStack.push(nk);
     }
   }
 

@@ -294,6 +294,17 @@ function createNpcSim(assetsDir) {
   }
   let carCfg = loadCarCfg();
 
+  // Exact per-direction vehicle collision boxes (build artifact, see
+  // tools/extract_vehicle_colboxes.py): spriteId -> dir(0-7) -> {w,h,offX,offY}.
+  // KEEP IN SYNC with NPCManager (same file, same lookup). Loaded once; vehicle
+  // art rarely changes (re-running the extractor needs a server restart).
+  let COLBOXES = {};
+  try {
+    COLBOXES = readJSON('sprites/colboxes.json');
+  } catch {
+    COLBOXES = {};
+  }
+
   // --- NPC state ---
   const NPCS_FILE = 'map/npcs.json';
   // Editor-authored placement overrides (public/overrides/npcs.json — sibling
@@ -624,18 +635,34 @@ function createNpcSim(assetsDir) {
     return false;
   }
 
-  // True if the foot box overlaps any OTHER live actor's foot box. Makes
-  // townsfolk and enemies solid to each other (same box/anchor as the player),
-  // so a chasing pack can't all stack on the same pixel — they jostle for
-  // position instead. Dead/tombstoned slots are non-solid.
+  // Collision box [x,y,w,h] for an actor positioned at (x,y). A manual Entity
+  // Manager override (entities[sprite].col) wins for anyone; else a car uses its
+  // exact per-direction box (full sprite rect as fallback) and everyone else the
+  // foot box. KEEP IN SYNC with NPCManager.blockedByNPC boxOf().
+  function entityColOverride(sprite) {
+    const e = enemyCfg && enemyCfg.entities && enemyCfg.entities[sprite];
+    return e && e.col ? e.col : null;
+  }
+  function actorBox(o, x, y) {
+    const m = entityColOverride(o.sprite);
+    if (m) return [x + (m.offX || 0) - m.w / 2, y + (m.offY || 0) - m.h, m.w, m.h];
+    if (o.kind === 'car') {
+      const g = COLBOXES[o.sprite];
+      const b = g && g[o.dir];
+      if (b) return [x + (b.offX || 0) - b.w / 2, y + (b.offY || 0) - b.h, b.w, b.h];
+      return [x - o.carW / 2, y - o.carH, o.carW, o.carH];
+    }
+    return [x - COL_W / 2, y + COL_OY, COL_W, COL_H];
+  }
+
+  // True if the foot box overlaps any OTHER live actor's box. Makes townsfolk
+  // and enemies solid to each other (same box/anchor as the player), so a
+  // chasing pack can't all stack on the same pixel — they jostle for position
+  // instead. Dead/tombstoned slots are non-solid.
   function hitsActor(self, x, y, w, h) {
     for (const o of actors) {
       if (o === self || o.dead || o.kind === 'deleted') continue;
-      // Cars are big obstacles (full sprite rect); everyone else is a foot box.
-      const ox = o.kind === 'car' ? o.x - o.carW / 2 : o.x - COL_W / 2;
-      const oy = o.kind === 'car' ? o.y - o.carH : o.y + COL_OY;
-      const ow = o.kind === 'car' ? o.carW : COL_W;
-      const oh = o.kind === 'car' ? o.carH : COL_H;
+      const [ox, oy, ow, oh] = actorBox(o, o.x, o.y);
       if (x < ox + ow && x + w > ox && y < oy + oh && y + h > oy) return true;
     }
     return false;
@@ -653,18 +680,14 @@ function createNpcSim(assetsDir) {
   // True if a car's body box at (nx,ny) overlaps any player or other live actor.
   // Cars yield to everything: when blocked they wait in place until it clears.
   function carBlocked(c, nx, ny, players) {
-    const bx = nx - c.carW / 2;
-    const by = ny - c.carH;
+    const [bx, by, bw, bh] = actorBox(c, nx, ny);
     for (const p of players) {
-      if (aabb(bx, by, c.carW, c.carH, p.x - COL_W / 2, p.y + COL_OY, COL_W, COL_H)) return true;
+      if (aabb(bx, by, bw, bh, p.x - COL_W / 2, p.y + COL_OY, COL_W, COL_H)) return true;
     }
     for (const o of actors) {
       if (o === c || o.dead || o.kind === 'deleted') continue;
-      const ox = o.kind === 'car' ? o.x - o.carW / 2 : o.x - COL_W / 2;
-      const oy = o.kind === 'car' ? o.y - o.carH : o.y + COL_OY;
-      const ow = o.kind === 'car' ? o.carW : COL_W;
-      const oh = o.kind === 'car' ? o.carH : COL_H;
-      if (aabb(bx, by, c.carW, c.carH, ox, oy, ow, oh)) return true;
+      const [ox, oy, ow, oh] = actorBox(o, o.x, o.y);
+      if (aabb(bx, by, bw, bh, ox, oy, ow, oh)) return true;
     }
     return false;
   }

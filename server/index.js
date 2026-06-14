@@ -71,8 +71,10 @@ const SPAWN = readSpawn();
 function damagePlayer(playerId, dmg) {
   const p = players.get(playerId);
   if (!p || p.hp <= 0) return;
-  p.hp = Math.max(0, p.hp - dmg);
-  broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg });
+  // Defense (stat + equipped armor) softens hits; always at least 1.
+  const eff = Math.max(1, dmg - Math.floor(((p.defense || 0) + (p.armorDefense || 0)) / 2));
+  p.hp = Math.max(0, p.hp - eff);
+  broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: eff });
   if (p.hp <= 0) {
     p.hp = p.maxHp;
     p.x = SPAWN.x;
@@ -112,6 +114,23 @@ function broadcastAll(data) {
   }
 }
 
+// Recompute combat bonuses from equipped gear (weapon offense + armor defense);
+// held sprite = equipped weapon. Mirror of vite.config.ts recomputeEquipStats.
+const EQUIP_SLOTS = ['weapon', 'body', 'arms', 'other'];
+function recomputeEquipStats(entry) {
+  const w = entry.equipped.weapon;
+  const we = w ? GOODS[w] && GOODS[w].equip : null;
+  entry.weaponOffense = we && we.slot === 'weapon' ? (we.offense | 0) : 0;
+  let def = 0;
+  for (const s of ['body', 'arms', 'other']) {
+    const id = entry.equipped[s];
+    const e = id ? GOODS[id] && GOODS[id].equip : null;
+    if (e && e.slot === s) def += (e.defense | 0);
+  }
+  entry.armorDefense = def;
+  entry.itemId = entry.equipped.weapon;
+}
+
 wss.on('connection', (ws) => {
   const playerId = String(nextId++);
   console.log(`Player ${playerId} connected`);
@@ -142,7 +161,10 @@ wss.on('connection', (ws) => {
           frame: 0,
           pose: 'walk',
           itemId: null, // held item (equipped weapon's sprite), set by 'equip'
-          weaponOffense: 0, // offense bonus from the equipped weapon (server-applied)
+          // EarthBound equip slots (server-authoritative); offense/defense apply.
+          equipped: { weapon: null, body: null, arms: null, other: null },
+          weaponOffense: 0, // offense from the equipped weapon
+          armorDefense: 0,  // total defense from equipped body/arms/other
           inventory: [...STARTING_INVENTORY], // Goods slots, mutated by 'use_item'
           money: STARTING_MONEY, // starting cash, shown in the menu
           hp: PLAYER_MAX_HP,
@@ -223,19 +245,22 @@ wss.on('connection', (ws) => {
       case 'equip': {
         const entry = players.get(playerId);
         if (!entry) break;
-        // Item ids are short slugs; clients ignore ids they don't recognize.
-        entry.itemId =
+        // Per-slot equip { slot, itemId|null }. Authoritative: equipping needs
+        // the item owned + fitting that slot; null unequips. Recompute bonuses.
+        const slot = typeof msg.slot === 'string' ? msg.slot : null;
+        const itemId =
           typeof msg.itemId === 'string' && msg.itemId.length <= 24 ? msg.itemId : null;
-        // Weapon offense is server-authoritative: counts only if the equipped
-        // item is a weapon the player actually owns (no spoofing).
-        const eq = entry.itemId ? GOODS[entry.itemId]?.equip : null;
-        const owns = entry.itemId ? entry.inventory.includes(entry.itemId) : false;
-        entry.weaponOffense = eq && eq.slot === 'weapon' && owns ? (eq.offense | 0) : 0;
+        if (!slot || !EQUIP_SLOTS.includes(slot)) break;
+        if (itemId !== null) {
+          const eq = GOODS[itemId] && GOODS[itemId].equip;
+          if (!eq || eq.slot !== slot || !entry.inventory.includes(itemId)) break;
+        }
+        entry.equipped[slot] = itemId;
+        recomputeEquipStats(entry);
+        entry._ws.send(JSON.stringify({ type: 'equipped', slots: entry.equipped }));
         const equipMsg = JSON.stringify({ type: 'equip', id: playerId, itemId: entry.itemId });
         for (const [id, p] of players) {
-          if (id !== playerId && p._ws.readyState === 1) {
-            p._ws.send(equipMsg);
-          }
+          if (id !== playerId && p._ws.readyState === 1) p._ws.send(equipMsg);
         }
         break;
       }

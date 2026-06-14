@@ -14,22 +14,24 @@
 
 import { drawWindow }                              from './WindowRenderer';
 import { drawText, measureText, FONT_LINE_HEIGHT } from './TextRenderer';
-import { renderStatus }                            from './StatusModal';
+import { renderStatus, getStatus }                 from './StatusModal';
 import { getPointer, consumePointerClick, isPointerDown,
          consumePointerPress, consumePointerRelease } from './Input';
 import { getGoods }                                from './Inventory';
 import { getMoney }                                from './Wallet';
 import { sendUseItem, sendUsePsi, sendBuy, sendSell, sendEquip } from './Network';
-import { getStoreItems, sellPrice, itemType, itemEquip } from './Shop';
-import { isEquippable, drawItemIcon, getItemName }  from './Items';
+import { getStoreItems, sellPrice, itemEquip, itemOffense, itemDefense } from './Shop';
+import { drawItemIcon, getItemName }               from './Items';
+import { EquipSlot, EQUIP_SLOTS, SLOT_LABELS }     from './Equipment';
 import { SCREEN_WIDTH, SCREEN_HEIGHT }             from '../types';
 
-// Hooks into the local player's held/equipped item, wired by Game (MenuManager
-// has no player ref). getHeldItem reads the current weapon; equipWeapon sets it
-// (held sprite + server 'equip'). Hotbar toggle-equip flows through these.
+// Hooks into the local player's equipment, wired by Game (MenuManager has no
+// player ref). getEquipped reads a slot; equip sets it (held sprite for a
+// weapon + server 'equip', which applies the offense/defense). The Equip screen
+// and hotbar toggle-equip both flow through these.
 export interface MenuHooks {
-  getHeldItem(): string | null;
-  equipWeapon(id: string | null): void;
+  getEquipped(slot: EquipSlot): string | null;
+  equip(slot: EquipSlot, itemId: string | null): void;
 }
 let hooks: MenuHooks | null = null;
 
@@ -89,6 +91,11 @@ const HOTBAR_SLOTS = 2;
 const hotbar: (string | null)[] = new Array(HOTBAR_SLOTS).fill(null);
 // A drag in progress: the item id being dragged onto a hotbar box.
 let drag: { id: string } | null = null;
+
+// Equip screen: one combined list — the 4 slots (each showing the equipped
+// item; selecting an occupied slot takes it off) followed by the player's
+// UNEQUIPPED gear (selecting equips it into its slot). A live status panel
+// (Offense/Defense) sits to the right so stat changes are visible.
 let equipCursor = 0;
 
 // EarthBound's telephone menu — pick who to call. Dad saves your game; Mom
@@ -199,45 +206,82 @@ function goodsRowAt(px: number, py: number): number {
   return -1;
 }
 
-// --- Equip modal + hotbar geometry/logic -------------------------------------
+// --- Equip screen (EB 4-slot) + hotbar geometry/logic ------------------------
 
-/** The player's equippable gear (weapons/armor) in inventory — the modal list. */
-function equippableGoods(): { id: string; name: string }[] {
-  return getGoods().filter((g) => isEquippable(itemType(g.id)));
+// One combined list: the 4 slots, then the player's UNEQUIPPED gear.
+type EquipRow = { kind: 'slot'; slot: EquipSlot } | { kind: 'item'; id: string; name: string };
+
+/** Equippable inventory gear that is NOT currently worn in its slot. */
+function unequippedGear(): { id: string; name: string }[] {
+  return getGoods().filter((g) => {
+    const eq = itemEquip(g.id);
+    return eq && (hooks?.getEquipped(eq.slot) ?? null) !== g.id;
+  });
 }
 
-const EQUIP_COLS = 4;
-const EQUIP_CELL = 22;  // gear icon cell (16px art + padding)
+function equipRows(): EquipRow[] {
+  const rows: EquipRow[] = EQUIP_SLOTS.map((slot) => ({ kind: 'slot', slot }));
+  for (const it of unequippedGear()) rows.push({ kind: 'item', id: it.id, name: it.name });
+  return rows;
+}
 
-/** Equip modal: a centered grid of gear icons, above the hotbar. */
-function equipLayout(): { winX: number; winY: number; winW: number; winH: number; cells: Cell[] } {
-  const items = equippableGoods();
-  const n = Math.max(1, items.length);
-  const cols = Math.min(EQUIP_COLS, n);
-  const rowsN = Math.ceil(n / cols);
-  const gridW = cols * EQUIP_CELL;
-  const innerW = Math.max(gridW, 88);
-  const innerH = rowsN * EQUIP_CELL + FONT_LINE_HEIGHT + 2; // grid + cursored-name line
-  const winW = innerW + PADDING * 2 + BORDER * 2;
-  const winH = innerH + PADDING * 2 + BORDER * 2;
-  const winX = Math.floor((SCREEN_WIDTH - winW) / 2);
-  const winY = 22;
-  const gx = winX + BORDER + PADDING + Math.floor((innerW - gridW) / 2);
-  const gy = winY + BORDER + PADDING;
-  const cells: Cell[] = [];
-  for (let i = 0; i < items.length; i++) {
-    cells.push({ x: gx + (i % cols) * EQUIP_CELL, y: gy + ((i / cols) | 0) * EQUIP_CELL, w: EQUIP_CELL, h: EQUIP_CELL });
+const EQUIP_ROW_W = 132; // inner width (slot label + item name)
+
+/** The combined Equip list window (slots + unequipped gear). */
+function equipListLayout(): { winX: number; winY: number; winW: number; winH: number; rows: Cell[] } {
+  const cmd = commandLayout();
+  const winX = cmd.winX;
+  const winY = cmd.winY + cmd.winH + 2;
+  const n = Math.max(1, equipRows().length);
+  const innerH = n * ITEM_H + PADDING * 2;
+  const rows: Cell[] = [];
+  for (let i = 0; i < n; i++) {
+    rows.push({ x: winX + BORDER + PADDING, y: winY + BORDER + PADDING + i * ITEM_H, w: EQUIP_ROW_W, h: ITEM_H });
   }
-  return { winX, winY, winW, winH, cells };
+  return { winX, winY, winW: EQUIP_ROW_W + PADDING * 2 + BORDER * 2, winH: innerH + BORDER * 2, rows };
 }
 
-function equipCellAt(px: number, py: number): number {
-  const { cells } = equipLayout();
-  for (let i = 0; i < cells.length; i++) {
-    const c = cells[i];
+function equipRowAt(px: number, py: number): number {
+  const { rows } = equipListLayout();
+  for (let i = 0; i < rows.length; i++) {
+    const c = rows[i];
     if (px >= c.x && px < c.x + c.w && py >= c.y && py < c.y + c.h) return i;
   }
   return -1;
+}
+
+/** Current Offense/Defense INCLUDING equipped gear (for the live status panel). */
+function equipStats(): { offense: number; defense: number } {
+  const base = getStatus();
+  let offense = base.offense + itemOffense(hooks?.getEquipped('weapon') ?? '');
+  let defense = base.defense;
+  for (const s of ['body', 'arms', 'other'] as EquipSlot[]) {
+    defense += itemDefense(hooks?.getEquipped(s) ?? '');
+  }
+  return { offense, defense };
+}
+
+/** Act on an equip-list row: take off an occupied slot, or equip a gear item. */
+function activateEquipRow(i: number): void {
+  const r = equipRows()[i];
+  if (!r) return;
+  if (r.kind === 'slot') {
+    if (hooks?.getEquipped(r.slot)) hooks?.equip(r.slot, null); // take off
+  } else {
+    const eq = itemEquip(r.id);
+    if (eq) hooks?.equip(eq.slot, r.id); // equip (server swaps out any occupant)
+  }
+}
+
+/** Auto-equip a Good if it's gear (else use it). Shows the resulting stat. */
+function useOrEquipGood(id: string): void {
+  const eq = itemEquip(id);
+  if (!eq) { sendUseItem(id); return; }
+  hooks?.equip(eq.slot, id);
+  const after = equipStats(); // hooks.equip updated the mirror synchronously
+  const line = eq.slot === 'weapon' ? `Offense is now ${after.offense}.` : `Defense is now ${after.defense}.`;
+  message = `Equipped ${getItemName(id) ?? 'it'}.\n${line}`;
+  menuState = 'message';
 }
 
 const HOTBAR_BOX = 24;
@@ -264,58 +308,51 @@ function hotbarBoxAt(px: number, py: number): number {
   return -1;
 }
 
-/** Equip/unequip a weapon directly (keyboard confirm / single click on gear). */
-function directEquip(id: string): void {
+/** Toggle-equip any gear (weapon or armor) into its own slot. */
+function equipToggle(id: string): void {
   const eq = itemEquip(id);
-  if (eq && eq.slot === 'weapon') {
-    const held = hooks?.getHeldItem() ?? null;
-    hooks?.equipWeapon(held === id ? null : id); // toggle
-  } else {
-    message = `${getItemName(id) ?? 'That'} — only weapons can be equipped for now.`;
-    menuState = 'message';
-  }
+  if (!eq) return;
+  const cur = hooks?.getEquipped(eq.slot) ?? null;
+  hooks?.equip(eq.slot, cur === id ? null : id);
 }
 
-/** Trigger a hotbar slot: toggle-equip a weapon, or use a consumable. */
+/** Trigger a hotbar slot: toggle-equip gear, or use a consumable. */
 function activateSlot(i: number): void {
   const id = hotbar[i];
   if (!id) return;
-  const eq = itemEquip(id);
-  if (eq && eq.slot === 'weapon') {
-    const held = hooks?.getHeldItem() ?? null;
-    hooks?.equipWeapon(held === id ? null : id); // brandish / holster
-  } else if (eq) {
-    message = `${getItemName(id) ?? 'That'} — armor slots aren't wired up yet.`;
-    menuState = 'message';
-  } else {
-    sendUseItem(id); // consumable
-  }
+  if (itemEquip(id)) equipToggle(id);
+  else sendUseItem(id);
 }
 
-// Pointer drag/drop: press on a gear cell (Equip modal) or Goods row starts a
-// drag; release on a hotbar box assigns it; release back on the source acts as a
-// plain click (equip / use). Runs only in the 'equip' and 'goods' states.
+// Pointer drag/drop. Goods: drag a row to a hotbar box to assign it, or release
+// on the same row to use/equip it. Equip: drag a gear ITEM row (ghost only —
+// the equip itself fires from the click latch, since each item has exactly one
+// valid slot). Press/release use their own Input latches, distinct from clicks.
 function updateHotbarDrag(): void {
   const press = consumePointerPress();
-  if (press && !drag && (menuState === 'equip' || menuState === 'goods')) {
-    const items = menuState === 'equip' ? equippableGoods() : getGoods();
-    const i = menuState === 'equip' ? equipCellAt(press.x, press.y) : goodsRowAt(press.x, press.y);
-    if (i >= 0 && items[i]) drag = { id: items[i].id };
+  if (press && !drag) {
+    if (menuState === 'goods') {
+      const items = getGoods();
+      const i = goodsRowAt(press.x, press.y);
+      if (i >= 0 && items[i]) drag = { id: items[i].id };
+    } else if (menuState === 'equip') {
+      const r = equipRows()[equipRowAt(press.x, press.y)];
+      if (r && r.kind === 'item') drag = { id: r.id };
+    }
   }
   const rel = consumePointerRelease();
   if (rel && drag) {
-    const box = hotbarBoxAt(rel.x, rel.y);
-    if (box >= 0) {
-      hotbar[box] = drag.id; // dropped on a slot — assign
-    } else if (menuState === 'equip') {
-      const i = equipCellAt(rel.x, rel.y);
-      const items = equippableGoods();
-      if (i >= 0 && items[i] && items[i].id === drag.id) directEquip(items[i].id); // click
-    } else if (menuState === 'goods') {
-      const i = goodsRowAt(rel.x, rel.y);
-      const items = getGoods();
-      if (i >= 0 && items[i] && items[i].id === drag.id) sendUseItem(items[i].id); // click
+    if (menuState === 'goods') {
+      const box = hotbarBoxAt(rel.x, rel.y);
+      if (box >= 0) {
+        hotbar[box] = drag.id; // dropped on a hotbar slot — assign
+      } else {
+        const i = goodsRowAt(rel.x, rel.y);
+        const items = getGoods();
+        if (i >= 0 && items[i] && items[i].id === drag.id) useOrEquipGood(items[i].id); // click
+      }
     }
+    // Equip: the click latch performs the equip; drag here is purely the ghost.
     drag = null;
   }
   if (drag && !isPointerDown()) drag = null; // safety: never get stuck dragging
@@ -448,18 +485,11 @@ export function updateMenu(): void {
   // A left-click anywhere this frame (game-space coords), consumed once.
   const click = menuState === 'closed' ? null : consumePointerClick();
 
-  // Hotbar (any open state): number keys 1-2 trigger a slot — except in the
-  // Equip modal, where they ASSIGN the cursored gear to that slot. Drag-drop is
-  // handled by updateHotbarDrag for the 'equip'/'goods' source lists.
+  // Hotbar (any open state): number keys 1-2 trigger their slot (toggle-equip
+  // gear / use a consumable). Drag-drop assignment is in updateHotbarDrag.
   if (menuState !== 'closed') {
     for (let n = 0; n < HOTBAR_SLOTS; n++) {
-      if (!justPressed(`Digit${n + 1}`)) continue;
-      if (menuState === 'equip') {
-        const items = equippableGoods();
-        if (items[equipCursor]) hotbar[n] = items[equipCursor].id;
-      } else {
-        activateSlot(n);
-      }
+      if (justPressed(`Digit${n + 1}`)) activateSlot(n);
     }
     updateHotbarDrag();
   }
@@ -525,9 +555,9 @@ export function updateMenu(): void {
       // updateHotbarDrag on pointer release, so a drag doesn't also use the item.
       const use = confirm ? goodsCursor : -1;
       if (use >= 0 && items[use]) {
-        // Server-authoritative: ask to use it; the resulting `inventory` and
-        // `player_hp` deltas (Cookie heals 10) flow back through Network.
-        sendUseItem(items[use].id);
+        // Equippable gear auto-equips (and pops a status line); everything else
+        // is used. Server-authoritative either way.
+        useOrEquipGood(items[use].id);
         // Keep the cursor in range for the next (shorter) list.
         if (goodsCursor >= items.length - 1) goodsCursor = Math.max(0, items.length - 2);
       }
@@ -558,20 +588,21 @@ export function updateMenu(): void {
     if (toggle || justPressed('Backspace')) {
       menuState = 'command'; // back to the command grid
     } else {
-      const items = equippableGoods();
-      const n = items.length;
+      const n = equipRows().length;
       if (n > 0) {
-        if (justPressed('ArrowLeft')  || justPressed('KeyA')) equipCursor = (equipCursor + n - 1) % n;
-        if (justPressed('ArrowRight') || justPressed('KeyD')) equipCursor = (equipCursor + 1) % n;
-        if (justPressed('ArrowUp')    || justPressed('KeyW')) equipCursor = Math.max(0, equipCursor - EQUIP_COLS);
-        if (justPressed('ArrowDown')  || justPressed('KeyS')) equipCursor = Math.min(n - 1, equipCursor + EQUIP_COLS);
+        if (justPressed('ArrowUp')   || justPressed('KeyW')) equipCursor = (equipCursor + n - 1) % n;
+        if (justPressed('ArrowDown') || justPressed('KeyS')) equipCursor = (equipCursor + 1) % n;
         if (equipCursor >= n) equipCursor = n - 1;
-        // Hover moves the cursor to the gear cell under the pointer.
         const p = getPointer();
-        const hov = equipCellAt(p.x, p.y);
+        const hov = equipRowAt(p.x, p.y);
         if (hov >= 0) equipCursor = hov;
-        // Confirm equips/uses the cursored gear (keyboard parity with drag/click).
-        if (confirm && items[equipCursor]) directEquip(items[equipCursor].id);
+        // E/Enter on the cursor, or a click on any row: equip a gear item into
+        // its slot / take off an equipped slot.
+        if (confirm) activateEquipRow(equipCursor);
+        if (click) {
+          const ci = equipRowAt(click.x, click.y);
+          if (ci >= 0) activateEquipRow(ci);
+        }
       }
     }
   } else if (menuState === 'shop') {
@@ -848,40 +879,50 @@ function renderGoods(ctx: CanvasRenderingContext2D): void {
 }
 
 function renderEquip(ctx: CanvasRenderingContext2D): void {
-  const items = equippableGoods();
-  const { winX, winY, winW, winH, cells } = equipLayout();
+  const rows = equipRows();
+  const { winX, winY, winW, winH, rows: cells } = equipListLayout();
   drawWindow(ctx, winX, winY, winW, winH, MENU_STYLE);
-  if (items.length === 0) {
-    drawText(ctx, 'No gear to equip', winX + BORDER + PADDING, winY + BORDER + PADDING, FONT_ID);
-    return;
-  }
-  const held = hooks?.getHeldItem() ?? null;
-  for (let i = 0; i < items.length; i++) {
-    const c = cells[i];
-    if (items[i].id === held) { // currently-equipped tint
-      ctx.fillStyle = 'rgba(120,220,120,0.28)';
-      ctx.fillRect(c.x + 1, c.y + 1, c.w - 2, c.h - 2);
-    }
-    if (i === equipCursor) { // selection box
-      ctx.strokeStyle = '#f0f0f0';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(c.x + 0.5, c.y + 0.5, c.w - 1, c.h - 1);
-    }
-    if (!drawItemIcon(ctx, items[i].id, c.x + 3, c.y + 3, 16)) {
-      ctx.fillStyle = '#557';
-      ctx.fillRect(c.x + 10, c.y + 10, 2, 2); // no-art dot
+  for (let i = 0; i < rows.length; i++) {
+    const { x, y } = cells[i];
+    if (i === equipCursor) drawCursor(ctx, x, y + 3);
+    const r = rows[i];
+    if (r.kind === 'slot') {
+      const id = hooks?.getEquipped(r.slot) ?? null;
+      drawText(ctx, SLOT_LABELS[r.slot], x + CURSOR_W, y, FONT_ID);
+      drawText(ctx, id ? (getItemName(id) ?? '?') : '-', x + CURSOR_W + 42, y, FONT_ID);
+    } else {
+      const eq = itemEquip(r.id);
+      const tag = eq
+        ? (eq.slot === 'weapon' ? `+${eq.offense ?? 0} off` : `+${eq.defense ?? 0} def`)
+        : '';
+      drawText(ctx, r.name, x + CURSOR_W, y, FONT_ID);
+      drawText(ctx, tag, x + CURSOR_W + 84, y, FONT_ID);
     }
   }
-  const sel = items[equipCursor];
-  const eq = sel ? itemEquip(sel.id) : null;
-  const stat = eq ? (eq.slot === 'weapon' ? `  +${eq.offense ?? 0} off` : `  +${eq.defense ?? 0} def`) : '';
-  drawText(ctx, (sel?.name ?? '') + stat,
-    winX + BORDER + PADDING, winY + winH - BORDER - PADDING - FONT_LINE_HEIGHT + 1, FONT_ID);
+  // Faint divider between the slots and the gear list.
+  if (rows.length > EQUIP_SLOTS.length) {
+    const sepY = cells[EQUIP_SLOTS.length].y - 1;
+    ctx.fillStyle = '#4a5a78';
+    ctx.fillRect(cells[0].x, sepY, EQUIP_ROW_W, 1);
+  }
+
+  // Live status panel (Offense/Defense incl. equipped gear) to the right.
+  const st = equipStats();
+  const lines: [string, number][] = [['Offense', st.offense], ['Defense', st.defense]];
+  const sx = winX + winW + 2;
+  const sw = 76;
+  const sh = lines.length * ITEM_H + PADDING * 2 + BORDER * 2;
+  drawWindow(ctx, sx, winY, sw, sh, MENU_STYLE);
+  for (let i = 0; i < lines.length; i++) {
+    const yy = winY + BORDER + PADDING + i * ITEM_H;
+    drawText(ctx, lines[i][0], sx + BORDER + PADDING, yy, FONT_ID);
+    const v = String(lines[i][1]);
+    drawText(ctx, v, sx + sw - BORDER - PADDING - measureText(v, FONT_ID), yy, FONT_ID);
+  }
 }
 
 function renderHotbar(ctx: CanvasRenderingContext2D): void {
   const boxes = hotbarLayout();
-  const held = hooks?.getHeldItem() ?? null;
   for (let i = 0; i < boxes.length; i++) {
     const b = boxes[i];
     // Small dark box (drawWindow's 6px border would crowd a 24px slot).
@@ -893,7 +934,9 @@ function renderHotbar(ctx: CanvasRenderingContext2D): void {
     const id = hotbar[i];
     if (id) {
       drawItemIcon(ctx, id, b.x + (b.w - 16) / 2, b.y + (b.h - 16) / 2, 16);
-      if (id === held) { // equipped highlight
+      // Green ring if this slot's gear is currently equipped in its slot.
+      const eq = itemEquip(id);
+      if (eq && hooks?.getEquipped(eq.slot) === id) {
         ctx.strokeStyle = '#7ee07e';
         ctx.strokeRect(b.x + 1.5, b.y + 1.5, b.w - 3, b.h - 3);
       }

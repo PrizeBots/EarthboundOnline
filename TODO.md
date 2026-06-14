@@ -85,9 +85,9 @@ EarthBound ROM and all assets are extracted in their browser. See CLAUDE.md
 - [ ] PSI/magic system (projectiles, AoE)
 - [x] Enemy AI (aggro range, chase, attack) — `npcSim` roamers detect within `DETECT_RANGE`, chase at `chaseSpeed`, swing on cooldown; per-spawner damage/rate/speed/level
 - [x] Health/damage system — server-authoritative HP for enemies AND players (`onPlayerHp`/`onPlayerRespawn`, `player_hp`/`player_respawn` msgs), death + respawn, floating damage numbers (Emitter)
-- [ ] Inventory system
+- [~] Inventory + equipment system — Goods (buy/use/sell, server-authoritative) + full ROM item table extracted (offense/defense/slot/who-can-equip → `extract_shops.py`). **Equipment**: EB 4-slot screen (Weapon/Body/Arms/Other) + a 2-slot quick-select hotbar; equipped **weapon offense → attack damage**, **armor defense → damage taken** (`Equipment.ts` mirror, server-authoritative per-slot equip). TODO: armor types beyond offense/defense (status resist, etc.), more hotbar slots, and **persistence** (equipped gear + hotbar + inventory reset on rejoin — needs the save system). DEV: a Cracked bat is granted on join for testing (`server/shops.js` — remove before launch)
 - [x] Experience/leveling — per-spawner **XP** (Enemy Spawner editor) → server-authoritative EXP-on-kill + level-up with **full stat growth** (geometric curve `30·1.5^(lvl-1)`; HP/offense/defense wired into combat, all 7 stats grow + display); pushed to client via `player_stats` → StatusModal. No persistence yet (resets on rejoin — needs the save system)
-- [ ] Save system (server-side persistence) — DECIDED: start with flat per-player JSON saves keyed by an **anonymous token** (generated client-side, stored in `localStorage`, sent on join); persists the progression block (level/exp/stats) across rejoins. No DB or login needed yet. Design saves so they can later be **"claimed" by a login**. Move to SQLite/Postgres when the standalone server (Phase 3) or accounts arrive
+- [ ] Save system (server-side persistence) — DECIDED: start with flat per-player JSON saves keyed by an **anonymous token** (generated client-side, stored in `localStorage`, sent on join); persists the progression block (level/exp/stats), **inventory, money, equipped gear (4 slots) + hotbar** across rejoins. No DB or login needed yet. Design saves so they can later be **"claimed" by a login**. Move to SQLite/Postgres when the standalone server (Phase 3) or accounts arrive
 - [~] Custom sprites for combat animations — player attack/hurt bands done (SpriteEditor); enemy bands still need the NPC Sprite Animator
 - [~] Sound effects / music integration — music PLAYS, but region triggers come from the ROM's per-sector musicId, which the door-stitched world often gets wrong. Fix is authoring-driven: the **Sound Manager** editor tool (`overrides/music.json` areas win over the sector lookup). Still to do: author correct regions across the map, then SFX (hit/attack/etc.)
 
@@ -99,6 +99,11 @@ Engine code should still be written to port cleanly (see CLAUDE.md Architecture)
 - [ ] Real hardware integration: boot on real SNES, multiplayer state via ESP32, latency testing, multi-console stress test
 
 ## Backlog / Ideas
+- [ ] **Tile animation system** — EB animates tiles via palette/tile cycling (escalator
+  steps scrolling, water, sunset, waterfalls). Our renderer pre-renders STATIC atlases,
+  so escalator steps ride correctly but don't visually scroll. A tile-animation layer
+  would cover all of these. (Escalators became rideable in DoorManager/Collision/Game;
+  animation is the remaining piece.)
 - [ ] Combat hit-reactions (stun + knockback) — the hurt flinch no longer locks movement (mob stunlock fix). Re-introduce **stun** as a deliberate, server-authoritative status effect: a **% proc chance** per enemy/weapon (entity stat) that freezes the victim for a short, **capped/diminishing** window so it can't chain into a perma-freeze. Pair with **knockback**: on a landed hit, shove the victim away from the attacker by a distance scaled to damage dealt (collision-checked, server-authoritative; small for chip damage, bigger for heavy hits). Wire both into `npcSim.applyDamage`/`damagePlayer` and broadcast so all clients see it.
 - [ ] Player settings screen — selectable chat font (default: regular EB font; Mr. Saturn font as a fun option via ChatManager.setChatFont)
 - [ ] Build visual sprite catalog (HTML page showing all 463 groups with IDs)

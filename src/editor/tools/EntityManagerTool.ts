@@ -1,9 +1,11 @@
 import { EditorTool, EditorShellApi } from '../types';
-import { listSpriteGroupIds, loadSpriteGroup } from '../../engine/SpriteManager';
+import { listSpriteGroupIds, loadSpriteGroup, getSpriteGroupMeta, drawSprite } from '../../engine/SpriteManager';
 import { getSpriteName, setSpriteNameOverride } from '../../engine/SpriteNames';
 import { createSpritePicker, drawSpriteGroupThumb, SpritePicker } from '../../engine/SpritePicker';
 import { loadNPCs } from '../../engine/NPCManager';
-import { EntityStats, EntityDefs, entityStatsFor } from '../../engine/EntityStats';
+import { EntityStats, EntityDefs, EntityCol, entityStatsFor } from '../../engine/EntityStats';
+import { loadJSON } from '../../engine/AssetLoader';
+import { Direction } from '../../types';
 import { saveOverride, loadOverride } from '../saveOverride';
 import { registerSaveHandler } from '../registry';
 
@@ -23,8 +25,9 @@ interface EnemyFile {
 
 // UI field descriptors. `scale` shows/edits a ms value in seconds; `float`
 // keeps fractional precision (speed); the rest are clamped positive integers.
+// Numeric stat fields only (col is edited separately, in the collision section).
 const STAT_FIELDS: {
-  key: keyof EntityStats; label: string; min: number; scale?: number; float?: boolean;
+  key: Exclude<keyof EntityStats, 'col'>; label: string; min: number; scale?: number; float?: boolean;
 }[] = [
   { key: 'hp', label: 'HP', min: 1 },
   { key: 'level', label: 'level', min: 1 },
@@ -34,6 +37,19 @@ const STAT_FIELDS: {
   { key: 'speed', label: 'speed', min: 0.1, float: true },
   { key: 'detectRange', label: 'detect px', min: 1 },
   { key: 'attackRange', label: 'atk px', min: 1 },
+];
+
+// Collision-box preview geometry. The sprite is drawn at COL_SCALE with its
+// feet at (COL_ANCHOR_X, COL_FEET_Y); the box overlay maps with the same anchor.
+const COL_PREVIEW_W = 152;
+const COL_PREVIEW_H = 140;
+const COL_SCALE = 2;
+const COL_ANCHOR_X = 76;
+const COL_FEET_Y = 116;
+// Directions to cycle in the preview (friendly order), with their labels.
+const DIR_CYCLE: [Direction, string][] = [
+  [Direction.S, 'S'], [Direction.E, 'E'], [Direction.N, 'N'], [Direction.W, 'W'],
+  [Direction.SE, 'SE'], [Direction.SW, 'SW'], [Direction.NE, 'NE'], [Direction.NW, 'NW'],
 ];
 
 class EntityManagerTool implements EditorTool {
@@ -53,6 +69,20 @@ class EntityManagerTool implements EditorTool {
   private picker: SpritePicker | null = null;
   private nameInput: HTMLInputElement | null = null;
 
+  // --- collision box state ---
+  // Precomputed exact per-direction boxes (sprites/colboxes.json); shown as the
+  // default for vehicles. A manual override (entities[sprite].col) wins.
+  private colBoxes: Record<string, Record<string, EntityCol>> = {};
+  private colSection: HTMLDivElement | null = null;
+  private colCanvas: HTMLCanvasElement | null = null;
+  private colFields = new Map<keyof EntityCol, HTMLInputElement>();
+  private previewDir: Direction = Direction.E;
+  private colDrag: 'move' | 'w' | 'h' | null = null;
+  private dragStart = { mx: 0, my: 0, box: { w: 0, h: 0, offX: 0, offY: 0 } as EntityCol };
+  // Bound window listeners (drag can leave the canvas) — removed on deactivate.
+  private onColMoveBound = (e: MouseEvent) => this.onColMouseMove(e);
+  private onColUpBound = () => (this.colDrag = null);
+
   activate(shell: EditorShellApi): void {
     this.shell = shell;
     registerSaveHandler('entities', () => this.save());
@@ -61,9 +91,15 @@ class EntityManagerTool implements EditorTool {
   }
 
   deactivate(): void {
+    window.removeEventListener('mousemove', this.onColMoveBound);
+    window.removeEventListener('mouseup', this.onColUpBound);
+    this.colDrag = null;
     this.panel?.remove();
     this.panel = null;
     this.picker = null;
+    this.colSection = null;
+    this.colCanvas = null;
+    this.colFields.clear();
   }
 
   /** Cross-tool handoff (Enemy Spawner's "Edit entity"): open with `sprite` selected. */
@@ -95,6 +131,9 @@ class EntityManagerTool implements EditorTool {
   private async load(): Promise<void> {
     const cfg = await this.readConfig();
     this.entities = { ...(cfg?.entities ?? {}) };
+    this.colBoxes = await loadJSON<Record<string, Record<string, EntityCol>>>(
+      '/assets/sprites/colboxes.json',
+    ).catch(() => ({}));
     if (!this.sprite) {
       this.sprite = cfg?.spawners?.length
         ? (cfg.spawners[0] as { sprite?: number }).sprite ?? listSpriteGroupIds()[0] ?? 1
@@ -198,6 +237,8 @@ class EntityManagerTool implements EditorTool {
     this.formEl.style.cssText = 'display:flex;flex-direction:column;gap:5px;';
     this.panel.appendChild(this.formEl);
 
+    this.buildColSection();
+
     this.mkBtn('Save', () => {
       void this.save().catch((e) => this.shell?.toast(`Save failed: ${e}`, true));
     }, this.panel, true);
@@ -227,6 +268,220 @@ class EntityManagerTool implements EditorTool {
       });
       i.value = String(shown);
     }
+    this.refreshColSection();
+  }
+
+  // --- collision box editor ------------------------------------------------------------
+
+  /** The box shown for a sprite+dir: manual override, else exact per-dir box,
+   *  else the kind default (full cell for vehicles, 14x8 foot box otherwise). */
+  private effectiveBox(sprite: number, dir: Direction): EntityCol {
+    const manual = this.entities[String(sprite)]?.col;
+    if (manual) return manual;
+    const perDir = this.colBoxes[String(sprite)]?.[String(dir)];
+    if (perDir) return perDir;
+    const meta = getSpriteGroupMeta(sprite);
+    if (this.colBoxes[String(sprite)] && meta) {
+      return { w: meta.width, h: meta.height, offX: 0, offY: 0 };
+    }
+    return { w: 14, h: 8, offX: 0, offY: 0 };
+  }
+
+  private hasOverride(sprite: number): boolean {
+    return !!this.entities[String(sprite)]?.col;
+  }
+
+  /** Set (or clear, with null) the manual box override for a sprite group. */
+  private setCol(sprite: number, col: EntityCol | null): void {
+    const cur = entityStatsFor(this.entities, sprite);
+    const next: EntityStats = { ...cur };
+    if (col) next.col = col;
+    else delete next.col;
+    this.entities[String(sprite)] = next;
+    this.shell?.markDirty('entities');
+  }
+
+  private buildColSection(): void {
+    this.colSection = document.createElement('div');
+    this.colSection.style.cssText =
+      'display:flex;flex-direction:column;gap:6px;border-top:1px solid #2a3540;padding-top:7px;';
+
+    const title = document.createElement('div');
+    title.textContent = 'COLLISION BOX';
+    title.style.cssText = 'color:#9fb8cc;font-size:11px;letter-spacing:0.5px;';
+    this.colSection.appendChild(title);
+
+    // Direction stepper (preview which facing's box to show).
+    const dirRow = document.createElement('div');
+    dirRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
+    this.mkBtn('◀', () => this.stepDir(-1), dirRow);
+    const dirLbl = document.createElement('span');
+    dirLbl.dataset.role = 'col-dir';
+    dirLbl.style.cssText = 'flex:1;text-align:center;color:#cde;';
+    dirRow.appendChild(dirLbl);
+    this.mkBtn('▶', () => this.stepDir(1), dirRow);
+    this.colSection.appendChild(dirRow);
+
+    // Preview canvas (sprite + box overlay; drag to edit when overriding).
+    this.colCanvas = document.createElement('canvas');
+    this.colCanvas.width = COL_PREVIEW_W;
+    this.colCanvas.height = COL_PREVIEW_H;
+    this.colCanvas.style.cssText =
+      'align-self:center;image-rendering:pixelated;background:#0c1014;border:1px solid #243;cursor:crosshair;';
+    this.colCanvas.addEventListener('mousedown', (e) => this.onColMouseDown(e));
+    window.addEventListener('mousemove', this.onColMoveBound);
+    window.addEventListener('mouseup', this.onColUpBound);
+    this.colSection.appendChild(this.colCanvas);
+
+    // Numeric fields for the override box.
+    const grid = document.createElement('div');
+    grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:4px 8px;';
+    for (const k of ['w', 'h', 'offX', 'offY'] as (keyof EntityCol)[]) {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:4px;';
+      const l = document.createElement('span');
+      l.textContent = k;
+      l.style.cssText = 'width:30px;color:#9fb8cc;font-size:11px;';
+      row.appendChild(l);
+      const i = document.createElement('input');
+      i.style.cssText =
+        'width:48px;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
+      i.onchange = () => {
+        const n = parseInt(i.value, 10);
+        if (Number.isNaN(n)) return;
+        const box = { ...this.effectiveBox(this.sprite, this.previewDir), [k]: n };
+        if (k === 'w' || k === 'h') box[k] = Math.max(2, n);
+        this.setCol(this.sprite, box);
+        this.refreshColSection();
+      };
+      this.colFields.set(k, i);
+      row.appendChild(i);
+      grid.appendChild(row);
+    }
+    this.colSection.appendChild(grid);
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:6px;';
+    this.mkBtn('Reset to art (exact)', () => {
+      this.setCol(this.sprite, null);
+      this.refreshColSection();
+      this.shell?.toast('Box reset to the exact per-direction art bounds');
+    }, btnRow);
+    this.colSection.appendChild(btnRow);
+
+    const hint = document.createElement('div');
+    hint.dataset.role = 'col-hint';
+    hint.style.cssText = 'color:#667;font-size:10px;';
+    this.colSection.appendChild(hint);
+
+    this.panel!.appendChild(this.colSection);
+  }
+
+  private stepDir(d: number): void {
+    const idx = DIR_CYCLE.findIndex(([dir]) => dir === this.previewDir);
+    const next = (idx < 0 ? 0 : idx + d + DIR_CYCLE.length) % DIR_CYCLE.length;
+    this.previewDir = DIR_CYCLE[next][0];
+    this.refreshColSection();
+  }
+
+  private refreshColSection(): void {
+    if (!this.colSection) return;
+    const override = this.hasOverride(this.sprite);
+    const dirName = DIR_CYCLE.find(([d]) => d === this.previewDir)?.[1] ?? 'S';
+    const dirLbl = this.colSection.querySelector<HTMLSpanElement>('[data-role=col-dir]');
+    if (dirLbl) dirLbl.textContent = `facing ${dirName}${override ? '  ·  override (all dirs)' : ''}`;
+    const box = this.effectiveBox(this.sprite, this.previewDir);
+    for (const [k, input] of this.colFields) {
+      if (document.activeElement !== input) input.value = String(box[k]);
+    }
+    const hint = this.colSection.querySelector<HTMLDivElement>('[data-role=col-hint]');
+    if (hint) {
+      hint.textContent = override
+        ? 'manual box — applies to every direction · drag the box, or "Reset to art"'
+        : this.colBoxes[String(this.sprite)]
+          ? 'exact per-direction box from the art (step ◀▶) · drag to override'
+          : 'foot box default (non-vehicle) · drag to set a custom box';
+    }
+    void loadSpriteGroup(this.sprite).then(() => this.drawColPreview()).catch(() => this.drawColPreview());
+  }
+
+  private drawColPreview(): void {
+    if (!this.colCanvas) return;
+    const ctx = this.colCanvas.getContext('2d')!;
+    ctx.clearRect(0, 0, COL_PREVIEW_W, COL_PREVIEW_H);
+    ctx.imageSmoothingEnabled = false;
+    ctx.save();
+    ctx.scale(COL_SCALE, COL_SCALE);
+    drawSprite(ctx, this.sprite, this.previewDir, 0, COL_ANCHOR_X / COL_SCALE, COL_FEET_Y / COL_SCALE);
+    ctx.restore();
+
+    const override = this.hasOverride(this.sprite);
+    const box = this.effectiveBox(this.sprite, this.previewDir);
+    const bx = COL_ANCHOR_X + (box.offX - box.w / 2) * COL_SCALE;
+    const by = COL_FEET_Y + (box.offY - box.h) * COL_SCALE;
+    const bw = box.w * COL_SCALE;
+    const bh = box.h * COL_SCALE;
+    ctx.strokeStyle = override ? '#6ad08a' : '#e8a33d';
+    ctx.strokeRect(bx + 0.5, by + 0.5, bw, bh);
+    // Feet anchor marker.
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(COL_ANCHOR_X - 1, COL_FEET_Y - 1, 2, 2);
+    // Drag handles (right edge = width, top edge = height).
+    ctx.fillStyle = override ? '#6ad08a' : '#e8a33d';
+    ctx.fillRect(bx + bw - 2, by + bh / 2 - 2, 4, 4);
+    ctx.fillRect(bx + bw / 2 - 2, by - 2, 4, 4);
+  }
+
+  private colBoxScreen(): { bx: number; by: number; bw: number; bh: number } {
+    const box = this.effectiveBox(this.sprite, this.previewDir);
+    return {
+      bx: COL_ANCHOR_X + (box.offX - box.w / 2) * COL_SCALE,
+      by: COL_FEET_Y + (box.offY - box.h) * COL_SCALE,
+      bw: box.w * COL_SCALE,
+      bh: box.h * COL_SCALE,
+    };
+  }
+
+  private onColMouseDown(e: MouseEvent): void {
+    if (!this.colCanvas) return;
+    const rect = this.colCanvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const { bx, by, bw, bh } = this.colBoxScreen();
+    const right = bx + bw;
+    const bottom = by + bh;
+    let mode: 'move' | 'w' | 'h' | null = null;
+    if (Math.abs(mx - right) < 7 && my > by - 7 && my < bottom + 7) mode = 'w';
+    else if (Math.abs(my - by) < 7 && mx > bx - 7 && mx < right + 7) mode = 'h';
+    else if (mx >= bx && mx <= right && my >= by && my <= bottom) mode = 'move';
+    if (!mode) return;
+    e.preventDefault();
+    // Starting a drag promotes the current (possibly auto) box to an override.
+    const box = { ...this.effectiveBox(this.sprite, this.previewDir) };
+    if (!this.hasOverride(this.sprite)) this.setCol(this.sprite, box);
+    this.colDrag = mode;
+    this.dragStart = { mx, my, box };
+  }
+
+  private onColMouseMove(e: MouseEvent): void {
+    if (!this.colDrag || !this.colCanvas) return;
+    const rect = this.colCanvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const dx = Math.round((mx - this.dragStart.mx) / COL_SCALE);
+    const dy = Math.round((my - this.dragStart.my) / COL_SCALE);
+    const s = this.dragStart.box;
+    const box: EntityCol = { ...s };
+    if (this.colDrag === 'move') {
+      box.offX = s.offX + dx;
+      box.offY = s.offY + dy;
+    } else if (this.colDrag === 'w') {
+      box.w = Math.max(2, s.w + dx * 2); // right edge out -> symmetric width grow
+    } else {
+      box.h = Math.max(2, s.h - dy); // top edge up (dy<0) -> taller
+    }
+    this.setCol(this.sprite, box);
+    this.refreshColSection();
   }
 
   // --- small DOM helpers ---------------------------------------------------------------

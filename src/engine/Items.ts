@@ -202,6 +202,38 @@ function nearestPaletteIndex(r: number, g: number, b: number): number {
   return best;
 }
 
+// --- Admin-authored custom items (overrides/custom_items.json) -------------
+// shops.json is ROM-derived and can't grow, so brand-new items the admin makes
+// in the Sprite Editor live here: an id + display name. Their pixel art is stored
+// in item_sprites.json like any other item. The legacy ITEM_DEFS seeds
+// (bat/pan/yoyo) also show under the editor's "Custom" tab, but they're built in
+// (HELD_ITEM_IDS), not stored here.
+export interface CustomItem { id: string; name: string; }
+const customItems = new Map<string, string>(); // id -> name
+
+export async function loadCustomItems(): Promise<void> {
+  customItems.clear();
+  const data = await loadJSON<{ items?: CustomItem[] }>('/overrides/custom_items.json').catch(() => null);
+  for (const it of data?.items ?? []) if (it?.id) customItems.set(it.id, it.name ?? it.id);
+}
+
+export function customItemIds(): string[] {
+  return [...customItems.keys()];
+}
+
+export function customItemsDoc(): { items: CustomItem[] } {
+  return { items: [...customItems].map(([id, name]) => ({ id, name })) };
+}
+
+/** Mint a new custom item with `name`, returning its fresh id (`custom-N`). */
+export function addCustomItem(name: string): string {
+  let n = 1;
+  while (customItems.has(`custom-${n}`)) n++;
+  const id = `custom-${n}`;
+  customItems.set(id, name.trim() || id);
+  return id;
+}
+
 // EarthBound item Type bits: 0x10..0x1F are the equip categories (weapon, body,
 // arms, other/headgear); 0x20+ are consumables/key items. Only equippable gear
 // gets a held sprite slot in the Item Manager.
@@ -216,8 +248,10 @@ export function nextHeldItem(current: string | null): string | null {
   return i === -1 || i === HELD_ITEM_IDS.length - 1 ? null : HELD_ITEM_IDS[i + 1];
 }
 
-/** Display name: catalog name (shops.json) first, then legacy def, then null. */
+/** Display name: custom name, then catalog (shops.json), then legacy def. */
 export function getItemName(itemId: string): string | null {
+  const custom = customItems.get(itemId);
+  if (custom) return custom;
   const n = catalogItemName(itemId);
   if (n && !n.startsWith('Item ')) return n;
   return ITEM_DEFS[itemId]?.name ?? n ?? null;

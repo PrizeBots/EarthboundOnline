@@ -9,8 +9,9 @@ import {
   drawHeldItem, isItemBehind, nextHeldItem, getItemName,
   ITEM_W, ITEM_H, ITEM_PALETTE, HELD_ITEM_IDS, setItemOverride, renderItemArt,
   loadItemSprites, getItemSpriteData, setItemSpriteData, canvasToItemPixels, itemSpriteIds,
+  loadCustomItems, customItemIds, addCustomItem, customItemsDoc,
 } from './Items';
-import { allItems } from './Shop';
+import { allItems, itemEquip } from './Shop';
 
 // The item list is now the whole game catalog (shops.json) — unified with the
 // Item Manager. Falls back to the legacy hand-authored ids if the catalog is
@@ -18,6 +19,26 @@ import { allItems } from './Shop';
 function itemListIds(): string[] {
   const ids = allItems().map((i) => i.id);
   return ids.length ? ids : [...HELD_ITEM_IDS];
+}
+
+// The item picker is split into tabs. Weapons/Items come from the shops catalog
+// (a weapon is gear whose equip slot is 'weapon'); Custom holds the legacy seed
+// items (bat/pan/yoyo) plus anything the admin makes with "+ New custom item".
+type ItemTab = 'weapons' | 'items' | 'custom';
+function idsForTab(tab: ItemTab): string[] {
+  if (tab === 'custom') {
+    const seen = new Set<string>();
+    return [...HELD_ITEM_IDS, ...customItemIds()].filter((id) => (seen.has(id) ? false : seen.add(id)));
+  }
+  const isWeapon = (id: string) => itemEquip(id)?.slot === 'weapon';
+  return allItems()
+    .filter((i) => (tab === 'weapons' ? isWeapon(i.id) : !isWeapon(i.id)))
+    .map((i) => i.id);
+}
+/** The tab a given item id belongs to (custom seeds + minted items win). */
+function tabForItem(id: string): ItemTab {
+  if (HELD_ITEM_IDS.includes(id) || customItemIds().includes(id)) return 'custom';
+  return itemEquip(id)?.slot === 'weapon' ? 'weapons' : 'items';
 }
 import { setMuteButtonHidden } from './MuteButton';
 import { Direction, Pose } from '../types';
@@ -222,7 +243,9 @@ let modeButtons = new Map<EditMode, HTMLButtonElement>();
 // real sprite (a native <option> can't). See createSpritePicker.
 let charPicker: SpritePicker | null = null;
 let itemPicker: SpritePicker | null = null;
-let itemRow: HTMLDivElement | null = null;
+let itemRow: HTMLDivElement | null = null;       // the whole item UI (tabs + picker + new)
+let itemPickerHost: HTMLDivElement | null = null; // the picker is rebuilt in here per tab
+let itemTab: ItemTab = 'weapons';
 let charNote: HTMLDivElement | null = null;
 let nameInput: HTMLInputElement | null = null;
 let rafId = 0;
@@ -261,6 +284,14 @@ export async function openSpriteEditor(callbacks: SpriteEditorCallbacks = {}): P
   await loadOverridesDoc();
   await loadSavedItems(); // restore saved item edits before seeding the buffer
   if (callbacks.focusItem) itemEditId = callbacks.focusItem; // Item Manager handoff
+  // Make sure itemEditId is a real, selectable item across the three tabs (the
+  // module default is a legacy seed id). If it isn't, fall back to the first
+  // weapon/item/custom available. Then open on the tab that holds it.
+  const allTabIds = new Set([...idsForTab('weapons'), ...idsForTab('items'), ...idsForTab('custom')]);
+  if (!itemEditId || !allTabIds.has(itemEditId)) {
+    itemEditId = idsForTab('weapons')[0] ?? idsForTab('items')[0] ?? idsForTab('custom')[0] ?? '';
+  }
+  itemTab = itemEditId ? tabForItem(itemEditId) : 'weapons';
   buildItemBuffer();
 
   buildDom();
@@ -295,6 +326,7 @@ export function closeSpriteEditor(): void {
   paletteGrid = null;
   itemPicker = null;
   itemRow = null;
+  itemPickerHost = null;
   charPicker = null;
   charNote = null;
   nameInput = null;
@@ -334,6 +366,7 @@ function buildItemBuffer(): void {
  * the live game both start from the same authored gear. */
 async function loadSavedItems(): Promise<void> {
   await loadItemSprites();
+  await loadCustomItems();
 }
 
 /** Load an item's current art (override or base) into the edit buffer. */
@@ -374,6 +407,67 @@ function buildItemSpriteDoc(): Record<string, { pixels: string[]; grip?: { x: nu
     if (d) doc[id] = d.grip ? { pixels: d.pixels, grip: d.grip } : { pixels: d.pixels };
   }
   return doc;
+}
+
+// --- item tabs + custom items --------------------------------------------------
+
+/** Rebuild the item dropdown for the active tab, keeping the current selection
+ *  if it's in this tab (else select the tab's first item). */
+function rebuildItemPicker(): void {
+  if (!itemPickerHost) return;
+  itemPickerHost.innerHTML = '';
+  const ids = idsForTab(itemTab);
+  const initial = ids.includes(itemEditId) ? itemEditId : (ids[0] ?? '');
+  itemPicker = createSpritePicker({
+    sections: [{ values: ids }],
+    initial,
+    labelFor: (v) => `${v} ${getItemName(v) ?? ''}`.trim(),
+    drawThumb: drawItemThumb,
+    onSelect: (v) => {
+      loadItemIntoBuffer(v);
+      dirty = true;
+    },
+  });
+  itemPickerHost.appendChild(itemPicker.el);
+}
+
+function highlightItemTabs(): void {
+  if (!itemRow) return;
+  for (const b of itemRow.querySelectorAll<HTMLButtonElement>('button[data-itab]')) {
+    const on = b.dataset.itab === itemTab;
+    b.style.color = on ? '#fff' : '#ddd';
+    b.style.borderColor = on ? '#9af' : '#444';
+  }
+}
+
+function selectItemTab(tab: ItemTab): void {
+  itemTab = tab;
+  const ids = idsForTab(tab);
+  if (!ids.includes(itemEditId) && ids.length) loadItemIntoBuffer(ids[0]); // sets itemEditId
+  rebuildItemPicker();
+  highlightItemTabs();
+  dirty = true;
+}
+
+function persistCustomItems(): void {
+  void postOverride('custom_items.json', customItemsDoc()).catch(() => {
+    if (itemNote) itemNote.textContent = 'Custom-item save failed (dev save channel?)';
+  });
+}
+
+/** Mint a blank custom item, drop into the Custom tab, and open it for drawing. */
+function createCustomItem(): void {
+  const name = window.prompt('New custom item name:', 'Custom item');
+  if (name === null) return; // cancelled
+  const id = addCustomItem(name.trim() || 'Custom item');
+  persistCustomItems(); // register it now so the id isn't orphaned
+  itemTab = 'custom';
+  loadItemIntoBuffer(id); // blank buffer (no art yet) + sets itemEditId
+  rebuildItemPicker();
+  highlightItemTabs();
+  itemPicker?.setValue(id);
+  if (itemNote) itemNote.textContent = `New item "${getItemName(id) ?? id}" — draw it, then Save`;
+  dirty = true;
 }
 
 function sheetReady(): boolean {
@@ -748,21 +842,40 @@ function buildToolPanel(): HTMLDivElement {
   }
   div.appendChild(modeRow);
 
-  // Which item to edit (item mode only) — custom dropdown with the item art in
-  // each row. Hidden until Item mode (setEditMode toggles itemRow).
-  itemPicker = createSpritePicker({
-    sections: [{ values: itemListIds() }],
-    initial: itemEditId || itemListIds()[0] || '',
-    labelFor: (v) => `${v} ${getItemName(v) ?? ''}`.trim(),
-    drawThumb: drawItemThumb,
-    onSelect: (v) => {
-      loadItemIntoBuffer(v);
-      dirty = true;
-    },
-  });
-  itemRow = itemPicker.el;
-  itemPicker.el.style.display = 'none'; // shown in Item mode (setEditMode)
-  div.appendChild(itemPicker.el);
+  // Item UI (item mode only): Weapons / Items / Custom tabs, the item dropdown
+  // (rebuilt per tab), and a New-item button. Hidden until Item mode.
+  itemRow = document.createElement('div');
+  itemRow.style.cssText = 'display:none;flex-direction:column;gap:5px;';
+
+  const itemTabs = document.createElement('div');
+  itemTabs.style.cssText = 'display:flex;gap:4px;';
+  for (const [t, label] of [['weapons', 'Weapons'], ['items', 'Items'], ['custom', 'Custom']] as [ItemTab, string][]) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.dataset.itab = t;
+    b.style.cssText =
+      'flex:1;font:11px monospace;padding:4px 0;background:#2a2a3a;color:#ddd;' +
+      'border:1px solid #444;border-radius:3px;cursor:pointer;';
+    b.onclick = () => selectItemTab(t);
+    itemTabs.appendChild(b);
+  }
+  itemRow.appendChild(itemTabs);
+
+  itemPickerHost = document.createElement('div');
+  itemRow.appendChild(itemPickerHost);
+
+  const newItemBtn = document.createElement('button');
+  newItemBtn.textContent = '+ New custom item';
+  newItemBtn.title = 'Create a blank custom item (stored in overrides/custom_items.json)';
+  newItemBtn.style.cssText =
+    'font:11px monospace;padding:4px 8px;background:#10301c;color:#7fe0a0;' +
+    'border:1px solid #2e6e44;border-radius:3px;cursor:pointer;';
+  newItemBtn.onclick = createCustomItem;
+  itemRow.appendChild(newItemBtn);
+
+  div.appendChild(itemRow);
+  rebuildItemPicker();
+  highlightItemTabs();
 
   const tools: [Tool, string][] = [
     ['pencil', '1/Q ✏ Pencil'],
@@ -966,9 +1079,12 @@ function setEditMode(m: EditMode): void {
   }
   if (editMode === m) return;
   editMode = m;
-  if (itemRow) itemRow.style.display = m === 'item' ? 'block' : 'none';
+  if (itemRow) itemRow.style.display = m === 'item' ? 'flex' : 'none';
   if (m === 'item') {
     colorIndex = 1;
+    itemTab = tabForItem(itemEditId); // open on the tab holding the current item
+    rebuildItemPicker();
+    highlightItemTabs();
     loadItemIntoBuffer(itemEditId); // also sets walkerItem so it previews on the character
   } else {
     walkerItem = null;
@@ -1224,8 +1340,8 @@ function onKeyDown(e: KeyboardEvent): void {
     walkerPoseTimer = 0;
   } else if (k === 'g') {
     if (editMode === 'item') {
-      // Cycle which item is being edited (keeps the picker in sync).
-      const list = itemListIds();
+      // Cycle which item is being edited within the active tab (picker in sync).
+      const list = idsForTab(itemTab);
       const i = list.indexOf(itemEditId);
       const next = list[(i + 1) % list.length];
       loadItemIntoBuffer(next); // updates the item buffer/thumb

@@ -33,8 +33,13 @@ function toGameCoords(clientX: number, clientY: number): { x: number; y: number 
   };
 }
 
+let listenersAttached = false;
 export function initInput(gameCanvas?: HTMLCanvasElement) {
   if (gameCanvas) canvas = gameCanvas;
+  // Attach the window listeners exactly once — initInput is called both at
+  // character select (so clicks/keys work there) and again on game start.
+  if (listenersAttached) return;
+  listenersAttached = true;
   window.addEventListener('keydown', (e) => {
     keys.add(e.code);
     // Prevent arrow keys from scrolling the page

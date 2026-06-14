@@ -209,6 +209,23 @@ async function playSPCSong(songNumber: number): Promise<void> {
   }
 }
 
+// EarthBound's name-entry music ("Your Name, Please", eb-002.spc) — the song
+// that plays while you name your party in the ROM. Played on the character
+// select screen, our analogue of that naming flow.
+const CHAR_SELECT_SONG = 2;
+
+/**
+ * Start the character-select (naming) music. Inits the SPC engine and resumes a
+ * suspended AudioContext — so it MUST be called from a user gesture (first key
+ * press / click on the select screen). Idempotent: playSPCSong no-ops if song 2
+ * is already current, so calling it on every interaction is fine.
+ */
+export function playCharSelectMusic(): void {
+  if (!initialized) initMusic();
+  if (audioContext && audioContext.state === 'suspended') void audioContext.resume();
+  void playSPCSong(CHAR_SELECT_SONG);
+}
+
 /**
  * Play a custom audio track (MP3/OGG — for ESP32-side music on hardware).
  */
@@ -303,13 +320,8 @@ export function updateMusic(playerX: number, playerY: number): void {
  */
 export function previewSong(songNumber: number): void {
   if (!initialized) initMusic();
-  if (audioContext) {
-    // The button click is a user gesture, so a suspended context can resume here.
-    if (audioContext.state === 'suspended') void audioContext.resume();
-    console.log(`previewSong(${songNumber}): initialized=${initialized}, ctx=${audioContext.state}`);
-  } else {
-    console.warn(`previewSong(${songNumber}): no AudioContext (SPC engine not initialized)`);
-  }
+  // The button click is a user gesture, so a suspended context can resume here.
+  if (audioContext && audioContext.state === 'suspended') void audioContext.resume();
   currentSongNumber = -1;
   void playSPCSong(songNumber);
 }

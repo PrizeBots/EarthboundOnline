@@ -1,25 +1,24 @@
 /**
- * Rooms — the registry of standalone interior rooms in the stitched map.
+ * Rooms — the registry of CUSTOM authored interior rooms.
  *
- * EarthBound reuses ONE interior template for many shops/houses, picking the
- * clerk per-door at runtime. Our open world can't do that with a single shared
- * region (two players entering two different burger shops would land in the same
- * room). So the extractor STAMPS a copy of each reused interior — one per
- * exterior entrance — into an "interiors band" appended below the overworld (the
- * map grows in height only; see MapManager / setMapDimensions). Each copy is a
- * real, distinct region of the plane, so the existing renderer, collision,
- * room-crop, doors, and area-of-interest networking all work unchanged, and two
- * players in two different shops are simply at different world coordinates.
+ * EarthBound does not reuse interiors between separate buildings (verified by
+ * tracing the door table and the script-warp doors), so this isn't about
+ * de-duplicating shared rooms. It's the substrate for AUTHORING new rooms that
+ * don't exist in the ROM: a room is copied from an existing interior template
+ * into an "interiors band" appended below the overworld (the map grows in height
+ * only; see MapManager / setMapDimensions), then edited and wired to new doors.
+ * Width is fixed at 256, so each copy is a real, distinct region and the existing
+ * renderer, collision, room-crop, doors, and area-of-interest networking all
+ * work unchanged.
  *
  * This module is the index over those regions: it maps a world point to the room
  * that contains it, tracks the active room, and lists rooms grouped by town then
- * type for the editor's room navigator. The overworld is IMPLICIT — any point
- * not inside a registered room rect is the overworld (`null` here, id "world").
+ * type for the editor's Places column. The overworld is IMPLICIT — any point not
+ * inside a registered room rect is the overworld (`null` here, id "world").
  *
- * rooms.json is OUR generated/authored metadata (pure ids/coords, no ROM
- * pixels): produced by tools/extract_rooms (the stamping pass) and editable via
- * the editor. Absent file ⇒ empty registry ⇒ behaves exactly like the
- * pre-rooms overworld-only world.
+ * rooms.json is OUR authored metadata (pure ids/coords, no ROM pixels). Absent
+ * file ⇒ empty registry ⇒ behaves exactly like the overworld-only world (the
+ * current state until rooms are authored).
  */
 
 import { loadJSON } from './AssetLoader';

@@ -158,6 +158,16 @@ def main():
         npc_shops[str(nid)] = {"store": store, "mode": mode}
         traced += 1
 
+    # Content overrides (OUR fan-game decisions, applied over the ROM trace):
+    #   cfg 33 = the Onett Burger Shop clerk. The ROM wires it to store 3
+    #   ("Gelato de resort") even though the room is the burger shop (the NPC
+    #   banter is all fries/burgers). Repoint it to store 4 (juice/coffee/fries/
+    #   hamburger) so the burger shop sells burgers.
+    CLERK_STORE_OVERRIDES = {"33": 4}
+    for nid, store in CLERK_STORE_OVERRIDES.items():
+        if str(store) in stores:
+            npc_shops[nid] = {"store": store, "mode": npc_shops.get(nid, {}).get("mode", "buy")}
+
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, "w", encoding="utf-8") as f:
         json.dump({"items": items, "stores": stores, "npcShops": npc_shops}, f)

@@ -14,6 +14,7 @@ import { Direction, POSES } from '../types';
 import type { NpcUpdate } from './Network';
 import { createInterpolator } from './RemoteInterp';
 import { loadShops, shopStoreForNpc } from './Shop';
+import type { EntityCol } from './EntityStats';
 
 /** ROM NPC config id from a placement key "areaIdx:npcId:occ", or -1. */
 function npcIdFromKey(k: string | undefined): number {
@@ -102,9 +103,20 @@ const cars: NPC[] = [];
 
 interface EnemyConfig {
   enemySpriteGroups?: number[];
-  entities?: Record<string, { hp?: number }>; // per-entity stats (Entity Manager); client only needs hp
+  // per-entity stats (Entity Manager); client needs hp + the optional collision
+  // box override (col), which wins over the kind default for ANY entity.
+  entities?: Record<string, { hp?: number; col?: EntityCol }>;
   spawners?: { sprite: number; x: number; y: number; poolSize?: number; hp?: number; enabled?: boolean }[];
 }
+
+// Exact per-direction collision boxes for vehicles (tools/extract_vehicle_colboxes.py
+// -> sprites/colboxes.json): spriteId -> dir (0-7) -> box. A car collides by the
+// real shape of the frame it's currently facing, not the padded sprite cell.
+// KEEP IN SYNC with server/npcSim.js (same file, same lookup).
+let carColBoxes: Record<string, Record<string, EntityCol>> = {};
+// Manual per-sprite-group box overrides authored in the Entity Manager
+// (enemy_spawns.json entities[*].col) — top priority when present.
+const entityCols = new Map<number, EntityCol>();
 
 export interface Vehicle {
   id: string;
@@ -165,7 +177,7 @@ export async function reloadNpcText(): Promise<void> {
 
 export async function loadNPCs(): Promise<void> {
   await loadShops(); // clerk->store map must be ready before we tag NPCs below
-  const [raw, overrides, text, dialogueOv, enemyOv, enemyBase, carOv, carBase] = await Promise.all([
+  const [raw, overrides, text, dialogueOv, enemyOv, enemyBase, carOv, carBase, colBoxes] = await Promise.all([
     loadJSON<RawNPC[]>('/assets/map/npcs.json'),
     // Editor-authored placement overrides — absent until something is authored.
     loadJSON<NpcOverrides>('/overrides/npcs.json').catch(() => null),
@@ -181,8 +193,16 @@ export async function loadNPCs(): Promise<void> {
     // IN SYNC with server/npcSim.js (same active-vehicle filter so ids align).
     loadJSON<CarTraffic>('/overrides/car_traffic.json').catch(() => null),
     loadJSON<CarTraffic>('/assets/map/car_traffic.json').catch(() => ({ version: 1 }) as CarTraffic),
+    // Precomputed per-direction vehicle collision boxes (build artifact).
+    loadJSON<Record<string, Record<string, EntityCol>>>('/assets/sprites/colboxes.json').catch(() => ({})),
   ]);
   const enemyCfg = enemyOv ?? enemyBase;
+  carColBoxes = colBoxes ?? {};
+  // Capture any manual per-sprite-group box overrides (Entity Manager).
+  entityCols.clear();
+  for (const [sprite, def] of Object.entries(enemyCfg.entities ?? {})) {
+    if (def?.col) entityCols.set(Number(sprite), def.col);
+  }
   npcText = mergeDialogue(text, dialogueOv);
   roamers.length = 0;
   cars.length = 0;
@@ -361,8 +381,17 @@ export function blockedByNPC(
   // and dead enemies don't block. A body the player ALREADY overlaps doesn't
   // block, so an embedded player can always walk back out. Cars use their full
   // sprite rect (feet-anchored) as the obstacle; people/enemies use a foot box.
+  const fromCol = (npc: NPC, c: EntityCol): [number, number, number, number] =>
+    [npc.x + c.offX - c.w / 2, npc.y + c.offY - c.h, c.w, c.h];
   const boxOf = (npc: NPC): [number, number, number, number] | null => {
+    // Manual Entity Manager override wins for any entity.
+    const manual = entityCols.get(npc.spriteGroupId);
+    if (manual) return fromCol(npc, manual);
     if (npc.kind === 'car') {
+      // Exact per-direction box (precomputed from the art); falls back to the
+      // full sprite cell if this vehicle wasn't in colboxes.json.
+      const perDir = carColBoxes[npc.spriteGroupId]?.[npc.direction];
+      if (perDir) return fromCol(npc, perDir);
       const meta = getSpriteGroupMeta(npc.spriteGroupId);
       if (!meta) return null; // sheet not loaded yet — not solid this frame
       return [npc.x - meta.width / 2, npc.y - meta.height, meta.width, meta.height];
