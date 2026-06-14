@@ -317,3 +317,52 @@ export function getStairAt(px: number, py: number): StairData | null {
   }
   return null;
 }
+
+/**
+ * The floor-change door an escalator/stairway delivers you to. EB escalators
+ * are a short connecting SHAFT (solid-bounded walkable region) with a `door`
+ * warp at the end that teleports to the next floor's map region. We flood the
+ * shaft from the trigger and pick the door inside it that (a) warps to an
+ * indoor/croppable floor (not the building's outdoor exit) and (b) lies in the
+ * ride's vertical direction (an UP escalator → the highest floor = smallest
+ * destY; DOWN → largest). Returns null for shafts that are too big to be a
+ * clean escalator (e.g. open-floor banks) — the caller then just stops.
+ */
+export function getStairExit(px: number, py: number, dy: number): DoorData | null {
+  const MAP_W_MT = MAP_WIDTH_TILES * 4;
+  const seedX = Math.floor(px / MINITILE_SIZE);
+  const seedY = Math.floor(py / MINITILE_SIZE);
+  // Flood the shaft (bounded by solid). Cap small: a real escalator shaft is a
+  // few dozen minitiles; a huge flood means we're on an open floor, not a shaft.
+  const SHAFT_CAP = 200;
+  const shaft = new Set<number>();
+  const stack = [seedY * MAP_W_MT + seedX];
+  while (stack.length) {
+    const k = stack.pop()!;
+    if (shaft.has(k)) continue;
+    const mx = k % MAP_W_MT;
+    const my = (k - mx) / MAP_W_MT;
+    if (isSolidAtPoint(mx * MINITILE_SIZE + 4, my * MINITILE_SIZE + 4)) continue;
+    shaft.add(k);
+    if (shaft.size > SHAFT_CAP) return null; // not a clean shaft
+    stack.push(k + 1, k - 1, k + MAP_W_MT, k - MAP_W_MT);
+  }
+
+  let best: DoorData | null = null;
+  for (const area of doorsByArea) {
+    for (const door of area) {
+      const mtKey =
+        Math.floor(door.worldY / MINITILE_SIZE) * MAP_W_MT +
+        Math.floor(door.worldX / MINITILE_SIZE);
+      if (!shaft.has(mtKey)) continue;
+      const destTX = Math.floor(door.destX / TILE_SIZE);
+      const destTY = Math.floor(door.destY / TILE_SIZE);
+      if (!isRoomCroppableTile(destTX, destTY)) continue; // outdoor exit — skip
+      // UP escalators climb toward smaller destY, DOWN toward larger.
+      if (!best || (dy < 0 ? door.destY < best.destY : door.destY > best.destY)) {
+        best = door;
+      }
+    }
+  }
+  return best;
+}

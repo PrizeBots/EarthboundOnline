@@ -8,6 +8,7 @@ import { trafficEditorTool } from './tools/TrafficEditorTool';
 import { dialogueTool } from './tools/DialogueTool';
 import { itemManagerTool } from './tools/ItemManagerTool';
 import { soundTool } from './tools/SoundTool';
+import { roomBuilderTool } from './tools/RoomBuilderTool';
 import { registerEditorTool, registerSaveHandler } from './registry';
 import { saveOverride } from './saveOverride';
 import { getNameOverrides } from '../engine/SpriteNames';
@@ -39,6 +40,7 @@ export function initEditorTools(context: EditorContext): EditorHooks {
   registerEditorTool(dialogueTool);
   registerEditorTool(itemManagerTool);
   registerEditorTool(soundTool);
+  registerEditorTool(roomBuilderTool);
   for (const t of PLANNED) registerEditorTool({ ...t, status: 'wip' });
 
   // Sprite Editor (engine/SpriteEditor.ts): a self-contained overlay that owns

@@ -24,6 +24,17 @@ export function getKeySet(): Set<string> {
   return keys;
 }
 
+/**
+ * Drop all currently-held keys. Called when the game transitions into play so a
+ * key still down from the previous screen (e.g. the E that confirmed character
+ * select) isn't read as an in-game press on the first playing frame — otherwise
+ * that confirm-E leaks straight into the Talk/Check action ("no problem here").
+ */
+export function flushKeys() {
+  keys.clear();
+  mouseAttack = false;
+}
+
 function toGameCoords(clientX: number, clientY: number): { x: number; y: number } {
   if (!canvas) return { x: 0, y: 0 };
   const rect = canvas.getBoundingClientRect();

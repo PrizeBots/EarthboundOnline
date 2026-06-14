@@ -89,6 +89,8 @@ export class EditorShell {
   private toolHint: HTMLDivElement | null = null;
   private readonly toolTabs = new Map<string, HTMLButtonElement>();
   private saveAllBtn: HTMLButtonElement | null = null;
+  private hotReloadBtn: HTMLButtonElement | null = null;
+  private hotReloadOn = false;
 
   // FPS
   private frames = 0;
@@ -439,6 +441,11 @@ export class EditorShell {
 
   update(): void {
     const cam = this.context.camera;
+    // Keep the broad map visible while the Crop toggle is off. teleport/goTo run
+    // an ASYNC sector load and only then set the gameplay room crop, so nulling
+    // it once in goTo() loses a race; re-assert it every frame instead. (Crop ON
+    // keeps the landed room's bounds.)
+    if (!this.applyRoomCrop && cam.roomBounds) cam.roomBounds = null;
     const fast = this.heldKeys.has('shift');
     // Pan in SCREEN-speed terms: zoomed out covers more world per frame.
     const speed = (fast ? PAN_FAST : PAN_SPEED) / cam.zoom;
@@ -767,6 +774,13 @@ export class EditorShell {
 
     mkBtn('Places', () => this.nav?.toggle());
 
+    // Hot-reload toggle: when OFF (default) editor saves don't refresh the page
+    // (so you stay in the editor); when ON, changes to override files reload the
+    // page. Talks to the dev server's /__editor/hotreload endpoint.
+    this.hotReloadBtn = mkBtn('🔄 Reload: …', () => void this.toggleHotReload());
+    this.hotReloadBtn.title = 'Auto-refresh the page when override files change (off = stay in the editor)';
+    void this.refreshHotReload();
+
     this.readout = document.createElement('span');
     this.readout.style.cssText = 'margin-left:auto;color:#9fb8cc;white-space:pre;';
     this.bar.appendChild(this.readout);
@@ -787,6 +801,50 @@ export class EditorShell {
       'padding:6px 14px;border-radius:4px;background:#101418f2;color:#cde;' +
       'font:12px monospace;border:1px solid #e8a33d;opacity:0;transition:opacity .3s;';
     document.body.appendChild(this.toastEl);
+  }
+
+  // --- override hot-reload toggle (dev server) -------------------------------
+
+  /** Read the current hot-reload state from the dev server and sync the button. */
+  private async refreshHotReload(): Promise<void> {
+    try {
+      const r = await fetch('/__editor/hotreload');
+      if (r.ok) this.hotReloadOn = !!(await r.json()).on;
+    } catch {
+      /* not on the Vite dev server (e.g. preview build) — leave it off */
+    }
+    this.syncHotReloadBtn();
+  }
+
+  /** Flip hot-reload on the dev server, then reflect the confirmed state. */
+  private async toggleHotReload(): Promise<void> {
+    const next = !this.hotReloadOn;
+    try {
+      const r = await fetch('/__editor/hotreload', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ on: next }),
+      });
+      if (r.ok) this.hotReloadOn = !!(await r.json()).on;
+    } catch {
+      this.toast('Hot-reload toggle failed (dev server only)', true);
+      return;
+    }
+    this.syncHotReloadBtn();
+    this.toast(
+      this.hotReloadOn
+        ? 'Hot-reload ON — the page refreshes when override files change'
+        : 'Hot-reload OFF — saves keep you in the editor',
+    );
+  }
+
+  private syncHotReloadBtn(): void {
+    const b = this.hotReloadBtn;
+    if (!b) return;
+    b.textContent = `🔄 Reload: ${this.hotReloadOn ? 'on' : 'off'}`;
+    b.style.background = this.hotReloadOn ? '#143d22' : '#1d2530';
+    b.style.color = this.hotReloadOn ? '#6ad08a' : '#cde';
+    b.style.borderColor = this.hotReloadOn ? '#6ad08a' : '#3a4a5a';
   }
 
   private syncToggleButtons(): void {

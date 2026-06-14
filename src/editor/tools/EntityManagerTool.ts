@@ -69,6 +69,14 @@ class EntityManagerTool implements EditorTool {
   private picker: SpritePicker | null = null;
   private nameInput: HTMLInputElement | null = null;
 
+  // --- center-panel preview picker ---
+  // A large gallery of every entity sprite, shown over the editor's center area
+  // (left of the right dock). Click a tile to select it; the right panel's
+  // stats/collision follow. Toggled from the panel; open by default.
+  private browser: HTMLDivElement | null = null;
+  private browserGrid: HTMLDivElement | null = null;
+  private browserCells = new Map<number, HTMLDivElement>();
+
   // --- collision box state ---
   // Precomputed exact per-direction boxes (sprites/colboxes.json); shown as the
   // default for vehicles. A manual override (entities[sprite].col) wins.
@@ -94,6 +102,7 @@ class EntityManagerTool implements EditorTool {
     window.removeEventListener('mousemove', this.onColMoveBound);
     window.removeEventListener('mouseup', this.onColUpBound);
     this.colDrag = null;
+    this.closeBrowser();
     this.panel?.remove();
     this.panel = null;
     this.picker = null;
@@ -114,6 +123,7 @@ class EntityManagerTool implements EditorTool {
     this.pending = null;
     this.picker?.setValue(String(this.sprite));
     this.rebuildForm();
+    this.highlightBrowser();
   }
 
   private async loadAndRefresh(): Promise<void> {
@@ -126,6 +136,7 @@ class EntityManagerTool implements EditorTool {
     this.applyPending();
     this.picker?.setValue(String(this.sprite));
     this.rebuildForm();
+    this.openBrowser(); // large center-panel gallery, open by default
   }
 
   private async load(): Promise<void> {
@@ -175,6 +186,135 @@ class EntityManagerTool implements EditorTool {
     this.shell?.toast('Saved entity stats — live here; other clients refresh to resync');
   }
 
+  /** Select a sprite group (from the dropdown OR the center gallery); sync both. */
+  private selectSprite(sprite: number): void {
+    this.sprite = sprite;
+    void loadSpriteGroup(sprite).catch(() => {});
+    this.picker?.setValue(String(sprite));
+    this.rebuildForm();
+    this.highlightBrowser();
+    this.browserCells.get(sprite)?.scrollIntoView({ block: 'nearest' });
+  }
+
+  // --- center-panel preview gallery ----------------------------------------------------
+
+  private toggleBrowser(): void {
+    if (this.browser) this.closeBrowser();
+    else this.openBrowser();
+  }
+
+  private closeBrowser(): void {
+    this.browser?.remove();
+    this.browser = null;
+    this.browserGrid = null;
+    this.browserCells.clear();
+  }
+
+  /** Build (or rebuild) the large entity gallery over the editor's center area. */
+  private openBrowser(): void {
+    if (this.browser) return;
+    const el = document.createElement('div');
+    // Sit in the editor's center: clear the top bar (~31px), the left Places nav
+    // (248px column) and the right tool dock (256px) so nothing overlaps it.
+    el.style.cssText =
+      'position:fixed;top:41px;left:258px;right:266px;bottom:10px;z-index:88;display:flex;' +
+      'flex-direction:column;background:#0d1014f5;color:#cde;font:12px monospace;' +
+      'border:1px solid #b06de8;border-radius:6px;box-shadow:0 8px 28px rgba(0,0,0,.6);overflow:hidden;';
+    // Keep clicks/keys/scroll inside the gallery (don't pan/zoom the world).
+    el.addEventListener('mousedown', (e) => e.stopPropagation());
+    el.addEventListener('keydown', (e) => e.stopPropagation());
+    el.addEventListener('keyup', (e) => e.stopPropagation());
+    el.addEventListener('wheel', (e) => e.stopPropagation());
+
+    const head = document.createElement('div');
+    head.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #2a2438;';
+    const title = document.createElement('div');
+    title.textContent = 'ENTITY PREVIEW';
+    title.style.cssText = 'color:#b06de8;font-weight:bold;letter-spacing:1px;';
+    head.appendChild(title);
+    const search = document.createElement('input');
+    search.placeholder = 'search id or name…';
+    search.style.cssText =
+      'flex:1;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:3px 6px;';
+    search.oninput = () => this.filterBrowser(search.value.trim().toLowerCase());
+    head.appendChild(search);
+    const close = document.createElement('button');
+    close.textContent = '✕';
+    close.style.cssText =
+      'font:12px monospace;padding:2px 9px;cursor:pointer;border-radius:3px;background:#1d2530;color:#cde;border:1px solid #3a4a5a;';
+    close.onclick = () => this.closeBrowser();
+    head.appendChild(close);
+    el.appendChild(head);
+
+    this.browserGrid = document.createElement('div');
+    // Vertical scroll only: overflow-x hidden + box-sizing so the scrollbar's
+    // width can't push the last column off the right edge (the cut-off bug).
+    // Flex-wrap of fixed-size cards (simple + predictable): each card is a fixed
+    // box that wraps to the next row, scrolling vertically. No grid-track maths.
+    this.browserGrid.style.cssText =
+      'flex:1 1 auto;min-height:0;height:0;overflow-y:auto;overflow-x:hidden;box-sizing:border-box;' +
+      'padding:10px;display:flex;flex-wrap:wrap;gap:10px;align-content:flex-start;';
+    // Scroll the gallery explicitly on wheel (and never let it reach the editor's
+    // zoom handler), so it always scrolls regardless of event routing.
+    this.browserGrid.addEventListener('wheel', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      this.browserGrid!.scrollTop += e.deltaY;
+    }, { passive: false });
+    this.browserCells.clear();
+    for (const id of listSpriteGroupIds()) {
+      const cell = document.createElement('div');
+      cell.dataset.sprite = String(id);
+      cell.style.cssText =
+        'display:flex;flex-direction:column;align-items:center;gap:5px;padding:6px;' +
+        'box-sizing:border-box;width:108px;flex:none;' +
+        'border:1px solid #2a2438;border-radius:5px;cursor:pointer;background:#12131c;';
+      cell.onmouseenter = () => { if (id !== this.sprite) cell.style.background = '#1a1b28'; };
+      cell.onmouseleave = () => { if (id !== this.sprite) cell.style.background = '#12131c'; };
+      const c = document.createElement('canvas');
+      c.width = 96;
+      c.height = 96;
+      // Big fixed square preview (94px display) — the card's main content.
+      c.style.cssText = 'width:94px;height:94px;flex:none;image-rendering:pixelated;background:#0c1014;border-radius:4px;';
+      drawSpriteGroupThumb(c, String(id));
+      const lbl = document.createElement('div');
+      lbl.textContent = `${id} ${getSpriteName(id) ?? ''}`.trim();
+      lbl.style.cssText =
+        'font-size:9px;color:#9fb8cc;text-align:center;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      cell.append(c, lbl);
+      cell.onclick = () => this.selectSprite(id);
+      this.browserGrid.appendChild(cell);
+      this.browserCells.set(id, cell);
+    }
+    el.appendChild(this.browserGrid);
+
+    document.body.appendChild(el);
+    this.browser = el;
+    this.highlightBrowser();
+    this.browserCells.get(this.sprite)?.scrollIntoView({ block: 'nearest' });
+  }
+
+  private filterBrowser(q: string): void {
+    for (const [id, cell] of this.browserCells) {
+      const name = (getSpriteName(id) ?? '').toLowerCase();
+      cell.style.display = !q || name.includes(q) || String(id).includes(q) ? 'flex' : 'none';
+    }
+  }
+
+  private highlightBrowser(): void {
+    for (const [id, cell] of this.browserCells) {
+      const on = id === this.sprite;
+      cell.style.borderColor = on ? '#b06de8' : '#2a2438';
+      cell.style.background = on ? '#241a33' : '#12131c';
+    }
+  }
+
+  /** Re-label a gallery tile after a rename (the label is the cell's last child). */
+  private refreshBrowserLabel(id: number): void {
+    const lbl = this.browserCells.get(id)?.lastElementChild as HTMLElement | null;
+    if (lbl) lbl.textContent = `${id} ${getSpriteName(id) ?? ''}`.trim();
+  }
+
   // --- panel ---------------------------------------------------------------------------
 
   private buildPanel(): void {
@@ -197,13 +337,12 @@ class EntityManagerTool implements EditorTool {
       initial: String(this.sprite || ids[0] || 1),
       labelFor: (v) => `${v} ${getSpriteName(Number(v)) ?? ''}`.trim(),
       drawThumb: drawSpriteGroupThumb,
-      onSelect: (v) => {
-        this.sprite = Number(v) | 0;
-        void loadSpriteGroup(this.sprite).catch(() => {}); // ensure the preview art is loaded
-        this.rebuildForm();
-      },
+      onSelect: (v) => this.selectSprite(Number(v) | 0),
     });
     this.panel.appendChild(this.picker.el);
+
+    // Toggle for the large center-panel preview gallery.
+    this.mkBtn('▦ Browse all entities (center)', () => this.toggleBrowser(), this.panel);
 
     // Rename the selected entity — writes the shared sprite-name override (same
     // mechanism as the Sprite/Placement editors). Save-all persists names.json.
@@ -222,8 +361,9 @@ class EntityManagerTool implements EditorTool {
       const v = this.nameInput!.value.trim();
       setSpriteNameOverride(this.sprite, v || null);
       this.shell?.markDirty('names');
-      this.picker?.refresh(); // update the dropdown's label
-      this.rebuildForm();     // update the header
+      this.picker?.refresh();             // update the dropdown's label
+      this.rebuildForm();                 // update the header
+      this.refreshBrowserLabel(this.sprite); // update the center gallery tile
       this.shell?.toast(`Renamed entity #${this.sprite} to "${v || '(default)'}" — Save all writes names.json`);
     };
     nameRow.appendChild(this.nameInput);

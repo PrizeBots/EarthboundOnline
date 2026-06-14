@@ -3,9 +3,21 @@
   "enemySpriteGroups": [
     284,
     283,
-    282
+    282,
+    226,
+    107
   ],
   "entities": {
+    "226": {
+      "hp": 3,
+      "xp": 1,
+      "level": 1,
+      "damage": 1,
+      "attackCooldownMs": 1000,
+      "speed": 0.2,
+      "detectRange": 220,
+      "attackRange": 24
+    },
     "282": {
       "hp": 5,
       "xp": 5,
@@ -29,6 +41,16 @@
       "damage": 7,
       "attackCooldownMs": 700,
       "speed": 0.7
+    },
+    "291": {
+      "hp": 35,
+      "xp": 5,
+      "level": 4,
+      "damage": 7,
+      "attackCooldownMs": 700,
+      "speed": 0.7,
+      "detectRange": 220,
+      "attackRange": 24
     }
   },
   "spawners": [
@@ -145,11 +167,35 @@
       "sprite": 282,
       "x": 1204,
       "y": 1148,
-      "wanderRadius": 600,
+      "wanderRadius": 32,
       "poolSize": 4,
       "maxActive": 1,
       "spawnIntervalMs": 3500,
       "respawnDelayMs": 12000,
+      "enabled": true
+    },
+    {
+      "name": "Mushroom Boy",
+      "sprite": 226,
+      "x": 7740,
+      "y": 7794,
+      "wanderRadius": 122,
+      "poolSize": 6,
+      "maxActive": 3,
+      "spawnIntervalMs": 11000,
+      "respawnDelayMs": 1000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-12",
+      "sprite": 107,
+      "x": 2125,
+      "y": 1046,
+      "wanderRadius": 600,
+      "poolSize": 7,
+      "maxActive": 4,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
       "enabled": true
     }
   ]

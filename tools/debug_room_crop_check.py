@@ -201,9 +201,27 @@ def compute_room(px, py, croppable):
             sec = sectors[k]
             flood_styles.add((sec["tilesetId"] << 8) | sec["paletteId"])
 
+    # Pocket merge runs over flood_sectors PLUS same-style INDOOR sectors adjacent
+    # to them — a shop's back-wall row (counter/register) is often its own
+    # floorless sector, not a flood sector, so the strip behind the counter would
+    # never be scanned and the counter renders black. Mirror of Collision.ts.
+    merge_sectors = set(flood_sectors)
+    for sk in flood_sectors:
+        syk, sxk = divmod(sk, MAP_W_SEC)
+        for dsx, dsy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nsx, nsy = sxk + dsx, syk + dsy
+            if not (0 <= nsx < MAP_W_SEC and 0 <= nsy < MAP_H_SEC):
+                continue
+            nk = nsy * MAP_W_SEC + nsx
+            if nk in merge_sectors:
+                continue
+            sec = sectors[nk]
+            if sec.get("indoor") and ((sec["tilesetId"] << 8) | sec["paletteId"]) in flood_styles:
+                merge_sectors.add(nk)
+
     # pocket merge
     processed = set()
-    for sk in flood_sectors:
+    for sk in merge_sectors:
         sy0, sx0 = divmod(sk, MAP_W_SEC)
         for y in range(sy0 * SEC_MTY, (sy0 + 1) * SEC_MTY):
             for x in range(sx0 * SEC_MTX, (sx0 + 1) * SEC_MTX):
@@ -220,7 +238,7 @@ def compute_room(px, py, croppable):
                     if solid(*k):
                         continue
                     ks = (k[1] // SEC_MTY) * MAP_W_SEC + (k[0] // SEC_MTX)
-                    if ks not in flood_sectors:
+                    if ks not in merge_sectors:
                         inside = False
                         continue
                     processed.add(k)

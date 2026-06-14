@@ -48,6 +48,55 @@ Format:
 
 ## Fixed
 
+### Black shroud riding an escalator DOWN between stacked floors (FIXED 2026-06-14)
+- **Symptom:** Going UP the dept-store escalators was fine, but turning around to
+  ride DOWN, a black shroud covered the escalator/landing and the player got
+  stuck at the bottom, unable to reach the floor below (and the next escalator
+  down showed black too).
+- **Root cause:** EB stacks dept-store floors as SEPARATE room-crop regions
+  joined only by the solid escalator ramp. The ride glides the player across the
+  ramp but the active crop stayed on the FLOOR THEY LEFT, so the destination
+  floor (and the down-ramp, which is below the floor where `WALL_S = 0` adds no
+  downward dilation) rendered black — you glide into a void and can't see/step
+  onto the landing. (Going up happened to look okay because the up-ramp is above,
+  under the `WALL_N` dilation.)
+- **Fix:** `Game.computeRideBounds` — when a ride has no door-warp, the active
+  room for the ride's duration is the UNION of the floor being left, the floor
+  being arrived on (found by marching the ramp to its end), and the ramp tiles
+  between. The ride then re-crops to the destination floor on arrival as before.
+  Door-warp rides (which fade) are unchanged.
+- **Verified:** in-game down-ride — ramp + both floors visible throughout, player
+  lands on the floor below inside the room (not sealed/stuck); up-ride still works
+  (no regression).
+- **Known follow-ups:** the ride trigger window is small (`STAIR_TRIGGER = 5`),
+  so a sloppy diagonal approach can still walk past an escalator without starting
+  the ride; and escalator triggers with raw `direction = 0x8000` are skipped by
+  `STAIR_DIR_VEC` (meaning unknown — not yet decoded). Neither blocks the fix.
+
+### Black box over shop counters (Twoson dept-store 3F register) (FIXED 2026-06-14)
+- **Symptom:** A black rectangle sat over the counter/register on the dept-store
+  3rd floor (and the same class of black box on other shop counters) — same look
+  as the cycle-shop floor holes.
+- **Root cause:** The walkable strip BEHIND a counter (where the clerk stands)
+  is an enclosed pocket the flood never reaches; the pocket merge is supposed to
+  reclaim it. But a wide shop's back-wall row is often its OWN sector that holds
+  no floor minitiles, so it is not a `floodSector` — and the pocket merge only
+  scanned `floodSectors`. The counter pocket was never even considered, so its
+  tiles dropped out of the mask and rendered black.
+- **Fix:** The pocket merge now scans `floodSectors` PLUS same-style **indoor**
+  sectors directly adjacent to them (the back-wall sectors). The door-rejection
+  is unchanged, so a real neighbour room (which always has a door mat) still
+  can't be merged; caves are excluded (indoor-only) so dungeon crops are
+  untouched. Mirror in `Collision.ts` + `tools/debug_room_crop_check.py`.
+- **Verified:** in-game — the 3F register and the 2F bakery counter now render
+  fully; a +40-tile room (a cafe whose stage was being cut off) renders as one
+  coherent room. Canonical sweep: 23 indoor rooms change, all pure additions
+  (0 removals), indoor multi-style still 0 (no merges), 0 NO-CROP nulls.
+- **NOT this fix:** the black areas to the *sides* of dept-store escalators are
+  the boundary to the adjacent FLOOR (a separate room, correctly masked) and
+  some `arr=0` empty map tiles — a multi-floor-building/escalator-handoff matter,
+  not a counter pocket.
+
 ### Black squares in the Twoson cycle shop floor (FIXED 2026-06-14)
 - **Symptom:** The cycle shop interior was missing pieces of its floor —
   black squares ate the lower-left corner (under the bicycles), beneath the
@@ -93,25 +142,32 @@ Format:
   3. The shaft is its own room; the camera crop already spans the whole shaft
      (gated flood = full 66-cell shaft for Twoson), so the "black around" is
      just the isolated pocket's walls — not a missing-tile bug.
-- **Fix:** Implemented an escalator **ride** (glide):
-  - `DoorManager.getStairAt()` returns the trigger's diagonal vector
-    (`STAIR_DIR_VEC`).
+- **Fix:** Implemented an escalator **ride** (glide) that ends in a **floor
+  warp**. The shaft is a separate map region; the floor change is a `door` at
+  its end (the dept-store floors are NOT one walkable space — even an ungated
+  flood gives an isolated 66-cell shaft; they're joined only by door links,
+  which is what the editor draws as "connected").
+  - `DoorManager.getStairAt()` → the trigger's diagonal vector (`STAIR_DIR_VEC`).
   - `Player.rideStep()` moves diagonally one frame, bypassing collision.
-  - `Game.updateRide()` glides until the minitile one step ahead along the ramp
-    is solid (the landing), then re-crops. The active-room crop is left intact
-    during the ride (an earlier attempt nulled it → free-camera black void).
-  - `Collision.isSolidAtPoint()` is the raw look-ahead used for arrival.
-- **Verified:** Replayed the glide against real collision for both Twoson
-  escalators — up lands on the top strip, down on the bottom strip, foot on
-  walkable both ways. No `doors.json` re-extraction needed (data was already
-  present, just ignored).
-- **Known limits / follow-ups:** (a) Fourside's dense multi-escalator banks
-  have a more complex layout — one trigger insta-stops in simulation (harmless:
-  player keeps control); needs in-game testing. (b) Steps don't visually scroll
-  — EB animates them via tile/palette cycling, which our static-atlas renderer
-  doesn't do yet (TODO: tile-animation system). (c) Ladders/ropes
-  (`RopeOrLadderDoor`, extracted as `type:"ladder"`/`"rope"`) are vertical
-  climbs with the same "not implemented" gap — not yet handled.
+  - `Game.updateRide()` glides until the minitile ahead along the ramp is solid
+    (the landing), then **warps** via `getStairExit()`. The active-room crop is
+    left intact during the glide (an earlier attempt nulled it → black void).
+  - `DoorManager.getStairExit()` floods the shaft and picks the `door` inside it
+    that warps to an indoor/croppable floor (skipping the building's outdoor
+    exit) in the ride's vertical direction (UP → smallest destY). Returns null
+    for over-large shafts (open-floor banks) → ride just stops in place.
+  - `Collision.isSolidAtPoint()` is the raw look-ahead used for arrival/flood.
+- **Verified (data replay):** riding UP Twoson escalator A warps to tile
+  (127,160) — the indoor 2F room, which then crops/renders fully. No
+  `doors.json` re-extraction needed (data was present, just ignored).
+- **Known limits / follow-ups:** (a) The DOWN/return direction is ambiguous in
+  the door data (both Twoson escalators' indoor-floor doors collapse to the same
+  target) — needs in-game testing; may need editor-authored escalator dests.
+  (b) Fourside's dense multi-escalator banks have over-large shafts → no warp
+  yet (ride stops in place); needs testing. (c) Steps don't visually scroll — EB
+  animates them via tile/palette cycling, which our static-atlas renderer
+  doesn't do yet (TODO: tile-animation system). (d) Ladders/ropes
+  (`RopeOrLadderDoor`) are vertical climbs with the same gap — not yet handled.
 
 ### Head floats in front of stop signs / poles everywhere — priority bit semantics (FIXED 2026-06-12, supersedes the bench entry below)
 - **Symptom:** Standing behind a stop sign (and "wherever I try" — any sign,

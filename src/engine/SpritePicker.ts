@@ -27,14 +27,18 @@ export interface SpritePickerOpts {
   sections: { label?: string; values: string[] }[];
   initial: string;
   labelFor: (v: string) => string;
-  drawThumb: (canvas: HTMLCanvasElement, v: string) => void;
+  /** Omit for a plain text picker (no thumbnail column) — e.g. the song list. */
+  drawThumb?: (canvas: HTMLCanvasElement, v: string) => void;
   onSelect: (v: string) => void;
+  /** Placeholder shown in the search box. */
+  searchPlaceholder?: string;
 }
 
 export function createSpritePicker(o: SpritePickerOpts): SpritePicker {
   let current = o.initial;
   let isOpen = false;
   let built = false;
+  const hasThumb = !!o.drawThumb;
   const rowEls = new Map<string, HTMLDivElement>();
   const rowThumbs = new Map<string, HTMLCanvasElement>();
 
@@ -59,7 +63,8 @@ export function createSpritePicker(o: SpritePickerOpts): SpritePicker {
   const caret = document.createElement('span');
   caret.textContent = '▾';
   caret.style.cssText = 'flex:none;color:#9af;';
-  trigger.append(triggerThumb, triggerLabel, caret);
+  if (hasThumb) trigger.append(triggerThumb, triggerLabel, caret);
+  else trigger.append(triggerLabel, caret);
   root.appendChild(trigger);
 
   const menu = document.createElement('div');
@@ -76,7 +81,7 @@ export function createSpritePicker(o: SpritePickerOpts): SpritePicker {
   let filter = '';
   const search = document.createElement('input');
   search.type = 'text';
-  search.placeholder = 'search id or name…';
+  search.placeholder = o.searchPlaceholder ?? 'search id or name…';
   search.style.cssText =
     'position:sticky;top:0;z-index:2;box-sizing:border-box;width:100%;margin:0;' +
     'font:11px monospace;background:#101018;color:#cde;border:0;border-bottom:1px solid #3a4a5a;' +
@@ -152,12 +157,18 @@ export function createSpritePicker(o: SpritePickerOpts): SpritePicker {
       row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:3px 6px;cursor:pointer;';
       row.onmouseenter = () => { if (v !== current) row.style.background = '#23232f'; };
       row.onmouseleave = () => { if (v !== current) row.style.background = ''; };
-      const thumb = mkThumb();
       const label = document.createElement('span');
       label.textContent = labelText;
       label.style.cssText =
         'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#ddd;';
-      row.append(thumb, label);
+      if (hasThumb) {
+        const thumb = mkThumb();
+        row.append(thumb, label);
+        rowThumbs.set(v, thumb);
+        o.drawThumb!(thumb, v);
+      } else {
+        row.append(label);
+      }
       row.onclick = () => {
         const changed = v !== current;
         setCurrent(v);
@@ -166,8 +177,6 @@ export function createSpritePicker(o: SpritePickerOpts): SpritePicker {
       };
       rowsHost.appendChild(row);
       rowEls.set(v, row);
-      rowThumbs.set(v, thumb);
-      o.drawThumb(thumb, v);
     }
     }
     built = true;
@@ -178,7 +187,7 @@ export function createSpritePicker(o: SpritePickerOpts): SpritePicker {
   const setCurrent = (v: string) => {
     current = v;
     triggerLabel.textContent = o.labelFor(v);
-    o.drawThumb(triggerThumb, v);
+    if (hasThumb) o.drawThumb!(triggerThumb, v);
     if (built) highlight();
   };
 
@@ -214,9 +223,10 @@ export function createSpritePicker(o: SpritePickerOpts): SpritePicker {
     el: root,
     setValue: (v) => setCurrent(v),
     redraw: () => {
-      o.drawThumb(triggerThumb, current);
+      if (!hasThumb) return;
+      o.drawThumb!(triggerThumb, current);
       const t = rowThumbs.get(current);
-      if (t) o.drawThumb(t, current);
+      if (t) o.drawThumb!(t, current);
     },
     refresh: () => {
       setCurrent(current);

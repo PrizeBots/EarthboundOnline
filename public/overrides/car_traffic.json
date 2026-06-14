@@ -312,6 +312,69 @@
           10144
         ]
       ]
+    },
+    {
+      "id": "v_npc_340_1080_0",
+      "name": "car-1",
+      "sprite": 255,
+      "w": 48,
+      "h": 32,
+      "speed": 1,
+      "loop": true,
+      "enabled": true,
+      "waypoints": [
+        [
+          5128,
+          2704
+        ],
+        [
+          5128,
+          2896
+        ]
+      ],
+      "t": 1080
+    },
+    {
+      "id": "v_npc_774_357_0",
+      "name": "car-2",
+      "sprite": 255,
+      "w": 48,
+      "h": 32,
+      "speed": 1,
+      "loop": true,
+      "enabled": true,
+      "waypoints": [
+        [
+          1504,
+          6368
+        ],
+        [
+          1696,
+          6368
+        ]
+      ],
+      "t": 357
+    },
+    {
+      "id": "v_npc_1255_784_0",
+      "name": "car-3",
+      "sprite": 255,
+      "w": 48,
+      "h": 32,
+      "speed": 1,
+      "loop": true,
+      "enabled": true,
+      "waypoints": [
+        [
+          1800,
+          9912
+        ],
+        [
+          1800,
+          10104
+        ]
+      ],
+      "t": 784
     }
   ]
 }

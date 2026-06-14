@@ -554,15 +554,39 @@ export function computeRoomBounds(worldX: number, worldY: number): RoomBounds | 
     }
   }
 
+  // The pocket merge runs over the room's flood sectors PLUS same-style INDOOR
+  // sectors directly adjacent to them. A shop's back-wall row (where the
+  // counter/register sits) is often its OWN sector holding no floor at all, so
+  // it's not a flood sector — the walkable strip behind the counter would never
+  // be scanned and the counter tiles render black (bugs.md, dept-store 3F
+  // counter). Buildings only (caves keep their flood sectors); same-style only
+  // (a differently-styled neighbour is another room); the door check below
+  // still rejects any region that reaches a real neighbour's door mat.
+  const mergeSectors = new Set<number>(floodSectors);
+  for (const sIdx of floodSectors) {
+    const sy = Math.floor(sIdx / MAP_WIDTH_SECTORS);
+    const sx = sIdx % MAP_WIDTH_SECTORS;
+    for (const [dsx, dsy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as [number, number][]) {
+      const nsx = sx + dsx, nsy = sy + dsy;
+      if (nsx < 0 || nsy < 0 || nsx >= MAP_WIDTH_SECTORS) continue;
+      const nIdx = nsy * MAP_WIDTH_SECTORS + nsx;
+      if (mergeSectors.has(nIdx)) continue;
+      const sec = getSector(nsx, nsy);
+      if (sec && sec.indoor && floodStyles.has((sec.tilesetId << 8) | sec.paletteId)) {
+        mergeSectors.add(nIdx);
+      }
+    }
+  }
+
   // Merge enclosed walkable pockets the player can't reach — clerk areas
   // behind shop counters, fenced nooks. The flood never enters them, so
   // without this they (and the tiles holding them) render as black bars over
   // counters/registers. A pocket belongs to this room iff it stays wholly
-  // inside the room's own sectors AND contains no door: real neighboring
+  // inside the room's own (merge) sectors AND contains no door: real neighboring
   // rooms (which can share a sector with this room) always have a warp mat
   // or door destination; clerk pockets never do.
   const processed = new Set<number>();
-  for (const sIdx of floodSectors) {
+  for (const sIdx of mergeSectors) {
     const sy = Math.floor(sIdx / MAP_WIDTH_SECTORS);
     const sx = sIdx % MAP_WIDTH_SECTORS;
     for (let mty = sy * SECTOR_MT_Y; mty < (sy + 1) * SECTOR_MT_Y; mty++) {
@@ -582,7 +606,7 @@ export function computeRoomBounds(worldX: number, worldY: number): RoomBounds | 
           if (isMinitileSolid(x, y)) continue;
           const kSec =
             Math.floor(y / SECTOR_MT_Y) * MAP_WIDTH_SECTORS + Math.floor(x / SECTOR_MT_X);
-          if (!floodSectors.has(kSec)) {
+          if (!mergeSectors.has(kSec)) {
             inside = false; // leaks out of the room's sectors — foreign floor
             continue; // don't expand outward; keeps the scan bounded
           }

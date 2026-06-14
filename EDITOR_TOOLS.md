@@ -424,6 +424,13 @@ behind `car_traffic.json`). One car per vehicle; the server drives it.
 - [x] Per-vehicle fields: name, vehicle sprite (id + ◀/▶ + live thumbnail —
       Taxi 206 / Car 255 / Truck 459 / Bus 243 …), **speed**, **loop** (circuit
       vs. back-and-forth), enabled toggle
+- [x] Select a vehicle by clicking its **sprite body** (not just a waypoint dot),
+      mirroring the Placement Editor's NPC picking — any car with traffic logic
+      is directly selectable/editable
+- [x] **Dialogue** — a vehicle is an NPC that drives, so it can be talkable:
+      the **Dialogue** button mints/edits a `t` (textId) and hands off to the
+      Dialogue Editor; `Vehicle.t` is saved and `NPCManager` spawns the car NPC
+      with it so `Game.tryTalk` works (EB's parked cars keep their line)
 - [x] Live overlay: the route polyline (closed when looping) with per-segment
       **direction arrows**, numbered waypoint dots, a start marker, and a ghost
       of the vehicle sprite facing its first segment
@@ -456,8 +463,10 @@ correct regions in OUR overrides layer.
       **corner handle to resize** (the opposite corner anchors; snaps to grid).
       The selected zone shows white corner handles; Del removes it
 - [x] Per-area fields: name, x/y/w/h (numeric), and a **song** picker — a
-      **dropdown of real track titles** (`SongNames`, pulled from the SPC ID666
-      tags by `tools/extract_song_names.py` → `src/data/songNames.json`). **▶ Test /
+      **searchable dropdown of real track titles** (the shared `createSpritePicker`
+      with its sticky search box, thumbnail column omitted; titles from `SongNames`,
+      pulled from the SPC ID666 tags by `tools/extract_song_names.py` →
+      `src/data/songNames.json`). Type to filter by song number or name. **▶ Test /
       ■ Stop** audition the track (`MusicManager.previewSong` resumes a suspended
       AudioContext so sound is enabled and always restarts; `stopMusic`); picking
       from the dropdown auto-previews

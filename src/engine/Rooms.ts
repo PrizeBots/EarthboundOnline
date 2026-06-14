@@ -21,8 +21,6 @@
  * current state until rooms are authored).
  */
 
-import { loadJSON } from './AssetLoader';
-
 /** Stable id of the implicit overworld "room". */
 export const WORLD_ROOM_ID = 'world';
 
@@ -50,23 +48,17 @@ export interface RoomDef {
   spawn?: { x: number; y: number; dir: number };
 }
 
-interface RoomsFile {
-  version: number;
-  rooms: RoomDef[];
-}
-
 let rooms: RoomDef[] = [];
 let activeRoomId: string = WORLD_ROOM_ID;
 
-export async function loadRooms(): Promise<void> {
-  let file: RoomsFile | null = null;
-  try {
-    file = await loadJSON<RoomsFile>('/assets/map/rooms.json');
-  } catch {
-    file = null; // not extracted yet — overworld-only world
-  }
-  rooms = Array.isArray(file?.rooms) ? file!.rooms : [];
-  console.log(`Rooms: ${rooms.length} interior room(s) loaded`);
+/**
+ * Populate the registry with the absolute room definitions MapManager builds
+ * from the custom-rooms band (overrides/rooms.json). Called once after the map
+ * loads; empty list ⇒ overworld-only.
+ */
+export function setRoomList(list: RoomDef[]): void {
+  rooms = list;
+  console.log(`Rooms: ${rooms.length} custom room(s) registered`);
 }
 
 /** The room containing a world point, or null when the point is the overworld. */

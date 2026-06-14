@@ -62,7 +62,11 @@ sector load + room crop — use it from the console or verification scripts.
   chunks on the stitched map and must be masked to the current room. Rooms
   are SEALED (bugs.md, arcade/Tracy's-room): the flood won't slip under
   walls in indoor sectors, pocket-merge skips regions containing doors
-  (DoorManager registers mat+dest cells via `setDoorCells`). A final
+  (DoorManager registers mat+dest cells via `setDoorCells`). The pocket merge
+  scans the room's `floodSectors` PLUS same-style INDOOR sectors adjacent to
+  them — a shop's back-wall row (counter/register) is often its own floorless
+  sector, so its behind-counter pocket would otherwise never be scanned and the
+  counter renders black (bugs.md, dept-store 3F). A final
   guard-free fill then reclaims floor minitiles the guarded flood skipped on
   the parasitic strip UNDER in-room furniture (shop counters/shelves) — it
   grows from `visited` but never leaves the room's own `floodSectors` and
@@ -78,17 +82,25 @@ sector load + room crop — use it from the console or verification scripts.
   carries only a diagonal `direction`. An escalator is a walkable diagonal RAMP
   (two landing strips joined by the ramp) bounded by solid; too narrow/corner-
   connected for normal foot-box movement, so the player is *glided* across it
-  (see DoorManager/Game). The crop already spans the whole shaft, so it needs
-  no special handling; `isSolidAtPoint()` is the raw look-ahead the ride uses
-  to find the ramp's end. The floor change itself is a normal `door` at a strip
-  end. See bugs.md (escalators) for the full mechanic.
+  (see DoorManager/Game). `isSolidAtPoint()` is the raw look-ahead the ride uses
+  to find the ramp's end. The floor change is either a `door` warp at the strip
+  end (fade) OR — for stacked floors with no door between them — the ride just
+  re-crops onto the destination floor. Those stacked floors are SEPARATE crop
+  regions joined only by the solid ramp, so during such a ride `Game` shows the
+  UNION of both floors + the ramp (`computeRideBounds`); otherwise the
+  destination (and the down-ramp) render black and you glide into a void
+  (bugs.md, dept-store escalators). See bugs.md (escalators) for the full mechanic.
 - **Entity.ts** — base class for Player and NPC (position = sprite center-x /
   feet-y, 2-frame walk cycle). Remote players share the drawable shape only.
 - **DoorManager** — door triggers + fade transitions; also loads escalator/
-  stairway triggers (`getStairAt` → diagonal vector). Game drives the ride:
-  stepping a trigger glides the player diagonally along the ramp (collision +
-  room-seal bypassed) until the cell ahead is solid (the landing), then
-  re-crops. Steps don't animate yet (no tile-animation system).
+  stairway triggers (`getStairAt` → diagonal vector) and resolves their floor
+  warp (`getStairExit` floods the shaft, picks the `door` inside it leading to
+  an indoor floor in the ride's vertical direction, skipping outdoor exits).
+  Game drives the ride: stepping a trigger glides the player diagonally along
+  the ramp (collision + room-seal bypassed) until the cell ahead is solid, then
+  warps through that floor door (fade reveals the next floor fully). Over-large
+  shafts get no warp (ride stops in place). Steps don't animate (no
+  tile-animation system).
 - **NPCManager / NPC.ts** — loads placements, buckets them into the ROM's
   256px area grid, lazy-loads sprite sheets, applies server `npc_update` rows.
   `blockedByNPC` makes `person` NPCs solid for the player (the player's move
@@ -163,8 +175,14 @@ sector load + room crop — use it from the console or verification scripts.
   the shared sprite-preview dropdown + search, shows name/cost/type plus the
   decoded EQUIP data — slot (weapon/body/arms/other), offense/defense, and who
   may equip it — and whether each item has art yet, and hands off (`openSpriteEditor({
-  focusItem })`) to the Sprite Editor's Item mode, whose item list is the SAME
-  catalog. Editing saves the 16x16 art to `overrides/item_sprites.json` via the
+  focusItem })`) to the Sprite Editor's Item mode. The Sprite Editor's item list
+  is split into **Weapons / Items / Custom** tabs: Weapons/Items come from the
+  catalog (a weapon is gear whose equip slot is `weapon`); **Custom** holds the
+  legacy seed art (bat/pan/yoyo = `HELD_ITEM_IDS`) plus admin-made items. Since
+  shops.json is ROM-derived and can't grow, the **+ New custom item** button mints
+  a `custom-N` id stored in `overrides/custom_items.json` (id+name; `Items.ts`
+  `loadCustomItems`/`addCustomItem`), with its art in `item_sprites.json` like any
+  other item. Editing saves the 16x16 art to `overrides/item_sprites.json` via the
   dev save channel, shared by all clients. (Catalog item ids and the Goods
   inventory ids are the same numeric-string id space.)
 - **Inventory.ts + MenuManager Goods** — the server-authoritative Goods
@@ -423,7 +441,12 @@ appended *after* the enemy pool (one slot per active vehicle — `enabled` with
 ≥2 waypoints — in file order) so wire ids stay aligned. The server drives each
 car along its route (`tickCar`/`dir8`), facing its travel direction, and
 broadcasts position over the existing `npc_update` channel; cars carry no HP and
-aren't attackable. Cars are solid to **everything**: a car waits in place when a
+aren't attackable. A **vehicle is an NPC that drives**, so it can also be
+**talkable**: a vehicle may carry a `t` (textId), and `NPCManager` spawns the car
+NPC with it — `Game.tryTalk`/`getNpcDialogue` work on any NPC with a textId, so a
+car speaks like EB's parked cars. Author its line via the Traffic Editor's
+**Dialogue** button (same handoff as the Placement Editor's). Cars are solid to
+**everything**: a car waits in place when a
 player or any actor overlaps its body box (`carBlocked`), `hitsActor`/`blockedByNPC`
 make cars solid for other actors and the local player. Routes are authored in the
 **Traffic Editor** (`src/editor/tools/TrafficEditorTool.ts`). No road data exists
@@ -448,7 +471,8 @@ EarthBound's static vehicle-sprite placements (cars/taxis/trucks placed as
 it appends one named, enabled vehicle per prop to the `car_traffic.json` override
 (default route running ±96px along the prop's facing — the road it sat on) and
 removes the now-duplicate static placement via an `npcs.json` `edits[k]=null`
-(talkable `person` cars are skipped so their dialogue survives). The script is
+(talkable `person` cars carry their `t`/textId onto the vehicle so the dialogue
+survives — the car stays speakable). The script is
 idempotent (deterministic `v_npc_<k>` ids). The **Placement Editor** surfaces all
 traffic vehicles as read-only green markers in its NPCs tab; selecting one shows
 an "Edit route in Traffic →" button that opens the Traffic Editor preselected on

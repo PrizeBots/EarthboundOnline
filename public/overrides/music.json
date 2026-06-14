@@ -994,14 +994,6 @@
       "song": 136
     },
     {
-      "name": "Pokey's House (4,26)",
-      "x": 1024,
-      "y": 3328,
-      "w": 1024,
-      "h": 512,
-      "song": 18
-    },
-    {
       "name": "The Metropolis of Fourside (8,26)",
       "x": 2048,
       "y": 3328,
@@ -2519,7 +2511,7 @@
       "y": 6912,
       "w": 1024,
       "h": 640,
-      "song": 28
+      "song": 37
     },
     {
       "name": "Enjoy Your Stay (29,54)",

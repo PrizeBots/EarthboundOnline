@@ -10,10 +10,12 @@ import {
 } from '../../engine/MusicManager';
 import {
   getSongName,
+  songLabel,
   setSongNameOverride,
   getSongNameOverrides,
   listSongs,
 } from '../../engine/SongNames';
+import { createSpritePicker, SpritePicker } from '../../engine/SpritePicker';
 import { saveOverride, loadOverride } from '../saveOverride';
 import { registerSaveHandler } from '../registry';
 
@@ -521,30 +523,27 @@ class SoundTool implements EditorTool {
     numField('w', () => a.w, (n) => (a.w = Math.max(SECTOR_W, Math.round(n))));
     numField('h', () => a.h, (n) => (a.h = Math.max(SECTOR_H, Math.round(n))));
 
-    // Song picker — a dropdown of real track titles (SongNames table, pulled
-    // from the SPC tags) instead of a bare number. Auditioning on change makes
-    // it a dial you can flip through.
+    // Song picker — a searchable dropdown of real track titles (same component
+    // as the other editor pickers, minus the sprite thumbnail). Type to filter
+    // by song number or name; picking auditions the track.
     const songRow = this.mkRow(form, 'song');
-    const songSel = document.createElement('select');
-    songSel.style.cssText =
-      'flex:1;min-width:0;font:11px monospace;background:#0c1014;color:#cde;' +
-      'border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
-    for (const { song, name } of listSongs()) {
-      const opt = document.createElement('option');
-      opt.value = String(song);
-      opt.textContent = `${song} · ${name}`;
-      songSel.appendChild(opt);
-    }
-    songSel.value = String(a.song);
-    songSel.onchange = () => {
-      a.song = parseInt(songSel.value, 10) || 0;
-      this.shell?.markDirty('music');
-      this.refreshList();
-      this.syncSongName();
-      previewSong(a.song); // audition the picked track
-    };
-    songRow.appendChild(songSel);
-    this.songSelect = songSel;
+    const picker = createSpritePicker({
+      sections: [{ values: listSongs().map((s) => String(s.song)) }],
+      initial: String(a.song),
+      labelFor: (v) => songLabel(Number(v)),
+      searchPlaceholder: 'search song # or name…',
+      onSelect: (v) => {
+        a.song = parseInt(v, 10) || 0;
+        this.shell?.markDirty('music');
+        this.refreshList();
+        this.syncSongName();
+        previewSong(a.song); // audition the picked track
+      },
+    });
+    picker.el.style.flex = '1';
+    picker.el.style.minWidth = '0';
+    songRow.appendChild(picker.el);
+    this.songPicker = picker;
 
     const audRow = this.mkRow(form, '');
     this.mkBtn('▶ Test', () => previewSong(a.song), audRow);
@@ -557,7 +556,7 @@ class SoundTool implements EditorTool {
       const name = v.trim();
       setSongNameOverride(a.song, name || null);
       this.shell?.markDirty('song_names');
-      this.refreshSongOptions();
+      this.songPicker?.refresh(); // relabel the picker with the new name
       this.refreshList();
       this.shell?.toast(`Renamed song ${a.song} to "${name || '(default)'}" — Save all writes song_names.json`);
     }, 150);
@@ -567,23 +566,13 @@ class SoundTool implements EditorTool {
     this.mkBtn('Delete area', () => this.deleteSelected(), form);
   }
 
-  private songSelect: HTMLSelectElement | null = null;
+  private songPicker: SpritePicker | null = null;
   private songNameInput: HTMLInputElement | null = null;
 
   /** Mirror the selected area's current song title into the rename field. */
   private syncSongName(): void {
     if (this.songNameInput && this.sel) {
       this.songNameInput.value = getSongName(this.sel.song) ?? '';
-    }
-  }
-
-  /** Re-label the dropdown options after a song rename. */
-  private refreshSongOptions(): void {
-    const sel = this.songSelect;
-    if (!sel) return;
-    for (const opt of Array.from(sel.options)) {
-      const song = parseInt(opt.value, 10);
-      opt.textContent = `${song} · ${getSongName(song) ?? song}`;
     }
   }
 

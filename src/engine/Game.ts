@@ -1,4 +1,4 @@
-import { Camera } from './Camera';
+import { Camera, RoomBounds } from './Camera';
 import { Player } from './Player';
 import { Renderer, setDebugBoxes, debugBoxesOn } from './Renderer';
 import { loadJSON } from './AssetLoader';
@@ -12,10 +12,11 @@ import {
   isToggleBoxesPressed,
   getKeySet,
   consumePointerClick,
+  flushKeys,
 } from './Input';
 import { loadMapData, getSector, getDrawTilesetId } from './MapManager';
-import { loadDoors, getDoorAt, getStairAt, DoorData } from './DoorManager';
-import { loadRooms, setActiveRoomFromPoint } from './Rooms';
+import { loadDoors, getDoorAt, getStairAt, getStairExit, DoorData } from './DoorManager';
+import { setActiveRoomFromPoint } from './Rooms';
 import { loadNPCs, getNearbyNPCs, applyNpcUpdates, applyNpcHp, getNpcDialogue, interpolateNpcs } from './NPCManager';
 import { NPC } from './NPC';
 import { loadAtlas } from './TilesetManager';
@@ -85,6 +86,7 @@ import {
   SECTOR_TILES_Y,
   MAP_WIDTH_SECTORS,
   MAP_HEIGHT_SECTORS,
+  MAP_WIDTH_TILES,
   TILE_SIZE,
   MINITILE_SIZE,
 } from '../types';
@@ -124,8 +126,9 @@ export class Game {
   private waitingForSectors = false;
   private doorSuppressed = false;
   // Active escalator/stairway ride: the player glides this diagonal along the
-  // walkable ramp until it ends at the landing on the next floor.
-  private riding: { dx: number; dy: number; dist: number } | null = null;
+  // walkable ramp; on reaching the end we warp through `exit` to the next floor
+  // (null = no floor door found, just stop and re-crop in place).
+  private riding: { dx: number; dy: number; dist: number; exit: DoorData | null } | null = null;
   private stairSuppressed = false;
   private talkingNpc: NPC | null = null;
 
@@ -241,7 +244,7 @@ export class Game {
 
     // Load map, player sprite, and tilesets
     console.log('Loading map data...');
-    await Promise.all([loadMapData(), loadDoors(), loadNPCs(), loadItemSprites(), loadRooms()]);
+    await Promise.all([loadMapData(), loadDoors(), loadNPCs(), loadItemSprites()]);
 
     // Editor-authored spawn override (public/overrides/spawn.json) takes
     // precedence over the src/spawn.json default baked into Player.
@@ -386,6 +389,9 @@ export class Game {
       },
     });
 
+    // Drop the confirm keypress (E/Enter) that started the game so the first
+    // playing frame doesn't read it as a Talk/Check ("no problem here").
+    flushKeys();
     this.phase = 'playing';
     console.log('Ready! Use arrow keys or WASD to move');
   }
@@ -481,6 +487,49 @@ export class Game {
   }
 
   /**
+   * Room bounds for an escalator ride: the UNION of the floor the player is
+   * leaving, the floor they're arriving on, and the ramp tiles between. The two
+   * floors are separate crop regions (stacked + joined only by the solid ramp),
+   * so without this the destination renders black while you glide. Built once at
+   * ride start and held until the ride re-crops to the destination on arrival.
+   */
+  private computeRideBounds(dx: number, dy: number): RoomBounds | null {
+    const src = computeRoomBounds(this.player.x, this.player.y);
+    // March along the ramp to the landing (same end test the ride uses),
+    // collecting the tiles the player will glide across.
+    const pathTiles = new Set<number>();
+    let x = this.player.x;
+    let y = this.player.y;
+    for (let i = 0; i < 48; i++) {
+      pathTiles.add(Math.floor(y / TILE_SIZE) * MAP_WIDTH_TILES + Math.floor(x / TILE_SIZE));
+      const footY = y - MINITILE_SIZE / 2;
+      if (isSolidAtPoint(x + dx * MINITILE_SIZE, footY + dy * MINITILE_SIZE)) break;
+      x += dx * MINITILE_SIZE;
+      y += dy * MINITILE_SIZE;
+    }
+    const dst = computeRoomBounds(x, y);
+    if (!src && !dst) return null;
+
+    const tiles = new Set<number>(pathTiles);
+    const cells = new Set<number>();
+    for (const b of [src, dst]) {
+      if (!b) continue;
+      for (const t of b.tiles) tiles.add(t);
+      for (const c of b.cells) cells.add(c);
+    }
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const t of tiles) {
+      const tx = t % MAP_WIDTH_TILES;
+      const ty = (t - tx) / MAP_WIDTH_TILES;
+      minX = Math.min(minX, tx * TILE_SIZE);
+      minY = Math.min(minY, ty * TILE_SIZE);
+      maxX = Math.max(maxX, (tx + 1) * TILE_SIZE);
+      maxY = Math.max(maxY, (ty + 1) * TILE_SIZE);
+    }
+    return { minX, minY, maxX, maxY, tiles, holes: [], cells };
+  }
+
+  /**
    * Advance an active escalator/stairway ride one frame. EB escalators are a
    * walkable diagonal ramp bounded by SOLID at each landing strip; the ramp is
    * too narrow (and corner-connected) for normal foot-box movement, so we glide
@@ -502,11 +551,17 @@ export class Game {
       footY + r.dy * MINITILE_SIZE
     );
     if (aheadSolid || r.dist >= RIDE_MAX) {
+      const exit = r.exit;
       this.riding = null;
       this.stairSuppressed = true;
       this.player.moving = false;
-      // Re-crop/re-seal to the landing (usually the same shaft room).
-      this.updateRoomBounds(this.player.x, this.player.y);
+      if (exit) {
+        // Warp to the next floor — the fade transition reveals it fully.
+        this.startTransition(exit);
+      } else {
+        // No floor door (open-floor bank) — just re-crop/re-seal in place.
+        this.updateRoomBounds(this.player.x, this.player.y);
+      }
     }
   }
 
@@ -724,9 +779,21 @@ export class Game {
     if (this.stairSuppressed) {
       if (!stair) this.stairSuppressed = false;
     } else if (stair && this.player.moving) {
-      // Glide the ramp. The shaft is already the active room crop, so leave it
-      // alone; updateRide bypasses collision to cross the narrow diagonal.
-      this.riding = { dx: stair.dx, dy: stair.dy, dist: 0 };
+      // Glide the ramp, then warp through the shaft's floor door to the next
+      // level. The shaft is already the active room crop, so leave it alone;
+      // updateRide bypasses collision to cross the narrow diagonal.
+      const exit = getStairExit(this.player.x, this.player.y, stair.dy);
+      this.riding = { dx: stair.dx, dy: stair.dy, dist: 0, exit };
+      // Reveal BOTH floors (and the ramp between) for the duration of the ride.
+      // EB stacks floors as separate room-crop regions joined only by the solid
+      // ramp, so the source-floor crop leaves the destination floor (and the
+      // down-ramp) black — you ride into a black void and can't see the landing
+      // (bugs.md, dept-store escalators). Only when there's no warp door: a
+      // door-warp ride fades to its destination, so leave that path alone.
+      if (!exit) {
+        const ride = this.computeRideBounds(stair.dx, stair.dy);
+        if (ride) this.camera.roomBounds = ride;
+      }
       return;
     }
 

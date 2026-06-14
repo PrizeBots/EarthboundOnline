@@ -13,9 +13,10 @@
  * (also the initial state of inactive spawner-pool slots).
  *
  * kind "car": server-authoritative traffic. Follows an authored waypoint route
- * (overrides/car_traffic.json), facing its travel direction; no HP, no
- * dialogue. Solid to every entity — a car stops when one is in its path and
- * blocks the player from walking through it.
+ * (overrides/car_traffic.json), facing its travel direction; no HP. MAY be
+ * talkable — a vehicle is an NPC that drives, so it can carry a textId and
+ * speak like any other (EB's parked cars). Solid to every entity — a car stops
+ * when one is in its path and blocks the player from walking through it.
  */
 
 import { Entity } from './Entity';

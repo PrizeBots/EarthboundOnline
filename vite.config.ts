@@ -25,6 +25,7 @@ const OVERRIDE_ALLOW = new Set([
   'music.json',
   'item_sprites.json',
   'custom_items.json',
+  'rooms.json',
 ]);
 const SAVE_BODY_LIMIT = 8 * 1024 * 1024; // sprite overrides carry data URLs
 
@@ -44,6 +45,47 @@ function editorSavePlugin() {
     name: 'editor-save-channel',
     apply: 'serve' as const, // dev server only — excluded from `vite build`
     configureServer(server: any) {
+      // Hot-reload of override files. OFF by default so editor saves don't
+      // trigger Vite's full-page reload (which kicks you out of the editor); the
+      // header toggle flips it live. We add/unwatch the overrides dir on the live
+      // chokidar instance rather than via a static `ignored` so it can change at
+      // runtime. Primeable with EB_RELOAD_OVERRIDES=1.
+      let hotReload = process.env.EB_RELOAD_OVERRIDES === '1';
+      const applyHotReload = () => {
+        try {
+          if (hotReload) server.watcher.add(OVERRIDES_DIR);
+          else server.watcher.unwatch(OVERRIDES_DIR);
+        } catch {
+          /* watcher not ready yet — retried on the next toggle */
+        }
+      };
+      applyHotReload();
+
+      server.middlewares.use('/__editor/hotreload', (req: any, res: any) => {
+        const reply = () => {
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ on: hotReload }));
+        };
+        if (req.method === 'GET') return reply();
+        if (req.method !== 'POST') {
+          res.statusCode = 405;
+          res.end('GET or POST only');
+          return;
+        }
+        let body = '';
+        req.on('data', (c: any) => (body += c));
+        req.on('end', () => {
+          try {
+            hotReload = !!JSON.parse(body).on;
+          } catch {
+            /* keep current state on a bad body */
+          }
+          applyHotReload();
+          console.log(`[editor] override hot-reload ${hotReload ? 'ON' : 'OFF'}`);
+          reply();
+        });
+      });
+
       server.middlewares.use('/__editor/save', (req: any, res: any) => {
         if (req.method !== 'POST') {
           res.statusCode = 405;
@@ -550,6 +592,14 @@ export default defineConfig({
   server: {
     port: 4444,
     strictPort: true,
+    watch: {
+      // Never reload on the save channel's scratch files. The override .json
+      // files in public/overrides/ are watched/UNwatched at RUNTIME (default
+      // off, so editor saves don't kick you out) — the editor's header
+      // "Hot-reload" toggle flips it live via /__editor/hotreload. See
+      // editorSavePlugin. Default can be primed with EB_RELOAD_OVERRIDES=1.
+      ignored: ['**/*.bak', '**/*.tmp'],
+    },
   },
   build: {
     outDir: 'dist',

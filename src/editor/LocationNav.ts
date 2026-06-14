@@ -1,5 +1,6 @@
 import { loadJSON, primeJSONCache } from '../engine/AssetLoader';
 import { getSector, getSectorForTile, getTileAt } from '../engine/MapManager';
+import { listRooms, RoomDef } from '../engine/Rooms';
 import { loadAtlas, drawTile, drawForegroundTile, hasForegroundTile } from '../engine/TilesetManager';
 import {
   TILE_SIZE,
@@ -865,27 +866,16 @@ export class LocationNav {
 
 // ── overrides load / save / compose ──────────────────────────────────────────
 
-// ── authored rooms (public/assets/map/rooms.json) ────────────────────────────
+// ── authored rooms (from the Rooms registry / overrides/rooms.json) ───────────
 // Custom rooms (copied from an interior template into the appended "interiors
 // band", then edited and wired to new doors) live off the door-derived tree, so
 // we list them here directly: grouped by town, under a synthetic "Custom Rooms"
-// building, each flying to the room's spawn. Absent rooms.json ⇒ nothing added.
-interface RoomJson {
-  id: string;
-  label: string;
-  town?: string | null;
-  type?: string | null;
-  spawn?: { x: number; y: number; dir: number };
-  rect: { x: number; y: number; w: number; h: number };
-}
+// building, each flying to the room's spawn. MapManager populates the registry
+// from overrides/rooms.json at load; empty ⇒ nothing added.
+type RoomJson = RoomDef;
 
-async function loadRoomsJson(): Promise<RoomJson[]> {
-  try {
-    const d = await loadJSON<{ rooms: RoomJson[] }>('/assets/map/rooms.json');
-    return Array.isArray(d.rooms) ? d.rooms : [];
-  } catch {
-    return []; // not extracted yet
-  }
+function loadRoomsJson(): RoomJson[] {
+  return [...listRooms()];
 }
 
 function injectInstancedRooms(tree: LocNode[], rooms: RoomJson[]): LocNode[] {

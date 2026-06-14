@@ -129,6 +129,8 @@ export interface Vehicle {
   loop: boolean;
   enabled: boolean;
   waypoints: [number, number][];
+  /** textId keying npc_text.json — a vehicle can be talkable like any NPC. */
+  t?: number | null;
 }
 export interface CarTraffic {
   version: number;
@@ -236,7 +238,9 @@ export async function loadNPCs(): Promise<void> {
   // starts at its first waypoint; the server drives it from there.
   for (const v of activeVehicles(carOv ?? carBase)) {
     const [sx, sy] = v.waypoints[0];
-    const car = new NPC(sx, sy, v.sprite, Direction.S, 'car', null);
+    // A vehicle is an NPC that drives — and may also be talkable (carries a
+    // textId), e.g. EB's parked cars with a line of dialogue.
+    const car = new NPC(sx, sy, v.sprite, Direction.S, 'car', v.t ?? null);
     npcsById[id++] = car;
     cars.push(car);
   }

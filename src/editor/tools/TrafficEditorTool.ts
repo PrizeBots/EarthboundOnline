@@ -5,6 +5,7 @@ import { drawSprite, loadSpriteGroup, getSpriteGroupMeta } from '../../engine/Sp
 import { loadNPCs, Vehicle, CarTraffic } from '../../engine/NPCManager';
 import { saveOverride, loadOverride } from '../saveOverride';
 import { registerSaveHandler } from '../registry';
+import { dialogueTool } from './DialogueTool';
 
 // Traffic Editor (EDITOR_TOOLS.md). Place vehicles and draw each one's waypoint
 // route; the server drives the car along it (server/npcSim.js), facing its
@@ -144,6 +145,7 @@ class TrafficEditorTool implements EditorTool {
       loop: v.loop !== false,
       enabled: v.enabled !== false,
       waypoints: Array.isArray(v.waypoints) ? v.waypoints.map(([x, y]) => [x, y] as [number, number]) : [],
+      t: v.t ?? null,
     }));
   }
 
@@ -168,6 +170,7 @@ class TrafficEditorTool implements EditorTool {
           loop: v.loop,
           enabled: v.enabled,
           waypoints: v.waypoints.map(([x, y]) => [Math.round(x), Math.round(y)] as [number, number]),
+          ...(v.t != null ? { t: v.t } : {}),
         };
       }),
     };
@@ -230,6 +233,18 @@ class TrafficEditorTool implements EditorTool {
       this.rebuildForm();
       return true;
     }
+    // Click the vehicle's body (its sprite) to select it — same feel as the
+    // Placement Editor's NPC picking. Selecting via the body (not just a dot)
+    // makes any car with traffic logic directly editable.
+    const veh = this.pickVehicle(p);
+    if (veh) {
+      this.sel = veh;
+      this.selWp = null;
+      this.setAddWp(false);
+      this.refreshList();
+      this.rebuildForm();
+      return true;
+    }
     return false; // let the shell pan
   }
 
@@ -276,6 +291,29 @@ class TrafficEditorTool implements EditorTool {
           bestD = d;
           best = { veh, idx: i };
         }
+      }
+    }
+    return best;
+  }
+
+  /**
+   * The vehicle whose body (sprite cell at its first waypoint) is under a point,
+   * front-most by feet-Y — mirrors PlacementTool's NPC/vehicle hit test so a car
+   * is selectable by clicking it, not only its waypoint dots.
+   */
+  private pickVehicle(p: WorldPoint): Vehicle | null {
+    let best: Vehicle | null = null;
+    let bestY = -Infinity;
+    for (const v of this.vehicles) {
+      const wp = v.waypoints[0];
+      if (!wp) continue;
+      const meta = getSpriteGroupMeta(v.sprite);
+      const w = meta?.width ?? v.w ?? 40;
+      const h = meta?.height ?? v.h ?? 28;
+      if (p.x < wp[0] - w / 2 || p.x > wp[0] + w / 2 || p.y < wp[1] - h || p.y > wp[1]) continue;
+      if (wp[1] > bestY) {
+        bestY = wp[1];
+        best = v;
       }
     }
     return best;
@@ -593,7 +631,45 @@ class TrafficEditorTool implements EditorTool {
     if (v.waypoints.length < 2) status.style.color = '#e8a33d';
     form.appendChild(status);
 
-    this.mkBtn('Delete vehicle', () => this.deleteVehicle(), form);
+    // A vehicle is an NPC that drives — it can also be talkable. Author/edit its
+    // line in the Dialogue Editor, same handoff the Placement Editor uses.
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;gap:6px;border-top:1px solid #243;padding-top:7px;flex-wrap:wrap;';
+    form.appendChild(actions);
+    this.mkBtn(v.t != null ? 'Dialogue ✎' : '+ Dialogue', () => void this.authorDialogue(v), actions);
+    this.mkBtn('Delete vehicle', () => this.deleteVehicle(), actions);
+
+    const talk = document.createElement('div');
+    talk.style.cssText = 'font-size:10px;color:#778;';
+    talk.textContent = v.t != null ? `talkable · textId ${v.t}` : 'silent — add dialogue to make it talkable';
+    form.appendChild(talk);
+  }
+
+  /** Lowest unused textId in the authored range (kept clear of ROM config ids). */
+  private mintTextId(): number {
+    let max = 899999;
+    for (const v of this.vehicles) if (v.t != null && v.t > max) max = v.t;
+    return max + 1;
+  }
+
+  /**
+   * Author this vehicle's dialogue: assign a fresh textId if it has none, save
+   * so the line isn't orphaned, then open the Dialogue Editor on that id.
+   */
+  private async authorDialogue(v: Vehicle): Promise<void> {
+    if (v.t == null) {
+      v.t = this.mintTextId();
+      this.shell?.markDirty('traffic');
+      this.rebuildForm();
+    }
+    try {
+      await this.save();
+    } catch (e) {
+      this.shell?.toast(`Save failed: ${e}`, true);
+      return;
+    }
+    dialogueTool.requestEntry(String(v.t));
+    this.shell?.openTool('dialogue');
   }
 
   private drawThumb(): void {

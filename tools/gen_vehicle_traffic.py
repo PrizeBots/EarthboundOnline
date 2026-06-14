@@ -6,8 +6,10 @@ EarthBound places cars/taxis/trucks as static placements in npcs.json (kind
 'prop'). In the real game many of these drove the streets; our traffic system
 (public/overrides/car_traffic.json, driven by server/npcSim.js buildCarPool)
 already IS the "NPC + waypoints" mechanism for that. This script converts each
-plain vehicle prop into a traffic instance so it's server-driven and synced, and
-removes the now-duplicate static placement.
+vehicle placement into a traffic instance so it's server-driven and synced, and
+removes the now-duplicate static placement. Talkable cars (kind 'person' with a
+textId — EB's parked cars with a line) carry their dialogue onto the traffic
+instance (Vehicle.t), so a vehicle is still an NPC that can speak.
 
 What it writes (overrides layer only — never the ROM-derived base):
   public/overrides/car_traffic.json  — one named, enabled vehicle per prop, with
@@ -100,13 +102,15 @@ def main():
         sprite = cur.get("sprite")
         if sprite not in VEHICLE_SPRITES:
             continue
-        # Skip talkable cars (kind 'person' with dialogue) — they stay NPCs so
-        # their talk/check text survives.
-        if cur.get("kind") == "person":
-            skipped_person += 1
-            continue
         if k is None:
             continue
+        # A vehicle is an NPC that drives — and may also be talkable. Talkable
+        # cars (kind 'person' with a textId) carry their dialogue onto the
+        # traffic instance (Vehicle.t) so the line survives the conversion;
+        # NPCManager spawns the car NPC with that textId and Game.tryTalk works.
+        text_id = cur.get("t")
+        if cur.get("kind") == "person":
+            skipped_person += 1  # counted as "talkable cars carried over"
         vid = "v_npc_" + str(k).replace(":", "_")
         idx = per_type.get(sprite, 0) + 1
         per_type[sprite] = idx
@@ -119,7 +123,7 @@ def main():
         fx, fy = DIR_VEC[d] if 0 <= d < len(DIR_VEC) else (1, 0)
         x, y = cur["x"], cur["y"]
         w, h = sizes.get(sprite, (40, 28))
-        vehicles.append({
+        v = {
             "id": vid,
             "name": f"{VEHICLE_SPRITES[sprite]}-{idx}",
             "sprite": sprite,
@@ -132,7 +136,10 @@ def main():
                 [round(x - fx * RUN), round(y - fy * RUN)],
                 [round(x + fx * RUN), round(y + fy * RUN)],
             ],
-        })
+        }
+        if text_id is not None:
+            v["t"] = text_id  # keep the car talkable (EB's parked cars)
+        vehicles.append(v)
         have_ids.add(vid)
         added += 1
 
@@ -149,7 +156,8 @@ def main():
     print(f"linked {added} vehicle props to traffic "
           f"({len(vehicles)} vehicles total in car_traffic.json)")
     print(f"removed {len([1 for v in edits.values() if v is None])} static "
-          f"placements via npcs.json edits; skipped {skipped_person} talkable cars")
+          f"placements via npcs.json edits; {skipped_person} talkable cars "
+          f"carried their dialogue (Vehicle.t)")
 
 
 if __name__ == "__main__":
