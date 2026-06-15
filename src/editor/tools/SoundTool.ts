@@ -30,8 +30,8 @@ import { registerSaveHandler } from '../registry';
 
 // EB sectors are 8x4 tiles → 64x32 px. Snapping areas to this grid keeps them
 // aligned to the native music unit.
-const SECTOR_W = SECTOR_TILES_X * TILE_SIZE; // 64
-const SECTOR_H = SECTOR_TILES_Y * TILE_SIZE; // 32
+const SECTOR_W = SECTOR_TILES_X * TILE_SIZE; // 256 (8 tiles * 32px)
+const SECTOR_H = SECTOR_TILES_Y * TILE_SIZE; // 128 (4 tiles * 32px)
 const MIN_SIZE = SECTOR_W; // ignore accidental micro-drags
 
 interface MusicFile {
@@ -204,8 +204,11 @@ class SoundTool implements EditorTool {
   onMouseMove(p: WorldPoint, dragging: boolean): void {
     this.hover = p;
     if (this.drawing) return; // rect tracked from anchor → hover in the overlay
+    // Move/resize follow the cursor FREELY while dragging — snapping live would
+    // round sub-sector drags back to the start, so the box looked frozen. We snap
+    // to the sector grid once, on mouse-up (onMouseUp → snapArea).
     if (this.resizing && dragging && this.sel) {
-      const r = this.normRect(this.anchorX, this.anchorY, p.x, p.y);
+      const r = this.normRect(this.anchorX, this.anchorY, p.x, p.y, false);
       this.sel.x = r.x;
       this.sel.y = r.y;
       this.sel.w = r.w;
@@ -215,14 +218,8 @@ class SoundTool implements EditorTool {
       return;
     }
     if (this.moving && dragging && this.sel) {
-      let nx = this.ox + (p.x - this.mx);
-      let ny = this.oy + (p.y - this.my);
-      if (this.snap) {
-        nx = snapTo(nx, SECTOR_W);
-        ny = snapTo(ny, SECTOR_H);
-      }
-      this.sel.x = nx;
-      this.sel.y = ny;
+      this.sel.x = this.ox + (p.x - this.mx);
+      this.sel.y = this.oy + (p.y - this.my);
       this.shell?.markDirty('music');
       this.syncForm();
     }
@@ -247,11 +244,23 @@ class SoundTool implements EditorTool {
       return;
     }
     if ((this.moving || this.resizing) && this.sel) {
+      this.snapArea(this.sel); // align to the sector grid now the drag is done
       this.shell?.markDirty('music');
       this.rebuildForm();
     }
     this.moving = false;
     this.resizing = false;
+  }
+
+  /** Snap an area's origin and size to the sector grid (no-op if snap is off). */
+  private snapArea(a: MusicArea): void {
+    if (!this.snap) return;
+    const x2 = snapTo(a.x + a.w, SECTOR_W);
+    const y2 = snapTo(a.y + a.h, SECTOR_H);
+    a.x = snapTo(a.x, SECTOR_W);
+    a.y = snapTo(a.y, SECTOR_H);
+    a.w = Math.max(SECTOR_W, x2 - a.x);
+    a.h = Math.max(SECTOR_H, y2 - a.y);
   }
 
   // --- corner-handle hit testing --------------------------------------------
@@ -299,13 +308,14 @@ class SoundTool implements EditorTool {
     x0: number,
     y0: number,
     x1: number,
-    y1: number
+    y1: number,
+    snap = this.snap
   ): { x: number; y: number; w: number; h: number } {
     let x = Math.min(x0, x1),
       y = Math.min(y0, y1);
     let w = Math.abs(x1 - x0),
       h = Math.abs(y1 - y0);
-    if (this.snap) {
+    if (snap) {
       const x2 = snapTo(x + w, SECTOR_W),
         y2 = snapTo(y + h, SECTOR_H);
       x = snapTo(x, SECTOR_W);

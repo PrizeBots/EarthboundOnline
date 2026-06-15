@@ -375,6 +375,10 @@ class GameHost {
         const entry = this.players.get(playerId);
         if (!entry) break;
         entry.editor = !!msg.on;
+        // Leaving the editor: the avatar may have been teleported far while
+        // parked, so exempt the rejoin jump from enemy door-warp follow (else
+        // chasers teleport along with the admin).
+        if (!entry.editor) this.npcSim.noteEditorExit(playerId);
         break;
       }
 

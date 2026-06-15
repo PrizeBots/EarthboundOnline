@@ -14,33 +14,35 @@
 
 import { drawText, measureText, getLineHeight } from './TextRenderer';
 
-const FONT = 4;                  // small 8px battle font (matches EB damage text)
-const LIFETIME = 850;            // ms a popup lives before vanishing
-const FADE = 300;                // ms of fade-out at the end of life
-const GRAVITY = 480;             // px/s^2 downward pull on the arc
-const LAUNCH_VY = 130;           // px/s initial upward speed
-const LAUNCH_VX = 30;            // px/s max random horizontal drift (±)
-const FLOAT_RISE = 22;          // px/s straight-up drift for XP / level-up text
-const SPAWN_RISE = 18;           // px above the feet the number pops from
-const SPAWN_JITTER = 5;          // px random x offset so stacked hits don't overlap
+const FONT = 4; // small 8px battle font (matches EB damage text)
+const LIFETIME = 850; // ms a popup lives before vanishing
+const FADE = 300; // ms of fade-out at the end of life
+const GRAVITY = 480; // px/s^2 downward pull on the arc
+const LAUNCH_VY = 130; // px/s initial upward speed
+const LAUNCH_VX = 30; // px/s max random horizontal drift (±)
+const FLOAT_RISE = 22; // px/s straight-up drift for XP / level-up text
+const SPAWN_RISE = 18; // px above the feet the number pops from
+const SPAWN_JITTER = 5; // px random x offset so stacked hits don't overlap
 
 const DAMAGE_COLOR = '#ffffff';
 const HEAL_COLOR = '#5cff5c';
-const XP_COLOR = '#7fd0ff';       // cyan, matches the EB "you won the battle" EXP text
-const LEVELUP_COLOR = '#ffd23d';  // gold
+const XP_COLOR = '#7fd0ff'; // cyan, matches the EB "you won the battle" EXP text
+const LEVELUP_COLOR = '#ffd23d'; // gold
+const CRIT_COLOR = '#ff4d4d'; // red — SMAAAASH! crit
+const MISS_COLOR = '#b8c0cc'; // dim slate — a whiffed swing
 const SHADOW_COLOR = '#000000';
 
-const MAX_POPUPS = 64;           // hard cap; oldest dropped past this
+const MAX_POPUPS = 64; // hard cap; oldest dropped past this
 
 interface Popup {
   text: string;
-  x0: number;                    // world origin x (number is centered here)
-  y0: number;                    // world origin y
-  vx: number;                    // px/s horizontal (0 for float style)
+  x0: number; // world origin x (number is centered here)
+  y0: number; // world origin y
+  vx: number; // px/s horizontal (0 for float style)
   color: string;
-  born: number;                  // performance.now() at spawn
-  float: boolean;                // true = rise straight up + fade; false = ballistic arc
-  life: number;                  // ms this popup lives
+  born: number; // performance.now() at spawn
+  float: boolean; // true = rise straight up + fade; false = ballistic arc
+  life: number; // ms this popup lives
 }
 
 const popups: Popup[] = [];
@@ -74,10 +76,20 @@ export function spawnLevelUp(x: number, y: number): void {
   spawn('LEVEL UP!', x, y, LEVELUP_COLOR, { float: true, riseExtra: 14, life: 1400 });
 }
 
+/** Pop a red "SMAAAASH!" off a crit — bigger arc, lingers a touch longer. */
+export function spawnCritText(x: number, y: number): void {
+  spawn('SMAAAASH!', x, y, CRIT_COLOR, { riseExtra: 8, life: 1050 });
+}
+
+/** Pop a dim "MISS" off a whiffed/dodged swing. */
+export function spawnMissText(x: number, y: number): void {
+  spawn('MISS', x, y, MISS_COLOR, { life: 750 });
+}
+
 interface SpawnOpts {
   riseExtra?: number; // px to start above the default pop height
-  float?: boolean;    // straight rise + fade instead of the ballistic arc
-  life?: number;      // ms lifetime
+  float?: boolean; // straight rise + fade instead of the ballistic arc
+  life?: number; // ms lifetime
 }
 
 function spawn(text: string, x: number, y: number, color: string, opts: SpawnOpts = {}): void {
@@ -106,7 +118,10 @@ export function updateEmitters(): void {
 }
 
 /** Draw all live popups in world space. Call inside the camera/zoom transform. */
-export function renderEmitters(ctx: CanvasRenderingContext2D, camera: { x: number; y: number }): void {
+export function renderEmitters(
+  ctx: CanvasRenderingContext2D,
+  camera: { x: number; y: number }
+): void {
   if (popups.length === 0) return;
   const t = now();
 
@@ -139,7 +154,7 @@ export function renderEmitters(ctx: CanvasRenderingContext2D, camera: { x: numbe
     ctx.globalAlpha = alpha;
     ctx.imageSmoothingEnabled = false;
     blitTinted(ctx, p.text, sx + 1, sy + 1, SHADOW_COLOR); // drop shadow
-    blitTinted(ctx, p.text, sx, sy, p.color);              // colored fill
+    blitTinted(ctx, p.text, sx, sy, p.color); // colored fill
     ctx.restore();
   }
 }
@@ -155,7 +170,7 @@ function blitTinted(
   text: string,
   x: number,
   y: number,
-  color: string,
+  color: string
 ): void {
   const w = Math.max(1, measureText(text, FONT) + 2);
   const h = getLineHeight(FONT) + 2;

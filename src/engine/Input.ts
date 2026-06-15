@@ -153,13 +153,18 @@ export function isAttackPressed(): boolean {
   return false;
 }
 
-/** G — cycle the held item (placeholder until an inventory exists). */
-export function isCycleItemPressed(): boolean {
-  if (keys.has('KeyG')) {
-    keys.delete('KeyG');
-    return true;
+/** 1 or 2 — trigger that hotbar slot (toggle-brandish the assigned weapon / use
+ *  the assigned consumable). Returns the 0-based slot just pressed, or -1.
+ *  Consumes the key so a single press fires once. Replaces the old G cycle key. */
+export function consumeHotbarSlot(): number {
+  for (let i = 0; i < 2; i++) {
+    const code = `Digit${i + 1}`;
+    if (keys.has(code)) {
+      keys.delete(code);
+      return i;
+    }
   }
-  return false;
+  return -1;
 }
 
 /** H — play the hurt animation (debug hook until combat deals damage). */

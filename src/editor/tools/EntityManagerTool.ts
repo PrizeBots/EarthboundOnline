@@ -42,6 +42,7 @@ const STAT_FIELDS: {
   key: Exclude<keyof EntityStats, 'col' | 'combat'>;
   label: string;
   min: number;
+  max?: number;
   scale?: number;
   float?: boolean;
 }[] = [
@@ -53,6 +54,9 @@ const STAT_FIELDS: {
   { key: 'speed', label: 'speed', min: 0.1, float: true },
   { key: 'detectRange', label: 'detect px', min: 1 },
   { key: 'attackRange', label: 'atk px', min: 1 },
+  // Crit/dodge are percent points (0..100); the server rolls them /100.
+  { key: 'crit', label: 'crit %', min: 0, max: 100 },
+  { key: 'dodge', label: 'dodge %', min: 0, max: 100 },
 ];
 
 // Collision-box preview geometry. The sprite is drawn at COL_SCALE with its
@@ -440,11 +444,12 @@ class EntityManagerTool implements EditorTool {
       const i = this.mkInput(this.formEl, f.key, f.label, (v) => {
         const n = parseFloat(v);
         if (Number.isNaN(n)) return;
-        const val = f.scale
+        let val = f.scale
           ? Math.max(f.min, Math.round(n * f.scale))
           : f.float
             ? Math.max(f.min, n)
             : Math.max(f.min, Math.round(n));
+        if (f.max != null) val = Math.min(f.max, val);
         this.setStat(this.sprite, f.key, val);
       });
       i.value = String(shown);

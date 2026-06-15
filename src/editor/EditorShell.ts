@@ -12,7 +12,7 @@ import { getSectorForTile } from '../engine/MapManager';
 import { getCollisionByteAt } from '../engine/Collision';
 import { isMusicMuted, setMusicMuted } from '../engine/MusicManager';
 import { setMuteButtonHidden } from '../engine/MuteButton';
-import { isSpriteEditorOpen, closeSpriteEditor } from '../engine/SpriteEditor';
+import { isSpriteEditorOpen, closeSpriteEditor } from '../engine/spriteEditor';
 import { getKeySet } from '../engine/Input';
 import { CommandStack } from './CommandStack';
 import { LocationNav, PlaceAnchor } from './LocationNav';
@@ -36,6 +36,10 @@ const ZOOM_MAX = 2;
 const ZOOM_STEP = 1.25;
 
 const PAN_KEYS = new Set(['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
+
+// Pointer travel (device px) under which a press+release counts as a click, not
+// a pan — the threshold for click-to-teleport.
+const CLICK_SLOP = 4;
 
 export class EditorShell {
   private active = false;
@@ -81,6 +85,12 @@ export class EditorShell {
   private toolDragging = false;
   private lastClientX = 0;
   private lastClientY = 0;
+  // Click-to-teleport: with no tool active, a click (not a pan-drag) on the map
+  // warps the player there so you can F2 back into the game in that spot. Track
+  // the press position + whether the gesture is still a click candidate.
+  private downClientX = 0;
+  private downClientY = 0;
+  private clickCandidate = false;
 
   // HUD
   private bar: HTMLDivElement | null = null;
@@ -175,7 +185,9 @@ export class EditorShell {
 
     this.buildDock();
 
-    this.toast('Editor mode — pick a tool on the right · F2 exits · wheel zooms');
+    this.toast(
+      'Editor mode — pick a tool on the right · click empty map to teleport · F2 exits · wheel zooms'
+    );
   }
 
   /**
@@ -761,10 +773,16 @@ export class EditorShell {
         return;
       }
     }
+    this.clickCandidate = false;
     if (this.activeTool?.onMouseDown?.(p)) {
       this.toolDragging = true;
     } else {
       this.panning = true;
+      // No tool selected → this may be a click-to-teleport (resolved on mouseup
+      // if the pointer barely moved). Dragging still pans.
+      this.clickCandidate = !this.activeTool;
+      this.downClientX = e.clientX;
+      this.downClientY = e.clientY;
     }
     this.lastClientX = e.clientX;
     this.lastClientY = e.clientY;
@@ -802,7 +820,19 @@ export class EditorShell {
     }
     if (this.toolDragging) {
       this.activeTool?.onMouseUp?.(this.toWorld(e.clientX, e.clientY));
+    } else if (this.clickCandidate) {
+      // A click (not a drag) with no tool active: teleport the player here so F2
+      // drops back into the game at this spot.
+      const moved = Math.hypot(e.clientX - this.downClientX, e.clientY - this.downClientY);
+      if (moved < CLICK_SLOP) {
+        const p = this.toWorld(e.clientX, e.clientY);
+        const tx = Math.round(p.x);
+        const ty = Math.round(p.y);
+        this.goTo(tx, ty);
+        this.toast(`Teleported to (${tx}, ${ty}) — press F2 to play here`);
+      }
     }
+    this.clickCandidate = false;
     this.panning = false;
     this.toolDragging = false;
   };
@@ -846,12 +876,13 @@ export class EditorShell {
 
     mkBtn('Places', () => this.nav?.toggle());
 
-    // Hot-reload toggle: when OFF (default) editor saves don't refresh the page
-    // (so you stay in the editor); when ON, changes to override files reload the
-    // page. Talks to the dev server's /__editor/hotreload endpoint.
+    // Reload toggle: when OFF (default) NOTHING refreshes the page — neither
+    // editor override saves nor source (.ts) edits via Vite HMR — so you stay in
+    // the editor. When ON, both reload as usual. Talks to the dev server's
+    // /__editor/hotreload endpoint.
     this.hotReloadBtn = mkBtn('🔄 Reload: …', () => void this.toggleHotReload());
     this.hotReloadBtn.title =
-      'Auto-refresh the page when override files change (off = stay in the editor)';
+      'Auto-refresh the page on override saves AND source edits (off = stay in the editor)';
     void this.refreshHotReload();
 
     this.readout = document.createElement('span');
@@ -906,8 +937,8 @@ export class EditorShell {
     this.syncHotReloadBtn();
     this.toast(
       this.hotReloadOn
-        ? 'Hot-reload ON — the page refreshes when override files change'
-        : 'Hot-reload OFF — saves keep you in the editor'
+        ? 'Reload ON — the page refreshes on override saves and source edits'
+        : 'Reload OFF — saves and source edits keep you in the editor'
     );
   }
 

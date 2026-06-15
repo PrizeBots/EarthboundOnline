@@ -61,6 +61,7 @@ import {
   initMusic,
   updateMusic,
   playCharSelectMusic,
+  playSfx,
 } from './MusicManager';
 import {
   loadCharacterSelect,
@@ -87,6 +88,10 @@ import {
   updateDialogue,
   renderDialogue,
 } from './DialogueManager';
+import { emitGameEvent } from './EventBus';
+import { loadFlagRegistry } from './FlagRegistry';
+import { initFlagTriggers } from './FlagTriggers';
+import { installFlagConsole } from './flagConsole';
 import {
   initChat,
   handleChatKey,
@@ -214,6 +219,12 @@ export class Game {
       });
     }
 
+    // Dev-only flag console: prove/inspect the flag+trigger+dialogue spine live.
+    //   __eb.flags.demo(textId)  — branch that NPC's line on a flag AND register a
+    //                              trigger that sets the flag when you finish talking
+    //   __eb.flags.set/clear/has/list/reset
+    if (import.meta.env.DEV) installFlagConsole();
+
     this.phase = 'charselect';
     console.log('Character select ready!');
   }
@@ -276,6 +287,11 @@ export class Game {
     // Load map, player sprite, and tilesets
     console.log('Loading map data...');
     await Promise.all([loadMapData(), loadDoors(), loadNPCs(), loadItemSprites()]);
+
+    // Flag/quest system: load the catalog (seeds new-player defaults) and the
+    // trigger table (subscribes to the EventBus). After loadNPCs so dialogue
+    // branches resolve against a populated PlayerFlags store.
+    await Promise.all([loadFlagRegistry(), initFlagTriggers()]);
 
     // Editor-authored spawn override (public/overrides/spawn.json) takes
     // precedence over the src/spawn.json default baked into Player.
@@ -611,6 +627,10 @@ export class Game {
     this.transitioning = true;
     this.transitionAlpha = 0;
     this.pendingDoor = door;
+    // Door SFX (door open / stairs / rope …) — authored per door in the
+    // Placement Editor; fires once as the player uses it. Silent until the
+    // audio is extracted into /assets/sfx/ (playSfx no-ops on a missing file).
+    playSfx(door.sfx);
     // Shield against enemy hits while frozen: position sends stop for the whole
     // fade, so the server would otherwise let a pursuer keep swinging at the
     // motionless ghost we leave at the doorway. Cleared when the fade completes.
@@ -786,7 +806,16 @@ export class Game {
     if (isDialogueOpen()) {
       updateDialogue();
       this.faceTalkingNpc();
-      if (!isDialogueOpen()) this.talkingNpc = null;
+      if (!isDialogueOpen()) {
+        // Conversation finished — fire dialogue:done so flag triggers can react
+        // (e.g. mark "met Mom" after her first line). Keyed by textId.
+        const done = this.talkingNpc;
+        if (done?.textId != null) {
+          const tid = Number(done.textId);
+          emitGameEvent({ type: 'dialogue:done', text: tid, npc: tid });
+        }
+        this.talkingNpc = null;
+      }
       return;
     }
 
@@ -960,7 +989,9 @@ export class Game {
       }
       const pages = bestInteractive ? bestPages : null;
       console.log(
-        `Talk: npc(${Math.round(target.x)},${Math.round(target.y)}) score=${Math.round(
+        `Talk: npc(${Math.round(target.x)},${Math.round(target.y)}) textId=${
+          target.textId ?? '-'
+        } score=${Math.round(
           bestInteractive ? bestInteractiveScore : bestScore
         )} ${pages ? `"${pages[0].slice(0, 40)}..."` : 'no dialogue (Check)'}`
       );

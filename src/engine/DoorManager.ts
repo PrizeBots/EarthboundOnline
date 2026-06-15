@@ -3,6 +3,7 @@ import { RoomBounds } from './Camera';
 import { checkCollision, setDoorCells, isSolidAtPoint } from './Collision';
 import { isRoomCroppableTile } from './MapManager';
 import { MINITILE_SIZE, TILE_SIZE, MAP_WIDTH_TILES } from '../types';
+import { DEFAULT_DOOR_SFX, normalizeDoorSfx } from './DoorSfx';
 import worldFlags from '../world_flags.json';
 
 // Event flags considered SET in our open world (see src/world_flags.json).
@@ -20,7 +21,6 @@ function isDoorActive(flag: number): boolean {
   return needSet === WORLD_SET_FLAGS.has(flag & 0x7fff);
 }
 
-
 export interface DoorData {
   /** Stable identity: "worldX,worldY" of the BASE trigger anchor. */
   key: string;
@@ -33,6 +33,8 @@ export interface DoorData {
   destY: number;
   destDir: number;
   style: number;
+  /** Sound effect id played when the player uses the door (see DoorSfx.ts). */
+  sfx: string;
 }
 
 /**
@@ -51,9 +53,25 @@ export interface DoorOverrides {
   version: number;
   edits?: Record<
     string,
-    { worldX?: number; worldY?: number; destX: number; destY: number; destDir: number; style: number } | null
+    {
+      worldX?: number;
+      worldY?: number;
+      destX: number;
+      destY: number;
+      destDir: number;
+      style: number;
+      sfx?: string;
+    } | null
   >;
-  additions?: { worldX: number; worldY: number; destX: number; destY: number; destDir: number; style: number }[];
+  additions?: {
+    worldX: number;
+    worldY: number;
+    destX: number;
+    destY: number;
+    destDir: number;
+    style: number;
+    sfx?: string;
+  }[];
 }
 
 /** A base door as the editor sees it (pre-override values, pixels). */
@@ -65,6 +83,8 @@ export interface EditorDoor {
   destY: number;
   destDir: number;
   style: number;
+  /** Sound effect id played when the door is used (see DoorSfx.ts). */
+  sfx: string;
   /** style=0 short-range zone door — inactive unless an override links it. */
   zone: boolean;
 }
@@ -149,7 +169,8 @@ export async function loadDoors(): Promise<void> {
       const destPx = (d.destX ?? 0) * MINITILE_SIZE;
       const destPy = (d.destY ?? 0) * MINITILE_SIZE;
       const zone =
-        d.style === 0 && Math.abs(destPx - (baseX - MINITILE_SIZE)) + Math.abs(destPy - (baseY - 4)) < 128;
+        d.style === 0 &&
+        Math.abs(destPx - (baseX - MINITILE_SIZE)) + Math.abs(destPy - (baseY - 4)) < 128;
 
       editorBase.push({
         key,
@@ -159,6 +180,7 @@ export async function loadDoors(): Promise<void> {
         destY: destPy,
         destDir: d.destDir ?? 0,
         style: d.style ?? 0,
+        sfx: DEFAULT_DOOR_SFX,
         zone,
       });
 
@@ -174,6 +196,7 @@ export async function loadDoors(): Promise<void> {
         destY: o ? o.destY : destPy,
         destDir: o ? o.destDir : (d.destDir ?? 0),
         style: o ? o.style : (d.style ?? 0),
+        sfx: normalizeDoorSfx(o?.sfx),
       });
     }
     return out;
@@ -193,6 +216,7 @@ export async function loadDoors(): Promise<void> {
       destY: a.destY,
       destDir: a.destDir,
       style: a.style,
+      sfx: normalizeDoorSfx(a.sfx),
     });
   });
 
@@ -235,7 +259,9 @@ export async function loadDoors(): Promise<void> {
     cells.add(Math.floor(o.destY / MINITILE_SIZE) * MAP_W_MT + Math.floor(o.destX / MINITILE_SIZE));
   }
   for (const a of additions) {
-    cells.add(Math.floor(a.worldY / MINITILE_SIZE) * MAP_W_MT + Math.floor(a.worldX / MINITILE_SIZE));
+    cells.add(
+      Math.floor(a.worldY / MINITILE_SIZE) * MAP_W_MT + Math.floor(a.worldX / MINITILE_SIZE)
+    );
     cells.add(Math.floor(a.destY / MINITILE_SIZE) * MAP_W_MT + Math.floor(a.destX / MINITILE_SIZE));
   }
   setDoorCells(cells);

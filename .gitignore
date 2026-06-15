@@ -13,6 +13,12 @@ extracted/
 # Build output
 dist/
 
+# Local persistence DB (accounts/sessions/saves — never commit player data)
+/data/
+*.db
+*.db-wal
+*.db-shm
+
 # Python
 __pycache__/
 *.pyc

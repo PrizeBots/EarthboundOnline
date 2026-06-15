@@ -13,7 +13,7 @@ import { registerEditorTool, registerSaveHandler } from './registry';
 import { saveOverride } from './saveOverride';
 import { getNameOverrides } from '../engine/SpriteNames';
 import { getSongNameOverrides } from '../engine/SongNames';
-import { openSpriteEditor } from '../engine/SpriteEditor';
+import { openSpriteEditor } from '../engine/spriteEditor';
 
 // Entry point for the dev-only editor layer. Game loads this module via a
 // dev-gated dynamic import (`if (import.meta.env.DEV) import('../editor')`),

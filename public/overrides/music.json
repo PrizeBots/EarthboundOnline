@@ -119,7 +119,7 @@
       "y": 256,
       "w": 512,
       "h": 128,
-      "song": 152
+      "song": 23
     },
     {
       "name": "Friendly Neighbors (31,2)",
@@ -133,9 +133,9 @@
       "name": "Oncoming Foe (29,3)",
       "x": 7424,
       "y": 384,
-      "w": 768,
+      "w": 256,
       "h": 128,
-      "song": 28
+      "song": 16
     },
     {
       "name": "Inside the Dungeon (0,4)",
@@ -175,7 +175,7 @@
       "y": 512,
       "w": 512,
       "h": 128,
-      "song": 152
+      "song": 17
     },
     {
       "name": "Friendly Neighbors (29,4)",
@@ -247,7 +247,7 @@
       "y": 768,
       "w": 512,
       "h": 128,
-      "song": 152
+      "song": 17
     },
     {
       "name": "Friendly Neighbors (29,6)",
@@ -287,7 +287,7 @@
       "y": 896,
       "w": 256,
       "h": 128,
-      "song": 152
+      "song": 23
     },
     {
       "name": "Hospital (30,7)",
@@ -367,7 +367,7 @@
       "y": 1024,
       "w": 256,
       "h": 128,
-      "song": 152
+      "song": 23
     },
     {
       "name": "Friendly Neighbors (27,9)",
@@ -439,7 +439,7 @@
       "y": 1280,
       "w": 512,
       "h": 128,
-      "song": 28
+      "song": 23
     },
     {
       "name": "Pokey's House (29,10)",
@@ -491,19 +491,11 @@
     },
     {
       "name": "Pokey's House (29,11)",
-      "x": 7424,
-      "y": 1408,
-      "w": 256,
-      "h": 128,
-      "song": 18
-    },
-    {
-      "name": "Oncoming Foe (30,11)",
       "x": 7680,
       "y": 1408,
       "w": 256,
       "h": 128,
-      "song": 28
+      "song": 3
     },
     {
       "name": "Enjoy Your Stay (31,11)",

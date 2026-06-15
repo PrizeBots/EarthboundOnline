@@ -1,0 +1,830 @@
+[
+  {
+    "id": "cursor-horizontal",
+    "num": 1,
+    "label": "Cursor horizontal",
+    "file": "cursor-horizontal.wav"
+  },
+  {
+    "id": "cursor-confirm",
+    "num": 2,
+    "label": "Cursor confirm",
+    "file": "cursor-confirm.wav"
+  },
+  {
+    "id": "cursor-vertical",
+    "num": 3,
+    "label": "Cursor vertical",
+    "file": "cursor-vertical.wav"
+  },
+  {
+    "id": "slot-machine-brothers",
+    "num": 4,
+    "label": "Slot Machine Brothers",
+    "file": "slot-machine-brothers.wav"
+  },
+  {
+    "id": "inaudible-failure-sound",
+    "num": 5,
+    "label": "Inaudible failure sound",
+    "file": "inaudible-failure-sound.wav"
+  },
+  {
+    "id": "text-blip",
+    "num": 7,
+    "label": "Text blip",
+    "file": "text-blip.wav"
+  },
+  {
+    "id": "door-open",
+    "num": 8,
+    "label": "Door open",
+    "file": "door-open.wav"
+  },
+  {
+    "id": "door-close",
+    "num": 9,
+    "label": "Door close",
+    "file": "door-close.wav"
+  },
+  {
+    "id": "phone-ring",
+    "num": 10,
+    "label": "Phone ring",
+    "file": "phone-ring.wav"
+  },
+  {
+    "id": "phone-pickup",
+    "num": 11,
+    "label": "Phone pickup",
+    "file": "phone-pickup.wav"
+  },
+  {
+    "id": "cash-register",
+    "num": 12,
+    "label": "Cash register",
+    "file": "cash-register.wav"
+  },
+  {
+    "id": "camera-shutter",
+    "num": 13,
+    "label": "Camera shutter",
+    "file": "camera-shutter.wav"
+  },
+  {
+    "id": "bubble-monkey-floats",
+    "num": 14,
+    "label": "Bubble Monkey floats",
+    "file": "bubble-monkey-floats.wav"
+  },
+  {
+    "id": "robot-footstep",
+    "num": 15,
+    "label": "Robot footstep",
+    "file": "robot-footstep.wav"
+  },
+  {
+    "id": "present-open",
+    "num": 16,
+    "label": "Present Open",
+    "file": "present-open.wav"
+  },
+  {
+    "id": "falling",
+    "num": 17,
+    "label": "Falling",
+    "file": "falling.wav"
+  },
+  {
+    "id": "stairs",
+    "num": 18,
+    "label": "Stairs",
+    "file": "stairs.wav"
+  },
+  {
+    "id": "shallow-water",
+    "num": 19,
+    "label": "Shallow water",
+    "file": "shallow-water.wav"
+  },
+  {
+    "id": "deep-water",
+    "num": 20,
+    "label": "Deep water",
+    "file": "deep-water.wav"
+  },
+  {
+    "id": "magicant-footstep",
+    "num": 21,
+    "label": "Magicant footstep",
+    "file": "magicant-footstep.wav"
+  },
+  {
+    "id": "onett-trumpet-player",
+    "num": 22,
+    "label": "Onett trumpet player",
+    "file": "onett-trumpet-player.wav"
+  },
+  {
+    "id": "bicycle-bell",
+    "num": 23,
+    "label": "Bicycle bell",
+    "file": "bicycle-bell.wav"
+  },
+  {
+    "id": "player-attack",
+    "num": 24,
+    "label": "Player attack",
+    "file": "player-attack.wav"
+  },
+  {
+    "id": "enemy-attack",
+    "num": 25,
+    "label": "Enemy attack",
+    "file": "enemy-attack.wav"
+  },
+  {
+    "id": "bash",
+    "num": 26,
+    "label": "Bash",
+    "file": "bash.wav"
+  },
+  {
+    "id": "menu-open-and-close",
+    "num": 27,
+    "label": "Menu open & close",
+    "file": "menu-open-and-close.wav"
+  },
+  {
+    "id": "pray",
+    "num": 28,
+    "label": "Pray",
+    "file": "pray.wav"
+  },
+  {
+    "id": "player-try-psi",
+    "num": 29,
+    "label": "Player try PSI",
+    "file": "player-try-psi.wav"
+  },
+  {
+    "id": "enemy-hurt",
+    "num": 30,
+    "label": "Enemy hurt",
+    "file": "enemy-hurt.wav"
+  },
+  {
+    "id": "smaaaash",
+    "num": 31,
+    "label": "SMAAAASH!",
+    "file": "smaaaash.wav"
+  },
+  {
+    "id": "player-die",
+    "num": 32,
+    "label": "Player die",
+    "file": "player-die.wav"
+  },
+  {
+    "id": "enemy-die",
+    "num": 33,
+    "label": "Enemy die",
+    "file": "enemy-die.wav"
+  },
+  {
+    "id": "just-missed-fell-over",
+    "num": 34,
+    "label": "Just missed - Fell over",
+    "file": "just-missed-fell-over.wav"
+  },
+  {
+    "id": "dodge",
+    "num": 35,
+    "label": "Dodge",
+    "file": "dodge.wav"
+  },
+  {
+    "id": "maxed-out",
+    "num": 36,
+    "label": "Maxed out",
+    "file": "maxed-out.wav"
+  },
+  {
+    "id": "heal",
+    "num": 37,
+    "label": "Heal",
+    "file": "heal.wav"
+  },
+  {
+    "id": "shield",
+    "num": 38,
+    "label": "Shield",
+    "file": "shield.wav"
+  },
+  {
+    "id": "psi-shield",
+    "num": 39,
+    "label": "PSI Shield",
+    "file": "psi-shield.wav"
+  },
+  {
+    "id": "stat-increase",
+    "num": 40,
+    "label": "Stat increase",
+    "file": "stat-increase.wav"
+  },
+  {
+    "id": "stat-decrease",
+    "num": 41,
+    "label": "Stat decrease",
+    "file": "stat-decrease.wav"
+  },
+  {
+    "id": "hypnosis",
+    "num": 42,
+    "label": "Hypnosis",
+    "file": "hypnosis.wav"
+  },
+  {
+    "id": "psi-magnet",
+    "num": 43,
+    "label": "PSI Magnet",
+    "file": "psi-magnet.wav"
+  },
+  {
+    "id": "paralysis-1",
+    "num": 44,
+    "label": "Paralysis 1",
+    "file": "paralysis-1.wav"
+  },
+  {
+    "id": "brainshock-1",
+    "num": 45,
+    "label": "Brainshock 1",
+    "file": "brainshock-1.wav"
+  },
+  {
+    "id": "player-hurt",
+    "num": 46,
+    "label": "Player hurt",
+    "file": "player-hurt.wav"
+  },
+  {
+    "id": "mortal-damage",
+    "num": 47,
+    "label": "Mortal damage",
+    "file": "mortal-damage.wav"
+  },
+  {
+    "id": "psi-rockin-1",
+    "num": 48,
+    "label": "PSI Rockin 1",
+    "file": "psi-rockin-1.wav"
+  },
+  {
+    "id": "psi-rockin-2",
+    "num": 49,
+    "label": "PSI Rockin 2",
+    "file": "psi-rockin-2.wav"
+  },
+  {
+    "id": "psi-rockin-3",
+    "num": 50,
+    "label": "PSI Rockin 3",
+    "file": "psi-rockin-3.wav"
+  },
+  {
+    "id": "fire-1",
+    "num": 51,
+    "label": "Fire 1",
+    "file": "fire-1.wav"
+  },
+  {
+    "id": "fire-2",
+    "num": 52,
+    "label": "Fire 2",
+    "file": "fire-2.wav"
+  },
+  {
+    "id": "fire-3",
+    "num": 53,
+    "label": "Fire 3",
+    "file": "fire-3.wav"
+  },
+  {
+    "id": "counter-psi",
+    "num": 54,
+    "label": "Counter PSI",
+    "file": "counter-psi.wav"
+  },
+  {
+    "id": "enemy-try-psi",
+    "num": 55,
+    "label": "Enemy try PSI",
+    "file": "enemy-try-psi.wav"
+  },
+  {
+    "id": "freeze-1",
+    "num": 56,
+    "label": "Freeze 1",
+    "file": "freeze-1.wav"
+  },
+  {
+    "id": "freeze-2",
+    "num": 57,
+    "label": "Freeze 2",
+    "file": "freeze-2.wav"
+  },
+  {
+    "id": "freeze-3",
+    "num": 58,
+    "label": "Freeze 3",
+    "file": "freeze-3.wav"
+  },
+  {
+    "id": "hp-sucker",
+    "num": 59,
+    "label": "HP sucker",
+    "file": "hp-sucker.wav"
+  },
+  {
+    "id": "thunder-miss",
+    "num": 60,
+    "label": "Thunder miss",
+    "file": "thunder-miss.wav"
+  },
+  {
+    "id": "thunder-hit-1",
+    "num": 61,
+    "label": "Thunder hit 1",
+    "file": "thunder-hit-1.wav"
+  },
+  {
+    "id": "thunder-hit-2",
+    "num": 62,
+    "label": "Thunder hit 2",
+    "file": "thunder-hit-2.wav"
+  },
+  {
+    "id": "thunder-damage",
+    "num": 63,
+    "label": "Thunder damage",
+    "file": "thunder-damage.wav"
+  },
+  {
+    "id": "starstorm",
+    "num": 64,
+    "label": "Starstorm",
+    "file": "starstorm.wav"
+  },
+  {
+    "id": "flash-1",
+    "num": 65,
+    "label": "Flash 1",
+    "file": "flash-1.wav"
+  },
+  {
+    "id": "flash-2",
+    "num": 66,
+    "label": "Flash 2",
+    "file": "flash-2.wav"
+  },
+  {
+    "id": "flash-3",
+    "num": 67,
+    "label": "Flash 3",
+    "file": "flash-3.wav"
+  },
+  {
+    "id": "eat",
+    "num": 68,
+    "label": "Eat",
+    "file": "eat.wav"
+  },
+  {
+    "id": "bottle-rocket",
+    "num": 70,
+    "label": "Bottle rocket",
+    "file": "bottle-rocket.wav"
+  },
+  {
+    "id": "spray",
+    "num": 71,
+    "label": "Spray",
+    "file": "spray.wav"
+  },
+  {
+    "id": "called-for-help",
+    "num": 72,
+    "label": "Called for help",
+    "file": "called-for-help.wav"
+  },
+  {
+    "id": "sky-runner-and-devil-s-machine-ping",
+    "num": 73,
+    "label": "Sky Runner & Devil's Machine ping",
+    "file": "sky-runner-and-devil-s-machine-ping.wav"
+  },
+  {
+    "id": "small-blast-and-devil-s-machine-turned-off",
+    "num": 74,
+    "label": "Small blast & Devil's Machine turned off",
+    "file": "small-blast-and-devil-s-machine-turned-off.wav"
+  },
+  {
+    "id": "burst-into-flamse-and-breathed-fire",
+    "num": 75,
+    "label": "Burst into flamse & Breathed fire",
+    "file": "burst-into-flamse-and-breathed-fire.wav"
+  },
+  {
+    "id": "defense-down",
+    "num": 76,
+    "label": "Defense down",
+    "file": "defense-down.wav"
+  },
+  {
+    "id": "fired-a-beam",
+    "num": 77,
+    "label": "Fired a beam",
+    "file": "fired-a-beam.wav"
+  },
+  {
+    "id": "master-belch-burp",
+    "num": 78,
+    "label": "Master Belch burp",
+    "file": "master-belch-burp.wav"
+  },
+  {
+    "id": "paralysis-2",
+    "num": 79,
+    "label": "Paralysis 2",
+    "file": "paralysis-2.wav"
+  },
+  {
+    "id": "brainshock-2",
+    "num": 80,
+    "label": "Brainshock 2",
+    "file": "brainshock-2.wav"
+  },
+  {
+    "id": "giygas-and-spitting-attacks",
+    "num": 81,
+    "label": "Giygas & Spitting attacks",
+    "file": "giygas-and-spitting-attacks.wav"
+  },
+  {
+    "id": "scattered-spores",
+    "num": 82,
+    "label": "Scattered spores",
+    "file": "scattered-spores.wav"
+  },
+  {
+    "id": "status-afflicted",
+    "num": 83,
+    "label": "Status afflicted",
+    "file": "status-afflicted.wav"
+  },
+  {
+    "id": "said-something-nasty-and-grumbled-about-today-s-youth",
+    "num": 84,
+    "label": "Said something nasty & Grumbled about today's youth",
+    "file": "said-something-nasty-and-grumbled-about-today-s-youth.wav"
+  },
+  {
+    "id": "did-something-mysterious",
+    "num": 85,
+    "label": "Did something mysterious",
+    "file": "did-something-mysterious.wav"
+  },
+  {
+    "id": "summoned-a-storm",
+    "num": 86,
+    "label": "Summoned a storm",
+    "file": "summoned-a-storm.wav"
+  },
+  {
+    "id": "extinguising-blast",
+    "num": 88,
+    "label": "Extinguising blast",
+    "file": "extinguising-blast.wav"
+  },
+  {
+    "id": "refuel",
+    "num": 89,
+    "label": "Refuel",
+    "file": "refuel.wav"
+  },
+  {
+    "id": "giygas-breaking-down",
+    "num": 90,
+    "label": "Giygas breaking down",
+    "file": "giygas-breaking-down.wav"
+  },
+  {
+    "id": "fire-4",
+    "num": 91,
+    "label": "Fire 4",
+    "file": "fire-4.wav"
+  },
+  {
+    "id": "mini-barf-burp",
+    "num": 92,
+    "label": "Mini Barf burp",
+    "file": "mini-barf-burp.wav"
+  },
+  {
+    "id": "shield-reflect",
+    "num": 93,
+    "label": "Shield Reflect",
+    "file": "shield-reflect.wav"
+  },
+  {
+    "id": "okdesuka",
+    "num": 94,
+    "label": "Okdesuka",
+    "file": "okdesuka.wav"
+  },
+  {
+    "id": "magic-butterfly",
+    "num": 95,
+    "label": "Magic Butterfly",
+    "file": "magic-butterfly.wav"
+  },
+  {
+    "id": "possessed-and-ghost-sound",
+    "num": 96,
+    "label": "Possessed & Ghost sound",
+    "file": "possessed-and-ghost-sound.wav"
+  },
+  {
+    "id": "quick-stairs-cutscene",
+    "num": 97,
+    "label": "Quick stairs (cutscene)",
+    "file": "quick-stairs-cutscene.wav"
+  },
+  {
+    "id": "star-master-and-shield-killer",
+    "num": 99,
+    "label": "Star Master & Shield Killer",
+    "file": "star-master-and-shield-killer.wav"
+  },
+  {
+    "id": "eden-warp",
+    "num": 100,
+    "label": "Eden warp",
+    "file": "eden-warp.wav"
+  },
+  {
+    "id": "chick",
+    "num": 101,
+    "label": "Chick",
+    "file": "chick.wav"
+  },
+  {
+    "id": "get-special-item",
+    "num": 102,
+    "label": "Get special item",
+    "file": "get-special-item.wav"
+  },
+  {
+    "id": "learn-psi",
+    "num": 103,
+    "label": "Learn PSI",
+    "file": "learn-psi.wav"
+  },
+  {
+    "id": "chicken",
+    "num": 104,
+    "label": "Chicken",
+    "file": "chicken.wav"
+  },
+  {
+    "id": "sphinx-button-1",
+    "num": 105,
+    "label": "Sphinx button 1",
+    "file": "sphinx-button-1.wav"
+  },
+  {
+    "id": "sphinx-button-2",
+    "num": 106,
+    "label": "Sphinx button 2",
+    "file": "sphinx-button-2.wav"
+  },
+  {
+    "id": "sphinx-button-3",
+    "num": 107,
+    "label": "Sphinx button 3",
+    "file": "sphinx-button-3.wav"
+  },
+  {
+    "id": "sphinx-button-4",
+    "num": 108,
+    "label": "Sphinx button 4",
+    "file": "sphinx-button-4.wav"
+  },
+  {
+    "id": "sphinx-button-5",
+    "num": 109,
+    "label": "Sphinx button 5",
+    "file": "sphinx-button-5.wav"
+  },
+  {
+    "id": "pyramid-door-opens",
+    "num": 110,
+    "label": "Pyramid door opens",
+    "file": "pyramid-door-opens.wav"
+  },
+  {
+    "id": "locked-door",
+    "num": 111,
+    "label": "Locked door",
+    "file": "locked-door.wav"
+  },
+  {
+    "id": "mani-mani-statue",
+    "num": 113,
+    "label": "Mani Mani Statue",
+    "file": "mani-mani-statue.wav"
+  },
+  {
+    "id": "spooky",
+    "num": 114,
+    "label": "Spooky",
+    "file": "spooky.wav"
+  },
+  {
+    "id": "equip",
+    "num": 115,
+    "label": "Equip",
+    "file": "equip.wav"
+  },
+  {
+    "id": "get-item-from-present",
+    "num": 116,
+    "label": "Get item from present",
+    "file": "get-item-from-present.wav"
+  },
+  {
+    "id": "pressure-plate",
+    "num": 117,
+    "label": "Pressure plate",
+    "file": "pressure-plate.wav"
+  },
+  {
+    "id": "purchase-item",
+    "num": 118,
+    "label": "Purchase item",
+    "file": "purchase-item.wav"
+  },
+  {
+    "id": "bad-key-machine",
+    "num": 119,
+    "label": "Bad Key Machine",
+    "file": "bad-key-machine.wav"
+  },
+  {
+    "id": "purchase-from-item-stand",
+    "num": 120,
+    "label": "Purchase from item stand",
+    "file": "purchase-from-item-stand.wav"
+  },
+  {
+    "id": "tenda-read-book-and-lift-rock",
+    "num": 121,
+    "label": "Tenda read book & lift rock",
+    "file": "tenda-read-book-and-lift-rock.wav"
+  },
+  {
+    "id": "naming-screen-type",
+    "num": 122,
+    "label": "Naming screen type",
+    "file": "naming-screen-type.wav"
+  },
+  {
+    "id": "naming-screen-horizontal-cursor",
+    "num": 123,
+    "label": "Naming screen horizontal cursor",
+    "file": "naming-screen-horizontal-cursor.wav"
+  },
+  {
+    "id": "naming-screen-vertical-cursor",
+    "num": 124,
+    "label": "Naming screen vertical cursor",
+    "file": "naming-screen-vertical-cursor.wav"
+  },
+  {
+    "id": "naming-screen-backspace",
+    "num": 125,
+    "label": "Naming screen backspace",
+    "file": "naming-screen-backspace.wav"
+  },
+  {
+    "id": "alternate-okdesuka-easter-egg",
+    "num": 126,
+    "label": "Alternate Okdesuka easter egg",
+    "file": "alternate-okdesuka-easter-egg.wav"
+  },
+  {
+    "id": "bulldozer",
+    "num": null,
+    "label": "Bulldozer",
+    "file": "bulldozer.wav"
+  },
+  {
+    "id": "buzz-buzz-die",
+    "num": null,
+    "label": "Buzz Buzz die",
+    "file": "buzz-buzz-die.wav"
+  },
+  {
+    "id": "buzz-buzz",
+    "num": null,
+    "label": "Buzz Buzz",
+    "file": "buzz-buzz.wav"
+  },
+  {
+    "id": "falling-into-underworld",
+    "num": null,
+    "label": "Falling into underworld",
+    "file": "falling-into-underworld.wav"
+  },
+  {
+    "id": "helicopter",
+    "num": null,
+    "label": "Helicopter",
+    "file": "helicopter.wav"
+  },
+  {
+    "id": "peaceful-rest-valley-ambiance",
+    "num": null,
+    "label": "Peaceful Rest Valley ambiance",
+    "file": "peaceful-rest-valley-ambiance.wav"
+  },
+  {
+    "id": "phase-distorter-fail",
+    "num": null,
+    "label": "Phase Distorter fail",
+    "file": "phase-distorter-fail.wav"
+  },
+  {
+    "id": "phase-distorter",
+    "num": null,
+    "label": "Phase Distorter",
+    "file": "phase-distorter.wav"
+  },
+  {
+    "id": "robotomy",
+    "num": null,
+    "label": "Robotomy",
+    "file": "robotomy.wav"
+  },
+  {
+    "id": "sky-runner-crash",
+    "num": null,
+    "label": "Sky Runner crash",
+    "file": "sky-runner-crash.wav"
+  },
+  {
+    "id": "sky-runner-going-down",
+    "num": null,
+    "label": "Sky Runner going down",
+    "file": "sky-runner-going-down.wav"
+  },
+  {
+    "id": "starman-junior-appear",
+    "num": null,
+    "label": "Starman Junior appear",
+    "file": "starman-junior-appear.wav"
+  },
+  {
+    "id": "static",
+    "num": null,
+    "label": "Static",
+    "file": "static.wav"
+  },
+  {
+    "id": "stonehenge-base-shuts-down",
+    "num": null,
+    "label": "Stonehenge Base shuts down",
+    "file": "stonehenge-base-shuts-down.wav"
+  },
+  {
+    "id": "teleport-crash",
+    "num": null,
+    "label": "Teleport crash",
+    "file": "teleport-crash.wav"
+  },
+  {
+    "id": "teleportation-end",
+    "num": null,
+    "label": "Teleportation end",
+    "file": "teleportation-end.wav"
+  },
+  {
+    "id": "teleportation",
+    "num": null,
+    "label": "Teleportation",
+    "file": "teleportation.wav"
+  }
+]

@@ -177,7 +177,7 @@ interface HeroPoses {
   laying?: number;
 }
 const HERO_POSES: Record<number, HeroPoses> = {
-  1: { ladder: 17, rope: 21, peace: 14, laying: 15 }, // Ness (laying 15 = sleeping; 16 is a crowd sprite)
+  1: { ladder: 17, rope: 21, peace: 14, laying: 16 }, // Ness
   2: { ladder: 18, rope: 22 }, // Paula
   3: { ladder: 19, rope: 23 }, // Jeff
   4: { ladder: 20, rope: 24 }, // Poo
@@ -207,7 +207,7 @@ async function loadPoseSource(gid: number | undefined): Promise<HTMLImageElement
  * reserved pose rows of the sheet:
  *   climb  (row 4):  ladder f0/f1 -> cols 0/1, rope f0/f1 -> cols 2/3
  *   peace  (row 13): peace  f0/f1 -> cols 0/1
- *   laying (row 14): laying f0/f1 -> the wide 32x16 frames span cols 0-1 / 2-3
+ *   laying (row 14): laying f0/f1 -> the wide 24x16 frames span cols 0-1 / 2-3
  * Each pose's 2 frames live in its source's row 0 (cols 0/1). No-op for a hero
  * who lacks a given pose group; the row just stays blank.
  */
@@ -236,20 +236,17 @@ async function applyHeroPoses(
     ctx.drawImage(rope, 0, 0, frameW, frameH, 2 * frameW, cy, frameW, frameH);
     ctx.drawImage(rope, frameW, 0, frameW, frameH, 3 * frameW, cy, frameW, frameH);
   }
-  // peace row: 2 frames in cols 0/1 (source frames 16x24)
+  // peace row: a single static frame in col 0 (source frame 16x24).
   if (peace) {
     const py = PEACE_ROW * frameH;
     ctx.drawImage(peace, 0, 0, frameW, frameH, 0, py, frameW, frameH);
-    ctx.drawImage(peace, frameW, 0, frameW, frameH, frameW, py, frameW, frameH);
   }
-  // laying row: the source frames are WIDE (24x16); draw each at native size,
-  // top-anchored, frame 0 spanning cols 0-1 and frame 1 spanning cols 2-3.
+  // laying: ONE static frame, 3x2 blocks (24x16 — wider than tall), top-anchored
+  // in the laying row spanning cols 0-1.
   if (laying) {
-    const lw = laying.width / 4; // 4-col source grid
-    const lh = laying.height / 4;
-    const ly = LAYING_ROW * frameH;
-    ctx.drawImage(laying, 0, 0, lw, lh, 0, ly, lw, lh);
-    ctx.drawImage(laying, lw, 0, lw, lh, 2 * frameW, ly, lw, lh);
+    const lw = laying.width / 4; // source frame width (24 = 3 blocks)
+    const lh = laying.height / 4; // source frame height (16 = 2 blocks)
+    ctx.drawImage(laying, 0, 0, lw, lh, 0, LAYING_ROW * frameH, lw, lh);
   }
 }
 
@@ -501,10 +498,10 @@ export function drawSprite(
     col = frameIndex; // ladder pair; rope pair (cols 2-3) not wired up yet
   } else if (pose === 'peace' && rows > PEACE_ROW) {
     row = PEACE_ROW;
-    col = frameIndex; // 2-frame victory pose, single direction
+    col = 0; // single static victory frame
   } else if (pose === 'laying' && rows > LAYING_ROW) {
     row = LAYING_ROW;
-    col = frameIndex * 2; // wide frames: f0 spans cols 0-1, f1 spans cols 2-3
+    col = 0; // single static frame; the figure spans cols 0-1, rows 14-15
   } else {
     [row, col] = DIRECTION_LAYOUT[dir][frameIndex];
   }

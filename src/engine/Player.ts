@@ -18,7 +18,11 @@ const COL_OFFSET_Y = -8; // collision box is near feet
 // swing) but NOT during a HURT flinch — locking the flinch let a mob of enemies
 // chain-reset it and freeze the player solid (stunlock). The flinch is now
 // cosmetic: you can walk out of a crowd while it plays.
-const ATTACK_WINDUP = 8;
+// Attack plays 3 weapon frames: wind-up (f0) → swing (f1) → follow-through (f2),
+// so a held weapon animates across all three (the body sprite has 2 attack
+// frames and clamps f2 to its swing). Thresholds split ATTACK_TOTAL into thirds.
+const ATTACK_WINDUP = 6; // f0 ends here
+const ATTACK_SWING = 11; // f1 ends here, f2 (follow-through) runs to ATTACK_TOTAL
 const ATTACK_TOTAL = 16;
 const HURT_TOTAL = 20;
 
@@ -58,7 +62,7 @@ export class Player extends Entity {
   update() {
     if (this.pose === 'attack') {
       this.poseTimer++;
-      this.frame = this.poseTimer < ATTACK_WINDUP ? 0 : 1;
+      this.frame = this.poseTimer < ATTACK_WINDUP ? 0 : this.poseTimer < ATTACK_SWING ? 1 : 2;
       if (this.poseTimer >= ATTACK_TOTAL) {
         this.pose = 'walk';
         this.resetAnimation();

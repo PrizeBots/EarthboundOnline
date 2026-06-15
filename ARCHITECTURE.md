@@ -156,9 +156,18 @@ sector load + room crop — use it from the console or verification scripts.
 - **Items.ts** — held-item overlays: 16x16 pixel art (our own, never
   ROM-derived) drawn at a per-direction hand anchor relative to the entity
   anchor; facing away (N/NE/NW) puts the item in the far hand, under the body
-  sprite. Attack pose raises (frame 0) then swings (frame 1) the item. Art is
-  keyed by **catalog item id** (shops.json): authored per-item in
-  `overrides/item_sprites.json` (ITEM_PALETTE-index rows + a grip point),
+  sprite. A weapon has **`ITEM_FRAMES` (3) animation frames** — wind-up (f0),
+  swing (f1), follow-through (f2) — and the attack pose drives which draws
+  (`Player` splits `ATTACK_TOTAL` into thirds; the body sprite has only 2 attack
+  frames and clamps f2 to its swing). A small per-frame hand nudge traces the
+  swing arc on top of the drawn frames. An item with fewer authored frames falls
+  back to frame 0 (static). An item may carry a body-mount **`offset`** from the
+  entity anchor (e.g. a badge on the chest) — it's drawn as-authored at that spot
+  (no per-direction flip) but STILL plays its full swing animation; positioning
+  only moves where the swing happens. Authored by dragging the item on the
+  editor's live-test character (`offsetFor`/`setItemOffset`). Art is keyed by **catalog item id**
+  (shops.json): authored per-item in `overrides/item_sprites.json` (`frames`: up to
+  3 ITEM_PALETTE-index grids; `pixels` mirrors frame 0 for back-compat; + a grip point + optional worn `offset`),
   loaded by `loadItemSprites()` at startup so every client renders the same
   gear. A few legacy hand-authored defs (bat/pan/yoyo) seed/fallback. The
   equip cycle key (G) steps through the **equippable gear in your inventory**
@@ -183,9 +192,12 @@ focusItem })`) to the Sprite Editor's Item mode. The Sprite Editor's item list
   shops.json is ROM-derived and can't grow, the **+ New custom item** button mints
   a `custom-N` id stored in `overrides/custom_items.json` (id+name; `Items.ts`
   `loadCustomItems`/`addCustomItem`), with its art in `item_sprites.json` like any
-  other item. Editing saves the 16x16 art to `overrides/item_sprites.json` via the
-  dev save channel, shared by all clients. (Catalog item ids and the Goods
-  inventory ids are the same numeric-string id space.)
+  other item. Item mode edits **3 frames per item** — click a frame in the FRAMES
+  strip to edit it (the active one is highlighted there; unauthored frames seed
+  from the previous one) and a 2nd live preview loops just the item's swing.
+  Editing saves all 3 frames to
+  `overrides/item_sprites.json` via the dev save channel, shared by all clients.
+  (Catalog item ids and the Goods inventory ids are the same numeric-string id space.)
 - **Inventory.ts + MenuManager Goods** — the server-authoritative Goods
   inventory. The server grants a starting Cookie on join and is the sole
   authority on contents and effects; `Inventory.ts` just mirrors the latest
@@ -336,10 +348,13 @@ track titles (`SongNames`, pulled from the SPC ID666 tags by
 (`MusicManager.previewSong`, which resumes a suspended AudioContext so sound is
 enabled) to audition. Songs are renamable like entities — the override lives in
 `overrides/song_names.json` (`loadSongNameOverrides` at startup). Areas snap to the EB
-sector grid (64×32 px) by default so they bake back to per-sector musicId on
-SNES. Saved to `overrides/music.json` (`{version, areas:[{name,x,y,w,h,song}]}`);
-`MusicManager.songForPoint` checks areas first (last match wins) and falls back
-to the sector lookup, so unauthored regions are unchanged. `loadMusicAreas()`
+sector grid (256×128 px) on release so they bake back to per-sector musicId on
+SNES (the box follows the cursor freely while dragging; snap is applied on
+mouse-up). Saved to `overrides/music.json` (`{version, areas:[{name,x,y,w,h,song}]}`);
+`MusicManager.areaForPoint` checks areas first and falls back to the sector
+lookup, so unauthored regions are unchanged. Resolution is **sticky**: the area
+you're already in keeps the music until you leave it by more than `EDGE_MARGIN`
+(one tile), so being close to a border never triggers a neighbouring room's song. `loadMusicAreas()`
 runs at startup and ships like other overrides; saving pushes the working set
 live via `setMusicAreas()`.
 

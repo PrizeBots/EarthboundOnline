@@ -35,6 +35,20 @@ type NetworkCallback = {
    * a hit; heal>0 = restored HP (e.g. ate a Cookie).
    */
   onPlayerHp: (id: string, hp: number, maxHp: number, dmg: number, heal: number) => void;
+  /**
+   * A crit or a miss happened at world (x, y). `byPlayer` is the attacking
+   * player's id (null for enemy/NPC swings); `targetPlayer` is the defending
+   * player's id (null for enemy/NPC targets). Drives floating text + the
+   * SMAAAASH! / just-missed / dodge SFX. Plain hits don't fire this — their
+   * damage arrives via onNpcHp / onPlayerHp.
+   */
+  onCombat: (
+    evt: 'crit' | 'miss',
+    x: number,
+    y: number,
+    byPlayer: string | null,
+    targetPlayer: string | null
+  ) => void;
   /** The local player's Goods list (welcome snapshot + post-use deltas). */
   onInventory: (items: GoodsItem[]) => void;
   /** The local player's money balance (welcome snapshot + future deltas). */
@@ -65,6 +79,10 @@ export interface PlayerStatsPayload {
 
 let ws: WebSocket | null = null;
 let callbacks: NetworkCallback | null = null;
+// Editor mode toggled before the socket finished connecting (F2 straight from
+// char select). Stashed here and flushed in onopen so the server still pulls
+// our avatar out of the world sim. null = nothing pending.
+let pendingEditorMode: boolean | null = null;
 
 export function connect(
   spriteGroupId: number,
@@ -90,6 +108,11 @@ export function connect(
         appearance,
       })
     );
+    // Flush an editor toggle that fired while the socket was still connecting.
+    if (pendingEditorMode !== null) {
+      ws!.send(JSON.stringify({ type: 'editor', on: pendingEditorMode }));
+      pendingEditorMode = null;
+    }
   };
 
   ws.onmessage = (ev) => {
@@ -136,6 +159,9 @@ export function connect(
         break;
       case 'player_hp':
         callbacks?.onPlayerHp(msg.id, msg.hp, msg.maxHp, msg.dmg ?? 0, msg.heal ?? 0);
+        break;
+      case 'combat':
+        callbacks?.onCombat(msg.evt, msg.x, msg.y, msg.byPlayer ?? null, msg.targetPlayer ?? null);
         break;
       case 'player_respawn':
         callbacks?.onPlayerRespawn(msg.id, msg.x, msg.y, (msg.dir ?? 0) as Direction);
@@ -191,6 +217,9 @@ export function sendWarpState(warping: boolean) {
 export function sendEditorMode(on: boolean) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'editor', on }));
+  } else {
+    // Socket still connecting (F2 from char select) — flush in onopen.
+    pendingEditorMode = on;
   }
 }
 

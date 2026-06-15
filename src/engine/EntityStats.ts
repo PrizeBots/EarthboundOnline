@@ -43,6 +43,12 @@ export interface EntityStats {
   speed: number; // wander move speed px/tick (chase scales from it)
   detectRange: number; // px — player within this aggros the enemy (separate from attack range)
   attackRange: number; // px — enemy must be this close to land a hit
+  // Crit/dodge are PERCENT integers (0..100): crit = chance this entity's swing
+  // does CRIT_MULT damage (SMAAAASH); dodge = chance it evades an incoming hit
+  // (the attacker "just misses"). Equipped gear adds to a player's values; here
+  // they're the entity's BASE. Resolved server-side in npcSim (rolls /100).
+  crit: number;
+  dodge: number;
   col?: EntityCol; // authored collision box; absent = kind default (see EntityCol)
   combat?: CombatPersonality; // townsfolk threat behavior; absent = seeded default (npcSim)
 }
@@ -67,6 +73,8 @@ export const DEFAULT_ENTITY_STATS: EntityStats = {
   speed: 0.7,
   detectRange: 220,
   attackRange: 24,
+  crit: 4, // % — KEEP IN SYNC with npcSim DEFAULT_ENEMY_CRIT
+  dodge: 4, // % — KEEP IN SYNC with npcSim DEFAULT_ENEMY_DODGE
 };
 
 /** Stats for a sprite group: its authored entry, or the defaults. */

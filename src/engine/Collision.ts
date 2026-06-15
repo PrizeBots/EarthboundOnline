@@ -41,9 +41,9 @@ export interface CollisionOverrides {
    * graphic. Mirrored by server/npcSim.js and the py room checker.
    */
   cells?: Record<string, Record<string, number>>;
-  /** Map tiles promoted to the FOREGROUND layer ("tileX,tileY") — their full art
-   *  redraws over priority-behind sprites so the player can hide behind objects
-   *  the ROM never made foreground (Collision Painter FG mode). */
+  /** @deprecated Whole-tile FG promotion (pre-minitile model). No longer written:
+   *  "Behind"/Hide is now the per-minitile 0x40 collision bit stored in `cells`.
+   *  Kept so old saves still parse — the value is IGNORED on load. */
   foreground?: string[];
 }
 
@@ -58,10 +58,13 @@ const pristineRows = new Map<string, number[]>();
 // arrangement row in effectiveRow(), so a painted cell is the ONLY one affected.
 const cellOverrides = new Map<number, Map<number, number>>();
 
-// Map tiles promoted to the FOREGROUND layer (the Collision Painter's FG mode):
-// their full art is redrawn over priority-behind sprites, so the player can hide
-// behind objects the ROM never made foreground. Keyed tileY*MAP_WIDTH_TILES+tileX.
-const fgPromoted = new Set<number>();
+// "Behind"/Hide is a per-minitile collision bit (0x40) in the effective row: the
+// painter sets it through the normal cell-override layer, so it's minitile-
+// granular and saved in `cells` like every other bit. A promoted minitile's art
+// is redrawn (clipped) in front of behind-FG sprites (Renderer Pass 3b) AND
+// grants whole-body priority to a sprite standing over it (getSpritePriority) —
+// the one-paint "hide behind this" for BG buildings the ROM never made foreground.
+export const FG_PROMOTE_BIT = 0x40;
 
 function rebuildCellOverrides(): void {
   cellOverrides.clear();
@@ -72,23 +75,17 @@ function rebuildCellOverrides(): void {
     for (const [idx, byte] of Object.entries(idxMap)) m.set(Number(idx), byte);
     cellOverrides.set(ty * MAP_WIDTH_TILES + tx, m);
   }
-  fgPromoted.clear();
-  for (const tk of collisionOverrides?.foreground ?? []) {
-    const [tx, ty] = tk.split(',').map(Number);
-    fgPromoted.add(ty * MAP_WIDTH_TILES + tx);
-  }
 }
 
-/** True if a map tile was promoted to the foreground layer. */
-export function isForegroundPromoted(tileX: number, tileY: number): boolean {
-  return fgPromoted.has(tileY * MAP_WIDTH_TILES + tileX);
-}
-
-/** Editor live paint: promote/demote a map tile to/from the foreground layer. */
-export function setForegroundPromotedLive(tileX: number, tileY: number, on: boolean): void {
-  const k = tileY * MAP_WIDTH_TILES + tileX;
-  if (on) fgPromoted.add(k);
-  else fgPromoted.delete(k);
+/** Minitile indices (0-15) of a map tile flagged "Behind"/Hide (0x40) — the
+ *  renderer redraws these (clipped) in front of behind-FG sprites. Empty when
+ *  none. Reads the effective row, so live paints show immediately. */
+export function getPromotedMinitiles(tileX: number, tileY: number): number[] {
+  const row = effectiveRow(tileX, tileY);
+  if (!row) return [];
+  const out: number[] = [];
+  for (let i = 0; i < 16; i++) if ((row[i] & FG_PROMOTE_BIT) !== 0) out.push(i);
+  return out;
 }
 
 /**
@@ -207,7 +204,12 @@ export function getArrangementByteAt(tileX: number, tileY: number, idx: number):
 
 /** Editor live paint: set one map-cell's per-tile collision byte. Gameplay and
  *  the room-crop preview read it immediately via effectiveRow. */
-export function setCellCollisionLive(tileX: number, tileY: number, idx: number, byte: number): void {
+export function setCellCollisionLive(
+  tileX: number,
+  tileY: number,
+  idx: number,
+  byte: number
+): void {
   const key = tileY * MAP_WIDTH_TILES + tileX;
   let m = cellOverrides.get(key);
   if (!m) {
@@ -287,12 +289,7 @@ export function setActiveRoom(bounds: RoomBounds | null): void {
  * constraint. Remote players and NPCs are positioned elsewhere and never use
  * this.
  */
-export function checkPlayerCollision(
-  x: number,
-  y: number,
-  width: number,
-  height: number
-): boolean {
+export function checkPlayerCollision(x: number, y: number, width: number, height: number): boolean {
   if (checkCollision(x, y, width, height)) return true;
   if (!activeRoomCells) return false;
 
@@ -308,12 +305,7 @@ export function checkPlayerCollision(
   return false;
 }
 
-export function checkCollision(
-  x: number,
-  y: number,
-  width: number,
-  height: number
-): boolean {
+export function checkCollision(x: number, y: number, width: number, height: number): boolean {
   if (x < 0 || y < 0) return true;
   if (x + width >= MAP_WIDTH_TILES * TILE_SIZE) return true;
   if (y + height >= MAP_HEIGHT_TILES * TILE_SIZE) return true;
@@ -396,24 +388,20 @@ export function getSpritePriority(worldX: number, worldY: number): number {
   let bits = 0;
   for (let mty = minMTY; mty <= maxMTY; mty++) {
     for (let mtx = minMTX; mtx <= maxMTX; mtx++) {
-      // A foreground-PROMOTED tile (Collision Painter "G FG / Hide" mode) grants
-      // whole-body priority to any sprite it overlaps, so one FG paint is the
-      // ENTIRE "hide behind this" action — no separate pri-hi pass needed. Native
-      // ROM foreground (trees/overhangs) is NOT promoted, so this never touches
-      // their existing behaviour; only tiles an admin explicitly marked FG.
-      if (fgPromoted.has((mty >> 2) * MAP_WIDTH_TILES + (mtx >> 2))) {
-        bits |= 0x02;
-        continue;
-      }
       const row = effectiveRow(mtx >> 2, mty >> 2);
       if (!row) continue;
 
-      // Skip SOLID minitiles: counters/tables carry priority bits on their
-      // own solid front faces (e.g. burger-shop counter = 0x80|0x02), but
-      // feet can never stand there — sampling them sank the player's head
-      // behind the counter when pressed against it. Only flags on walkable
-      // ground (clerk strips, sofa cushions, canopy shade) apply to sprites.
       const b = row[(mty & 3) * 4 + (mtx & 3)];
+      // Explicit Behind/Hide (0x40) grants whole-body priority even on SOLID
+      // cells — that's the whole point: you walk up against a building and your
+      // foot box reaches into its solid front wall (which you painted Behind),
+      // so your overlapping upper body hides behind it. One paint = "hide behind
+      // this" for BG buildings with no native ROM foreground.
+      if ((b & FG_PROMOTE_BIT) !== 0) bits |= 0x02;
+      // Native pri bits (0x01/0x02) only apply on WALKABLE ground: counters/
+      // tables carry them on their own solid front faces (e.g. burger-shop
+      // counter = 0x80|0x02), but feet never stand there — sampling them sank
+      // the player's head behind the counter when pressed against it.
       if ((b & 0x80) === 0) bits |= b & 0x03;
     }
   }
@@ -492,7 +480,10 @@ export function computeRoomBounds(worldX: number, worldY: number): RoomBounds | 
 
   const visited = new Set<number>();
   const stack: number[] = [seedY * MAP_WIDTH_MT + seedX];
-  let minMTX = seedX, maxMTX = seedX, minMTY = seedY, maxMTY = seedY;
+  let minMTX = seedX,
+    maxMTX = seedX,
+    minMTY = seedY,
+    maxMTY = seedY;
 
   while (stack.length > 0) {
     const key = stack.pop()!;
@@ -521,10 +512,7 @@ export function computeRoomBounds(worldX: number, worldY: number): RoomBounds | 
     // Dungeons keep free expansion — caves have legitimate 1-tall squeezes
     // and cliff ledges.
     for (const nx of [mtx + 1, mtx - 1]) {
-      if (
-        isIndoorTile(nx >> 2, mty >> 2) &&
-        isMinitileSolid(nx, mty - 1)
-      ) {
+      if (isIndoorTile(nx >> 2, mty >> 2) && isMinitileSolid(nx, mty - 1)) {
         continue;
       }
       stack.push(mty * MAP_WIDTH_MT + nx);
@@ -566,8 +554,14 @@ export function computeRoomBounds(worldX: number, worldY: number): RoomBounds | 
   for (const sIdx of floodSectors) {
     const sy = Math.floor(sIdx / MAP_WIDTH_SECTORS);
     const sx = sIdx % MAP_WIDTH_SECTORS;
-    for (const [dsx, dsy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as [number, number][]) {
-      const nsx = sx + dsx, nsy = sy + dsy;
+    for (const [dsx, dsy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ] as [number, number][]) {
+      const nsx = sx + dsx,
+        nsy = sy + dsy;
       if (nsx < 0 || nsy < 0 || nsx >= MAP_WIDTH_SECTORS) continue;
       const nIdx = nsy * MAP_WIDTH_SECTORS + nsx;
       if (mergeSectors.has(nIdx)) continue;
@@ -653,8 +647,7 @@ export function computeRoomBounds(worldX: number, worldY: number): RoomBounds | 
       if (isMinitileSolid(nx, ny)) continue;
       const nk = ny * MAP_WIDTH_MT + nx;
       if (visited.has(nk)) continue;
-      const nSec =
-        Math.floor(ny / SECTOR_MT_Y) * MAP_WIDTH_SECTORS + Math.floor(nx / SECTOR_MT_X);
+      const nSec = Math.floor(ny / SECTOR_MT_Y) * MAP_WIDTH_SECTORS + Math.floor(nx / SECTOR_MT_X);
       if (!floodSectors.has(nSec)) continue;
       if (doorCells.has(nk)) continue;
       visited.add(nk);
@@ -715,13 +708,19 @@ export function computeRoomBounds(worldX: number, worldY: number): RoomBounds | 
     }
   };
   dilate(WALL_MARGIN_N, [[0, -1]]); // back walls
-  dilate(WALL_MARGIN_EW, [[-1, 0], [1, 0]]); // side walls
+  dilate(WALL_MARGIN_EW, [
+    [-1, 0],
+    [1, 0],
+  ]); // side walls
   if (WALL_MARGIN_S > 0) dilate(WALL_MARGIN_S, [[0, 1]]);
 
   // Bounding rect of the mask (camera clamping), plus "holes": minitiles
   // inside masked tiles that are a neighboring room's floor (walls are not
   // always tile-aligned, so an edge tile can straddle both rooms).
-  let minTX = MAP_WIDTH_TILES, maxTX = 0, minTY = MAP_HEIGHT_TILES, maxTY = 0;
+  let minTX = MAP_WIDTH_TILES,
+    maxTX = 0,
+    minTY = MAP_HEIGHT_TILES,
+    maxTY = 0;
   const holes: { x: number; y: number }[] = [];
   for (const t of tiles) {
     const tx = t % MAP_WIDTH_TILES;

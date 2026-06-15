@@ -19,7 +19,7 @@ import {
   customItemIds,
   HELD_ITEM_IDS,
 } from '../../engine/Items';
-import { openSpriteEditor } from '../../engine/SpriteEditor';
+import { openSpriteEditor } from '../../engine/spriteEditor';
 
 // The catalog is split into the same tabs as the Sprite Editor's item picker:
 // Weapons/Items come from the shops catalog (a weapon is gear whose equip slot

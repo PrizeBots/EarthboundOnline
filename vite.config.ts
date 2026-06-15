@@ -25,8 +25,17 @@ const OVERRIDE_ALLOW = new Set([
   'item_sprites.json',
   'custom_items.json',
   'rooms.json',
+  'sprite_frames.json',
+  'flags.json', // Flag Editor — flag catalog (id/name/scope/default)
+  'triggers.json', // Flag Editor — event→flag rules
 ]);
 const SAVE_BODY_LIMIT = 8 * 1024 * 1024; // sprite overrides carry data URLs
+
+// Editor override hot-reload state. Shared between the watch `ignored`
+// predicate (in server.watch below) and the /__editor/hotreload toggle.
+// Default OFF so editor saves don't trigger Vite's full-page reload (which
+// kicks you out of the editor). Primeable with EB_RELOAD_OVERRIDES=1.
+let overrideHotReload = process.env.EB_RELOAD_OVERRIDES === '1';
 
 // Verifier registry for editor "Verify" buttons (EDITOR_TOOLS.md: surface the
 // canonical py checkers inside the tools). Fixed commands only — the client
@@ -43,27 +52,26 @@ function editorSavePlugin() {
   return {
     name: 'editor-save-channel',
     apply: 'serve' as const, // dev server only — excluded from `vite build`
+    // When the editor's Reload toggle is OFF, also swallow Vite's own HMR /
+    // full-page reloads for SOURCE edits (.ts etc.) — returning [] means "no
+    // modules to update", so Vite sends nothing and you stay in the editor.
+    // Flip the toggle ON (or reload manually) to pick the changes back up.
+    handleHotUpdate(ctx: any) {
+      if (!overrideHotReload) return [];
+      return ctx.modules;
+    },
     configureServer(server: any) {
-      // Hot-reload of override files. OFF by default so editor saves don't
-      // trigger Vite's full-page reload (which kicks you out of the editor); the
-      // header toggle flips it live. We add/unwatch the overrides dir on the live
-      // chokidar instance rather than via a static `ignored` so it can change at
-      // runtime. Primeable with EB_RELOAD_OVERRIDES=1.
-      let hotReload = process.env.EB_RELOAD_OVERRIDES === '1';
-      const applyHotReload = () => {
-        try {
-          if (hotReload) server.watcher.add(OVERRIDES_DIR);
-          else server.watcher.unwatch(OVERRIDES_DIR);
-        } catch {
-          /* watcher not ready yet — retried on the next toggle */
-        }
-      };
-      applyHotReload();
-
+      // Hot-reload of override files is gated by the `ignored` predicate in
+      // server.watch (below), which chokidar re-evaluates per file event — so
+      // flipping `overrideHotReload` here takes effect live with no restart.
+      // (We used to add/unwatch OVERRIDES_DIR on the live watcher, but unwatch
+      // was unreliable for sub-paths of the recursively-watched root, and the
+      // Windows backslash path never matched — so saves kept reloading even
+      // with the toggle OFF.)
       server.middlewares.use('/__editor/hotreload', (req: any, res: any) => {
         const reply = () => {
           res.setHeader('content-type', 'application/json');
-          res.end(JSON.stringify({ on: hotReload }));
+          res.end(JSON.stringify({ on: overrideHotReload }));
         };
         if (req.method === 'GET') return reply();
         if (req.method !== 'POST') {
@@ -75,12 +83,11 @@ function editorSavePlugin() {
         req.on('data', (c: any) => (body += c));
         req.on('end', () => {
           try {
-            hotReload = !!JSON.parse(body).on;
+            overrideHotReload = !!JSON.parse(body).on;
           } catch {
             /* keep current state on a bad body */
           }
-          applyHotReload();
-          console.log(`[editor] override hot-reload ${hotReload ? 'ON' : 'OFF'}`);
+          console.log(`[editor] override hot-reload ${overrideHotReload ? 'ON' : 'OFF'}`);
           reply();
         });
       });
@@ -213,12 +220,19 @@ export default defineConfig({
     port: 4444,
     strictPort: true,
     watch: {
-      // Never reload on the save channel's scratch files. The override .json
-      // files in public/overrides/ are watched/UNwatched at RUNTIME (default
-      // off, so editor saves don't kick you out) — the editor's header
-      // "Hot-reload" toggle flips it live via /__editor/hotreload. See
-      // editorSavePlugin. Default can be primed with EB_RELOAD_OVERRIDES=1.
-      ignored: ['**/*.bak', '**/*.tmp'],
+      // Never reload on the save channel's scratch files.
+      // The override .json files in public/overrides/ are ignored while
+      // hot-reload is OFF (the default), so editor saves don't trigger Vite's
+      // full-page reload and kick you out of the editor. The header "Hot-reload"
+      // toggle flips `overrideHotReload` live via /__editor/hotreload; chokidar
+      // re-runs this predicate per file event, so the toggle applies without a
+      // restart. Default can be primed with EB_RELOAD_OVERRIDES=1.
+      ignored: [
+        '**/*.bak',
+        '**/*.tmp',
+        (file: string) =>
+          !overrideHotReload && file.replace(/\\/g, '/').includes('/public/overrides/'),
+      ],
     },
   },
   build: {

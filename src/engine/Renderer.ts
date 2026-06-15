@@ -5,7 +5,7 @@ import { getTileAt, getSectorForTile } from './MapManager';
 import { drawTile, drawForegroundTile, hasForegroundTile } from './TilesetManager';
 import { drawSprite, getSpriteGroupMeta, SpritePart } from './SpriteManager';
 import { drawHeldItem, isItemBehind } from './Items';
-import { getSpritePriority, isForegroundPromoted } from './Collision';
+import { getSpritePriority, getPromotedMinitiles } from './Collision';
 import { getStatus } from './StatusModal';
 import {
   Pose,
@@ -14,6 +14,7 @@ import {
   SCREEN_WIDTH,
   SCREEN_HEIGHT,
   TILE_SIZE,
+  MINITILE_SIZE,
   MAP_WIDTH_TILES,
 } from '../types';
 
@@ -42,8 +43,14 @@ const ATTACK_HALF = 8;
 const DBG_DIAG = Math.SQRT1_2;
 // Indexed by Direction: S,N,W,E,NW,SW,SE,NE.
 const DBG_DIR_VEC: [number, number][] = [
-  [0, 1], [0, -1], [-1, 0], [1, 0],
-  [-DBG_DIAG, -DBG_DIAG], [-DBG_DIAG, DBG_DIAG], [DBG_DIAG, DBG_DIAG], [DBG_DIAG, -DBG_DIAG],
+  [0, 1],
+  [0, -1],
+  [-1, 0],
+  [1, 0],
+  [-DBG_DIAG, -DBG_DIAG],
+  [-DBG_DIAG, DBG_DIAG],
+  [DBG_DIAG, DBG_DIAG],
+  [DBG_DIAG, -DBG_DIAG],
 ];
 
 // --- Health / PSI bars ------------------------------------------------------
@@ -55,7 +62,7 @@ const DBG_DIR_VEC: [number, number][] = [
 // Visibility: you ONLY see your OWN player bar; other players' bars are never
 // drawn. Enemies show an HP bar only once damaged. Props never carry one.
 
-const BAR_W = 21;  // inner fill length (~30% longer than the original 16)
+const BAR_W = 21; // inner fill length (~30% longer than the original 16)
 const BAR_H = 1.5; // inner fill height (each bar thin — half the previous 3)
 const BAR_GAP = 4; // px between sprite top and bar
 const DEFAULT_SPRITE_H = 24;
@@ -123,8 +130,8 @@ function drawHealthBar(
   const spriteH = getSpriteGroupMeta(spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
   const B = 0.5;
   const h = BAR_H + 2 * B; // one capsule's height
-  const R = h / 2;         // outer end: fully rounded
-  const INNER_R = 1;       // inner end: small radius — trims a px off each divider side
+  const R = h / 2; // outer end: fully rounded
+  const INNER_R = 1; // inner end: small radius — trims a px off each divider side
   const hasPP = ppRatio !== undefined;
   const total = h + (hasPP ? h : 0); // flush — no gap between the two
   const x = centerX - BAR_W / 2 - B;
@@ -198,7 +205,12 @@ export class Renderer {
     this.ctx.imageSmoothingEnabled = false;
   }
 
-  render(camera: Camera, player: Player, remotePlayers: Map<string, RemotePlayer>, npcs: NPC[] = []) {
+  render(
+    camera: Camera,
+    player: Player,
+    remotePlayers: Map<string, RemotePlayer>,
+    npcs: NPC[] = []
+  ) {
     // Switch backbuffer resolution only when entering/leaving editor zoom, so
     // gameplay rendering (and text) is byte-for-byte the same as before.
     const wantHighRes = camera.zoom !== 1;
@@ -260,50 +272,42 @@ export class Renderer {
       }
     }
 
-    // SNES layering model: sprites render ABOVE the whole FG layer unless the
-    // ground under their feet is flagged. Bit 0x01 drops the sprite's LOWER
-    // half behind FG (tall grass, bed feet, counters); bit 0x02 drops the
-    // WHOLE sprite (tree canopies, directly behind signs). The map data
-    // encodes all depth relationships through these flags — no Y-sorting
-    // against FG tiles.
+    // Depth model: ALL sprites draw in ONE feet-Y-sorted pass, so a sprite in
+    // front (larger feet-Y) always paints over one behind it — sprite-vs-sprite
+    // is pure Y-sort. The FG layer (native foreground tiles + "Behind"/0x40
+    // promoted BG tiles) is then re-drawn over each sprite's own footprint to
+    // occlude the parts flagged behind it: bit 0x01 = LOWER half behind FG (tall
+    // grass, counters), 0x02 = WHOLE body behind FG (canopies, behind a
+    // building). This replaces the old two-bucket (behind-FG / above-FG) split,
+    // which forced EVERY above-FG sprite to paint after EVERY behind-FG one —
+    // so an NPC behind you rendered on top whenever you stood on a flagged tile.
+    const drawFG = camera.zoom >= FG_PASS_MIN_ZOOM;
 
-    const behindFG: { sortY: number; draw: () => void }[] = [];
-    const aboveFG: { sortY: number; draw: () => void }[] = [];
-
-    // Enqueues a sprite (and its optional health bar) into the FG-relative
-    // layers. The bar sits above the head, so it follows the UPPER half: when
-    // the upper half is dropped behind the FG (e.g. under a tree canopy), the
-    // bar hides behind it too. Pushed after the sprite with the same sortY so
-    // the stable sort keeps it drawing directly on top of its own entity.
-    const enqueueSprite = (
+    // One drawable sprite: feet-Y sort key, FG-priority bits, part + bar draws.
+    interface SpriteJob {
+      worldX: number;
+      feetY: number;
+      local: boolean; // the local player wins feet-Y ties (draws on top)
+      pri: number;
+      drawPart: (part: SpritePart) => void;
+      drawBar?: () => void;
+    }
+    const jobs: SpriteJob[] = [];
+    const addSprite = (
       worldX: number,
       worldY: number,
       drawPart: (part: SpritePart) => void,
-      drawBar?: () => void
+      drawBar?: () => void,
+      local = false
     ) => {
-      const pri = getSpritePriority(worldX, worldY);
-      // ROM semantics (EB tile-attribute docs, verified against extracted
-      // data at the Onett stop sign — see bugs.md): 0x01 = LOWER BODY hidden
-      // behind FG (tall grass, hedges, one row back from a sign); 0x02 =
-      // WHOLE BODY hidden (tree canopies, pressed directly behind signs —
-      // those rows are 0x03 in the ROM: whole wins over lower). There is NO
-      // "upper half" bit; an earlier reading invented one and a later fix
-      // split 0x03 as lower-only, which floated heads in front of every
-      // sign/pole on the map.
-      const wholeBehind = (pri & 0x02) !== 0;
-      const lowerHalfBehind = (pri & 0x01) !== 0;
-      if (wholeBehind) {
-        behindFG.push({ sortY: worldY, draw: () => drawPart('full') });
-      } else if (lowerHalfBehind) {
-        behindFG.push({ sortY: worldY, draw: () => drawPart('lower') });
-        aboveFG.push({ sortY: worldY, draw: () => drawPart('upper') });
-      } else {
-        aboveFG.push({ sortY: worldY, draw: () => drawPart('full') });
-      }
-      if (drawBar) {
-        // Bar rides with the head — hidden only when the whole body is.
-        (wholeBehind ? behindFG : aboveFG).push({ sortY: worldY, draw: drawBar });
-      }
+      jobs.push({
+        worldX,
+        feetY: worldY,
+        local,
+        pri: getSpritePriority(worldX, worldY),
+        drawPart,
+        drawBar,
+      });
     };
 
     // Draws a player (local or remote) plus their held-item overlay. The item
@@ -332,20 +336,35 @@ export class Renderer {
 
     const playerSx = Math.round(player.x) - camX;
     const playerSy = Math.round(player.y) - camY;
-    enqueueSprite(
-      player.x, player.y,
+    addSprite(
+      player.x,
+      player.y,
       (part) =>
         drawPlayerPart(
-          player.spriteGroupId, player.direction, player.frame,
-          player.pose, player.heldItemId, playerSx, playerSy, part
+          player.spriteGroupId,
+          player.direction,
+          player.frame,
+          player.pose,
+          player.heldItemId,
+          playerSx,
+          playerSy,
+          part
         ),
       () => {
         // Your own bar: HP + a PSI bar beneath it (PP from the authoritative
         // stats mirror). Only you ever see this.
         const s = getStatus();
         const ppRatio = s.ppMax > 0 ? Math.max(0, Math.min(1, s.pp / s.ppMax)) : 0;
-        drawHealthBar(this.ctx, playerSx, playerSy, player.spriteGroupId, player.healthRatio, ppRatio);
-      }
+        drawHealthBar(
+          this.ctx,
+          playerSx,
+          playerSy,
+          player.spriteGroupId,
+          player.healthRatio,
+          ppRatio
+        );
+      },
+      true
     );
 
     for (const [, rp] of remotePlayers) {
@@ -353,12 +372,19 @@ export class Renderer {
       const rpScreenY = Math.round(rp.y) - camY;
       if (rpScreenX < -32 || rpScreenX > vw + 32) continue;
       if (rpScreenY < -48 || rpScreenY > vh + 48) continue;
-      enqueueSprite(
-        rp.x, rp.y,
+      addSprite(
+        rp.x,
+        rp.y,
         (part) =>
           drawPlayerPart(
-            rp.spriteGroupId, rp.direction, rp.frame,
-            rp.pose ?? 'walk', rp.itemId ?? null, rpScreenX, rpScreenY, part
+            rp.spriteGroupId,
+            rp.direction,
+            rp.frame,
+            rp.pose ?? 'walk',
+            rp.itemId ?? null,
+            rpScreenX,
+            rpScreenY,
+            part
           )
         // No bar: you never see other players' health/PSI bars.
       );
@@ -371,23 +397,32 @@ export class Renderer {
       if (nScreenY < -48 || nScreenY > vh + 48) continue;
       // Props are scenery — only people/enemies carry health bars, and a bar is
       // hidden at full HP (shown to everyone only once it drops below 100%).
-      const drawBar = (npc.kind === 'person' || npc.kind === 'enemy') && npc.healthRatio < 1
-        ? () => drawHealthBar(this.ctx, nScreenX, nScreenY, npc.spriteGroupId, npc.healthRatio)
-        : undefined;
-      enqueueSprite(
-        npc.x, npc.y,
-        (part) => drawSprite(this.ctx, npc.spriteGroupId, npc.direction, npc.frame, nScreenX, nScreenY, part, npc.pose),
+      const drawBar =
+        (npc.kind === 'person' || npc.kind === 'enemy') && npc.healthRatio < 1
+          ? () => drawHealthBar(this.ctx, nScreenX, nScreenY, npc.spriteGroupId, npc.healthRatio)
+          : undefined;
+      addSprite(
+        npc.x,
+        npc.y,
+        (part) =>
+          drawSprite(
+            this.ctx,
+            npc.spriteGroupId,
+            npc.direction,
+            npc.frame,
+            nScreenX,
+            nScreenY,
+            part,
+            npc.pose
+          ),
         drawBar
       );
     }
 
-    // Pass 2: sprite halves dropped behind the FG layer (Y-sorted among themselves)
-    behindFG.sort((a, b) => a.sortY - b.sortY);
-    for (const item of behindFG) item.draw();
-
-    // Pass 3: the FG layer (flat, like a high-priority SNES BG layer).
-    // Skipped when zoomed far out in the editor — FG detail is sub-pixel there.
-    const drawFG = camera.zoom >= FG_PASS_MIN_ZOOM;
+    // The FG layer over the BG for areas with NO sprite (sprites re-cover their
+    // own footprint below). Native foreground tiles are transparent except their
+    // FG pixels; "Behind"/0x40 tiles are already in the BG pass, so they're only
+    // re-drawn per-sprite to occlude a hidden sprite — not here.
     if (drawFG) {
       for (let row = startRow; row <= endRow; row++) {
         for (let col = startCol; col <= endCol; col++) {
@@ -395,54 +430,102 @@ export class Renderer {
           if (!sector) continue;
           if (!hasForegroundTile(sector.tilesetId, sector.paletteId)) continue;
           const arrangementId = getTileAt(col, row);
-          const screenX = col * TILE_SIZE - camX;
-          const screenY = row * TILE_SIZE - camY;
-          drawForegroundTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, screenX, screenY);
+          drawForegroundTile(
+            this.ctx,
+            sector.tilesetId,
+            sector.paletteId,
+            arrangementId,
+            col * TILE_SIZE - camX,
+            row * TILE_SIZE - camY
+          );
         }
       }
     }
 
-    // Pass 3b: foreground-promoted tiles (Collision Painter "G Hide" mode) —
-    // redraw their FULL art here so it covers priority-behind sprites. Lets the
-    // player hide behind ROM-BG objects (buildings) that have no native FG layer.
-    //
-    // "See-through while hiding": when the LOCAL player is behind promoted
-    // tiles, a soft CIRCLE of reveal around them ghosts the building so you can
-    // see what's behind it — yourself, other players, enemies, gift boxes. All
-    // of those render in the behind-FG pass (above), so fading the building's
-    // redraw here exposes them. Radial falloff keeps the edge soft; the rest of
-    // the building stays solid.
-    const REVEAL_IN = 52;    // fully ghosted within this radius (world px)
-    const REVEAL_OUT = 108;  // back to fully solid past this radius
-    const MIN_ALPHA = 0.1;   // building opacity at the centre of the reveal (~10%)
+    // "See-through while hiding": when the LOCAL player is behind a building, a
+    // soft CIRCLE of reveal ghosts the Behind/0x40 redraw so you can see yourself
+    // and anyone else tucked behind the same building. Radial falloff keeps the
+    // edge soft; the rest of the building stays solid.
+    const REVEAL_IN = 52; // fully ghosted within this radius (world px)
+    const REVEAL_OUT = 108; // back to fully solid past this radius
+    const MIN_ALPHA = 0.1; // building opacity at the centre of the reveal (~10%)
     const playerHidden = getSpritePriority(player.x, player.y) !== 0;
-    for (let row = startRow; drawFG && row <= endRow; row++) {
-      for (let col = startCol; col <= endCol; col++) {
-        if (!isForegroundPromoted(col, row)) continue;
-        const sector = getSectorForTile(col, row);
-        if (!sector) continue;
-        const tileWX = col * TILE_SIZE, tileWY = row * TILE_SIZE;
-        let alpha = 1;
-        if (playerHidden) {
-          const dx = tileWX + TILE_SIZE / 2 - player.x;
-          const dy = tileWY + TILE_SIZE / 2 - player.y;
-          const d = Math.sqrt(dx * dx + dy * dy);
-          if (d <= REVEAL_IN) alpha = MIN_ALPHA;
-          else if (d < REVEAL_OUT)
-            alpha = MIN_ALPHA + (1 - MIN_ALPHA) * ((d - REVEAL_IN) / (REVEAL_OUT - REVEAL_IN));
+
+    // Re-draw the FG layer over one sprite's footprint, occluding its behind-FG
+    // part. Footprint = a box around the feet generous enough to cover the body
+    // and the health bar above the head.
+    const FG_COVER_HALF_W = 20; // px each side of the sprite centre
+    const FG_COVER_UP = 56; // px above the feet (body + bar)
+    const FG_COVER_DOWN = 2;
+    const redrawFGOver = (worldX: number, feetY: number) => {
+      if (!drawFG) return;
+      const c0 = Math.max(startCol, Math.floor((worldX - FG_COVER_HALF_W) / TILE_SIZE));
+      const c1 = Math.min(endCol, Math.floor((worldX + FG_COVER_HALF_W) / TILE_SIZE));
+      const r0 = Math.max(startRow, Math.floor((feetY - FG_COVER_UP) / TILE_SIZE));
+      const r1 = Math.min(endRow, Math.floor((feetY + FG_COVER_DOWN) / TILE_SIZE));
+      for (let row = r0; row <= r1; row++) {
+        for (let col = c0; col <= c1; col++) {
+          const sector = getSectorForTile(col, row);
+          if (!sector) continue;
+          const arrangementId = getTileAt(col, row);
+          const sx = col * TILE_SIZE - camX;
+          const sy = row * TILE_SIZE - camY;
+          if (hasForegroundTile(sector.tilesetId, sector.paletteId)) {
+            drawForegroundTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, sx, sy);
+          }
+          const mask = getPromotedMinitiles(col, row);
+          if (mask.length === 0) continue;
+          let alpha = 1;
+          if (playerHidden) {
+            const dx = col * TILE_SIZE + TILE_SIZE / 2 - player.x;
+            const dy = row * TILE_SIZE + TILE_SIZE / 2 - player.y;
+            const d = Math.sqrt(dx * dx + dy * dy);
+            if (d <= REVEAL_IN) alpha = MIN_ALPHA;
+            else if (d < REVEAL_OUT)
+              alpha = MIN_ALPHA + (1 - MIN_ALPHA) * ((d - REVEAL_IN) / (REVEAL_OUT - REVEAL_IN));
+          }
+          // Clip to just the painted minitiles, then draw the tile art — only the
+          // Behind cells show through, giving sub-tile (8px) hide precision.
+          this.ctx.save();
+          this.ctx.beginPath();
+          for (const idx of mask) {
+            this.ctx.rect(
+              sx + (idx % 4) * MINITILE_SIZE,
+              sy + (idx >> 2) * MINITILE_SIZE,
+              MINITILE_SIZE,
+              MINITILE_SIZE
+            );
+          }
+          this.ctx.clip();
+          if (alpha < 1) this.ctx.globalAlpha = alpha;
+          drawTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, sx, sy);
+          if (alpha < 1) this.ctx.globalAlpha = 1;
+          this.ctx.restore();
         }
-        if (alpha < 1) this.ctx.globalAlpha = alpha;
-        drawTile(this.ctx, sector.tilesetId, sector.paletteId, getTileAt(col, row),
-          tileWX - camX, tileWY - camY);
-        if (alpha < 1) this.ctx.globalAlpha = 1;
+      }
+    };
+
+    // Feet-Y order; the local player wins ties so you're never hidden under an
+    // NPC you're standing level with.
+    jobs.sort((a, b) => a.feetY - b.feetY || (a.local ? 1 : 0) - (b.local ? 1 : 0));
+    for (const job of jobs) {
+      const wholeBehind = (job.pri & 0x02) !== 0;
+      const lowerHalfBehind = (job.pri & 0x01) !== 0;
+      if (wholeBehind) {
+        job.drawPart('full');
+        job.drawBar?.(); // bar hides with the body
+        redrawFGOver(job.worldX, job.feetY);
+      } else if (lowerHalfBehind) {
+        job.drawPart('lower');
+        redrawFGOver(job.worldX, job.feetY);
+        job.drawPart('upper');
+        job.drawBar?.();
+      } else {
+        // In front of the FG layer — drawn over the global FG pass above.
+        job.drawPart('full');
+        job.drawBar?.();
       }
     }
-
-    // Pass 4: sprite halves above the FG layer (Y-sorted among themselves).
-    // Each entity's health bar rides in whichever layer its upper half landed
-    // (enqueued just after the sprite), so it shares the entity's depth.
-    aboveFG.sort((a, b) => a.sortY - b.sortY);
-    for (const item of aboveFG) item.draw();
 
     // Black out minitiles of neighboring rooms that share an edge tile with
     // the current room (sub-tile leftovers of the room mask).

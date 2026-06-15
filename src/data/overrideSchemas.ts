@@ -27,6 +27,9 @@ export const EntityStatsSchema = z
     speed: z.number().optional(),
     detectRange: z.number().optional(),
     attackRange: z.number().optional(),
+    // Crit/dodge as percent points (0..100); server rolls them /100.
+    crit: z.number().min(0).max(100).optional(),
+    dodge: z.number().min(0).max(100).optional(),
     col: EntityColSchema.optional(),
     combat: z.enum(['brave', 'skirmisher', 'coward', 'nervous']).optional(),
     // documentation extras kept on EarthBound enemies — not read by the runtime

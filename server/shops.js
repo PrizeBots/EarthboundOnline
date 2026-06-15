@@ -18,9 +18,9 @@ const path = require('path');
 // buyable/sellable, they just don't do anything when "used" (use_item no-ops).
 // Cookie (88) keeps the legacy value so the starter item behaves as before.
 const HEAL_BY_ID = {
-  '88': 6,   // Cookie
-  '89': 10,  // Bag of fries
-  '90': 50,  // Hamburger
+  88: 6, // Cookie
+  89: 10, // Bag of fries
+  90: 50, // Hamburger
 };
 
 function loadShops(assetsDir) {
@@ -33,18 +33,36 @@ function loadShops(assetsDir) {
   const items = data.items || {};
   const stores = data.stores || {};
 
+  // Crit/dodge per equippable item live in OUR own override file (shops.json is
+  // ROM-derived and can't grow), keyed by item id: { "17": { crit: 5, dodge: 0 } }
+  // (percent points). Merged onto each good's equip block below. Absent file =
+  // all gear is crit/dodge-neutral. See gameHost recomputeEquipStats.
+  let equipStats = {};
+  try {
+    const p = path.resolve(assetsDir, '..', 'overrides', 'equip_stats.json');
+    equipStats = JSON.parse(fs.readFileSync(p, 'utf8')) || {};
+  } catch {
+    /* none authored — gear adds no crit/dodge */
+  }
+
   // GOODS catalog keyed by numeric-string id: { name, cost, heal }. Replaces the
   // old hand-authored registry; inventoryView + use_item read the same shape.
   const goods = {};
   for (const [id, it] of Object.entries(items)) {
+    // Equip data (slot + offense/defense) for gear; null for consumables. Lets
+    // the server apply weapon offense to attack damage and refuse to "use"
+    // (consume) equippable gear. See tools/extract_shops.py. Crit/dodge from our
+    // override file are folded in here so combat reads one shape.
+    let equip = it.equip || null;
+    if (equip) {
+      const ov = equipStats[id] || {};
+      equip = { ...equip, crit: ov.crit | 0, dodge: ov.dodge | 0 };
+    }
     goods[id] = {
       name: it.name,
       cost: it.cost | 0,
       heal: HEAL_BY_ID[id] || 0,
-      // Equip data (slot + offense/defense) for gear; null for consumables.
-      // Lets the server apply weapon offense to attack damage and refuse to
-      // "use" (consume) equippable gear. See tools/extract_shops.py.
-      equip: it.equip || null,
+      equip,
     };
   }
 

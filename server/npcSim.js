@@ -1866,6 +1866,19 @@ function createNpcSim(assetsDir) {
       recentWarps.delete(id);
     },
 
+    /**
+     * Tell the sim a player just LEFT the dev editor. While editing, the avatar
+     * is parked server-side at its pre-editor spot (the client stops sending
+     * moves) while the admin may have teleported it far away. On exit the client
+     * resumes and reports the new coords — a big one-tick jump that looks exactly
+     * like a door warp. Same guard as a respawn: pause warp detection briefly and
+     * drop any queued warp so chasers don't follow the editor teleport.
+     */
+    noteEditorExit(id) {
+      respawnGuard.set(id, Date.now() + RESPAWN_GUARD_MS);
+      recentWarps.delete(id);
+    },
+
     stop() {
       if (tickInterval) clearInterval(tickInterval);
       if (sendInterval) clearInterval(sendInterval);

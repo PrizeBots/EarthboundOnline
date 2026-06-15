@@ -79,7 +79,7 @@ mirrors the patterns already in the codebase — `apply_map_changes.py`'s curate
   text. Don't author anything that couldn't exist on hardware.
 - **Live in the real renderer.** Edit against the actual `Renderer`/`Camera` so
   what you see is what ships — no separate preview that can drift.
-- **Reuse the `SpriteEditor.ts` overlay pattern** for input/mode handling.
+- **Reuse the `engine/spriteEditor/` overlay pattern** for input/mode handling.
 - **Reuse the sprite picker.** Any "choose a sprite" UI must use the shared
   `createSpritePicker` dropdown in `engine/SpritePicker.ts` (trigger + every row
   render the real sprite next to its id/name) — not a number field or stepper.
@@ -245,7 +245,7 @@ spawn — that loose end is closed).
 **Built 2026-06-12** (DOORS tab). Identity: the base trigger anchor
 "worldX,worldY" (the key `ZONE_DOOR_OVERRIDES` already used). Override =
 `public/overrides/doors.json` `{version, edits: {key: {worldX?, worldY?,
-destX, destY, destDir, style} | null}, additions: [...]}` (dest in PIXELS);
+destX, destY, destDir, style, sfx?} | null}, additions: [...]}` (dest in PIXELS);
 consumed by `DoorManager.loadDoors` AND `tools/debug_room_crop_check.py`
 (which now reads the same file instead of its own hardcoded mirror —
 verified: sweep output identical to the documented baseline). Saving re-runs
@@ -256,6 +256,14 @@ verified: sweep output identical to the documented baseline). Saving re-runs
 - [x] Edit `destDir` (arrive facing) and style; trigger/dest also numerically.
       Event `flag` editing deferred — overrides act on flag-ACTIVE doors;
       authoring flag conditions belongs with a world-flag editor
+- [x] **Door SFX picker** (`sfx`): prepopulated dropdown of the real EarthBound
+      SFX set (door/stairs/movement first, then the full 138-sound library —
+      `src/engine/DoorSfx.ts`, built from `src/data/sfxManifest.json`). Plays once
+      when the player uses the door (`Game.startTransition` → `MusicManager.playSfx`,
+      a one-shot gain node layered over the SPC music, separate SFX mute so picks
+      audition in-editor). Audio imported by `tools/import_sfx.py` from the
+      community EB SFX rip → `public/assets/sfx/<id>.wav` (ROM-derived, dev-only).
+      EB has no distinct rope/ladder sound, so there's intentionally no 'rope' id.
 - [x] "Walk-test": teleport through the selected door without leaving editor
       (+ "Go to dest" to fly the camera there)
 - [x] Migrated hand-coded `ZONE_DOOR_OVERRIDES` into `overrides/doors.json`
@@ -283,10 +291,10 @@ Overrides apply at THREE points kept in sync: `Collision.effectiveRow`
 AI, hot-reloads the override file), and `tools/debug_room_crop_check.py` (the
 canonical sweep sees painted collision).
 
-- [x] Overlay the collision grid colored by byte: solid `0x80` red full-cell,
-      `0x01` blue LOWER half, `0x02` green UPPER half (halves match meaning)
-- [x] Brush tools: solid / pri-lo / pri-hi (first cell decides set-vs-clear),
-      clear, rectangle fill, eyedropper → stamp byte (keys S/L/H/C/T/E/X)
+- [x] Overlay the collision grid colored by byte (all full-cell): solid `0x80`
+      red, pri-lo `0x01` blue, pri-hi `0x02` pink, Behind/Hide `0x40` orange
+- [x] Brush tools: solid / pri-lo / pri-hi (overwrite type), Behind/Hide (toggle
+      0x40), clear, rectangle fill, eyedropper → stamp byte (keys F/L/H/G/C/T/E/X)
 - [x] Adjustable brush size (B: 1/2/4 minitiles); minitile-accurate painting;
       strokes are undoable; painting a cell back to its arrangement default
       drops the override (no redundant data)
@@ -300,13 +308,21 @@ canonical sweep sees painted collision).
 - [x] Save to `overrides/collision.json` `cells` (per-map-tile diffs vs the
       arrangement default; no-op edits drop out) — generated collision files
       never written; npcSim re-applies via file watch, the py sweep reads it
-- [x] **Foreground promotion (G FG)** — mark whole map tiles (orange overlay) to
-      redraw over priority-behind sprites, so players can hide behind objects the
-      ROM never made foreground. Pairs with pri-hi on the walkable ground: paint
-      pri-hi where the player stands + FG on the covering tiles. Saved to
-      `overrides/collision.json` `foreground` (`["tileX,tileY", …]`); client
-      render only (`Renderer` Pass 3b via `Collision.isForegroundPromoted`), no
-      server role. Note: S/L/H now OVERWRITE the cell type (mutually exclusive);
+- [x] **Behind / Hide (G)** — the `0x40` collision bit (orange overlay), a
+      MINITILE brush. Painted minitiles redraw their tile-art in FRONT of
+      behind-FG sprites AND grant whole-body priority to a sprite over them, so
+      one paint is the entire "hide behind this" for BG buildings the ROM never
+      made foreground — no separate pri-hi pass. Why a separate bit from pri-lo/
+      pri-hi: those only do something where the ROM already authored foreground
+      art (canopies, eaves); over a plain BG building they're a no-op. `0x40` is
+      a MODIFIER (orthogonal to solid/pri), so painting Behind leaves a wall's
+      solid bit intact; it toggles (a second pass un-hides). Saved in
+      `overrides/collision.json` `cells` like every other bit; client render only
+      (`Renderer` re-draws the FG layer over each sprite's footprint, clipping the
+      Behind redraw to `Collision.getPromotedMinitiles`; sprites Y-sort in one
+      pass so a sprite in front always paints over one behind it),
+      no server role. The legacy whole-tile `foreground` array is deprecated and
+      ignored on load. Note: F/L/H OVERWRITE the cell type (mutually exclusive);
       hotkeys avoid WASD — Solid is **F**, not S
 
 ---
@@ -335,14 +351,18 @@ edits go live on save with just `reloadNpcText()`; no dev-server restart.
       Dialogue Editor focused on that entry (`dialogueTool.requestEntry` handoff +
       `shell.openTool`). The Dialogue Editor also has a standalone **"+ New
       dialogue"**. So: place NPC → Dialogue ✎ → type → Save
-- [ ] Support flag conditionals / branches the engine understands — DEFERRED
-      (ccscript-level; the engine renders flat pages today)
+- [~] Support flag conditionals / branches the engine understands — ENGINE DONE,
+  AUTHORING UI TODO. A dialogue override entry may now be a branch
+  `{flag, ifSet, ifClear}` instead of flat pages; `NPCManager.getNpcDialogue`
+  resolves it against `PlayerFlags` at talk time (see the Flag System below).
+  The flat Dialogue Editor skips branch entries; the conditional authoring UI
+  lives in the Flag Editor (`§9`).
 - [ ] Validate: orphaned entries / blank dialogue — DEFERRED (`verify_dialogue.mjs`
       is a heavy Playwright screenshot run, not a quick fixed-command verifier)
 
 ---
 
-## 5. Cast Sprite Editor — DONE (lives in `engine/SpriteEditor.ts`, off char-select)
+## 5. Cast Sprite Editor — DONE (lives in `engine/spriteEditor/`, off char-select)
 
 **Built, but not as an F2 tool.** Reached from the character-select screen's
 ✎ EDIT cell. Pick any cast character from the dropdown (the `characters.json`
@@ -547,12 +567,51 @@ Writes go to the **overrides layer**, not the generated asset files.
 
 ---
 
+## 9. Flag Editor — runtime foundation BUILT, tool UI TODO
+
+The event-flag / quest system. Lets one NPC (e.g. Ness's mom) say one thing for
+a new player and another after an event. Subsumes the old "world-flag editor"
+backlog item and unblocks Dialogue §4 conditionals + Doors §2 flag editing.
+
+**Two flag scopes** — `world` (global, baked, shared open-world state, the
+existing `world_flags.json`) vs `player` (per-character progress, runtime).
+Player-flag ids mint >= 900000, clear of ROM numbers. Player flags persist to
+localStorage today behind a swappable seam (`PlayerFlags.ts`) — MUST become
+server-authoritative at launch (no DB/accounts exist yet; the client can't be
+trusted to set its own progress).
+
+**The spine (built 2026-06-15):**
+
+- `EventBus.ts` — typed game events: `dialogue:done`, `item:acquired`,
+  `enemy:defeated`, `area:entered`.
+- `PlayerFlags.ts` — `hasFlag/setFlag/clearFlag`, localStorage-backed, seeds
+  new-player defaults from the registry.
+- `FlagRegistry.ts` — loads `overrides/flags.json` (the flag catalog:
+  id/name/scope/default/desc).
+- `FlagTriggers.ts` — loads `overrides/triggers.json` (rules: `on` event +
+  optional target, `require`/`requireClear` prereq flags, `set`/`clear`),
+  subscribes to the bus, applies to PlayerFlags. Triggers set PLAYER flags only.
+- Dialogue branching — `dialogue.json` entry may be `{flag, ifSet, ifClear}`;
+  resolved in `NPCManager.getNpcDialogue`. `setDialogueBranchLive` for previews.
+- Init in `Game.startGame`; emit `dialogue:done` on dialogue close.
+- Dev proof: `__eb.flags.demo(textId)` arms a full branch+trigger on any NPC.
+
+**Still TODO:**
+
+- [ ] Emit points: `item:acquired` (no inventory system yet), `enemy:defeated`
+      (server-authoritative `npc_hp` — emit on the hp→0 transition / kill credit),
+      `area:entered` (sector change — straightforward, do next).
+- [ ] `FlagTool.ts` dock tool — FLAGS tab (CRUD + live-toggle your own player
+      flags to watch dialogue change) and TRIGGERS tab (author rules with the
+      NPC/item/enemy pickers). Saves `flags.json` + `triggers.json`.
+- [ ] Dialogue conditional authoring UI (the §4 branch editor) hangs off this.
+- [ ] Server authority: forward events to the server, it owns flag writes + DB.
+
 ## Backlog (later tools)
 
 - [ ] Sector settings editor (music id, indoor/dungeon flags — pairs with
       `tools/add_sector_settings.py`)
 - [ ] Tile / map arrangement painter (overworld art)
-- [ ] World-flag / event-state editor (`world_flags.json`, open-world overrides)
 - [ ] Item / held-item editor
 - [ ] Music preview hookup (SPC700)
 

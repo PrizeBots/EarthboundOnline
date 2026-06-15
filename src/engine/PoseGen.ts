@@ -10,8 +10,9 @@ import { Direction } from '../types';
 //
 // Output layout = sheet v4 (15 rows): walk 0-3 (copied), climb 4 (copied if
 // the source has it, else empty), attack 5-8 (generated: f0 wind-up, f1
-// swing), hurt 9-12 (generated: f0 recoil, f1 settle), peace 13 + laying 14
-// (left empty here; composited from the hero's own pose groups in SpriteManager).
+// swing), hurt 9-12 (generated: f0 recoil, f1 settle), peace 13 (1 frame),
+// laying 14 (1 frame; a 3x2-block 24x16 figure). peace/laying are left empty
+// here and composited from the hero's own pose groups in SpriteManager.
 // Bands are proportional thirds of the frame height, so any frame size works
 // (16x16 cats included).
 

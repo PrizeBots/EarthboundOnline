@@ -15,7 +15,7 @@ export const ITEM_H = 16;
 // are NOT tied to the EB sprite palette — this is a hand-picked spread. Index
 // 0 is transparent (empty string), matching the character editor's color 0.
 export const ITEM_PALETTE: string[] = [
-  '',        // 0: transparent
+  '', // 0: transparent
   '#000000', // 1: black (outline)
   '#ffffff', // 2: white
   '#7a4a20', // 3: wood dark
@@ -128,11 +128,25 @@ const DEFAULT_GRIP = { x: 3, y: 13 };
 // OUR authored pixel art (ITEM_PALETTE indices), shared across clients so
 // everyone sees the same held gear. Loaded from overrides/item_sprites.json,
 // edited in the Sprite Editor, listed/managed in the Item Manager.
+// A held weapon/item animates across this many frames during a swing (wind-up →
+// swing → follow-through). Authored per-frame in the Sprite Editor; the attack
+// animation (Player / npc poses) drives which frame draws. KEEP IN SYNC with the
+// editor's frame selector and the player attack timing.
+export const ITEM_FRAMES = 3;
+
 export interface ItemSpriteData {
-  /** 16 rows of 16 hex chars ('0'..'f'), each an ITEM_PALETTE index (0 = clear). */
+  /** Frame 0 art — 16 rows of 16 hex chars ('0'..'f'), ITEM_PALETTE index (0 = clear).
+   *  Kept as the canonical first frame (mirrors frames[0]) for back-compat. */
   pixels: string[];
+  /** Full swing animation: up to ITEM_FRAMES pixel grids. frames[0] === pixels.
+   *  Absent / short → missing frames fall back to frame 0 (a static weapon). */
+  frames?: string[][];
   /** Hand grip point; defaults applied if absent. */
   grip?: { x: number; y: number };
+  /** Body-mount offset from the character anchor (center-x / feet-y). When set,
+   *  the item is WORN at this spot (static, no swing) instead of held in the hand
+   *  — e.g. a badge on the chest. Authored by dragging in the editor's live test. */
+  offset?: { x: number; y: number };
 }
 const itemSprites = new Map<string, ItemSpriteData>();
 
@@ -141,14 +155,42 @@ export async function loadItemSprites(): Promise<void> {
   itemSprites.clear();
   itemCanvases.clear();
   const data = await loadJSON<Record<string, ItemSpriteData>>('/overrides/item_sprites.json').catch(
-    () => null,
+    () => null
   );
-  if (data) for (const [id, d] of Object.entries(data)) if (d && Array.isArray(d.pixels)) itemSprites.set(id, d);
+  if (data)
+    for (const [id, d] of Object.entries(data)) {
+      if (!d || (!Array.isArray(d.pixels) && !Array.isArray(d.frames))) continue;
+      // Normalize: ensure frame 0 (`pixels`) always exists for back-compat readers.
+      const frames =
+        Array.isArray(d.frames) && d.frames.length ? d.frames : d.pixels ? [d.pixels] : [];
+      itemSprites.set(id, { ...d, pixels: d.pixels ?? frames[0] ?? [], frames });
+    }
 }
 
 /** The authored data for an item id (Item Manager / Sprite Editor save path). */
 export function getItemSpriteData(id: string): ItemSpriteData | null {
   return itemSprites.get(id) ?? null;
+}
+
+/** The authored pixel grid for one animation frame, falling back to frame 0 (so
+ *  a 1-frame weapon stays static across the swing). Null if the item has no
+ *  authored data at all (a legacy ITEM_DEF is resolved separately). */
+function itemFrameGrid(id: string, frame: number): string[] | null {
+  const d = itemSprites.get(id);
+  if (!d) return null;
+  const grids = d.frames && d.frames.length ? d.frames : d.pixels ? [d.pixels] : [];
+  if (!grids.length) return null;
+  const g = grids[frame];
+  return g && g.length ? g : (grids[0] ?? null);
+}
+
+/** True if the item has its OWN authored art for this frame (not a fallback) —
+ *  lets the editor seed an unauthored frame from the previous one. */
+export function itemHasFrame(id: string, frame: number): boolean {
+  const d = itemSprites.get(id);
+  if (!d) return false;
+  if (d.frames && d.frames[frame] && d.frames[frame].length) return true;
+  return frame === 0 && !!d.pixels && d.pixels.length > 0;
 }
 
 /** All item ids that currently have authored art (for export / status). */
@@ -165,9 +207,8 @@ export function hasItemSprite(id: string): boolean {
  * caller persists the full map to overrides/item_sprites.json separately. */
 export function setItemSpriteData(id: string, data: ItemSpriteData): void {
   itemSprites.set(id, data);
-  itemOverrides.delete(id); // authored data now wins over any stale live canvas
-  itemCanvases.delete(id);
-  itemCanvases.delete(`${id}:f`);
+  for (let f = 0; f < ITEM_FRAMES; f++) itemOverrides.delete(`${id}:${f}`); // authored wins now
+  clearItemCache(id);
 }
 
 /** Serialize a 16x16 edit canvas to ITEM_PALETTE-index rows for JSON storage. */
@@ -189,7 +230,11 @@ export function canvasToItemPixels(canvas: HTMLCanvasElement): string[] {
 
 const ITEM_PAL_RGB: [number, number, number][] = ITEM_PALETTE.map((hex) => {
   if (!hex) return [0, 0, 0];
-  return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)];
+  return [
+    parseInt(hex.slice(1, 3), 16),
+    parseInt(hex.slice(3, 5), 16),
+    parseInt(hex.slice(5, 7), 16),
+  ];
 });
 function nearestPaletteIndex(r: number, g: number, b: number): number {
   let best = 1;
@@ -197,7 +242,10 @@ function nearestPaletteIndex(r: number, g: number, b: number): number {
   for (let i = 1; i < ITEM_PAL_RGB.length; i++) {
     const [pr, pg, pb] = ITEM_PAL_RGB[i];
     const d = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2;
-    if (d < bestD) { bestD = d; best = i; }
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
   }
   return best;
 }
@@ -208,12 +256,17 @@ function nearestPaletteIndex(r: number, g: number, b: number): number {
 // in item_sprites.json like any other item. The legacy ITEM_DEFS seeds
 // (bat/pan/yoyo) also show under the editor's "Custom" tab, but they're built in
 // (HELD_ITEM_IDS), not stored here.
-export interface CustomItem { id: string; name: string; }
+export interface CustomItem {
+  id: string;
+  name: string;
+}
 const customItems = new Map<string, string>(); // id -> name
 
 export async function loadCustomItems(): Promise<void> {
   customItems.clear();
-  const data = await loadJSON<{ items?: CustomItem[] }>('/overrides/custom_items.json').catch(() => null);
+  const data = await loadJSON<{ items?: CustomItem[] }>('/overrides/custom_items.json').catch(
+    () => null
+  );
   for (const it of data?.items ?? []) if (it?.id) customItems.set(it.id, it.name ?? it.id);
 }
 
@@ -262,31 +315,64 @@ function gripFor(id: string): { x: number; y: number } {
   return itemSprites.get(id)?.grip ?? ITEM_DEFS[id]?.grip ?? DEFAULT_GRIP;
 }
 
-// Rendered item canvases, normal + horizontally flipped.
+/** Body-mount offset for an item, or null if it's hand-held (a weapon). */
+export function offsetFor(id: string): { x: number; y: number } | null {
+  return itemSprites.get(id)?.offset ?? null;
+}
+
+/** Set (or clear, with null) an item's body-mount offset. Updates the shared
+ *  art entry in place — pixels are untouched, so no cache bust is needed. The
+ *  editor calls this while dragging; persistItem writes it to the file. */
+export function setItemOffset(id: string, offset: { x: number; y: number } | null): void {
+  const cur = itemSprites.get(id) ?? { pixels: [] as string[], frames: [] as string[][] };
+  if (offset) cur.offset = offset;
+  else delete cur.offset;
+  itemSprites.set(id, cur);
+}
+
+/** The default hand position (vs the entity anchor) for a facing — the spot a
+ *  freshly-dragged item lifts off from before you reposition it. */
+export function defaultHeldOffset(direction: Direction): { x: number; y: number } {
+  const a = HAND_ANCHORS[direction];
+  // Canonical (right-facing) space: drawHeldItem mirrors x back for flipped
+  // facings, so pre-negate it here when this facing is one of them.
+  return { x: a.flip ? -a.dx : a.dx, y: a.dy };
+}
+
+// Rendered item canvases, keyed `${id}:${frame}` (+ ':f' for the flipped
+// variant), normal + horizontally flipped, per animation frame.
 const itemCanvases = new Map<string, HTMLCanvasElement>();
 
-// Runtime art overrides (the sprite editor). When an item has an override its
-// pixels come from the supplied ITEM_W x ITEM_H canvas instead of ITEM_DEFS.
+// Runtime art overrides (the sprite editor), keyed `${id}:${frame}`. When a
+// frame has an override its pixels come from the supplied canvas (the editor's
+// live buffer) instead of the authored data / ITEM_DEFS.
 const itemOverrides = new Map<string, HTMLCanvasElement>();
 
-/**
- * Replace an item's art at runtime with a 16x16 canvas (the editor's buffer).
- * Busts the render cache so the new pixels show on the very next draw — the
- * game/test-pane render path (drawHeldItem) picks it up with no other plumbing.
- */
-export function setItemOverride(itemId: string, canvas: HTMLCanvasElement): void {
-  itemOverrides.set(itemId, canvas);
-  itemCanvases.delete(itemId);
-  itemCanvases.delete(`${itemId}:f`);
+/** Drop every cached frame canvas for an item (after its art changes). */
+function clearItemCache(id: string): void {
+  for (let f = 0; f < ITEM_FRAMES; f++) {
+    itemCanvases.delete(`${id}:${f}`);
+    itemCanvases.delete(`${id}:${f}:f`);
+  }
 }
 
 /**
- * Render an item's CURRENT art (override if present, else the base def) into a
- * fresh 16x16 canvas. The editor uses this to seed its edit buffer so you start
- * from the existing pixels.
+ * Replace one animation frame of an item's art at runtime with a 16x16 canvas
+ * (the editor's per-frame buffer). Busts the render cache so the new pixels show
+ * on the very next draw — drawHeldItem picks it up with no other plumbing.
  */
-export function renderItemArt(itemId: string): HTMLCanvasElement | null {
-  const base = getItemCanvas(itemId, false);
+export function setItemOverride(itemId: string, frame: number, canvas: HTMLCanvasElement): void {
+  itemOverrides.set(`${itemId}:${frame}`, canvas);
+  clearItemCache(itemId);
+}
+
+/**
+ * Render an item frame's CURRENT art (override if present, else authored data,
+ * else the base def) into a fresh 16x16 canvas. The editor uses this to seed its
+ * per-frame edit buffer so you start from the existing pixels.
+ */
+export function renderItemArt(itemId: string, frame = 0): HTMLCanvasElement | null {
+  const base = getItemCanvas(itemId, frame, false);
   if (!base) return null;
   const c = document.createElement('canvas');
   c.width = ITEM_W;
@@ -304,15 +390,22 @@ export function drawItemThumb(canvas: HTMLCanvasElement, id: string): void {
   const ctx = canvas.getContext('2d')!;
   ctx.imageSmoothingEnabled = false;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  const art = getItemCanvas(id, false);
+  const art = getItemCanvas(id, 0, false);
   if (art) {
     const s = Math.max(1, Math.floor(Math.min(canvas.width / ITEM_W, canvas.height / ITEM_H)));
     const w = ITEM_W * s;
     const h = ITEM_H * s;
-    ctx.drawImage(art, Math.floor((canvas.width - w) / 2), Math.floor((canvas.height - h) / 2), w, h);
+    ctx.drawImage(
+      art,
+      Math.floor((canvas.width - w) / 2),
+      Math.floor((canvas.height - h) / 2),
+      w,
+      h
+    );
   } else {
     ctx.fillStyle = '#333';
-    for (let y = 2; y < canvas.height; y += 4) for (let x = 2; x < canvas.width; x += 4) ctx.fillRect(x, y, 1, 1);
+    for (let y = 2; y < canvas.height; y += 4)
+      for (let x = 2; x < canvas.width; x += 4) ctx.fillRect(x, y, 1, 1);
   }
 }
 
@@ -322,9 +415,13 @@ export function drawItemThumb(canvas: HTMLCanvasElement, id: string): void {
  * false if the item has no art yet (caller can draw a placeholder).
  */
 export function drawItemIcon(
-  ctx: CanvasRenderingContext2D, id: string, x: number, y: number, size = ITEM_W
+  ctx: CanvasRenderingContext2D,
+  id: string,
+  x: number,
+  y: number,
+  size = ITEM_W
 ): boolean {
-  const art = getItemCanvas(id, false);
+  const art = getItemCanvas(id, 0, false);
   if (!art) return false;
   const prev = ctx.imageSmoothingEnabled;
   ctx.imageSmoothingEnabled = false;
@@ -333,12 +430,15 @@ export function drawItemIcon(
   return true;
 }
 
-function getItemCanvas(itemId: string, flip: boolean): HTMLCanvasElement | null {
-  const override = itemOverrides.get(itemId); // live edit buffer (Sprite Editor)
-  const data = itemSprites.get(itemId);       // authored, shared art
-  const def = ITEM_DEFS[itemId];              // legacy hand-authored seed
-  if (!override && !data && !def) return null; // unknown id — draw nothing
-  const key = flip ? `${itemId}:f` : itemId;
+function getItemCanvas(itemId: string, frame: number, flip: boolean): HTMLCanvasElement | null {
+  const fr = Math.max(0, Math.min(frame | 0, ITEM_FRAMES - 1));
+  // Live edit buffer (Sprite Editor) for this frame; fall back to frame 0's
+  // buffer so a half-authored animation still previews.
+  const override = itemOverrides.get(`${itemId}:${fr}`) ?? itemOverrides.get(`${itemId}:0`);
+  const grid = itemFrameGrid(itemId, fr); // authored ITEM_PALETTE rows (→ frame 0 fallback)
+  const def = ITEM_DEFS[itemId]; // legacy hand-authored seed (single frame)
+  if (!override && !grid && !def) return null; // unknown id — draw nothing
+  const key = flip ? `${itemId}:${fr}:f` : `${itemId}:${fr}`;
   const cached = itemCanvases.get(key);
   if (cached) return cached;
 
@@ -350,12 +450,15 @@ function getItemCanvas(itemId: string, flip: boolean): HTMLCanvasElement | null 
 
   if (override) {
     // Edited art: blit the override canvas, mirrored for the flipped variant.
-    if (flip) { ctx.translate(ITEM_W, 0); ctx.scale(-1, 1); }
+    if (flip) {
+      ctx.translate(ITEM_W, 0);
+      ctx.scale(-1, 1);
+    }
     ctx.drawImage(override, 0, 0);
-  } else if (data) {
-    // Authored data: ITEM_PALETTE-index rows.
-    for (let y = 0; y < Math.min(data.pixels.length, ITEM_H); y++) {
-      const row = data.pixels[y];
+  } else if (grid) {
+    // Authored data: ITEM_PALETTE-index rows for this frame.
+    for (let y = 0; y < Math.min(grid.length, ITEM_H); y++) {
+      const row = grid[y];
       for (let x = 0; x < Math.min(row.length, ITEM_W); x++) {
         const idx = parseInt(row[x], 16);
         const color = ITEM_PALETTE[idx];
@@ -383,23 +486,24 @@ function getItemCanvas(itemId: string, flip: boolean): HTMLCanvasElement | null 
 // `behind` = the holding hand is on the character's far side, so the item
 // draws underneath the body sprite. `flip` mirrors the item so it points
 // outward. Values are eyeballed for 16x24 EB-style sprites — tune freely.
-const HAND_ANCHORS: Record<Direction, { dx: number; dy: number; flip: boolean; behind: boolean }> = {
-  [Direction.S]:  { dx: -6, dy: -10, flip: true,  behind: false },
-  [Direction.N]:  { dx: 6,  dy: -10, flip: false, behind: true },
-  [Direction.E]:  { dx: 6,  dy: -10, flip: false, behind: false },
-  [Direction.W]:  { dx: -6, dy: -10, flip: true,  behind: false },
-  [Direction.NE]: { dx: 7,  dy: -10, flip: false, behind: true },
-  [Direction.SE]: { dx: 6,  dy: -10, flip: false, behind: false },
-  [Direction.SW]: { dx: -6, dy: -10, flip: true,  behind: false },
-  [Direction.NW]: { dx: -7, dy: -10, flip: true,  behind: true },
-};
+const HAND_ANCHORS: Record<Direction, { dx: number; dy: number; flip: boolean; behind: boolean }> =
+  {
+    [Direction.S]: { dx: -6, dy: -10, flip: true, behind: false },
+    [Direction.N]: { dx: 6, dy: -10, flip: false, behind: true },
+    [Direction.E]: { dx: 6, dy: -10, flip: false, behind: false },
+    [Direction.W]: { dx: -6, dy: -10, flip: true, behind: false },
+    [Direction.NE]: { dx: 7, dy: -10, flip: false, behind: true },
+    [Direction.SE]: { dx: 6, dy: -10, flip: false, behind: false },
+    [Direction.SW]: { dx: -6, dy: -10, flip: true, behind: false },
+    [Direction.NW]: { dx: -7, dy: -10, flip: true, behind: true },
+  };
 
 // Swing push direction for attack frame 1, per facing.
 const SWING: Record<Direction, [number, number]> = {
-  [Direction.S]:  [0, 4],
-  [Direction.N]:  [0, -4],
-  [Direction.E]:  [4, 0],
-  [Direction.W]:  [-4, 0],
+  [Direction.S]: [0, 4],
+  [Direction.N]: [0, -4],
+  [Direction.E]: [4, 0],
+  [Direction.W]: [-4, 0],
   [Direction.NE]: [3, -3],
   [Direction.SE]: [3, 3],
   [Direction.SW]: [-3, 3],
@@ -409,6 +513,14 @@ const SWING: Record<Direction, [number, number]> = {
 /** True if the held item should draw BEHIND the body for this facing. */
 export function isItemBehind(direction: Direction): boolean {
   return HAND_ANCHORS[direction].behind;
+}
+
+/** True if an item's art mirrors for this facing — the same left/right axis the
+ *  body sprite mirrors on (W/NW/SW + S). Worn-item offsets are stored in canonical
+ *  (right-facing) space, so an editor authoring a position must mirror its drag
+ *  delta when this is true. */
+export function isItemFlipped(direction: Direction): boolean {
+  return HAND_ANCHORS[direction].flip;
 }
 
 /**
@@ -426,24 +538,42 @@ export function drawHeldItem(
   y: number
 ): void {
   const anchor = HAND_ANCHORS[direction];
-  const img = getItemCanvas(itemId, anchor.flip);
+  // Authored body position (badge → chest), else the per-direction hand. EVERY
+  // item mirrors on the body sprite's left/right axis: the art h-flips and, for a
+  // worn item, its mount point mirrors across center too — so it swaps sides
+  // exactly as the character does. Offsets are authored in canonical (right-
+  // facing) space, so negate x for a flipped facing. Swing still plays normally.
+  const off = offsetFor(itemId);
+  const flip = anchor.flip;
+
+  // During a swing the weapon plays its 3 authored frames; otherwise it rests on
+  // frame 0. The body sprite only has 2 attack frames (it clamps), but the
+  // weapon animates across all three.
+  const weaponFrame = pose === 'attack' ? Math.max(0, Math.min(frame | 0, ITEM_FRAMES - 1)) : 0;
+  const img = getItemCanvas(itemId, weaponFrame, flip);
   if (!img) return; // no art for this id — draw nothing
   const grip = gripFor(itemId);
 
-  let handX = x + anchor.dx;
-  let handY = y + anchor.dy;
+  let handX = x + (off ? (flip ? -off.x : off.x) : anchor.dx);
+  let handY = y + (off ? off.y : anchor.dy);
   if (pose === 'attack') {
-    if (frame === 0) {
-      handY -= 5; // wind-up: raised
-    } else {
-      const [sx, sy] = SWING[direction]; // swing: pushed toward the facing
-      handX += sx;
+    // A subtle hand nudge per frame so the swing reads even on minimal art: the
+    // 3 drawn frames carry the animation, this traces the arc the hand follows.
+    const [sx, sy] = SWING[direction];
+    if (weaponFrame === 0) {
+      handX -= sx * 0.4; // wind-up: raised and pulled back
+      handY -= sy * 0.4 + 5;
+    } else if (weaponFrame === 1) {
+      handX += sx; // swing: full push toward the facing
       handY += sy;
+    } else {
+      handX += sx * 0.8; // follow-through: past the strike, settling lower
+      handY += sy * 0.8 + 2;
     }
   } else if (frame === 1) {
     handY += 1; // walk bob
   }
 
-  const gripX = anchor.flip ? ITEM_W - 1 - grip.x : grip.x;
+  const gripX = flip ? ITEM_W - 1 - grip.x : grip.x;
   ctx.drawImage(img, Math.floor(handX - gripX), Math.floor(handY - grip.y));
 }

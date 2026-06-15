@@ -16,6 +16,8 @@ import {
   liveNpcForKey,
 } from '../../engine/NPCManager';
 import { DoorOverrides, EditorDoor, getEditorDoorBase, loadDoors } from '../../engine/DoorManager';
+import { DOOR_SFX, DEFAULT_DOOR_SFX, normalizeDoorSfx } from '../../engine/DoorSfx';
+import { playSfx } from '../../engine/MusicManager';
 import { checkCollision } from '../../engine/Collision';
 import { Camera } from '../../engine/Camera';
 import { Direction } from '../../types';
@@ -80,6 +82,7 @@ interface DoorEntry {
   destY: number;
   destDir: number;
   style: number;
+  sfx: string; // sound effect id played on use (see DoorSfx.ts)
 }
 
 type Mode = 'npcs' | 'spawn' | 'doors';
@@ -228,6 +231,7 @@ class PlacementTool implements EditorTool {
         destY: o && o !== null ? o.destY : d.destY,
         destDir: o && o !== null ? o.destDir : d.destDir,
         style: o && o !== null ? o.style : d.style,
+        sfx: normalizeDoorSfx(o && o !== null ? o.sfx : d.sfx),
       });
     }
     for (const a of doorOv?.additions ?? []) {
@@ -237,6 +241,7 @@ class PlacementTool implements EditorTool {
         deleted: false,
         zone: false,
         ...a,
+        sfx: normalizeDoorSfx(a.sfx),
       });
     }
 
@@ -289,6 +294,7 @@ class PlacementTool implements EditorTool {
             destY: e.destY,
             destDir: e.destDir,
             style: e.style,
+            sfx: e.sfx,
           });
         }
         continue;
@@ -300,7 +306,8 @@ class PlacementTool implements EditorTool {
         e.destX !== b.destX ||
         e.destY !== b.destY ||
         e.destDir !== b.destDir ||
-        e.style !== b.style;
+        e.style !== b.style ||
+        e.sfx !== b.sfx;
       if (e.deleted) {
         // Disabling a zone door = just don't author a link for it.
         if (!e.zone) edits![e.key] = null;
@@ -310,6 +317,7 @@ class PlacementTool implements EditorTool {
           destY: e.destY,
           destDir: e.destDir,
           style: e.style,
+          sfx: e.sfx,
         };
         if (e.worldX !== b.worldX || e.worldY !== b.worldY) {
           o!.worldX = e.worldX;
@@ -684,6 +692,7 @@ class PlacementTool implements EditorTool {
       destY: this.snapV(p.y) + 32,
       destDir: 0,
       style: 1,
+      sfx: DEFAULT_DOOR_SFX,
     };
     this.shell!.run({
       label: 'add door',
@@ -932,7 +941,8 @@ class PlacementTool implements EditorTool {
       d.destX !== b.destX ||
       d.destY !== b.destY ||
       d.destDir !== b.destDir ||
-      d.style !== b.style
+      d.style !== b.style ||
+      d.sfx !== b.sfx
     );
   }
 
@@ -1375,6 +1385,19 @@ class PlacementTool implements EditorTool {
       sel((e) => !Number.isNaN(num(v)) && this.mutate('style', e, { style: num(v) }, 'doors'))()
     );
 
+    // Sound effect played when the player uses this door — prepopulated picker.
+    this.mkSelect(
+      form,
+      'dsfx',
+      'sfx',
+      DOOR_SFX.map((s) => [s.id, s.label] as [string, string]),
+      (v) =>
+        sel((e) => {
+          this.mutate('door sfx', e, { sfx: normalizeDoorSfx(v) }, 'doors');
+          playSfx(v); // audition the pick (silent until /assets/sfx/ is populated)
+        })()
+    );
+
     const actions = document.createElement('div');
     actions.style.cssText =
       'display:flex;gap:6px;border-top:1px solid #243;padding-top:7px;flex-wrap:wrap;';
@@ -1480,6 +1503,7 @@ class PlacementTool implements EditorTool {
       if (e) {
         setVal('ddir', String(e.destDir));
         setVal('dstyle', String(e.style));
+        setVal('dsfx', e.sfx);
       }
       const authored = this.doors.filter(
         (d) => d.deleted || d.added || this.isDoorAuthored(d)

@@ -15,7 +15,7 @@
  */
 const assert = require('assert');
 const path = require('path');
-const { createNpcSim } = require('./npcSim');
+const { createNpcSim, resolveMelee } = require('./npcSim');
 
 const ATTACK_REACH = 14; // px the hitbox sits in front of the attacker (npcSim.js)
 
@@ -39,7 +39,10 @@ function check(name, fn) {
   }
 }
 
-const sim = createNpcSim(path.join(__dirname, '..', 'public', 'assets'));
+// Inject a deterministic RNG that never dodges and never crits (0.99 * 100 = 99,
+// above every default chance), so the geometry/damage assertions below stay
+// exact. resolveMelee's own dodge/crit branches are unit-tested separately.
+const sim = createNpcSim(path.join(__dirname, '..', 'public', 'assets'), () => 0.99);
 // Only fight enemies with a CLEAR line to the swing spot (no wall on the east
 // side) — melee now respects walls, so an enemy standing flush against one would
 // make a correctly-aimed swing miss. Filtering here keeps the damage tests about
@@ -99,6 +102,48 @@ check('a swing through a wall deals no damage (no melee through walls)', () => {
 check('wallBetween: adjacent actors are never wall-separated', () => {
   // Bodies within one minitile can never have a wall between them.
   assert.strictEqual(sim.wallBetween(100, 100, 104, 100), false);
+});
+
+// --- Crit / dodge resolution (resolveMelee, pure + deterministic) ---
+
+check('resolveMelee: a normal swing deals exactly base damage', () => {
+  const r = resolveMelee(0, 0, 10, () => 0.5);
+  assert.deepStrictEqual(r, { miss: false, crit: false, dmg: 10 });
+});
+
+check('resolveMelee: a dodge is a clean miss (0 damage)', () => {
+  // dodge 100% → the first roll (any value) is under 100, so it misses.
+  const r = resolveMelee(0, 100, 10, () => 0.0);
+  assert.strictEqual(r.miss, true);
+  assert.strictEqual(r.dmg, 0);
+});
+
+check('resolveMelee: a crit deals CRIT_MULT (2x) base damage', () => {
+  // dodge 0 (never), crit 100% → rolls into the crit branch.
+  const r = resolveMelee(100, 0, 10, () => 0.0);
+  assert.strictEqual(r.crit, true);
+  assert.strictEqual(r.dmg, 20);
+});
+
+check('resolveMelee: dodge is rolled BEFORE crit (a dodge wins)', () => {
+  // Both at 100%: dodge resolves first, so the swing misses (no crit).
+  const r = resolveMelee(100, 100, 10, () => 0.0);
+  assert.strictEqual(r.miss, true);
+  assert.strictEqual(r.crit, false);
+});
+
+check('handleAttack: a forced crit (crit=100) deals double damage', () => {
+  // Re-read live enemies (earlier checks killed/dented some); find a fresh one.
+  const e = sim
+    .enemyState()
+    .find(
+      (n) => !n.dead && n.hp === n.maxHp && !sim.wallBetween(n.x - ATTACK_REACH, n.y + 1, n.x, n.y)
+    );
+  assert(e, 'need a full-HP clear-line enemy');
+  const a = aimAt(e);
+  // crit=100 with the sim's 0.99 rng: dodge(4%) whiffs, crit fires → 2x.
+  sim.handleAttack(a.x, a.y, a.dir, 'atk-crit', 3, false, 100);
+  assert.strictEqual(hpOf(e.id).hp, e.maxHp - 6, 'crit should deal 2x the 3 base');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

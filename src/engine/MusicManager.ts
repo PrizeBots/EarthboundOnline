@@ -31,10 +31,28 @@ export interface MusicArea {
 }
 let musicAreas: MusicArea[] = [];
 
+// The area whose song is currently playing (index into musicAreas, or -1). We
+// stick to it until the player has clearly LEFT it (see EDGE_MARGIN) so that
+// standing near — or brushing across — a border never hands the music to a
+// neighbouring room.
+let currentAreaIndex = -1;
+
+// Hysteresis at area borders, in world px. The current area keeps the music
+// until the player is this far OUTSIDE it; a neighbour only takes over once the
+// player is solidly inside it. One tile (32px) — enough that you can hug a wall
+// or step on a seam without the song flipping, but the change still lands as you
+// walk into the next room.
+const EDGE_MARGIN = TILE_SIZE;
+
+function inArea(a: MusicArea, x: number, y: number, m = 0): boolean {
+  return x >= a.x - m && x < a.x + a.w + m && y >= a.y - m && y < a.y + a.h + m;
+}
+
 export async function loadMusicAreas(): Promise<void> {
   try {
     const res = await fetch('/overrides/music.json', { cache: 'no-store' });
     musicAreas = res.ok ? ((await res.json())?.areas ?? []) : [];
+    currentAreaIndex = -1;
     console.log(`Music areas loaded: ${musicAreas.length}`);
   } catch {
     musicAreas = []; // none authored yet — pure sector fallback
@@ -44,15 +62,26 @@ export async function loadMusicAreas(): Promise<void> {
 /** Live-replace the areas (editor pushes its working set without a refetch). */
 export function setMusicAreas(areas: MusicArea[]): void {
   musicAreas = areas.slice();
+  currentAreaIndex = -1; // area refs changed — re-resolve from scratch
   lastLoggedSong = -2; // force the next updateMusic to re-evaluate + log
 }
 
-/** Song number for a world point from the authored areas, or -1 if none. */
-function songForPoint(x: number, y: number): number {
-  // Last matching area wins — later entries are drawn on top / authored later.
+/**
+ * Index of the area that owns the music at a world point, or -1 if none.
+ * Sticky: if the player is still inside the current area (plus EDGE_MARGIN) it
+ * wins — so being close to an edge can't trigger a neighbouring room's sound.
+ * Otherwise the topmost (last-authored) area containing the point takes over.
+ */
+function areaForPoint(x: number, y: number): number {
+  if (
+    currentAreaIndex >= 0 &&
+    currentAreaIndex < musicAreas.length &&
+    inArea(musicAreas[currentAreaIndex], x, y, EDGE_MARGIN)
+  ) {
+    return currentAreaIndex;
+  }
   for (let i = musicAreas.length - 1; i >= 0; i--) {
-    const a = musicAreas[i];
-    if (x >= a.x && x < a.x + a.w && y >= a.y && y < a.y + a.h) return a.song;
+    if (inArea(musicAreas[i], x, y)) return i;
   }
   return -1;
 }
@@ -283,15 +312,86 @@ export function toggleMusicMuted(): boolean {
   return muted;
 }
 
+// --- one-shot sound effects -------------------------------------------------
+// Door/stairs/rope SFX play through their own gain node so they layer over the
+// SPC music without interrupting it (SNES-honest: a SFX ID fired alongside the
+// song). Buffers are decoded once and cached. Missing files no-op silently so
+// the door pipeline works before the audio is extracted into /assets/sfx/.
+
+const sfxBuffers = new Map<string, AudioBuffer | null>(); // null = known-missing
+const sfxLoading = new Set<string>();
+let sfxGain: GainNode | null = null;
+// SFX have their own mute, separate from music: the editor force-mutes MUSIC
+// while authoring, but a door's SFX still needs to audition when you pick it.
+let sfxMuted = false;
+
+export function setSfxMuted(m: boolean): void {
+  sfxMuted = m;
+}
+
+export function isSfxMuted(): boolean {
+  return sfxMuted;
+}
+
+async function loadSfx(id: string): Promise<AudioBuffer | null> {
+  if (sfxBuffers.has(id)) return sfxBuffers.get(id)!;
+  if (!audioContext || sfxLoading.has(id)) return null;
+  sfxLoading.add(id);
+  try {
+    const resp = await fetch(`/assets/sfx/${id}.wav`);
+    if (!resp.ok) {
+      sfxBuffers.set(id, null); // remember the gap; don't refetch every door
+      return null;
+    }
+    const buf = await audioContext.decodeAudioData(await resp.arrayBuffer());
+    sfxBuffers.set(id, buf);
+    return buf;
+  } catch {
+    sfxBuffers.set(id, null);
+    return null;
+  } finally {
+    sfxLoading.delete(id);
+  }
+}
+
+/**
+ * Play a one-shot sound effect by id (see DoorSfx.ts). No-ops when muted, when
+ * the audio engine isn't up yet, for the 'none' id, or when the file is absent.
+ * Async load on first use; subsequent plays are instant from cache.
+ */
+export function playSfx(id: string | undefined | null): void {
+  if (!id || id === 'none' || sfxMuted || !initialized || !audioContext) return;
+  const ctx = audioContext;
+  if (!sfxGain) {
+    sfxGain = ctx.createGain();
+    sfxGain.gain.value = 1;
+    sfxGain.connect(ctx.destination);
+  }
+  void loadSfx(id).then((buf) => {
+    if (!buf || sfxMuted) return; // re-check mute: load is async
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(sfxGain!);
+    src.start();
+  });
+}
+
 let lastLoggedSong = -1;
 
 export function updateMusic(playerX: number, playerY: number): void {
   if (!initialized) return;
 
-  // An authored area wins; otherwise fall back to the sector's ROM musicId.
-  let songNumber = songForPoint(playerX, playerY);
-  let source = 'area';
-  if (songNumber < 0) {
+  // An authored area wins (sticky — see areaForPoint); otherwise fall back to
+  // the sector's ROM musicId.
+  const ai = areaForPoint(playerX, playerY);
+  let songNumber: number;
+  let source: string;
+  if (ai >= 0) {
+    currentAreaIndex = ai;
+    songNumber = musicAreas[ai].song;
+    source = `area "${musicAreas[ai].name}"`;
+  } else {
+    currentAreaIndex = -1;
     const sectorX = Math.floor(playerX / (SECTOR_TILES_X * TILE_SIZE));
     const sectorY = Math.floor(playerY / (SECTOR_TILES_Y * TILE_SIZE));
     const sector = getSector(sectorX, sectorY);

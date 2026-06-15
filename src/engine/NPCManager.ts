@@ -15,6 +15,7 @@ import type { NpcUpdate } from './Network';
 import { createInterpolator } from './RemoteInterp';
 import { loadShops, shopStoreForNpc } from './Shop';
 import type { EntityCol } from './EntityStats';
+import { hasFlag } from './PlayerFlags';
 
 /** ROM NPC config id from a placement key "areaIdx:npcId:occ", or -1. */
 function npcIdFromKey(k: string | undefined): number {
@@ -156,25 +157,57 @@ function activeVehicles(cfg: CarTraffic | null): Vehicle[] {
 }
 
 /**
+ * A flag-conditional dialogue entry: the engine picks `ifSet` or `ifClear` at
+ * talk time by checking the player's flag (PlayerFlags). This is how an NPC
+ * (e.g. Ness's mom) says one thing for a new player and another after an event.
+ * Authored by the Flag/Dialogue editors; resolved in getNpcDialogue.
+ */
+export interface DialogueBranch {
+  flag: number;
+  ifSet: string[];
+  ifClear: string[];
+}
+
+function isBranch(v: string[] | DialogueBranch | null): v is DialogueBranch {
+  return v != null && !Array.isArray(v) && typeof (v as DialogueBranch).flag === 'number';
+}
+
+/**
  * Dialogue Editor override (public/overrides/dialogue.json — OUR authored text).
- * `edits` maps a textId to replacement pages, or null to revert that entry to
- * the decoded base. Merged over npc_text.json so re-running eb_dialogue.py
- * never clobbers authoring.
+ * `edits` maps a textId to replacement pages, a flag-conditional branch, or
+ * null to revert that entry to the decoded base. Merged over npc_text.json so
+ * re-running eb_dialogue.py never clobbers authoring.
  */
 export interface DialogueOverrides {
   version: number;
-  edits?: Record<string, string[] | null>;
+  edits?: Record<string, string[] | DialogueBranch | null>;
 }
 
+// Conditional entries, split out of the flat npcText at merge time and resolved
+// against PlayerFlags in getNpcDialogue. Keyed by textId (string).
+let npcBranches = new Map<string, DialogueBranch>();
+
+/**
+ * Merge authored overrides onto the decoded base. Flat pages go into the
+ * returned record (back-compat); conditional branches are pulled into
+ * `npcBranches` and win over any flat entry for that id. Rebuilds `npcBranches`
+ * each call, so it must run on every (re)load of dialogue.
+ */
 function mergeDialogue(
   base: Record<string, string[]>,
   ov: DialogueOverrides | null
 ): Record<string, string[]> {
-  if (!ov?.edits) return { ...base };
+  npcBranches = new Map();
   const merged = { ...base };
-  for (const [id, pages] of Object.entries(ov.edits)) {
-    if (pages === null) delete merged[id];
-    else merged[id] = pages;
+  for (const [id, val] of Object.entries(ov?.edits ?? {})) {
+    if (val === null) {
+      delete merged[id];
+    } else if (isBranch(val)) {
+      npcBranches.set(id, val);
+      delete merged[id]; // the branch resolver supplies this id's pages
+    } else {
+      merged[id] = val;
+    }
   }
   return merged;
 }
@@ -344,7 +377,20 @@ export function applyNpcHp(rows: [number, number, number][]): void {
 /** Dialogue pages for an NPC, or null if it has nothing to say. */
 export function getNpcDialogue(npc: NPC): string[] | null {
   if (npc.textId == null) return null;
-  return npcText[npc.textId] ?? null;
+  const id = String(npc.textId);
+  const branch = npcBranches.get(id);
+  if (branch) return hasFlag(branch.flag) ? branch.ifSet : branch.ifClear;
+  return npcText[id] ?? null;
+}
+
+/**
+ * Inject/replace a flag-conditional branch at runtime (null clears it). Used by
+ * the Flag Editor for live preview and by the dev flag console hook — bypasses
+ * the override file so an admin can watch dialogue flip without a save/reload.
+ */
+export function setDialogueBranchLive(textId: string, branch: DialogueBranch | null): void {
+  if (branch) npcBranches.set(textId, branch);
+  else npcBranches.delete(textId);
 }
 
 /**

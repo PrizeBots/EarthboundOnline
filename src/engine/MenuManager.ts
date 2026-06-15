@@ -25,6 +25,7 @@ import {
 import { getGoods } from './Inventory';
 import { getMoney } from './Wallet';
 import { sendUseItem, sendUsePsi, sendBuy, sendSell, sendEquip } from './Network';
+import { playEventSfx } from './SfxEvents';
 import { getStoreItems, itemEquip, itemOffense, itemDefense } from './Shop';
 import { getItemName } from './Items';
 import { EquipSlot, EQUIP_SLOTS } from './Equipment';
@@ -202,6 +203,35 @@ function activateSlot(i: number): void {
   else sendUseItem(id);
 }
 
+/** Trigger hotbar slot `n` (0-based) — keys 1/2 in the field. Toggle-brandishes
+ *  the assigned weapon or uses the assigned consumable. Public so Game can fire
+ *  it during overworld play (the old G "cycle weapon" key is gone). */
+export function triggerHotbarSlot(n: number): void {
+  activateSlot(n);
+}
+
+/** Hotbar-eligible = a weapon (held/brandished) or a consumable (non-gear).
+ *  Armor slots (body/arms/other) are excluded — they live only on Equip. */
+function hotbarEligible(id: string): boolean {
+  const eq = itemEquip(id);
+  return !eq || eq.slot === 'weapon';
+}
+
+/**
+ * Keep the hotbar reflecting the equipped weapon so its sprite shows in a box
+ * AND key 1/2 can toggle it. A newly-equipped weapon takes over the existing
+ * weapon box (you brandish one at a time), else the first free box, else box 0.
+ * Unequipping does NOT clear the box — the assignment persists so the same key
+ * re-brandishes it; the box just loses its "equipped" ring. Consumables the
+ * player placed stay put. Call whenever the equipped weapon changes.
+ */
+export function syncWeaponHotbar(weaponId: string | null): void {
+  if (!weaponId || hotbar.includes(weaponId)) return;
+  const weaponSlot = hotbar.findIndex((id) => id !== null && itemEquip(id)?.slot === 'weapon');
+  const empty = hotbar.indexOf(null);
+  hotbar[weaponSlot !== -1 ? weaponSlot : empty !== -1 ? empty : 0] = weaponId;
+}
+
 // Pointer drag/drop. Goods: drag a row to a hotbar box to assign it, or release
 // on the same row to use/equip it. Equip: drag a gear ITEM row (ghost only —
 // the equip itself fires from the click latch, since each item has exactly one
@@ -223,7 +253,10 @@ function updateHotbarDrag(): void {
     if (menuState === 'goods') {
       const box = hotbarBoxAt(rel.x, rel.y);
       if (box >= 0) {
-        hotbar[box] = drag.id; // dropped on a hotbar slot — assign
+        // The hotbar is for things you ACT with — a weapon to brandish or a
+        // consumable buff. Armor (body/arms/other) belongs only on the Equip
+        // screen, so reject it here.
+        if (hotbarEligible(drag.id)) hotbar[box] = drag.id;
       } else {
         const i = goodsRowAt(rel.x, rel.y);
         const items = getGoods();
@@ -291,19 +324,38 @@ export function updateMenu(): void {
     if (toggle) {
       menuState = 'command';
       cursorIndex = 0;
+      playEventSfx('menu-open');
       consumePointerClick(); // drop any click left over from gameplay
     }
   } else if (menuState === 'command') {
     if (toggle || justPressed('Backspace')) {
       menuState = 'closed';
+      playEventSfx('menu-close');
     } else {
       let col = cursorIndex % COLS;
       let row = Math.floor(cursorIndex / COLS);
-      if (justPressed('ArrowLeft') || justPressed('KeyA')) col = (col + COLS - 1) % COLS;
-      if (justPressed('ArrowRight') || justPressed('KeyD')) col = (col + 1) % COLS;
-      if (justPressed('ArrowUp') || justPressed('KeyW')) row = (row + ROWS - 1) % ROWS;
-      if (justPressed('ArrowDown') || justPressed('KeyS')) row = (row + 1) % ROWS;
+      const prevCursor = cursorIndex;
+      let moveAxis: 'horizontal' | 'vertical' | null = null;
+      if (justPressed('ArrowLeft') || justPressed('KeyA')) {
+        col = (col + COLS - 1) % COLS;
+        moveAxis = 'horizontal';
+      }
+      if (justPressed('ArrowRight') || justPressed('KeyD')) {
+        col = (col + 1) % COLS;
+        moveAxis = 'horizontal';
+      }
+      if (justPressed('ArrowUp') || justPressed('KeyW')) {
+        row = (row + ROWS - 1) % ROWS;
+        moveAxis = 'vertical';
+      }
+      if (justPressed('ArrowDown') || justPressed('KeyS')) {
+        row = (row + 1) % ROWS;
+        moveAxis = 'vertical';
+      }
       cursorIndex = row * COLS + col;
+      if (moveAxis && cursorIndex !== prevCursor) {
+        playEventSfx(moveAxis === 'horizontal' ? 'cursor-horizontal' : 'cursor-vertical');
+      }
 
       // Mouse hover moves the cursor to the item under the pointer.
       const p = getPointer();
@@ -318,6 +370,7 @@ export function updateMenu(): void {
       }
       if (activate >= 0) {
         cursorIndex = activate;
+        playEventSfx('cursor-confirm');
         onSelect(MENU_ITEMS[activate].action);
       }
     }
@@ -336,10 +389,12 @@ export function updateMenu(): void {
     if (toggle || justPressed('Backspace') || items.length === 0) {
       menuState = 'command'; // cancel, or nothing left to show
     } else {
+      const prevGoods = goodsCursor;
       if (justPressed('ArrowUp') || justPressed('KeyW'))
         goodsCursor = (goodsCursor + items.length - 1) % items.length;
       if (justPressed('ArrowDown') || justPressed('KeyS'))
         goodsCursor = (goodsCursor + 1) % items.length;
+      if (goodsCursor !== prevGoods) playEventSfx('cursor-vertical');
 
       // Mouse hover moves the cursor to the row under the pointer.
       const p = getPointer();
@@ -361,10 +416,12 @@ export function updateMenu(): void {
     if (toggle || justPressed('Backspace')) {
       menuState = 'command'; // cancel back to the command grid
     } else {
+      const prevPsi = psiCursor;
       if (justPressed('ArrowUp') || justPressed('KeyW'))
         psiCursor = (psiCursor + PSI_ABILITIES.length - 1) % PSI_ABILITIES.length;
       if (justPressed('ArrowDown') || justPressed('KeyS'))
         psiCursor = (psiCursor + 1) % PSI_ABILITIES.length;
+      if (psiCursor !== prevPsi) playEventSfx('cursor-vertical');
 
       const p = getPointer();
       const hovered = psiRowAt(p.x, p.y);
@@ -387,8 +444,10 @@ export function updateMenu(): void {
     } else {
       const n = equipRows().length;
       if (n > 0) {
+        const prevEquip = equipCursor;
         if (justPressed('ArrowUp') || justPressed('KeyW')) equipCursor = (equipCursor + n - 1) % n;
         if (justPressed('ArrowDown') || justPressed('KeyS')) equipCursor = (equipCursor + 1) % n;
+        if (equipCursor !== prevEquip) playEventSfx('cursor-vertical');
         if (equipCursor >= n) equipCursor = n - 1;
         const p = getPointer();
         const hov = equipRowAt(p.x, p.y, equipRows().length);
@@ -406,9 +465,11 @@ export function updateMenu(): void {
     if (toggle || justPressed('Backspace')) {
       menuState = 'closed'; // leave the shop entirely
     } else {
+      const prevShopRoot = shopRootCursor;
       if (justPressed('ArrowUp') || justPressed('KeyW')) shopRootCursor = (shopRootCursor + 1) % 2;
       if (justPressed('ArrowDown') || justPressed('KeyS'))
         shopRootCursor = (shopRootCursor + 1) % 2;
+      if (shopRootCursor !== prevShopRoot) playEventSfx('cursor-vertical');
       // Mouse: hover highlights, click chooses Buy/Sell.
       const p = getPointer();
       const hov = shopRootRowAt(p.x, p.y);
@@ -428,10 +489,12 @@ export function updateMenu(): void {
     if (toggle || justPressed('Backspace')) {
       menuState = 'shop';
     } else if (rows.length) {
+      const prevShopBuy = shopBuyCursor;
       if (justPressed('ArrowUp') || justPressed('KeyW'))
         shopBuyCursor = (shopBuyCursor + rows.length - 1) % rows.length;
       if (justPressed('ArrowDown') || justPressed('KeyS'))
         shopBuyCursor = (shopBuyCursor + 1) % rows.length;
+      if (shopBuyCursor !== prevShopBuy) playEventSfx('cursor-vertical');
       const p = getPointer();
       const hovered = shopRowAt('buy', shopStore, p.x, p.y);
       if (hovered >= 0) shopBuyCursor = hovered;
@@ -446,6 +509,7 @@ export function updateMenu(): void {
         if (item && getMoney() < item.cost) shopNote = 'Not enough money.';
         else {
           sendBuy(shopStore, rows[pick].id);
+          playEventSfx('shop-purchase');
           shopNote = `Bought ${item?.name ?? 'item'}!`; // the money window confirms the spend
         }
       }
@@ -455,10 +519,12 @@ export function updateMenu(): void {
     if (toggle || justPressed('Backspace')) {
       menuState = 'shop';
     } else if (getGoods().length) {
+      const prevShopSell = shopSellCursor;
       if (justPressed('ArrowUp') || justPressed('KeyW'))
         shopSellCursor = (shopSellCursor + rows.length - 1) % rows.length;
       if (justPressed('ArrowDown') || justPressed('KeyS'))
         shopSellCursor = (shopSellCursor + 1) % rows.length;
+      if (shopSellCursor !== prevShopSell) playEventSfx('cursor-vertical');
       const p = getPointer();
       const hovered = shopRowAt('sell', shopStore, p.x, p.y);
       if (hovered >= 0) shopSellCursor = hovered;
@@ -470,6 +536,7 @@ export function updateMenu(): void {
       if (pick >= 0 && rows[pick]) {
         shopNote = '';
         sendSell(rows[pick].id);
+        playEventSfx('shop-sell');
         if (shopSellCursor >= rows.length - 1) shopSellCursor = Math.max(0, rows.length - 2);
       }
     } else {
@@ -480,10 +547,12 @@ export function updateMenu(): void {
     if (toggle || justPressed('Backspace')) {
       menuState = 'closed'; // hang up
     } else {
+      const prevPhone = phoneCursor;
       if (justPressed('ArrowUp') || justPressed('KeyW'))
         phoneCursor = (phoneCursor + PHONE_CONTACTS.length - 1) % PHONE_CONTACTS.length;
       if (justPressed('ArrowDown') || justPressed('KeyS'))
         phoneCursor = (phoneCursor + 1) % PHONE_CONTACTS.length;
+      if (phoneCursor !== prevPhone) playEventSfx('cursor-vertical');
 
       const p = getPointer();
       const hovered = phoneRowAt(p.x, p.y);
@@ -509,10 +578,12 @@ export function updateMenu(): void {
     if (toggle || justPressed('Backspace')) {
       menuState = 'phone';
     } else {
+      const prevSave = saveCursor;
       if (justPressed('ArrowUp') || justPressed('KeyW'))
         saveCursor = (saveCursor + SAVE_CHOICES.length - 1) % SAVE_CHOICES.length;
       if (justPressed('ArrowDown') || justPressed('KeyS'))
         saveCursor = (saveCursor + 1) % SAVE_CHOICES.length;
+      if (saveCursor !== prevSave) playEventSfx('cursor-vertical');
 
       const p = getPointer();
       const hovered = saveChoiceAt(p.x, p.y);

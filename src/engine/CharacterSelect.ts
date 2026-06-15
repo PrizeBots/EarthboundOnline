@@ -1,4 +1,5 @@
 import { loadImage, loadJSON } from './AssetLoader';
+import { playEventSfx } from './SfxEvents';
 import { sheetHasDiagonals } from './SpriteManager';
 import { getSpriteName } from './SpriteNames';
 import { SpriteGroupMeta, Direction, SCREEN_WIDTH, SCREEN_HEIGHT } from '../types';
@@ -21,14 +22,14 @@ const SOUTH_COL = 0;
 // 4-direction sheet shows instead of the (empty) diagonal cell — the same
 // NE,SE<-E / SW,NW<-W rule the in-game renderer uses.
 const DIR_ORDER: { row: number; col: number; fallback?: { row: number; col: number } }[] = [
-  { row: 1, col: 0 },                                  // S
-  { row: 1, col: 2 },                                  // W
-  { row: 0, col: 0 },                                  // N
-  { row: 0, col: 2 },                                  // E
-  { row: 3, col: 0, fallback: { row: 1, col: 2 } },    // SW <- W
-  { row: 3, col: 2, fallback: { row: 1, col: 2 } },    // NW <- W
-  { row: 2, col: 0, fallback: { row: 0, col: 2 } },    // NE <- E
-  { row: 2, col: 2, fallback: { row: 0, col: 2 } },    // SE <- E
+  { row: 1, col: 0 }, // S
+  { row: 1, col: 2 }, // W
+  { row: 0, col: 0 }, // N
+  { row: 0, col: 2 }, // E
+  { row: 3, col: 0, fallback: { row: 1, col: 2 } }, // SW <- W
+  { row: 3, col: 2, fallback: { row: 1, col: 2 } }, // NW <- W
+  { row: 2, col: 0, fallback: { row: 0, col: 2 } }, // NE <- E
+  { row: 2, col: 2, fallback: { row: 0, col: 2 } }, // SE <- E
 ];
 
 interface CharEntry {
@@ -97,14 +98,18 @@ export function handleCharSelectInput(key: string): 'confirm' | null {
   const currentRow = Math.floor(selectedIndex / COLS);
   const currentCol = selectedIndex % COLS;
 
+  const prevIndex = selectedIndex;
+  let axis: 'horizontal' | 'vertical' | null = null;
   switch (key) {
     case 'ArrowRight':
     case 'd':
       selectedIndex = Math.min(selectedIndex + 1, totalCells - 1);
+      axis = 'horizontal';
       break;
     case 'ArrowLeft':
     case 'a':
       selectedIndex = Math.max(selectedIndex - 1, 0);
+      axis = 'horizontal';
       break;
     case 'ArrowDown':
     case 's':
@@ -112,18 +117,25 @@ export function handleCharSelectInput(key: string): 'confirm' | null {
         const next = (currentRow + 1) * COLS + currentCol;
         selectedIndex = Math.min(next, totalCells - 1);
       }
+      axis = 'vertical';
       break;
     case 'ArrowUp':
     case 'w':
       if (currentRow > 0) {
         selectedIndex = (currentRow - 1) * COLS + currentCol;
       }
+      axis = 'vertical';
       break;
     case 'Enter':
     case ' ':
     case 'e': // E — the action/confirm button (matches the in-game E binding)
     case 'E':
       return 'confirm';
+  }
+
+  // Blip only when the cursor actually moved (not at a grid edge).
+  if (axis && selectedIndex !== prevIndex) {
+    playEventSfx(axis === 'horizontal' ? 'cursor-horizontal' : 'cursor-vertical');
   }
 
   // Scroll to keep selection visible

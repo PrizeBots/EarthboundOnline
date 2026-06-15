@@ -313,6 +313,10 @@ class DialogueTool implements EditorTool {
     for (const id of ids) {
       const override = edits[id];
       if (override === null) continue; // reverted to base-with-no-entry: skip
+      // Flag-conditional branches ({flag, ifSet, ifClear}) are authored in the
+      // Flag Editor's conditional UI, not this flat page editor — skip them here
+      // so we never flatten a branch back to a single page list and lose it.
+      if (override && !Array.isArray(override)) continue;
       const basePages = baseText[id] ?? null;
       const pages = override ?? basePages ?? [''];
       this.entries.set(id, {
