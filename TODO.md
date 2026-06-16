@@ -10,7 +10,7 @@ green (accounts, char creation, the whole ROM extraction pipeline); these are th
 threads that were left mid-flight:
 
 - [x] **Crit/dodge combat — SERVER half.** Done: `npcSim.resolveMelee(crit,
-  dodge, base, rng)` (pure, dodge rolled BEFORE crit, crit = 2× `CRIT_MULT`),
+dodge, base, rng)` (pure, dodge rolled BEFORE crit, crit = 2× `CRIT_MULT`),
       injectable rng via `createNpcSim(assetsDir, rng = Math.random)`, `critChance`
       arg on `handleAttack` that broadcasts `{type:'combat', evt:'crit'|'miss', …}`
       on dodge/crit, `resolveMelee` exported. `gameHost` passes a Luck-derived crit
@@ -29,12 +29,12 @@ threads that were left mid-flight:
 ## Phase 2: Multiplayer (Browser)
 
 - [x] Player name tags above sprites — `NamePlate.ts`: "Name Lv#" in the EB font (outlined), drawn above each player's health bar (local + remote) in `Renderer`. Remote players now also show an HP bar; remote levels stay current via `player_stats`.
-- [ ] Server-side validation (speed, position bounds)
-- [ ] Handle disconnects gracefully (timeout, reconnect)
-- [ ] Stress test with 10+ simultaneous clients
-- [ ] PK player toggle — let a player flip their own `pk` on/off (UI + server `set_pk` message); all players are non-PK until this ships
-- [ ] PvP melee resolution — server-side player-hitbox-vs-player so PK rules apply between players (PK players hurt anyone; anyone hurts a PKer)
-- [ ] NPC combat — give townsfolk HP/death and AI that attacks nearby PKers (so "enemies hurt NPCs" and "NPCs attack PKers" go live)
+- [x] Server-side validation (speed, position bounds) — `gameHost` 'move' drops non-finite coords, clamps to the map (`npcSim.bounds()`), and caps non-warp jumps to `MAX_MOVE_STEP` (=WARP_DELTA); door warps exempt via the warp shield. Tested.
+- [x] Handle disconnects gracefully (timeout, reconnect) — server `_reapIdle` heartbeat closes sockets silent past `IDLE_TIMEOUT_MS` (→ save+cleanup); client auto-reconnects on unexpected drop with exponential backoff (`Network.openSocket`, replays the join). Tested.
+- [x] Stress test with 10+ simultaneous clients — `server/loadtest.js` (N headless WS clients vs :4444, wander+attack+chat). Verified 12 and 20 clients: all joined cleanly, 0 errors, ~6.7k broadcast msgs/s at 20. Re-run: `node server/loadtest.js [clients] [seconds]`.
+- [x] PK player toggle — `set_pk` flips a runtime `pk` flag, broadcast as `player_pk`; 'K' toggles client-side, red nameplate marks PKers. Runtime-only (rejoin = non-PK).
+- [x] PvP melee resolution — `handleAttack` also resolves vs other players (canHurt-gated: PK hurts anyone, anyone hurts a PKer) with crit/dodge; landed hits → `onPlayerHit`→`damagePlayer`. Tested.
+- [x] NPC combat — townsfolk have HP/death + self-defense; foe-finder (`nearestFoeTo`) now also targets PK players (canHurt-gated) and swings via the host; enemies already aggro townsfolk (defend-on-sight). "enemies hurt NPCs" + "NPCs attack PKers" live.
 - [x] WebSocket game server (embedded Vite plugin, port 4444)
 - [x] Client network layer (join/move/leave)
 - [x] Remote player rendering
