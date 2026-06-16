@@ -24,7 +24,9 @@ const { sanitizeAlloc, deriveCombatStats, STAT_KEYS } = require('./charStats');
 const POSES = ['walk', 'climb', 'attack', 'hurt'];
 const PLAYER_MAX_HP = 60;
 const MAX_SLOTS = 14; // EarthBound's Goods menu holds 14 items per character
+const BAG_FULL_NOTICE_MS = 2500; // min gap between "bag full" popups (anti-spam)
 const STARTING_MONEY = 1000; // every player joins with $1000
+const DEATH_CASH_PCT = 0.5; // fraction of ON-HAND cash dropped on death (bank is safe)
 const EQUIP_SLOTS = ['weapon', 'body', 'arms', 'other'];
 // Skill points granted per level-up (banked until spent on the pentagon) and the
 // per-stat cap a spend can raise an allocation to. Both server-authoritative.
@@ -253,7 +255,10 @@ class GameHost {
       (playerId, xp, _enemy, loot) => this.awardKill(playerId, xp, loot),
       // PvP: a player's swing landed on another player — apply it to the victim's
       // server-authoritative HP (same path as an enemy hit).
-      (targetId, dmg) => this.damagePlayer(targetId, dmg)
+      (targetId, dmg) => this.damagePlayer(targetId, dmg),
+      // Ground-drop claim: the sim found a player on a drop; we own inventory/cash
+      // and decide if they can take it (bag room). Return true to consume it.
+      (playerId, drop) => this.tryPickup(playerId, drop)
     );
     // Graceful disconnects: reap dead/zombie sockets that stopped sending. A live
     // client sends a move every ~3 frames, so silence past IDLE_TIMEOUT_MS means
@@ -339,7 +344,8 @@ class GameHost {
       appearance: this._validAppearance(msg.appearance),
       progression: newProgression(),
       inventory: [...this.STARTING_INVENTORY],
-      money: STARTING_MONEY,
+      money: STARTING_MONEY, // on-hand cash (shops spend this)
+      bank: 0, // ATM balance — kill money lands here; withdraw to spend
       equipped: { weapon: null, body: null, arms: null, other: null },
       x: this.SPAWN.x,
       y: this.SPAWN.y,
@@ -372,6 +378,7 @@ class GameHost {
       ? save.inventory.filter((id) => this.GOODS[id])
       : [...this.STARTING_INVENTORY];
     const money = Number.isInteger(save.money) ? save.money : STARTING_MONEY;
+    const bank = Number.isInteger(save.bank) && save.bank >= 0 ? save.bank : 0;
 
     const equipped = { weapon: null, body: null, arms: null, other: null };
     if (save.equipped && typeof save.equipped === 'object') {
@@ -389,6 +396,7 @@ class GameHost {
       progression: progressionFromAlloc(alloc, level, exp),
       inventory,
       money,
+      bank,
       equipped,
       x: Number.isFinite(save.x) ? save.x : this.SPAWN.x,
       y: Number.isFinite(save.y) ? save.y : this.SPAWN.y,
@@ -436,6 +444,7 @@ class GameHost {
           unspentPoints: handle.unspentPoints || 0,
           inventory: [...p.inventory],
           money: p.money,
+          bank: p.bank,
           equipped: { ...p.equipped },
           x: p.x,
           y: p.y,
@@ -498,6 +507,16 @@ class GameHost {
     p.hp = Math.max(0, p.hp - eff);
     this.broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: eff });
     if (p.hp <= 0) {
+      // Death penalty: drop half your ON-HAND cash where you fell as a first-touch
+      // money pickup (anyone can grab it); your bank balance is untouched. Strong
+      // nudge to bank your earnings. Spawn it before the respawn teleport moves p.
+      const dropped = Math.floor((p.money | 0) * DEATH_CASH_PCT);
+      if (dropped > 0) {
+        p.money -= dropped;
+        p._ws.send(JSON.stringify({ type: 'money', money: p.money }));
+        this.npcSim.spawnMoneyDrop(p.x, p.y, dropped);
+        this._saveCharacter(playerId);
+      }
       p.hp = p.maxHp;
       p.x = this.SPAWN.x;
       p.y = this.SPAWN.y;
@@ -544,32 +563,58 @@ class GameHost {
     this._saveCharacter(playerId); // persist new exp/level/points (signed-in only)
   }
 
-  // A player killed an enemy: award EXP, plus the ROM loot npcSim already rolled
-  // (money always; the item only if it's a known good and the bag has room — drops
-  // of items outside the goods registry are skipped until they're catalogued).
+  // A player killed an enemy: award EXP + the kill money. Money goes to the BANK
+  // (EarthBound's model — it's wired to your ATM account, not your pocket), so you
+  // must visit an ATM to withdraw spendable cash. Items spawn as first-touch GROUND
+  // DROPS at the death spot and are claimed via tryPickup.
   awardKill(playerId, xp, loot) {
     this.awardXp(playerId, xp); // also persists; broadcasts player_stats
     const p = this.players.get(playerId);
     if (!p || !loot) return;
-    let changed = false;
     if (loot.money > 0) {
-      p.money += loot.money;
+      p.bank = (p.bank | 0) + loot.money;
+      p._ws.send(JSON.stringify({ type: 'bank', bank: p.bank }));
+      this._saveCharacter(playerId);
+    }
+  }
+
+  // Claim a ground drop for a player (npcSim found them standing on it). We own
+  // inventory/cash, so the grant decision lives here. Returns true if the drop was
+  // consumed (remove it from the world), false to leave it lying there.
+  //   - money: always taken, merged into on-hand cash (→ bank split in Phase E).
+  //   - item:  taken only if it's a real good AND the bag has room; a full bag
+  //            leaves the drop and (Phase D) notifies the player why.
+  tryPickup(playerId, drop) {
+    const p = this.players.get(playerId);
+    if (!p || !drop) return false;
+    if (drop.kind === 'money') {
+      const amount = drop.amount | 0;
+      if (amount <= 0) return true; // nothing to give; still consume it
+      p.money += amount;
       p._ws.send(JSON.stringify({ type: 'money', money: p.money }));
-      changed = true;
+      p._ws.send(JSON.stringify({ type: 'loot', money: amount }));
+      this._saveCharacter(playerId);
+      return true;
     }
-    if (loot.item && loot.item.item != null) {
-      const itemId = String(loot.item.item);
-      if (this.GOODS[itemId] && p.inventory.length < MAX_SLOTS) {
-        p.inventory.push(itemId);
-        p._ws.send(JSON.stringify({ type: 'inventory', items: this.inventoryView(p.inventory) }));
-        // Notify so the client can surface "Found <item>!" (unknown types ignored).
-        p._ws.send(
-          JSON.stringify({ type: 'loot', item: itemId, name: this.GOODS[itemId].name || '' })
-        );
-        changed = true;
+    // item drop
+    const itemId = String(drop.item);
+    if (!this.GOODS[itemId]) return true; // unknown id — consume so it can't linger
+    if (p.inventory.length >= MAX_SLOTS) {
+      // Bag full: leave the drop so they can return after making room, and tell
+      // them why — debounced, since the sim re-offers the drop every tick while
+      // they stand on it (one popup per BAG_FULL_NOTICE_MS, not 60/second).
+      const now = Date.now();
+      if (now - (p._bagFullAt || 0) >= BAG_FULL_NOTICE_MS) {
+        p._bagFullAt = now;
+        p._ws.send(JSON.stringify({ type: 'notice', code: 'bag_full', text: 'Your bag is full!' }));
       }
+      return false;
     }
-    if (changed) this._saveCharacter(playerId);
+    p.inventory.push(itemId);
+    p._ws.send(JSON.stringify({ type: 'inventory', items: this.inventoryView(p.inventory) }));
+    p._ws.send(JSON.stringify({ type: 'loot', item: itemId, name: this.GOODS[itemId].name || '' }));
+    this._saveCharacter(playerId);
+    return true;
   }
 
   /**
@@ -640,7 +685,8 @@ class GameHost {
           weaponOffense: 0,
           armorDefense: 0,
           inventory: init.inventory, // Goods slots, mutated by use/buy/sell
-          money: init.money,
+          money: init.money, // on-hand cash
+          bank: init.bank | 0, // ATM balance
           // PK (player-kill) flag + remaining enable-lock (in-game ms) — see
           // npcSim canHurt and the set_pk handler. Loaded from the save (anon:
           // off). pkTickAt is reset to now so the lock resumes from join, paused
@@ -693,8 +739,10 @@ class GameHost {
             players: otherPlayers,
             npcs: this.npcSim.snapshot(),
             npcHps: this.npcSim.hpSnapshot(),
+            drops: this.npcSim.dropsSnapshot(), // ground loot already lying around
             inventory: this.inventoryView(entry.inventory), // own Goods
-            money: entry.money, // own balance
+            money: entry.money, // own on-hand cash
+            bank: entry.bank | 0, // own ATM balance
             // Signed-in characters restore their saved spawn + stats + gear; the
             // anonymous client ignores these (it spawns from its own spawn.json).
             self: { x: entry.x, y: entry.y, direction: entry.direction },
@@ -896,6 +944,41 @@ class GameHost {
           JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) })
         );
         entry._ws.send(JSON.stringify({ type: 'money', money: entry.money }));
+        this._saveCharacter(playerId);
+        break;
+      }
+
+      // ATM: move money between the bank balance and on-hand cash. The server is
+      // the sole authority — it clamps the amount to what actually exists, so a
+      // forged/negative/oversized request can never mint money or overdraw. (The
+      // client only opens the ATM menu when standing on an ATM sprite; proximity
+      // isn't re-checked here because you can only ever move your OWN money.)
+      case 'atm_withdraw': {
+        const entry = this.players.get(playerId);
+        if (!entry) break;
+        const want = Math.floor(Number(msg.amount));
+        if (!Number.isFinite(want) || want <= 0) break;
+        const amount = Math.min(want, entry.bank | 0);
+        if (amount <= 0) break;
+        entry.bank -= amount;
+        entry.money += amount;
+        entry._ws.send(JSON.stringify({ type: 'money', money: entry.money }));
+        entry._ws.send(JSON.stringify({ type: 'bank', bank: entry.bank }));
+        this._saveCharacter(playerId);
+        break;
+      }
+
+      case 'atm_deposit': {
+        const entry = this.players.get(playerId);
+        if (!entry) break;
+        const want = Math.floor(Number(msg.amount));
+        if (!Number.isFinite(want) || want <= 0) break;
+        const amount = Math.min(want, entry.money | 0);
+        if (amount <= 0) break;
+        entry.money -= amount;
+        entry.bank += amount;
+        entry._ws.send(JSON.stringify({ type: 'money', money: entry.money }));
+        entry._ws.send(JSON.stringify({ type: 'bank', bank: entry.bank }));
         this._saveCharacter(playerId);
         break;
       }

@@ -491,12 +491,16 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   function rollLoot(sprite) {
     const e = entityDefs[String(sprite)] || {};
     const money = (e.money | 0) > 0 ? e.money | 0 : 0;
-    let item = null;
-    if (e.drop && e.drop.item) {
-      const rate = typeof e.drop.rate === 'number' ? e.drop.rate : 0;
-      if (Math.random() < rate) item = { item: e.drop.item, itemName: e.drop.itemName || '' };
+    // Drop table: prefer the authored `drops` list; fall back to the catalog's
+    // single `drop`. Every entry rolls independently against its own `rate`.
+    const table = Array.isArray(e.drops) && e.drops.length ? e.drops : e.drop ? [e.drop] : [];
+    const items = [];
+    for (const d of table) {
+      if (!d || !d.item) continue;
+      const rate = typeof d.rate === 'number' ? d.rate : 0;
+      if (Math.random() < rate) items.push({ item: d.item, itemName: d.itemName || '' });
     }
-    return money || item ? { money, item } : null;
+    return money || items.length ? { money, items } : null;
   }
 
   // --- Traffic config (our own content — public/.../car_traffic.json) ---
@@ -559,6 +563,67 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   let onEnemyKillCb = null; // set in start(): (playerId, xp, enemy, loot) => void
   let onPlayerHitCb = null; // set in start(): (targetPlayerId, dmg, byPlayerId) => void (PvP)
   let getPlayersCb = null; // set in start(): () => player snapshots (PvP targeting)
+  let onPickupCb = null; // set in start(): (playerId, drop) => bool — host claims a ground drop
+
+  // --- Ground loot drops (first-touch FFA pickup; never despawn) -------------
+  // A drop is a world entity at a fixed spot. The tick finds the first player
+  // within DROP_PICKUP_RADIUS and offers it to the host (onPickupCb), which owns
+  // inventory/cash and decides if the player can take it (bag room for items).
+  // Accepted -> removed + broadcast; refused (bag full) -> stays for next time.
+  const groundDrops = []; // {id, kind, x, y, item?, name?, amount?, fromX?, fromY?, pickableAt?}
+  let nextDropId = 1;
+  const DROP_PICKUP_RADIUS = 18; // px (anchor distance) to claim a drop
+  // Loot ejection: a drop flies out of the corpse at a random angle and lands
+  // EJECT_MIN..EJECT_MAX px away, so it never spawns under the killer's feet (no
+  // instant grab) and reads as a physical pop-out. It's unclaimable until it lands.
+  const EJECT_MIN = 14;
+  const EJECT_MAX = 40;
+  const EJECT_MS = 450; // flight time; pickup is locked until now + EJECT_MS
+
+  // Pick a non-solid landing spot a random angle+distance from (ox,oy). Tries a
+  // few angles so loot doesn't settle inside a wall; falls back to the origin.
+  function ejectLanding(ox, oy) {
+    for (let tries = 0; tries < 6; tries++) {
+      const ang = Math.random() * Math.PI * 2;
+      const dist = EJECT_MIN + Math.random() * (EJECT_MAX - EJECT_MIN);
+      const x = ox + Math.cos(ang) * dist;
+      const y = oy + Math.sin(ang) * dist;
+      if (!blocked(x - 4, y - 4, 8, 8)) return { x, y };
+    }
+    return { x: ox, y: oy };
+  }
+
+  // Wire shape for a drop. Items carry their id (client renders the held sprite);
+  // money carries an amount (client renders a coin). While a freshly ejected drop
+  // is still in flight we include its origin + flight time so the client animates
+  // the arc; once landed those are omitted (a late joiner just sees it at rest).
+  function dropWire(d) {
+    const base =
+      d.kind === 'money'
+        ? { id: d.id, kind: 'money', x: d.x, y: d.y, amount: d.amount | 0 }
+        : { id: d.id, kind: 'item', x: d.x, y: d.y, item: d.item, name: d.name || '' };
+    if (d.fromX != null && d.pickableAt && Date.now() < d.pickableAt) {
+      base.fromX = d.fromX;
+      base.fromY = d.fromY;
+      base.ejectMs = EJECT_MS;
+    }
+    return base;
+  }
+
+  // Spawn a drop. `landX/landY` is where it comes to rest; pass `origin` (the
+  // corpse spot) to make it eject — it arcs out from there and can't be claimed
+  // until it lands (now + EJECT_MS). `data` = {item,name} or {amount}.
+  function spawnDrop(kind, landX, landY, data, origin) {
+    const d = { id: `d${nextDropId++}`, kind, x: Math.round(landX), y: Math.round(landY), ...data };
+    if (origin) {
+      d.fromX = Math.round(origin.x);
+      d.fromY = Math.round(origin.y);
+      d.pickableAt = Date.now() + EJECT_MS;
+    }
+    groundDrops.push(d);
+    if (broadcastCb) broadcastCb({ type: 'drop_spawn', drop: dropWire(d) });
+    return d;
+  }
 
   function readOverrides() {
     try {
@@ -1133,6 +1198,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       if (foe.isPlayer) {
         // Swing at a PK player: HP lives on the host, so apply it there. Flat
         // NPC_DAMAGE (no crit/dodge) — townsfolk are a deliberate PK deterrent.
+        console.log(
+          `[HITDBG] TOWNSPERSON hit player ${e.id}: npc id=${n.id} sprite=${n.sprite} at (${Math.round(n.x)},${Math.round(n.y)}) -> player at (${Math.round(e.x)},${Math.round(e.y)}) dist=${Math.round(dist)} (player must be PK)`
+        );
         if (onPlayerHitCb) onPlayerHitCb(e.id, NPC_DAMAGE, null);
       } else {
         applyDamage(e, NPC_DAMAGE, now, null);
@@ -1524,24 +1592,18 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       const top = n.warpStack[n.warpStack.length - 1];
       const already = top && top.inX === (w && w.toX) && top.inY === (w && w.toY);
       if (w && !already && Math.hypot(n.x - w.fromX, n.y - w.fromY) <= WARP_FOLLOW_RANGE) {
-        if (w.door) {
-          // Walk to the resolved doorway and warp there ourselves.
-          n.pendingDoor = { triggerX: w.door.x, triggerY: w.door.y, destX: w.toX, destY: w.toY };
-          n.doorSince = now;
-          n.mode = 'door';
-          tickDoorSeek(n, players, now);
-          return;
-        }
-        // No door trigger resolved (a zone seam / scripted warp): fall back to
-        // the legacy instant follow so those transitions still work.
-        const spot = findFreeNear(w.toX, w.toY, n, players);
-        if (spot) {
-          n.warpStack.push({ outX: w.fromX, outY: w.fromY, inX: w.toX, inY: w.toY });
-          n.x = spot.x;
-          n.y = spot.y;
-          n.dirty = true;
-          return; // landed inside — aggro re-acquires the target next tick
-        }
+        // Walk to the crossing point and warp through on contact (tickDoorSeek)
+        // — NEVER teleport across the room. A resolved door gives the exact
+        // doorway anchor; a zone seam / scripted warp has no door trigger, so
+        // the player's OWN pre-warp position is the crossing the enemy walks to
+        // and warps through, treated as a synthetic doorway. Same walk-to-warp
+        // path either way, so the regroup retrace (warpStack) is uniform.
+        const cross = w.door || { x: w.fromX, y: w.fromY };
+        n.pendingDoor = { triggerX: cross.x, triggerY: cross.y, destX: w.toX, destY: w.toY };
+        n.doorSince = now;
+        n.mode = 'door';
+        tickDoorSeek(n, players, now);
+        return;
       }
     }
 
@@ -1583,6 +1645,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
                   targetPlayer: target.id,
                 });
             } else {
+              console.log(
+                `[HITDBG] ENEMY hit player ${target.id}: enemy id=${n.id} sprite=${n.sprite} kind=${n.kind} mode=${n.mode} dead=${n.dead} at (${Math.round(n.x)},${Math.round(n.y)}) -> player at (${Math.round(target.x)},${Math.round(target.y)}) dist=${Math.round(dist)} dmg=${res.dmg}`
+              );
               if (onEnemyHit) onEnemyHit(target.id, res.dmg, n);
               if (res.crit && broadcastCb)
                 broadcastCb({
@@ -1787,8 +1852,34 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       if (target.isEnemy) {
         target.respawnAt =
           now + (target.spawner ? target.spawner.respawnDelayMs || 9000 : STATIC_RESPAWN_MS);
-        if (killerPlayerId != null && onEnemyKillCb)
-          onEnemyKillCb(killerPlayerId, target.xp || 0, target, rollLoot(target.sprite));
+        if (killerPlayerId != null) {
+          const loot = rollLoot(target.sprite);
+          // Items become first-touch ground drops at the death spot (anyone can
+          // grab them); money is still credited to the killer (→ bank in Phase E).
+          const items = (loot && loot.items) || [];
+          for (const it of items) {
+            // Each item ejects from the corpse to its own random landing spot, so
+            // it pops out and settles nearby instead of under the killer's feet.
+            const land = ejectLanding(target.x, target.y);
+            spawnDrop(
+              'item',
+              land.x,
+              land.y,
+              { item: it.item, name: it.itemName || '' },
+              {
+                x: target.x,
+                y: target.y,
+              }
+            );
+          }
+          if (onEnemyKillCb)
+            onEnemyKillCb(
+              killerPlayerId,
+              target.xp || 0,
+              target,
+              loot ? { money: loot.money } : null
+            );
+        }
       } else {
         target.respawnAt = now + NPC_RESPAWN_MS;
       }
@@ -1873,6 +1964,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             });
           continue;
         }
+        console.log(
+          `[HITDBG] PVP hit player ${t.id}: by player ${playerId} at (${Math.round(t.x)},${Math.round(t.y)}) dmg=${res.dmg}`
+        );
         onPlayerHitCb(t.id, res.dmg, playerId);
         if (res.crit && broadcastCb)
           broadcastCb({
@@ -1900,10 +1994,11 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
      *   killing blow; the host awards EXP and `loot` ({money, item} | null,
      *   already rolled against the ROM drop rate).
      */
-    start(getPlayers, broadcast, onEnemyHit, onEnemyKill, onPlayerHit) {
+    start(getPlayers, broadcast, onEnemyHit, onEnemyKill, onPlayerHit, onPickup) {
       onEnemyKillCb = onEnemyKill || null;
       onPlayerHitCb = onPlayerHit || null; // PvP: apply a landed swing to a player
       getPlayersCb = getPlayers || null; // PvP: who else is in the world
+      onPickupCb = onPickup || null; // ground-drop claim: (playerId, drop) => bool
       broadcastCb = broadcast; // handleAttack uses this for crit/miss events
       tickInterval = setInterval(() => {
         const players = getPlayers();
@@ -1983,6 +2078,26 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             tickEnemy(n, players, now, onEnemyHit, recentWarps);
           }
         }
+        // Ground-drop pickup: first player within reach claims each drop. The
+        // host owns inventory/cash and decides if it can be taken (bag room);
+        // accepted -> remove + broadcast, refused (bag full) -> leave it.
+        if (groundDrops.length && onPickupCb) {
+          for (let i = groundDrops.length - 1; i >= 0; i--) {
+            const d = groundDrops[i];
+            if (d.pickableAt && now < d.pickableAt) continue; // still mid-flight
+            const p = players.find(
+              (q) =>
+                !q.editor &&
+                !(q.hp !== undefined && q.hp <= 0) &&
+                Math.abs(q.x - d.x) <= DROP_PICKUP_RADIUS &&
+                Math.abs(q.y - d.y) <= DROP_PICKUP_RADIUS
+            );
+            if (p && onPickupCb(p.id, dropWire(d))) {
+              groundDrops.splice(i, 1);
+              broadcast({ type: 'drop_remove', id: d.id });
+            }
+          }
+        }
       }, 1000 / TICK_HZ);
 
       sendInterval = setInterval(() => {
@@ -2058,6 +2173,17 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         maxHp: n.maxHp,
         dead: !!n.dead,
       }));
+    },
+
+    /** Every live ground drop (wire shape), for a newly joining client. */
+    dropsSnapshot() {
+      return groundDrops.map(dropWire);
+    },
+
+    /** Spawn a money ground drop (Phase F: player death drops on-hand cash). */
+    spawnMoneyDrop(x, y, amount) {
+      if ((amount | 0) <= 0) return null;
+      return spawnDrop('money', x, y, { amount: amount | 0 });
     },
 
     /** Resolve a player's melee swing (server-authoritative). */

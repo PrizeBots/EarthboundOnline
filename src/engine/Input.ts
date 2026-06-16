@@ -85,6 +85,13 @@ export function initInput(gameCanvas?: HTMLCanvasElement) {
     pointerHeld = false;
     releasePending = toGameCoords(e.clientX, e.clientY);
   });
+  // Right-click over the game canvas shouldn't pop the browser's native context
+  // menu ("Save image as" / "Copy image") — it's just a game surface. Scoped to
+  // the canvas so DOM UI (ROM picker, account forms, inputs) keeps its menu.
+  window.addEventListener('contextmenu', (e) => {
+    const t = e.target as HTMLElement | null;
+    if (t && (t === canvas || t.tagName === 'CANVAS')) e.preventDefault();
+  });
 }
 
 /** True while the left button is held down (for drag interactions). */
@@ -166,17 +173,6 @@ export function consumeHotbarSlot(): number {
   }
   return -1;
 }
-
-/** G — cycle the held/equipped weapon through your inventory (+ none). Coexists
- *  with the 1/2 hotbar (consumeHotbarSlot); Game.ts still drives equip via this. */
-export function isCycleItemPressed(): boolean {
-  if (keys.has('KeyG')) {
-    keys.delete('KeyG');
-    return true;
-  }
-  return false;
-}
-
 /** H — play the hurt animation (debug hook until combat deals damage). */
 export function isHurtPressed(): boolean {
   if (keys.has('KeyH')) {

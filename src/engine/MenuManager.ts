@@ -23,8 +23,16 @@ import {
   consumePointerRelease,
 } from './Input';
 import { getGoods } from './Inventory';
-import { getMoney } from './Wallet';
-import { sendUseItem, sendUsePsi, sendBuy, sendSell, sendEquip } from './Network';
+import { getMoney, getBank } from './Wallet';
+import {
+  sendUseItem,
+  sendUsePsi,
+  sendBuy,
+  sendSell,
+  sendEquip,
+  sendAtmWithdraw,
+  sendAtmDeposit,
+} from './Network';
 import { playEventSfx } from './SfxEvents';
 import { getStoreItems, itemEquip, itemOffense, itemDefense } from './Shop';
 import { getItemName } from './Items';
@@ -126,6 +134,30 @@ export function openPhoneMenu(): void {
   menuState = 'phone';
 }
 
+// ATM — move money between your bank account and on-hand cash. Up/Down pick the
+// action (Withdraw / Deposit); Left/Right size the amount (clamped to what's
+// available); confirm sends the request. The server is authoritative and re-clamps,
+// so nothing here can mint or overdraw money — see GameHost atm_withdraw/deposit.
+const ATM_ACTIONS = ['Withdraw', 'Deposit'] as const;
+let atmCursor = 0; // 0 = Withdraw, 1 = Deposit
+let atmAmount = 0; // currently dialed-in amount
+
+/** Max amount the selected action can move (bank for withdraw, cash for deposit). */
+function atmMax(): number {
+  return atmCursor === 0 ? getBank() : getMoney();
+}
+/** Step the dialed amount by ~1/10 of the available max (min $1), clamped. */
+function atmStep(): number {
+  return Math.max(1, Math.round(atmMax() / 10));
+}
+
+/** Open the ATM/bank menu (called from Game.tryTalk for an ATM sprite). */
+export function openAtmMenu(): void {
+  atmCursor = 0;
+  atmAmount = 0;
+  menuState = 'atm';
+}
+
 // Shop: opened by talking to a clerk (openShop), NOT from the command grid.
 // 'shop' is the Buy/Sell chooser; the two lists hang under it. The server owns
 // money + inventory, so confirming just sends a request and the resulting
@@ -189,12 +221,11 @@ function useOrEquipGood(id: string): void {
   menuState = 'message';
 }
 
-/** Toggle-equip any gear (weapon or armor) into its own slot. */
+/** Equip any gear (weapon or armor) into its own slot (no-op if already worn). */
 function equipToggle(id: string): void {
   const eq = itemEquip(id);
   if (!eq) return;
-  const cur = hooks?.getEquipped(eq.slot) ?? null;
-  hooks?.equip(eq.slot, cur === id ? null : id);
+  if ((hooks?.getEquipped(eq.slot) ?? null) !== id) hooks?.equip(eq.slot, id);
 }
 
 /** Cast a PSI ability (server-authoritative) + its cast/heal SFX. Shared by the
@@ -208,13 +239,20 @@ function usePsi(abilityId: string): void {
   if (abilityId === 'lifeup') playEventSfx('heal');
 }
 
-/** Trigger a hotbar slot: cast a PSI move, toggle-equip gear, or use a consumable. */
+/** Trigger a hotbar slot. Weapon → swap to / equip it; consumable → use it
+ *  (cookie, etc.); PSI → cast it. Equipping never toggles off — an already-worn
+ *  weapon just stays equipped, so the key reads as "make this my weapon". */
 function activateSlot(i: number): void {
   const id = hotbar[i];
   if (!id) return;
-  if (isPsiEntry(id)) usePsi(id.slice(PSI_TAG.length));
-  else if (itemEquip(id)) equipToggle(id);
-  else sendUseItem(id);
+  if (isPsiEntry(id)) {
+    usePsi(id.slice(PSI_TAG.length));
+    return;
+  }
+  const eq = itemEquip(id);
+  if (eq?.slot === 'weapon')
+    equipToggle(id); // swap to this weapon
+  else sendUseItem(id); // consumable
 }
 
 /** Trigger hotbar slot `n` (0-based) — keys 1/2 in the field. Toggle-brandishes
@@ -233,18 +271,18 @@ function hotbarEligible(id: string): boolean {
 }
 
 /**
- * Keep the hotbar reflecting the equipped weapon so its sprite shows in a box
- * AND key 1/2 can toggle it. A newly-equipped weapon takes over the existing
- * weapon box (you brandish one at a time), else the first free box, else box 0.
- * Unequipping does NOT clear the box — the assignment persists so the same key
- * re-brandishes it; the box just loses its "equipped" ring. Consumables the
- * player placed stay put. Call whenever the equipped weapon changes.
+ * Guarantee the equipped weapon is in a hotbar slot, so "if a weapon is equipped
+ * it's on the hotbar" always holds and key 1/2 can swap to it. If it's already
+ * in a slot, nothing changes. Otherwise it takes the first EMPTY slot (so a
+ * second weapon you placed isn't evicted — you can swap between them), else an
+ * existing weapon slot, else box 0. Consumables/PSI the player placed stay put.
+ * Call whenever the equipped weapon changes.
  */
 export function syncWeaponHotbar(weaponId: string | null): void {
   if (!weaponId || hotbar.includes(weaponId)) return;
-  const weaponSlot = hotbar.findIndex((id) => id !== null && itemEquip(id)?.slot === 'weapon');
   const empty = hotbar.indexOf(null);
-  hotbar[weaponSlot !== -1 ? weaponSlot : empty !== -1 ? empty : 0] = weaponId;
+  const weaponSlot = hotbar.findIndex((id) => id !== null && itemEquip(id)?.slot === 'weapon');
+  hotbar[empty !== -1 ? empty : weaponSlot !== -1 ? weaponSlot : 0] = weaponId;
 }
 
 // Pointer drag/drop. Goods: drag a row to a hotbar box to assign it, or release
@@ -303,6 +341,23 @@ export function openShop(store: number): void {
 }
 
 let menuState: MenuName = 'closed';
+
+// Modal prompt screens that OWN the keyboard: the telephone, the ATM, the
+// Yes/No confirms (PK warning + Dad's save), and result messages. On these the
+// quick-select hotbar is suppressed — keys 1/2 and drag do nothing and the bar
+// isn't drawn — so a stray hotkey can't fire an item/PSI mid-prompt. The bar
+// stays live only on the browsing screens (command/goods/psi/equip/status/shop).
+const HOTBAR_BLOCKED: ReadonlySet<MenuName> = new Set<MenuName>([
+  'phone',
+  'save',
+  'confirm',
+  'atm',
+  'message',
+]);
+function hotbarActive(): boolean {
+  return menuState !== 'closed' && !HOTBAR_BLOCKED.has(menuState);
+}
+
 let cursorIndex = 0;
 let goodsCursor = 0;
 let psiCursor = 0;
@@ -340,9 +395,10 @@ export function updateMenu(): void {
   // A left-click anywhere this frame (game-space coords), consumed once.
   const click = menuState === 'closed' ? null : consumePointerClick();
 
-  // Hotbar (any open state): number keys 1-2 trigger their slot (toggle-equip
-  // gear / use a consumable). Drag-drop assignment is in updateHotbarDrag.
-  if (menuState !== 'closed') {
+  // Hotbar (browsing screens only — not the modal prompts): number keys 1-2
+  // trigger their slot (toggle-equip gear / use a consumable). Drag-drop
+  // assignment is in updateHotbarDrag. See hotbarActive / HOTBAR_BLOCKED.
+  if (hotbarActive()) {
     for (let n = 0; n < HOTBAR_SLOTS; n++) {
       if (justPressed(`Digit${n + 1}`)) activateSlot(n);
     }
@@ -631,6 +687,36 @@ export function updateMenu(): void {
         menuState = 'closed'; // hung up without saving
       }
     }
+  } else if (menuState === 'atm') {
+    // Bank machine: pick Withdraw/Deposit (Up/Down), size the amount (Left/Right),
+    // confirm to send. Cancel leaves. The amount is always clamped to what's
+    // available for the chosen action so you can't dial past your balance.
+    if (toggle || justPressed('Backspace')) {
+      menuState = 'closed';
+    } else {
+      const prevCursor = atmCursor;
+      if (justPressed('ArrowUp') || justPressed('KeyW')) atmCursor = (atmCursor + 1) % 2;
+      if (justPressed('ArrowDown') || justPressed('KeyS')) atmCursor = (atmCursor + 1) % 2;
+      if (atmCursor !== prevCursor) {
+        atmAmount = 0; // reset the dial when switching account direction
+        playEventSfx('cursor-vertical');
+      }
+      const max = atmMax();
+      if (atmAmount > max) atmAmount = max; // a balance change may have shrunk it
+      const prevAmt = atmAmount;
+      if (justPressed('ArrowRight') || justPressed('KeyD'))
+        atmAmount = Math.min(max, atmAmount + atmStep());
+      if (justPressed('ArrowLeft') || justPressed('KeyA'))
+        atmAmount = Math.max(0, atmAmount - atmStep());
+      if (atmAmount !== prevAmt) playEventSfx('cursor-horizontal');
+
+      if (confirm && atmAmount > 0) {
+        if (atmCursor === 0) sendAtmWithdraw(atmAmount);
+        else sendAtmDeposit(atmAmount);
+        playEventSfx('cash-register');
+        atmAmount = 0; // server pushes new balances; start a fresh dial
+      }
+    }
   } else if (menuState === 'confirm') {
     // Generic Yes/No prompt (PK warning). Cancel (Esc/Backspace) = No → command.
     if (toggle || justPressed('Backspace')) {
@@ -678,9 +764,12 @@ export function renderMenu(ctx: CanvasRenderingContext2D): void {
   if (menuState === 'closed') return;
   const view = buildView();
   renderMenuBody(ctx, view);
-  // The hotbar (and any in-flight drag) overlay every open menu state.
-  renderHotbar(ctx, view);
-  renderDragGhost(ctx, view);
+  // The hotbar (and any in-flight drag) overlay the browsing screens only —
+  // hidden on the modal prompts where its keys are suppressed (hotbarActive).
+  if (hotbarActive()) {
+    renderHotbar(ctx, view);
+    renderDragGhost(ctx, view);
+  }
 }
 
 /** Draw just the quick-select hotbar as an overworld HUD element — so the 1/2
@@ -745,6 +834,10 @@ function renderMenuBody(ctx: CanvasRenderingContext2D, view: MenuView): void {
     renderPhone(ctx);
     return;
   }
+  if (menuState === 'atm') {
+    renderAtm(ctx);
+    return;
+  }
   if (menuState === 'save') {
     renderSave(ctx);
     return;
@@ -785,6 +878,31 @@ function phoneRowAt(px: number, py: number): number {
     if (px >= c.x && px < c.x + c.w && py >= c.y && py < c.y + c.h) return i;
   }
   return -1;
+}
+
+// ATM/bank window — balances on top, the Withdraw/Deposit chooser with a ">"
+// cursor below, and the dialed amount. Top-left, same window family as the phone.
+function renderAtm(ctx: CanvasRenderingContext2D): void {
+  const winX = 8;
+  const winY = 8;
+  const lineH = FONT_LINE_HEIGHT;
+  const innerX = winX + BORDER + PADDING;
+  const innerW = 96;
+  const lines = 6; // Bank, Cash, gap, Withdraw, Deposit, Amount
+  const winH = lines * lineH + PADDING * 2 + BORDER * 2;
+  drawWindow(ctx, winX, winY, innerW + PADDING * 2 + BORDER * 2, winH, MENU_STYLE);
+
+  let y = winY + BORDER + PADDING;
+  drawText(ctx, `Bank:  $${getBank()}`, innerX, y, FONT_ID);
+  y += lineH;
+  drawText(ctx, `Cash:  $${getMoney()}`, innerX, y, FONT_ID);
+  y += lineH * 2; // blank spacer row
+  for (let i = 0; i < ATM_ACTIONS.length; i++) {
+    if (i === atmCursor) drawCursor(ctx, innerX, y + 3);
+    drawText(ctx, ATM_ACTIONS[i], innerX + CURSOR_W, y, FONT_ID);
+    y += lineH;
+  }
+  drawText(ctx, `Amount: $${atmAmount}`, innerX, y, FONT_ID);
 }
 
 function renderPhone(ctx: CanvasRenderingContext2D): void {

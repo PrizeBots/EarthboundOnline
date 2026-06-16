@@ -7,6 +7,7 @@ import { isComposite, drawComposite, drawCompositeFg } from './CompositeTiles';
 import { drawSprite, getSpriteGroupMeta, SpritePart } from './SpriteManager';
 import { getNameplate, getLevelPlate } from './NamePlate';
 import { drawHeldItem, isItemBehind } from './Items';
+import { renderDrops } from './DropManager';
 import { getSpritePriority, getPromotedMinitiles } from './Collision';
 import { getStatus } from './StatusModal';
 import {
@@ -317,6 +318,10 @@ export class Renderer {
         }
       }
     }
+
+    // Ground loot sits on the floor, under every sprite — draw it between the tile
+    // pass and the Y-sorted sprite pass so players/NPCs walk over it.
+    renderDrops(this.ctx, camX, camY);
 
     // Depth model: ALL sprites draw in ONE feet-Y-sorted pass, so a sprite in
     // front (larger feet-Y) always paints over one behind it — sprite-vs-sprite

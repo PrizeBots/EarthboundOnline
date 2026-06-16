@@ -444,6 +444,16 @@ export function applyNpcUpdates(rows: NpcUpdate[]): void {
   for (const [id, x, y, dir, frame, poseCode] of rows) {
     const npc = npcsById[id];
     if (!npc) continue;
+    // Reconcile a missed activation: the server only broadcasts movement for
+    // LIVE actors (npcSim send loop guards `!n.dead`), so a movement row for an
+    // enemy we still think is dead means we dropped its one-shot `npc_hp`
+    // activation (e.g. it fired during our async NPC-pool load, before this
+    // instance existed). Left dead, the enemy is skipped by both getNearbyNPCs
+    // (invisible) and interpolateNpcs (position frozen at spawn) while the
+    // server happily chases/door-warps it onto us and lands real hits — the
+    // "invisible attacker after a door" bug. Revive it provisionally; the next
+    // `npc_hp` delta corrects the bar.
+    if (npc.kind === 'enemy' && npc.dead) npc.applyHp(npc.maxHp, npc.maxHp);
     const pose = POSES[poseCode ?? 0] ?? 'walk';
     const key = String(id);
     // Buffer the snapshot for smooth interpolation (see interpolateNpcs). The

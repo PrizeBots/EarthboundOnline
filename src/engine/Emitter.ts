@@ -86,6 +86,16 @@ export function spawnMissText(x: number, y: number): void {
   spawn('MISS', x, y, MISS_COLOR, { life: 750 });
 }
 
+/** Pop a gold loot toast (e.g. "Found Cookie!", "Got $40") off the player. */
+export function spawnLootText(x: number, y: number, label: string): void {
+  spawn(label, x, y, LEVELUP_COLOR, { float: true, riseExtra: 10, life: 1300 });
+}
+
+/** Pop a red notice (e.g. "Your bag is full!") off the player. */
+export function spawnNoticeText(x: number, y: number, label: string): void {
+  spawn(label, x, y, CRIT_COLOR, { float: true, riseExtra: 10, life: 1300 });
+}
+
 interface SpawnOpts {
   riseExtra?: number; // px to start above the default pop height
   float?: boolean; // straight rise + fade instead of the ballistic arc

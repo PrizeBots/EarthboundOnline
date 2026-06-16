@@ -1,5 +1,13 @@
 import { RemotePlayer, Direction, Pose, CharacterAppearance } from '../types';
 import { GoodsItem } from './Inventory';
+import { GroundDrop } from './DropManager';
+
+/** A pickup notification: an item ("Found Cookie!") or money ("Got $40"). */
+export interface LootPayload {
+  item?: string;
+  name?: string;
+  money?: number;
+}
 
 /**
  * Server NPC state row: [npcId, x, y, direction, frame, poseCode?].
@@ -51,8 +59,10 @@ type NetworkCallback = {
   ) => void;
   /** The local player's Goods list (welcome snapshot + post-use deltas). */
   onInventory: (items: GoodsItem[]) => void;
-  /** The local player's money balance (welcome snapshot + future deltas). */
+  /** The local player's on-hand cash (welcome snapshot + deltas). */
   onMoney: (amount: number) => void;
+  /** The local player's bank/ATM balance (welcome snapshot + deltas). */
+  onBank?: (amount: number) => void;
   /** A player respawned — snap them to (x, y). */
   onPlayerRespawn: (id: string, x: number, y: number, dir: Direction) => void;
   /** Server-authoritative progression: EXP gained / level-up / stat growth. */
@@ -75,6 +85,16 @@ type NetworkCallback = {
    * timestamp) keeps it correct across client/server clock differences.
    */
   onPlayerPk?: (id: string, pk: boolean, lockMs: number) => void;
+  /** Ground loot already lying in the world on join (welcome snapshot). */
+  onDrops?: (drops: GroundDrop[]) => void;
+  /** A new ground drop appeared (enemy/player death). */
+  onDropSpawn?: (drop: GroundDrop) => void;
+  /** A ground drop was claimed/removed. */
+  onDropRemove?: (id: string) => void;
+  /** The LOCAL player picked something up — drives the "Found X!" toast. */
+  onLoot?: (loot: LootPayload) => void;
+  /** A server notice for the LOCAL player (e.g. "Your bag is full!"). */
+  onNotice?: (text: string, code?: string) => void;
 };
 
 /** Progression block the server pushes (field names match StatusModal). */
@@ -186,6 +206,7 @@ function openSocket() {
         if (msg.npcHps) callbacks?.onNpcHp(msg.npcHps);
         if (msg.inventory) callbacks?.onInventory(msg.inventory);
         if (typeof msg.money === 'number') callbacks?.onMoney(msg.money);
+        if (typeof msg.bank === 'number') callbacks?.onBank?.(msg.bank);
         // Signed-in characters restore saved stats + gear right away (reusing the
         // live progression/equip handlers). Anonymous joins omit these.
         if (msg.stats) callbacks?.onPlayerStats(msg.playerId, msg.stats, false, 0);
@@ -194,6 +215,7 @@ function openSocket() {
         callbacks?.onFlags?.(Array.isArray(msg.flags) ? msg.flags : []);
         // Restore PK state + remaining lock (a player who logged out PK stays PK).
         callbacks?.onPlayerPk?.(msg.playerId, !!msg.pk, msg.lockMs ?? 0);
+        if (Array.isArray(msg.drops)) callbacks?.onDrops?.(msg.drops);
         break;
       case 'join_error':
         console.error('Join rejected:', msg.error);
@@ -248,6 +270,21 @@ function openSocket() {
       case 'player_pk':
         callbacks?.onPlayerPk?.(msg.id, !!msg.pk, msg.lockMs ?? 0);
         break;
+      case 'drop_spawn':
+        if (msg.drop) callbacks?.onDropSpawn?.(msg.drop);
+        break;
+      case 'drop_remove':
+        callbacks?.onDropRemove?.(msg.id);
+        break;
+      case 'loot':
+        callbacks?.onLoot?.(msg);
+        break;
+      case 'notice':
+        callbacks?.onNotice?.(msg.text ?? '', msg.code);
+        break;
+      case 'bank':
+        callbacks?.onBank?.(typeof msg.bank === 'number' ? msg.bank : 0);
+        break;
     }
   };
 
@@ -287,6 +324,20 @@ export function sendPosition(
         pose,
       })
     );
+  }
+}
+
+/** ATM: ask the server to move `amount` from the bank to on-hand cash. */
+export function sendAtmWithdraw(amount: number) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'atm_withdraw', amount: Math.floor(amount) }));
+  }
+}
+
+/** ATM: ask the server to move `amount` from on-hand cash to the bank. */
+export function sendAtmDeposit(amount: number) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'atm_deposit', amount: Math.floor(amount) }));
   }
 }
 

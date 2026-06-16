@@ -18,6 +18,7 @@ export type MenuName =
   | 'phone'
   | 'save'
   | 'confirm'
+  | 'atm'
   | 'equip';
 
 // Hooks into the local player's equipment + PK state, wired by Game (the menu

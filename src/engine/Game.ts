@@ -7,7 +7,6 @@ import {
   isActionPressed,
   isTalkPressed,
   isAttackPressed,
-  isCycleItemPressed,
   isHurtPressed,
   consumeHotbarSlot,
   isToggleBoxesPressed,
@@ -62,9 +61,8 @@ import { loadNameOverrides, getSpriteName } from './SpriteNames';
 import { loadSongNameOverrides } from './SongNames';
 import { setStatus } from './StatusModal';
 import { pushRemoteSnapshot, dropRemoteBuffer, interpolateRemotePlayer } from './RemoteInterp';
-import { getItemName, loadItemSprites } from './Items';
+import { loadItemSprites } from './Items';
 import { loadCustomTiles } from './CustomTiles';
-import { itemEquip } from './Shop';
 import { getEquipped, setEquipped, setEquippedFromServer } from './Equipment';
 import {
   loadMusicMap,
@@ -97,8 +95,10 @@ import {
   renderMenu,
   renderHotbarOverlay,
   triggerHotbarSlot,
+  syncWeaponHotbar,
   openShop,
   openPhoneMenu,
+  openAtmMenu,
 } from './MenuManager';
 import {
   initDialogue,
@@ -130,10 +130,13 @@ import {
   spawnLevelUp,
   spawnCritText,
   spawnMissText,
+  spawnLootText,
+  spawnNoticeText,
 } from './Emitter';
+import { setDrops, addDrop, removeDrop } from './DropManager';
 import { playEventSfx, loadSfxEvents } from './SfxEvents';
-import { setGoods, getGoods } from './Inventory';
-import { setMoney } from './Wallet';
+import { setGoods } from './Inventory';
+import { setMoney, setBank } from './Wallet';
 import {
   RemotePlayer,
   CharacterAppearance,
@@ -393,7 +396,10 @@ export class Game {
       getEquipped: (slot) => getEquipped(slot),
       equip: (slot, id) => {
         setEquipped(slot, id);
-        if (slot === 'weapon') this.player.heldItemId = id;
+        if (slot === 'weapon') {
+          this.player.heldItemId = id;
+          syncWeaponHotbar(id); // an equipped weapon always lives in a hot slot
+        }
         sendEquip(slot, id);
         if (id) playEventSfx('equip'); // only on equip, not take-off
       },
@@ -474,6 +480,7 @@ export class Game {
           // and the held-weapon sprite.
           setEquippedFromServer(slots);
           this.player.heldItemId = slots.weapon ?? null;
+          syncWeaponHotbar(slots.weapon ?? null); // show the saved weapon on the hotbar
         },
         onNpcUpdate: (rows) => {
           applyNpcUpdates(rows);
@@ -507,7 +514,29 @@ export class Game {
           setGoods(items); // mirror the server's Goods list for the menu
         },
         onMoney: (amount) => {
-          setMoney(amount); // mirror the server's balance for the menu
+          setMoney(amount); // mirror the server's on-hand cash for the menu
+        },
+        onBank: (amount) => {
+          setBank(amount); // mirror the server's bank/ATM balance
+        },
+        // --- Ground loot drops (server-authoritative; pickup is first-touch) ---
+        onDrops: (list) => {
+          setDrops(list); // full set on join / re-join
+        },
+        onDropSpawn: (drop) => {
+          addDrop(drop);
+        },
+        onDropRemove: (id) => {
+          removeDrop(id);
+        },
+        onLoot: (loot) => {
+          // We picked something up — float a gold toast off the player.
+          const label =
+            typeof loot.money === 'number' ? `Got $${loot.money}` : `Found ${loot.name || 'item'}!`;
+          spawnLootText(this.player.x, this.player.y, label);
+        },
+        onNotice: (text) => {
+          if (text) spawnNoticeText(this.player.x, this.player.y, text);
         },
         onPlayerRespawn: (id, x, y, dir) => {
           if (id === this.localPlayerId) {
@@ -1014,9 +1043,9 @@ export class Game {
       return;
     }
 
-    // F = attack swing, G = cycle held item, H = hurt flinch (debug hook).
-    // A swing that actually starts is sent to the server, which resolves the
-    // hit against enemies (server-authoritative damage).
+    // F = attack swing, H = hurt flinch (debug hook). Weapons are swapped via the
+    // 1/2 hotbar now — there's no separate cycle key. A swing that actually starts
+    // is sent to the server, which resolves the hit (server-authoritative damage).
     if (isAttackPressed() && this.player.attack()) {
       sendAttack(this.player.x, this.player.y, this.player.direction);
       playEventSfx('player-attack');
@@ -1027,21 +1056,6 @@ export class Game {
     if (slot >= 0) triggerHotbarSlot(slot);
     if (isHurtPressed()) this.player.hurt();
     if (isToggleBoxesPressed()) setDebugBoxes(!debugBoxesOn());
-    if (isCycleItemPressed()) {
-      // Cycle through the equippable gear in your inventory (+ none). Equipping a
-      // catalog item broadcasts its id so everyone renders its held sprite.
-      const weapons = getGoods()
-        .filter((g) => itemEquip(g.id)?.slot === 'weapon')
-        .map((g) => g.id);
-      const cycle: (string | null)[] = [null, ...weapons];
-      const idx = cycle.indexOf(this.player.heldItemId);
-      const next = cycle[(idx + 1) % cycle.length] ?? null;
-      this.player.heldItemId = next;
-      setEquipped('weapon', next);
-      sendEquip('weapon', next);
-      if (next) playEventSfx('equip');
-      console.log(`Equip weapon: ${next ? getItemName(next) : 'none'}`);
-    }
 
     this.player.update();
     // NPC simulation is server-authoritative; getNearbyNPCs (in render) still
@@ -1175,6 +1189,13 @@ export class Game {
         openPhoneMenu();
         return;
       }
+      // An ATM opens the bank menu (withdraw/deposit) — kill money lives in the
+      // bank; withdraw to get spendable cash.
+      if (target.isAtm) {
+        console.log('Talk: ATM -> bank menu');
+        openAtmMenu();
+        return;
+      }
       // A shop clerk opens its store; anyone else talks (or gives the Check
       // fallback if they have nothing to say).
       if (target.shopStore !== null) {
@@ -1272,10 +1293,19 @@ export class Game {
       this.ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
     }
 
-    // Quick-select hotbar HUD — always visible during play. When the menu is
-    // open, renderMenu draws it (with the drag ghost), so only draw the standalone
-    // overlay here when the menu is closed (and not in the editor).
-    if (!isMenuOpen() && !this.editor?.isActive()) renderHotbarOverlay(this.ctx);
+    // Quick-select hotbar HUD — bottom of the UI depth stack: drawn only when
+    // the player has plain field control. Any higher layer hides it — the menu,
+    // NPC dialogue, the level-up pentagon, chat typing, a door fade, or the
+    // editor. (When the menu is open, renderMenu draws the bar itself, and only
+    // on its browsing screens.)
+    const hudBlocked =
+      isMenuOpen() ||
+      isDialogueOpen() ||
+      isLevelUpOpen() ||
+      isChatTyping() ||
+      this.transitioning ||
+      !!this.editor?.isActive();
+    if (!hudBlocked) renderHotbarOverlay(this.ctx);
 
     // Draw menu on top of game world (including during transitions)
     renderMenu(this.ctx);

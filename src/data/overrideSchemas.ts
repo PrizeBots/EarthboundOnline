@@ -46,6 +46,18 @@ export const EntityStatsSchema = z
         raw: z.string().optional(),
       })
       .optional(),
+    // Drop TABLE: authored list of independent rolls. Each entry rolls vs its own
+    // `rate` on death, so an enemy can drop several distinct items. When present it
+    // supersedes the single `drop` above (which stays as the catalog default).
+    drops: z
+      .array(
+        z.object({
+          item: z.number().int(),
+          itemName: z.string().optional(),
+          rate: z.number().min(0).max(1),
+        })
+      )
+      .optional(),
   })
   .catchall(z.unknown());
 

@@ -1,21 +1,31 @@
 /**
- * Wallet — the local player's money ($), mirrored from the server.
+ * Wallet — the local player's money, mirrored from the server.
  *
- * The server is authoritative: it grants the $1000 starting balance and is the
- * sole authority on the balance (welcome snapshot + future `money` deltas once
- * shops/drops exist). This module just holds the latest copy so the command
- * window can show it. On SNES this maps to the money RAM the menu reads —
- * EarthBound actually keeps cash "in the bank", but a single counter is enough
- * until an ATM/bank system exists.
+ * The server is authoritative on both balances; this module just holds the latest
+ * copy for the menu/ATM to read. EarthBound's model (now implemented): money lives
+ * in two places —
+ *   - `money` = on-hand CASH, what shops spend.
+ *   - `bank`  = ATM balance; kill rewards land here, and you withdraw to spend.
+ * Both arrive on welcome and via `money` / `bank` deltas; ATM moves them between.
  */
 
 let money = 0;
+let bank = 0;
 
-/** Replace the balance (called on welcome and every `money` delta). */
+/** Replace the on-hand cash (welcome + every `money` delta). */
 export function setMoney(amount: number): void {
   money = Number.isFinite(amount) ? Math.max(0, Math.floor(amount)) : 0;
 }
 
 export function getMoney(): number {
   return money;
+}
+
+/** Replace the bank balance (welcome + every `bank` delta). */
+export function setBank(amount: number): void {
+  bank = Number.isFinite(amount) ? Math.max(0, Math.floor(amount)) : 0;
+}
+
+export function getBank(): number {
+  return bank;
 }

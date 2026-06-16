@@ -29,6 +29,10 @@ export type NPCKind = 'person' | 'prop' | 'enemy' | 'car';
 // (special/late-game phones). Mirrors how shopStore marks a clerk.
 const PHONE_SPRITE_GROUPS = new Set([215, 216, 412, 427]);
 
+// EarthBound's ATMs (cash machines) — talking to one opens the bank menu to move
+// money between your account and on-hand cash. Sprite groups 259 / 447.
+const ATM_SPRITE_GROUPS = new Set([259, 447]);
+
 export class NPC extends Entity {
   readonly kind: NPCKind;
   /** NPC config id keying npc_text.json, or null if this NPC has no dialogue. */
@@ -48,6 +52,11 @@ export class NPC extends Entity {
   /** True if this placement is a telephone — talking to it triggers a save. */
   get isPhone(): boolean {
     return PHONE_SPRITE_GROUPS.has(this.spriteGroupId);
+  }
+
+  /** True if this placement is an ATM — talking to it opens the bank menu. */
+  get isAtm(): boolean {
+    return ATM_SPRITE_GROUPS.has(this.spriteGroupId);
   }
 
   constructor(
