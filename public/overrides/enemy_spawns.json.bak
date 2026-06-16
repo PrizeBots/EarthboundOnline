@@ -260,10 +260,22 @@
       "sprite": 282,
       "x": 992,
       "y": 1897,
-      "wanderRadius": 600,
+      "wanderRadius": 233,
       "poolSize": 5,
       "maxActive": 2,
       "spawnIntervalMs": 22000,
+      "respawnDelayMs": 9000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-16",
+      "sprite": 282,
+      "x": 1205,
+      "y": 1530,
+      "wanderRadius": 100,
+      "poolSize": 32,
+      "maxActive": 20,
+      "spawnIntervalMs": 1000,
       "respawnDelayMs": 9000,
       "enabled": true
     }

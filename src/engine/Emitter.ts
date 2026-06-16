@@ -76,9 +76,9 @@ export function spawnLevelUp(x: number, y: number): void {
   spawn('LEVEL UP!', x, y, LEVELUP_COLOR, { float: true, riseExtra: 14, life: 1400 });
 }
 
-/** Pop a red "SMAAAASH!" off a crit — bigger arc, lingers a touch longer. */
+/** Pop a red "SMAAAASH!" off a crit — floats straight up and fades (no arc). */
 export function spawnCritText(x: number, y: number): void {
-  spawn('SMAAAASH!', x, y, CRIT_COLOR, { riseExtra: 8, life: 1050 });
+  spawn('SMAAAASH!', x, y, CRIT_COLOR, { float: true, riseExtra: 8, life: 1050 });
 }
 
 /** Pop a dim "MISS" off a whiffed/dodged swing. */

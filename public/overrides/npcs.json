@@ -65,6 +65,20 @@
       "sprite": 68,
       "dir": 0,
       "kind": "person"
+    },
+    {
+      "x": 232,
+      "y": 11280,
+      "sprite": 153,
+      "dir": 0,
+      "kind": "prop"
+    },
+    {
+      "x": 352,
+      "y": 11240,
+      "sprite": 401,
+      "dir": 0,
+      "kind": "enemy"
     }
   ]
 }

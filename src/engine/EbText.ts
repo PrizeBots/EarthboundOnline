@@ -27,9 +27,10 @@ export function ebText(
   text: string,
   scale = 2,
   color = '#ffffff',
-  fontId = EB_FONT
+  fontId = EB_FONT,
+  tracking = 1
 ): HTMLCanvasElement {
-  const w = Math.max(1, measureText(text, fontId));
+  const w = Math.max(1, measureText(text, fontId, tracking));
   const h = getLineHeight(fontId);
   const cv = document.createElement('canvas');
   cv.width = w * scale;
@@ -38,7 +39,7 @@ export function ebText(
   ctx.imageSmoothingEnabled = false;
   ctx.save();
   ctx.scale(scale, scale);
-  drawText(ctx, text, 0, 0, fontId);
+  drawText(ctx, text, 0, 0, fontId, tracking);
   ctx.restore();
   // Tint the glyphs to `color` (works whether the sheet's glyphs are white or
   // black — source-in keeps the glyph shape, replaces the color).

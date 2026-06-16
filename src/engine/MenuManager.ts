@@ -43,6 +43,8 @@ import {
   HOTBAR_SLOTS,
   MENU_ITEMS,
   PSI_ABILITIES,
+  PSI_TAG,
+  isPsiEntry,
   drawCursor,
   cellAt,
   goodsRowAt,
@@ -195,11 +197,23 @@ function equipToggle(id: string): void {
   hooks?.equip(eq.slot, cur === id ? null : id);
 }
 
-/** Trigger a hotbar slot: toggle-equip gear, or use a consumable. */
+/** Cast a PSI ability (server-authoritative) + its cast/heal SFX. Shared by the
+ *  PSI menu and the hotbar so both paths sound and behave identically. */
+function usePsi(abilityId: string): void {
+  // Server checks PP, applies the effect, and pushes back player_hp (heal) +
+  // player_stats (PP decrease) so the bars redraw.
+  sendUsePsi(abilityId);
+  playEventSfx('player-try-psi');
+  // Lifeup layers its heal chime on top of the generic PSI cast sound.
+  if (abilityId === 'lifeup') playEventSfx('heal');
+}
+
+/** Trigger a hotbar slot: cast a PSI move, toggle-equip gear, or use a consumable. */
 function activateSlot(i: number): void {
   const id = hotbar[i];
   if (!id) return;
-  if (itemEquip(id)) equipToggle(id);
+  if (isPsiEntry(id)) usePsi(id.slice(PSI_TAG.length));
+  else if (itemEquip(id)) equipToggle(id);
   else sendUseItem(id);
 }
 
@@ -213,6 +227,7 @@ export function triggerHotbarSlot(n: number): void {
 /** Hotbar-eligible = a weapon (held/brandished) or a consumable (non-gear).
  *  Armor slots (body/arms/other) are excluded — they live only on Equip. */
 function hotbarEligible(id: string): boolean {
+  if (isPsiEntry(id)) return true; // PSI moves are always quick-castable
   const eq = itemEquip(id);
   return !eq || eq.slot === 'weapon';
 }
@@ -246,22 +261,30 @@ function updateHotbarDrag(): void {
     } else if (menuState === 'equip') {
       const r = equipRows()[equipRowAt(press.x, press.y, equipRows().length)];
       if (r && r.kind === 'item') drag = { id: r.id };
+    } else if (menuState === 'psi') {
+      // Drag a PSI move onto a hotbar box to quick-cast it with 1/2.
+      const i = psiRowAt(press.x, press.y);
+      if (i >= 0 && PSI_ABILITIES[i]) drag = { id: PSI_TAG + PSI_ABILITIES[i].id };
     }
   }
   const rel = consumePointerRelease();
   if (rel && drag) {
-    if (menuState === 'goods') {
-      const box = hotbarBoxAt(rel.x, rel.y);
-      if (box >= 0) {
-        // The hotbar is for things you ACT with — a weapon to brandish or a
-        // consumable buff. Armor (body/arms/other) belongs only on the Equip
-        // screen, so reject it here.
-        if (hotbarEligible(drag.id)) hotbar[box] = drag.id;
-      } else {
-        const i = goodsRowAt(rel.x, rel.y);
-        const items = getGoods();
-        if (i >= 0 && items[i] && items[i].id === drag.id) useOrEquipGood(items[i].id); // click
-      }
+    const box = hotbarBoxAt(rel.x, rel.y);
+    if (box >= 0) {
+      // The hotbar is for things you ACT with — a weapon to brandish, a
+      // consumable buff, or a PSI move. Armor (body/arms/other) belongs only on
+      // the Equip screen, so reject it here.
+      if (hotbarEligible(drag.id)) hotbar[box] = drag.id;
+    } else if (menuState === 'goods') {
+      // Released back on a Goods row (not a box): treat as a click → use/equip.
+      const i = goodsRowAt(rel.x, rel.y);
+      const items = getGoods();
+      if (i >= 0 && items[i] && items[i].id === drag.id) useOrEquipGood(items[i].id);
+    } else if (menuState === 'psi') {
+      // Released back on the same PSI row (not a box): treat as a click → cast.
+      const i = psiRowAt(rel.x, rel.y);
+      if (i >= 0 && PSI_ABILITIES[i] && PSI_TAG + PSI_ABILITIES[i].id === drag.id)
+        usePsi(PSI_ABILITIES[i].id);
     }
     // Equip: the click latch performs the equip; drag here is purely the ghost.
     drag = null;
@@ -436,15 +459,12 @@ export function updateMenu(): void {
       const hovered = psiRowAt(p.x, p.y);
       if (hovered >= 0) psiCursor = hovered;
 
-      let use = confirm ? psiCursor : -1;
-      if (click) {
-        const clicked = psiRowAt(click.x, click.y);
-        if (clicked >= 0) use = clicked;
-      }
+      // Cast via keyboard confirm only. Mouse cast (and drag-to-hotbar) is
+      // handled by updateHotbarDrag on pointer RELEASE, so dropping a PSI move
+      // onto a slot assigns it without also casting it.
+      const use = confirm ? psiCursor : -1;
       if (use >= 0 && PSI_ABILITIES[use]) {
-        // Server-authoritative: it checks PP, applies the effect, and pushes
-        // back player_hp (heal) + player_stats (PP decrease) so the bar redraws.
-        sendUsePsi(PSI_ABILITIES[use].id);
+        usePsi(PSI_ABILITIES[use].id);
       }
     }
   } else if (menuState === 'equip') {
@@ -661,6 +681,13 @@ export function renderMenu(ctx: CanvasRenderingContext2D): void {
   // The hotbar (and any in-flight drag) overlay every open menu state.
   renderHotbar(ctx, view);
   renderDragGhost(ctx, view);
+}
+
+/** Draw just the quick-select hotbar as an overworld HUD element — so the 1/2
+ *  slots are always visible during play, not only while the menu is open.
+ *  Game.ts calls this when the menu is CLOSED (renderMenu handles it otherwise). */
+export function renderHotbarOverlay(ctx: CanvasRenderingContext2D): void {
+  renderHotbar(ctx, buildView());
 }
 
 // Snapshot the mutable menu state into the immutable view the renderer reads.

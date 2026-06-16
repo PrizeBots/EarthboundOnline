@@ -10,15 +10,15 @@
 
 import { loadImage, loadJSON } from './AssetLoader';
 
-const SHEET_COLS  = 16;
-const SHEET_ROWS  = 8;
+const SHEET_COLS = 16;
+const SHEET_ROWS = 8;
 const ASCII_OFFSET = 0x20; // Grid position 0 = ASCII space
 
 interface FontData {
-  image:  HTMLImageElement;
+  image: HTMLImageElement;
   widths: number[];
-  cellW:  number;
-  cellH:  number;
+  cellW: number;
+  cellH: number;
 }
 
 const fontCache = new Map<number, FontData>();
@@ -54,6 +54,7 @@ export function drawText(
   x: number,
   y: number,
   fontId: number = 1,
+  tracking: number = 1
 ): void {
   const font = fontCache.get(fontId);
   if (!font) {
@@ -81,14 +82,14 @@ export function drawText(
 
     const col = gridIndex % SHEET_COLS;
     const row = Math.floor(gridIndex / SHEET_COLS);
-    const sx  = col * cellW;
-    const sy  = row * cellH;
+    const sx = col * cellW;
+    const sy = row * cellH;
 
     const charWidth = widths[gridIndex] ?? cellW;
     if (charWidth === 255) continue; // undefined character
 
     ctx.drawImage(image, sx, sy, cellW, cellH, cursorX, y, cellW, cellH);
-    cursorX += charWidth + 1;
+    cursorX += charWidth + tracking;
   }
 
   ctx.restore();
@@ -97,7 +98,7 @@ export function drawText(
 /**
  * Measure the pixel width of a string with the given font.
  */
-export function measureText(text: string, fontId: number = 1): number {
+export function measureText(text: string, fontId: number = 1, tracking: number = 1): number {
   const font = fontCache.get(fontId);
   if (!font) return text.length * 8;
 
@@ -107,9 +108,9 @@ export function measureText(text: string, fontId: number = 1): number {
     if (gridIndex < 0 || gridIndex >= 128) continue;
     const charWidth = font.widths[gridIndex] ?? font.cellW;
     if (charWidth === 255) continue;
-    w += charWidth + 1;
+    w += charWidth + tracking;
   }
-  return w > 0 ? w - 1 : 0;
+  return w > 0 ? w - tracking : 0;
 }
 
 /** Cell height of the 16px dialogue fonts (0-2) — use getLineHeight for others. */

@@ -175,7 +175,7 @@
       "y": 512,
       "w": 512,
       "h": 128,
-      "song": 152
+      "song": 17
     },
     {
       "name": "Friendly Neighbors (29,4)",
@@ -3828,10 +3828,10 @@
     {
       "name": "Moonside Swing (0,86)",
       "x": 0,
-      "y": 11008,
+      "y": 11136,
       "w": 512,
-      "h": 128,
-      "song": 50
+      "h": 256,
+      "song": 96
     },
     {
       "name": "Dr. Andonuts' Lab (3,86)",

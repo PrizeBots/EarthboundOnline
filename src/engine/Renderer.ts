@@ -5,7 +5,7 @@ import { getTileAt, getSectorForTile } from './MapManager';
 import { drawTile, drawForegroundTile, hasForegroundTile } from './TilesetManager';
 import { isComposite, drawComposite, drawCompositeFg } from './CompositeTiles';
 import { drawSprite, getSpriteGroupMeta, SpritePart } from './SpriteManager';
-import { getNameplate } from './NamePlate';
+import { getNameplate, getLevelPlate } from './NamePlate';
 import { drawHeldItem, isItemBehind } from './Items';
 import { getSpritePriority, getPromotedMinitiles } from './Collision';
 import { getStatus } from './StatusModal';
@@ -146,9 +146,9 @@ function drawHealthBar(
   }
 }
 
-// "Name Lv5" in the EB font, centered just above the health bar. `hasPP` tells us
-// whether the bar is one capsule (others) or two (your own HP+PSI) so the plate
-// clears it.
+// The player's name in the EB font, centered just above the health bar, with a
+// "Lv5" plate tucked to the LEFT of the bars. `hasPP` tells us whether the bar
+// is one capsule (others) or two (your own HP+PSI) so the name clears it.
 function drawNameplate(
   ctx: CanvasRenderingContext2D,
   centerX: number,
@@ -163,7 +163,8 @@ function drawNameplate(
   if (!plate) return;
   const spriteH = getSpriteGroupMeta(spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
   const capsule = BAR_H + 1; // one bar capsule (matches drawHealthBar's h)
-  const barTop = feetY - spriteH - BAR_GAP - (hasPP ? 2 : 1) * capsule;
+  const barCount = hasPP ? 2 : 1;
+  const barTop = feetY - spriteH - BAR_GAP - barCount * capsule;
   // Draw at half logical size: the 2x supersampled backbuffer still renders the
   // 8px font as crisp whole pixels, but it's half the on-screen height.
   const w = plate.width / 2;
@@ -171,6 +172,18 @@ function drawNameplate(
   const x = Math.round(centerX - w / 2);
   const y = Math.round(barTop - h);
   ctx.drawImage(plate, x, y, w, h);
+
+  // "Lv5" sits left of the bars, vertically centered on the bar stack.
+  const lvl = getLevelPlate(level, pk);
+  if (lvl) {
+    const lw = lvl.width / 2;
+    const lh = lvl.height / 2;
+    const B = 0.5;
+    const barLeft = centerX - BAR_W / 2 - B;
+    const lx = Math.round(barLeft - lw + 1); // tucked right up against the bars
+    const ly = Math.round(barTop + (barCount * capsule) / 2 - lh / 2);
+    ctx.drawImage(lvl, lx, ly, lw, lh);
+  }
 }
 
 export class Renderer {

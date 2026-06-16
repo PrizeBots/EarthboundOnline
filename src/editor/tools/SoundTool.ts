@@ -6,8 +6,17 @@ import {
   setMusicAreas,
   previewSong,
   stopMusic,
+  stopAllSounds,
+  playSfx,
   setMusicMuted,
 } from '../../engine/MusicManager';
+import {
+  SFX_EVENTS,
+  listSfx,
+  sfxLabel,
+  getSfxEventMap,
+  setSfxEventMap,
+} from '../../engine/SfxEvents';
 import {
   getSongName,
   songLabel,
@@ -80,20 +89,33 @@ class SoundTool implements EditorTool {
   private listEl: HTMLDivElement | null = null;
   private formEl: HTMLDivElement | null = null;
 
+  // Music | SFX tab. The Music tab is the map-area editor (below); the SFX tab
+  // is the event→sound assignment list (test + reassign + stop-all).
+  private mode: 'music' | 'sfx' = 'music';
+  private musicBody: HTMLDivElement | null = null;
+  private sfxBody: HTMLDivElement | null = null;
+  private tabBtns: Record<'music' | 'sfx', HTMLButtonElement | null> = { music: null, sfx: null };
+  // Working copy of the event→sfx map (merged defaults+overrides). Edits mutate
+  // this and persist to overrides/sfx_events.json via the 'sfx_events' handler.
+  private sfxMap: Record<string, string> = {};
+
   activate(shell: EditorShellApi): void {
     this.shell = shell;
     // The editor mutes music on entry (so other tools edit in silence); the
     // Sound Manager is the exception — unmute so Test/auditioning is audible.
     setMusicMuted(false);
     registerSaveHandler('music', () => this.save());
+    registerSaveHandler('sfx_events', () => this.saveSfx());
+    this.sfxMap = getSfxEventMap(); // defaults + any loaded overrides
     this.buildPanel();
     this.refreshList();
     this.rebuildForm();
+    this.refreshSfxList();
     void this.loadAndRefresh();
   }
 
   deactivate(): void {
-    stopMusic(); // drop any preview before leaving the tool
+    stopAllSounds(); // drop any music/sfx preview before leaving the tool
     setMusicMuted(true); // restore the editor's edit-in-silence state
     this.panel?.remove();
     this.panel = null;
@@ -467,11 +489,21 @@ class SoundTool implements EditorTool {
     title.style.cssText = 'color:#5ad0e8;font-weight:bold;letter-spacing:1px;';
     this.panel.appendChild(title);
 
+    // Music | SFX tab switch.
+    const tabs = document.createElement('div');
+    tabs.style.cssText = 'display:flex;gap:4px;';
+    this.tabBtns.music = this.mkBtn('Music', () => this.switchMode('music'), tabs);
+    this.tabBtns.sfx = this.mkBtn('SFX', () => this.switchMode('sfx'), tabs);
+    this.panel.appendChild(tabs);
+
+    // --- Music tab body ---
+    this.musicBody = document.createElement('div');
+    this.musicBody.style.cssText = 'display:flex;flex-direction:column;gap:7px;';
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
     this.mkBtn('+ New area (N)', () => this.startPlacing(), actions);
     // No Save button — edits auto-save via the shell (registered handler).
-    this.panel.appendChild(actions);
+    this.musicBody.appendChild(actions);
 
     const snapRow = document.createElement('label');
     snapRow.style.cssText = 'display:flex;align-items:center;gap:6px;color:#9fb8cc;font-size:11px;';
@@ -480,25 +512,143 @@ class SoundTool implements EditorTool {
     snapCb.checked = this.snap;
     snapCb.onchange = () => (this.snap = snapCb.checked);
     snapRow.append(snapCb, document.createTextNode('snap to sector grid (64×32)'));
-    this.panel.appendChild(snapRow);
+    this.musicBody.appendChild(snapRow);
 
     this.listEl = document.createElement('div');
     this.listEl.style.cssText =
       'display:flex;flex-direction:column;gap:2px;max-height:150px;overflow:auto;' +
       'border-top:1px solid #2a3540;border-bottom:1px solid #2a3540;padding:4px 0;';
-    this.panel.appendChild(this.listEl);
+    this.musicBody.appendChild(this.listEl);
 
     this.formEl = document.createElement('div');
     this.formEl.style.cssText = 'display:flex;flex-direction:column;gap:5px;';
-    this.panel.appendChild(this.formEl);
+    this.musicBody.appendChild(this.formEl);
 
     const hint = document.createElement('div');
     hint.textContent =
       'drag center to move · drag a corner to resize · Del to remove · wheel zooms out to see all';
     hint.style.cssText = 'color:#667;font-size:10px;';
-    this.panel.appendChild(hint);
+    this.musicBody.appendChild(hint);
+    this.panel.appendChild(this.musicBody);
+
+    // --- SFX tab body ---
+    this.sfxBody = document.createElement('div');
+    this.sfxBody.style.cssText = 'display:flex;flex-direction:column;gap:7px;';
+    this.buildSfxBody(this.sfxBody);
+    this.panel.appendChild(this.sfxBody);
 
     this.shell!.panelHost.appendChild(this.panel);
+    this.switchMode(this.mode); // apply initial tab visibility + button styles
+  }
+
+  /** Show the chosen tab's body, hide the other, and restyle the tab buttons. */
+  private switchMode(mode: 'music' | 'sfx'): void {
+    this.mode = mode;
+    if (this.musicBody) this.musicBody.style.display = mode === 'music' ? 'flex' : 'none';
+    if (this.sfxBody) this.sfxBody.style.display = mode === 'sfx' ? 'flex' : 'none';
+    for (const k of ['music', 'sfx'] as const) {
+      const b = this.tabBtns[k];
+      if (!b) continue;
+      const on = k === mode;
+      b.style.cssText =
+        'font:11px monospace;padding:3px 12px;cursor:pointer;border-radius:3px;' +
+        (on
+          ? 'background:#123338;color:#5ad0e8;border:1px solid #5ad0e8;'
+          : 'background:#1d2530;color:#7a8a9a;border:1px solid #3a4a5a;');
+    }
+    // The Music tab owns the map overlay/selection; mute its handles on the SFX tab.
+    if (mode === 'sfx') this.sel = null;
+  }
+
+  // --- SFX tab ---------------------------------------------------------------
+
+  /** Build the static SFX-tab chrome (library tester + stop-all + event list). */
+  private buildSfxBody(host: HTMLDivElement): void {
+    const stopRow = document.createElement('div');
+    stopRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
+    this.mkBtn('■ Stop all sounds', () => stopAllSounds(), stopRow, true);
+    host.appendChild(stopRow);
+
+    // Sound library: a searchable dropdown of ALL sfx so you can audition any of
+    // them directly, independent of which game event they're bound to.
+    const libRow = this.mkRow(host, 'library');
+    let libSel = listSfx()[0]?.id ?? 'none';
+    const libPicker = createSpritePicker({
+      sections: [{ values: listSfx().map((s) => s.id) }],
+      initial: libSel,
+      labelFor: (v) => sfxLabel(v),
+      searchPlaceholder: 'search all sounds…',
+      onSelect: (v) => {
+        libSel = v;
+        playSfx(v); // audition on pick
+      },
+    });
+    libPicker.el.style.flex = '1';
+    libPicker.el.style.minWidth = '0';
+    libRow.appendChild(libPicker.el);
+    this.mkBtn('▶', () => playSfx(libSel), libRow);
+
+    const sub = document.createElement('div');
+    sub.textContent = 'Game event → sound. ▶ tests · pick to reassign (auto-saves).';
+    sub.style.cssText =
+      'color:#9fb8cc;font-size:10px;border-top:1px solid #2a3540;padding-top:6px;';
+    host.appendChild(sub);
+
+    const list = document.createElement('div');
+    list.style.cssText =
+      'display:flex;flex-direction:column;gap:4px;max-height:320px;overflow:auto;' +
+      'border-top:1px solid #2a3540;padding:6px 0;';
+    host.appendChild(list);
+    this.sfxListEl = list;
+  }
+
+  private sfxListEl: HTMLDivElement | null = null;
+
+  /** Render one row per game event: label · current sound picker · ▶ test. */
+  private refreshSfxList(): void {
+    const list = this.sfxListEl;
+    if (!list) return;
+    list.innerHTML = '';
+    const sounds = listSfx();
+    for (const evt of SFX_EVENTS) {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:6px;';
+
+      const label = document.createElement('span');
+      label.textContent = evt.label;
+      label.title = `event id: ${evt.id}`;
+      label.style.cssText =
+        'width:120px;flex:none;color:#cde;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      row.appendChild(label);
+
+      const cur = this.sfxMap[evt.id] ?? evt.defaultSfx;
+      const picker = createSpritePicker({
+        sections: [{ values: sounds.map((s) => s.id) }],
+        initial: cur,
+        labelFor: (v) => sfxLabel(v),
+        searchPlaceholder: 'search sound…',
+        onSelect: (v) => {
+          this.sfxMap[evt.id] = v;
+          setSfxEventMap(this.sfxMap); // live in this client immediately
+          this.shell?.markDirty('sfx_events');
+          playSfx(v); // audition the newly-picked sound
+        },
+      });
+      picker.el.style.flex = '1';
+      picker.el.style.minWidth = '0';
+      row.appendChild(picker.el);
+
+      this.mkBtn('▶', () => playSfx(this.sfxMap[evt.id] ?? evt.defaultSfx), row);
+      list.appendChild(row);
+    }
+  }
+
+  /** Persist the event→sfx map to overrides/sfx_events.json (OUR shippable data). */
+  private async saveSfx(): Promise<void> {
+    await saveOverride('sfx_events.json', { version: 1, events: this.sfxMap });
+    setSfxEventMap(this.sfxMap);
+    this.shell?.clearDirty('sfx_events');
+    this.shell?.toast('Saved SFX assignments — live here; other clients refresh to resync');
   }
 
   private refreshList(): void {

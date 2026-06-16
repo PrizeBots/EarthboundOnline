@@ -24,6 +24,8 @@ export const SFX_EVENTS: SfxEventDef[] = [
   { id: 'cursor-horizontal', label: 'Cursor move (left/right)', defaultSfx: 'cursor-horizontal' },
   { id: 'cursor-vertical', label: 'Cursor move (up/down)', defaultSfx: 'cursor-vertical' },
   { id: 'player-attack', label: 'Player attack', defaultSfx: 'player-attack' },
+  { id: 'player-try-psi', label: 'Player uses PSI', defaultSfx: 'player-try-psi' },
+  { id: 'heal', label: 'Heal (Lifeup PSI)', defaultSfx: 'heal' },
   { id: 'player-hurt', label: 'Player hurt', defaultSfx: 'player-hurt' },
   { id: 'player-die', label: 'Player die', defaultSfx: 'player-die' },
   { id: 'enemy-die', label: 'Enemy die', defaultSfx: 'enemy-die' },

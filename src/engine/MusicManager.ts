@@ -321,6 +321,9 @@ export function toggleMusicMuted(): boolean {
 const sfxBuffers = new Map<string, AudioBuffer | null>(); // null = known-missing
 const sfxLoading = new Set<string>();
 let sfxGain: GainNode | null = null;
+// Live one-shot sources, tracked so stopAllSfx() can cut them mid-play. Each
+// source removes itself on 'ended' so the set doesn't leak.
+const activeSfxSources = new Set<AudioBufferSourceNode>();
 // SFX have their own mute, separate from music: the editor force-mutes MUSIC
 // while authoring, but a door's SFX still needs to audition when you pick it.
 let sfxMuted = false;
@@ -372,8 +375,33 @@ export function playSfx(id: string | undefined | null): void {
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.connect(sfxGain!);
+    trackSfxSource(src);
     src.start();
   });
+}
+
+/** Register a one-shot source so stopAllSfx() can cut it; self-cleans on end. */
+function trackSfxSource(src: AudioBufferSourceNode): void {
+  activeSfxSources.add(src);
+  src.addEventListener('ended', () => activeSfxSources.delete(src));
+}
+
+/** Hard-stop every currently-playing one-shot SFX (does not touch music). */
+export function stopAllSfx(): void {
+  for (const src of activeSfxSources) {
+    try {
+      src.stop();
+    } catch {
+      /* already stopped */
+    }
+  }
+  activeSfxSources.clear();
+}
+
+/** Panic button: cut music AND all one-shot SFX immediately. */
+export function stopAllSounds(): void {
+  stopMusic();
+  stopAllSfx();
 }
 
 // Listener (player) position for positional SFX, refreshed every frame by
@@ -408,6 +436,7 @@ export function playSfxAt(id: string | undefined | null, x: number, y: number): 
     g.gain.value = vol;
     src.connect(g);
     g.connect(sfxGain!);
+    trackSfxSource(src);
     src.start();
   });
 }

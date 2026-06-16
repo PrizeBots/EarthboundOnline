@@ -10,6 +10,7 @@ import { loadJSON } from './AssetLoader';
 import { loadSpriteGroup, getSpriteGroupMeta } from './SpriteManager';
 import { NPC, NPCKind } from './NPC';
 import { spawnDamageNumber } from './Emitter';
+import { playEventSfxAt } from './SfxEvents';
 import { Direction, POSES } from '../types';
 import type { NpcUpdate } from './Network';
 import { createInterpolator } from './RemoteInterp';
@@ -406,7 +407,12 @@ export function applyNpcHp(rows: [number, number, number][]): void {
     if (prev > 0 && hp < prev) spawnDamageNumber(npc.x, npc.y, prev - hp);
     // Died/hidden: clear its interp buffer so a later respawn (which teleports
     // it back to its spawn point) starts fresh instead of gliding across town.
-    if (hp <= 0) npcInterp.drop(String(id));
+    // Positional death sfx, but only on a real kill (prev > 0 skips the join
+    // snapshot / inactive-slot 0 -> 0 noise).
+    if (hp <= 0) {
+      if (prev > 0) playEventSfxAt('enemy-die', npc.x, npc.y);
+      npcInterp.drop(String(id));
+    }
   }
 }
 

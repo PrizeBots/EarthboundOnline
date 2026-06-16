@@ -140,12 +140,23 @@ decompression primitive (`EbCompressibleBlock`) + a parity harness.
   - **`items.ts`** — item table (@0x155000): names + full catalog (cost/type/equip slot+bonus/users).
   - **`shops.ts`** — store table (@0x1576B2) + clerk→store bytecode trace. **Full parity** vs shops.json (items/stores/npcShops).
   - All three (npc_text/shops/music_map) now produced by `buildAssetBundle` → the Worker, so the cached ROM bundle is text-complete. 56 extract checks green.
-- [ ] Legal cleanup (now unblocked): exclude `public/assets/` from prod build, scrub git history — then launch-ready architecture.
+- [x] Legal cleanup — phase 1 (done 2026-06-16): `public/assets/` is now
+      gitignored + untracked (`git rm --cached`, files kept on local disk for
+      dev). New commits can't re-add ROM data, and a fresh CI/Render clone has no
+      `public/assets/` → `vite build` can't ship it. This also covers "exclude
+      from production build" (it's simply not in the repo the build clones).
 - [ ] Asset cache in IndexedDB/OPFS; AssetLoader reads cache instead of HTTP
-- [ ] Exclude `public/assets/` from production build (dev keeps local pre-extracted assets for speed)
-- [ ] Scrub `public/assets/` from ALL git history (`git filter-repo`), force-push
-      (also covers `tools/_*.png` debug renders — untracked + gitignored now, but
-      still present in earlier commits)
+- [ ] ⚠️ **BEFORE making this repo PUBLIC** — scrub `public/assets/` from ALL git
+      history (`git filter-repo --path public/assets --invert-paths`) + force-push.
+      DEFERRED while the repo is private (history only leaks if it goes public /
+      gets mirrored / host breached). Irreversible; rewrites shared history — run
+      it deliberately (maybe in a real terminal, like the git-upgrade note). Also
+      sweep `tools/_*.png` debug renders (untracked now, still in old commits).
+- [ ] ⚠️ **BEFORE a PUBLIC launch** — wire a hard "supply your ROM before play"
+      gate (the ROM-intake screen above). Without `public/assets/`, a deployed
+      player who hasn't supplied a ROM has NO assets → broken game. Fine while
+      private/dev (assets are on the maintainer's disk); a hard requirement for
+      a public, code-only deploy.
 - [ ] Redeploy Render with code only; verify nothing ROM-derived is served
 - [ ] SPC700 music sources sample/song data from the player's ROM (was the plan anyway)
 - [ ] Consider renaming the project (trademark exposure is separate from copyright)

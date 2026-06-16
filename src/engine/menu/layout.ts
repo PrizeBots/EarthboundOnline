@@ -58,6 +58,17 @@ export const PSI_ABILITIES = [
   { id: 'lifeup', name: 'Lifeup α' }, // Lifeup α — restores HP
 ];
 
+// Hotbar entries are normally item ids; a PSI ability is stored tagged as
+// `psi:<abilityId>` so activateSlot/renderHotbar can tell them apart from items.
+export const PSI_TAG = 'psi:';
+export function isPsiEntry(id: string): boolean {
+  return id.startsWith(PSI_TAG);
+}
+/** Display name for a PSI ability id (falls back to the raw id). */
+export function psiName(abilityId: string): string {
+  return PSI_ABILITIES.find((a) => a.id === abilityId)?.name ?? abilityId;
+}
+
 // Shop Buy/Sell chooser labels.
 export const SHOP_ROOT = ['Buy', 'Sell'];
 
@@ -288,14 +299,14 @@ export function shopRootRowAt(px: number, py: number): number {
 
 // --- Quick-select hotbar geometry (2 slots, bottom-center) -------------------
 export const HOTBAR_SLOTS = 2;
-const HOTBAR_BOX = 24;
-const HOTBAR_GAP = 6;
+const HOTBAR_BOX = 16;
+const HOTBAR_GAP = 3;
 
-/** The hotbar boxes, centered at the bottom of the screen. */
+/** The hotbar boxes, centered along the bottom edge of the screen. */
 export function hotbarLayout(): Cell[] {
   const totalW = HOTBAR_SLOTS * HOTBAR_BOX + (HOTBAR_SLOTS - 1) * HOTBAR_GAP;
   const x0 = Math.floor((SCREEN_WIDTH - totalW) / 2);
-  const y = SCREEN_HEIGHT - HOTBAR_BOX - 6;
+  const y = SCREEN_HEIGHT - HOTBAR_BOX; // flush to the bottom edge
   const boxes: Cell[] = [];
   for (let i = 0; i < HOTBAR_SLOTS; i++) {
     boxes.push({ x: x0 + i * (HOTBAR_BOX + HOTBAR_GAP), y, w: HOTBAR_BOX, h: HOTBAR_BOX });

@@ -27,6 +27,9 @@ import {
   CURSOR_W,
   MENU_ITEMS,
   PSI_ABILITIES,
+  PSI_TAG,
+  isPsiEntry,
+  psiName,
   SHOP_ROOT,
   drawCursor,
   commandLayout,
@@ -204,6 +207,27 @@ export function renderMessage(ctx: CanvasRenderingContext2D, v: MenuView): void 
   }
 }
 
+/** Draw a hotbar entry's glyph: an item sprite, or — for a PSI move (which has
+ *  no item sprite) — its name abbreviated to fit the box. */
+function drawHotbarGlyph(
+  ctx: CanvasRenderingContext2D,
+  id: string,
+  bx: number,
+  by: number,
+  bw: number,
+  bh: number
+): void {
+  if (isPsiEntry(id)) {
+    let label = psiName(id.slice(PSI_TAG.length));
+    while (label.length > 1 && measureText(label, FONT_ID) > bw - 2) label = label.slice(0, -1);
+    const tx = bx + (bw - measureText(label, FONT_ID)) / 2;
+    drawText(ctx, label, tx, by + (bh - FONT_LINE_HEIGHT) / 2, FONT_ID);
+  } else {
+    const s = Math.min(16, bw - 2); // fit the icon inside the (smaller) box
+    drawItemIcon(ctx, id, bx + (bw - s) / 2, by + (bh - s) / 2, s);
+  }
+}
+
 export function renderHotbar(ctx: CanvasRenderingContext2D, v: MenuView): void {
   const boxes = hotbarLayout();
   for (let i = 0; i < boxes.length; i++) {
@@ -216,7 +240,7 @@ export function renderHotbar(ctx: CanvasRenderingContext2D, v: MenuView): void {
     ctx.strokeRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
     const id = v.hotbar[i];
     if (id) {
-      drawItemIcon(ctx, id, b.x + (b.w - 16) / 2, b.y + (b.h - 16) / 2, 16);
+      drawHotbarGlyph(ctx, id, b.x, b.y, b.w, b.h);
       // Green ring if this slot's gear is currently equipped in its slot.
       const eq = itemEquip(id);
       if (eq && v.hooks?.getEquipped(eq.slot) === id) {
@@ -224,7 +248,15 @@ export function renderHotbar(ctx: CanvasRenderingContext2D, v: MenuView): void {
         ctx.strokeRect(b.x + 1.5, b.y + 1.5, b.w - 3, b.h - 3);
       }
     }
-    drawText(ctx, String(i + 1), b.x + 2, b.y + 1, FONT_ID); // number-key label
+    // Tiny number-key label in the top-left corner (native small font — the
+    // bitmap menu font is too big for a 16px slot). save/restore so the font +
+    // baseline don't leak into other draws.
+    ctx.save();
+    ctx.font = '5px monospace';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = '#aebbd6';
+    ctx.fillText(String(i + 1), b.x + 1, b.y + 1);
+    ctx.restore();
   }
 }
 
@@ -232,6 +264,6 @@ export function renderDragGhost(ctx: CanvasRenderingContext2D, v: MenuView): voi
   if (!v.drag) return;
   const p = getPointer();
   ctx.globalAlpha = 0.8;
-  drawItemIcon(ctx, v.drag.id, p.x - 8, p.y - 8, 16);
+  drawHotbarGlyph(ctx, v.drag.id, p.x - 12, p.y - 12, 24, 24);
   ctx.globalAlpha = 1;
 }

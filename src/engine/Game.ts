@@ -9,6 +9,7 @@ import {
   isAttackPressed,
   isCycleItemPressed,
   isHurtPressed,
+  consumeHotbarSlot,
   isToggleBoxesPressed,
   getKeySet,
   consumePointerClick,
@@ -94,6 +95,8 @@ import {
   updateMenu,
   isMenuOpen,
   renderMenu,
+  renderHotbarOverlay,
+  triggerHotbarSlot,
   openShop,
   openPhoneMenu,
 } from './MenuManager';
@@ -1018,6 +1021,10 @@ export class Game {
       sendAttack(this.player.x, this.player.y, this.player.direction);
       playEventSfx('player-attack');
     }
+    // 1/2 = trigger the quick-select slot during overworld play (brandish a
+    // weapon, use a consumable, or cast an assigned PSI move).
+    const slot = consumeHotbarSlot();
+    if (slot >= 0) triggerHotbarSlot(slot);
     if (isHurtPressed()) this.player.hurt();
     if (isToggleBoxesPressed()) setDebugBoxes(!debugBoxesOn());
     if (isCycleItemPressed()) {
@@ -1264,6 +1271,11 @@ export class Game {
       this.ctx.fillStyle = `rgba(0, 0, 0, ${this.transitionAlpha})`;
       this.ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
     }
+
+    // Quick-select hotbar HUD — always visible during play. When the menu is
+    // open, renderMenu draws it (with the drag ghost), so only draw the standalone
+    // overlay here when the menu is closed (and not in the editor).
+    if (!isMenuOpen() && !this.editor?.isActive()) renderHotbarOverlay(this.ctx);
 
     // Draw menu on top of game world (including during transitions)
     renderMenu(this.ctx);

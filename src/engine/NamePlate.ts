@@ -31,19 +31,14 @@ const OUTLINE: [number, number][] = [
   [1, 1],
 ];
 
-/**
- * Cached outlined nameplate canvas, or null if the font isn't loaded yet. PK
- * players render in red so everyone can spot who's hostile at a glance.
- */
-export function getNameplate(name: string, level: number, pk = false): HTMLCanvasElement | null {
-  if (!ready) return null;
-  const label = `Lv${level} ${name}`;
-  const key = pk ? `pk:${label}` : label;
+/** Build (and cache) an outlined EB-font canvas for `label` in `color`. */
+function buildPlate(label: string, color: string, tracking = 1): HTMLCanvasElement {
+  const key = `${color}|${tracking}|${label}`;
   const hit = cache.get(key);
   if (hit) return hit;
 
-  const white = ebText(label, 1, pk ? '#ff4040' : '#ffffff', NAME_FONT);
-  const dark = ebText(label, 1, '#101018', NAME_FONT);
+  const white = ebText(label, 1, color, NAME_FONT, tracking);
+  const dark = ebText(label, 1, '#101018', NAME_FONT, tracking);
   const cv = document.createElement('canvas');
   cv.width = white.width + 2;
   cv.height = white.height + 2;
@@ -54,4 +49,23 @@ export function getNameplate(name: string, level: number, pk = false): HTMLCanva
 
   cache.set(key, cv);
   return cv;
+}
+
+/**
+ * Cached outlined nameplate canvas (just the name, centered above the bars), or
+ * null if the font isn't loaded yet. PK players render in red so everyone can
+ * spot who's hostile at a glance.
+ */
+export function getNameplate(name: string, _level: number, pk = false): HTMLCanvasElement | null {
+  if (!ready) return null;
+  return buildPlate(name, pk ? '#ff4040' : '#ffffff');
+}
+
+/**
+ * Cached "Lv5" plate, drawn to the LEFT of the health/stamina bars, or null if
+ * the font isn't loaded yet. Matches the name's PK-red coloring.
+ */
+export function getLevelPlate(level: number, pk = false): HTMLCanvasElement | null {
+  if (!ready) return null;
+  return buildPlate(`Lv${level}`, pk ? '#ff4040' : '#ffffff', 0); // tight kerning
 }
