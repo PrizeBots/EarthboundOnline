@@ -69,10 +69,12 @@ type NetworkCallback = {
    */
   onFlags?: (ids: number[]) => void;
   /**
-   * A player's PK (player-kill) state changed. `until` is the epoch-ms the
-   * enable-lock expires (only meaningful for the LOCAL player; 0 when off).
+   * A player's PK (player-kill) state changed. `lockMs` is the REMAINING in-game
+   * ms on the enable-lock (only meaningful for the LOCAL player; 0 when off). The
+   * client turns it into a local deadline — sending remaining ms (not an absolute
+   * timestamp) keeps it correct across client/server clock differences.
    */
-  onPlayerPk?: (id: string, pk: boolean, until: number) => void;
+  onPlayerPk?: (id: string, pk: boolean, lockMs: number) => void;
 };
 
 /** Progression block the server pushes (field names match StatusModal). */
@@ -190,8 +192,8 @@ function openSocket() {
         if (msg.equipped) callbacks?.onEquipped(msg.equipped);
         // Restore saved player flags (empty for anonymous joins).
         callbacks?.onFlags?.(Array.isArray(msg.flags) ? msg.flags : []);
-        // Restore PK state + lock (a player who logged out PK stays PK).
-        callbacks?.onPlayerPk?.(msg.playerId, !!msg.pk, msg.pkUntil ?? 0);
+        // Restore PK state + remaining lock (a player who logged out PK stays PK).
+        callbacks?.onPlayerPk?.(msg.playerId, !!msg.pk, msg.lockMs ?? 0);
         break;
       case 'join_error':
         console.error('Join rejected:', msg.error);
@@ -244,7 +246,7 @@ function openSocket() {
         callbacks?.onPlayerStats(msg.id, msg.stats, !!msg.leveled, msg.gained ?? 0);
         break;
       case 'player_pk':
-        callbacks?.onPlayerPk?.(msg.id, !!msg.pk, msg.until ?? 0);
+        callbacks?.onPlayerPk?.(msg.id, !!msg.pk, msg.lockMs ?? 0);
         break;
     }
   };

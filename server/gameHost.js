@@ -59,8 +59,11 @@ const MAX_MOVE_STEP = 96;
 // saves + cleans up). Generous, so only true zombies are reaped.
 const IDLE_TIMEOUT_MS = 30000;
 const HEARTBEAT_MS = 5000;
-// PK enable-lock: once a player turns PK on they're committed for this long and
-// can't turn it off. Persisted (pkUntil), so relogging doesn't escape it.
+// PK enable-lock: once a player turns PK on they're committed for this much
+// IN-GAME (connected) time before they can turn it off. Stored as remaining ms
+// (pkLockMs) that only counts down while the player is online — the lock PAUSES
+// when they're offline, so logging out can't wait it out, and relogging can't
+// escape it (pkLockMs is persisted).
 const PK_LOCK_MS = 5 * 60 * 1000;
 
 // PSI abilities (server-authoritative). `pp` is the cost; `heal` restores HP.
@@ -345,7 +348,7 @@ class GameHost {
       alloc: null,
       flags: [],
       pk: false,
-      pkUntil: 0,
+      pkLockMs: 0,
     };
   }
 
@@ -396,11 +399,24 @@ class GameHost {
         Number.isInteger(save.unspentPoints) && save.unspentPoints >= 0 ? save.unspentPoints : 0,
       flags: Array.isArray(save.flags) ? save.flags.filter((n) => Number.isInteger(n)) : [],
       // PK mode + its enable-lock survive relogging (you can't escape PK by
-      // disconnecting); pkUntil is an absolute epoch-ms, so a long-gone lock has
-      // simply expired by the time they return.
+      // disconnecting). pkLockMs is REMAINING in-game ms — it only counts down
+      // while online, so it resumes (paused) right where it left off.
       pk: !!save.pk,
-      pkUntil: Number.isFinite(save.pkUntil) ? save.pkUntil : 0,
+      pkLockMs: Number.isFinite(save.pkLockMs) ? save.pkLockMs : 0,
     };
+  }
+
+  // Decrement a player's PK lock by the IN-GAME time elapsed since the last tick.
+  // Only ever called while the player is connected, so the wall-clock delta IS
+  // in-game time; the lock pauses while offline because pkTickAt is reset to now
+  // on (re)join. Idempotent — safe to call before any read of pkLockMs.
+  _tickPkLock(entry) {
+    if (!entry) return;
+    const now = Date.now();
+    if (entry.pkLockMs > 0) {
+      entry.pkLockMs = Math.max(0, entry.pkLockMs - (now - (entry.pkTickAt || now)));
+    }
+    entry.pkTickAt = now;
   }
 
   // Write a signed-in player's mutable state back to its character row. No-op for
@@ -409,6 +425,7 @@ class GameHost {
     const handle = this.saves.get(playerId);
     const p = this.players.get(playerId);
     if (!handle || !p || !this.store) return;
+    this._tickPkLock(p); // bank the in-game time served so the saved lock is current
     try {
       this.store.updateCharacterSave(
         handle.characterId,
@@ -425,7 +442,7 @@ class GameHost {
           direction: p.direction,
           flags: [...(this.flags.get(playerId) || [])],
           pk: !!p.pk,
-          pkUntil: p.pkUntil || 0,
+          pkLockMs: p.pkLockMs || 0,
         },
         Date.now()
       );
@@ -624,10 +641,13 @@ class GameHost {
           armorDefense: 0,
           inventory: init.inventory, // Goods slots, mutated by use/buy/sell
           money: init.money,
-          // PK (player-kill) flag + enable-lock expiry — see npcSim canHurt and
-          // the set_pk handler. Loaded from the save (anon: off).
+          // PK (player-kill) flag + remaining enable-lock (in-game ms) — see
+          // npcSim canHurt and the set_pk handler. Loaded from the save (anon:
+          // off). pkTickAt is reset to now so the lock resumes from join, paused
+          // for the whole time the player was offline.
           pk: init.pk,
-          pkUntil: init.pkUntil,
+          pkLockMs: init.pkLockMs,
+          pkTickAt: Date.now(),
           // Door-transition shield (see 'warp'): whiffs enemy swings on the
           // frozen ghost left at a doorway mid-fade.
           warping: false,
@@ -682,9 +702,11 @@ class GameHost {
             equipped: entry.equipped,
             // Saved quest/progress flags (PlayerFlags) — private to this player.
             flags: [...this.flags.get(playerId)],
-            // Restore PK state + lock (a player who logged out PK stays PK).
+            // Restore PK state + remaining lock (a player who logged out PK
+            // stays PK; the lock resumes paused-from-logout). lockMs is the
+            // remaining in-game ms — the client renders its own countdown.
             pk: entry.pk,
-            pkUntil: entry.pkUntil,
+            lockMs: entry.pkLockMs,
           })
         );
 
@@ -920,32 +942,39 @@ class GameHost {
       }
 
       case 'set_pk': {
-        // Server-authoritative PK with a 5-minute enable-LOCK that can't be
-        // escaped by relogging (pkUntil is persisted in the save). Enabling
-        // (re)arms the lock; disabling is refused until it expires. Broadcast so
-        // every client renders the PK marker; npcSim reads pk live through the
-        // getPlayers snapshot for PvP + NPC aggro gating.
+        // Server-authoritative PK with a 5-minute enable-LOCK measured in IN-GAME
+        // time (pkLockMs counts down only while online, persisted), so it can't be
+        // waited out or escaped by logging off. Enabling (re)arms the lock;
+        // disabling is refused until it expires. Broadcast so every client renders
+        // the PK marker; npcSim reads pk live through the getPlayers snapshot for
+        // PvP + NPC aggro gating.
         const entry = this.players.get(playerId);
         if (!entry) break;
-        const now = Date.now();
         if (msg.on) {
           entry.pk = true;
-          entry.pkUntil = now + PK_LOCK_MS; // committed to PK for 5 minutes
+          entry.pkLockMs = PK_LOCK_MS; // committed for 5 min of in-game time
+          entry.pkTickAt = Date.now();
         } else {
-          if (now < (entry.pkUntil || 0)) {
+          this._tickPkLock(entry); // bring the remaining lock up to date
+          if (entry.pkLockMs > 0) {
             // Still locked — refuse, and re-assert the truth so the client snaps back.
             this.sendTo(playerId, {
               type: 'player_pk',
               id: playerId,
               pk: true,
-              until: entry.pkUntil,
+              lockMs: entry.pkLockMs,
             });
             break;
           }
           entry.pk = false;
-          entry.pkUntil = 0;
+          entry.pkLockMs = 0;
         }
-        this.broadcastAll({ type: 'player_pk', id: playerId, pk: entry.pk, until: entry.pkUntil });
+        this.broadcastAll({
+          type: 'player_pk',
+          id: playerId,
+          pk: entry.pk,
+          lockMs: entry.pkLockMs,
+        });
         this._saveCharacter(playerId);
         break;
       }

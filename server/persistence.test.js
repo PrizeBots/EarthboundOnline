@@ -190,6 +190,40 @@ check('setting flags persists them; rejoin restores via welcome.flags', () => {
   assert.deepStrictEqual(store.getCharacter(character.id).save.flags, [], 'reset persists empty');
 });
 
+// ---- PK + its in-game lock persist, and resume PAUSED across a relog ----
+
+check('PK + remaining in-game lock persist; reload resumes (offline not counted)', () => {
+  const s = new FakeSocket();
+  host.handleConnection(s);
+  s.recv({ type: 'join', sessionToken: 'sess-ok', characterId: character.id });
+  const id = s.last('welcome').playerId;
+
+  s.recv({ type: 'set_pk', on: true });
+  const p = host.players.get(id);
+  assert(p.pk && p.pkLockMs > 0, 'PK on with a lock');
+  // Simulate ~1 minute of in-game time served, then disconnect (saves).
+  p.pkTickAt = Date.now() - 60000;
+  s.close();
+
+  const saved = store.getCharacter(character.id).save;
+  assert.strictEqual(saved.pk, true, 'PK flag persists');
+  // 5-min lock minus ~1 min served ≈ 4 min remaining.
+  assert(
+    saved.pkLockMs > 235000 && saved.pkLockMs < 245000,
+    `~4 min should remain, got ${saved.pkLockMs}`
+  );
+
+  // Rejoin: still PK, and the lock resumes from the SAVED remaining — the offline
+  // gap is not counted (in-game time only).
+  const s2 = new FakeSocket();
+  host.handleConnection(s2);
+  s2.recv({ type: 'join', sessionToken: 'sess-ok', characterId: character.id });
+  const w = s2.last('welcome');
+  assert.strictEqual(w.pk, true, 'rejoined still PK');
+  assert(Math.abs(w.lockMs - saved.pkLockMs) < 2000, `lock resumes paused, got ${w.lockMs}`);
+  s2.close();
+});
+
 // ---- rejoin restores the saved progress ----
 
 check('rejoining restores the saved level', () => {

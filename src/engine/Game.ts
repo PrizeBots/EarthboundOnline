@@ -427,12 +427,14 @@ export class Game {
           const defaults = getPlayerDefaultFlags();
           if (defaults.length) seedDefaults(defaults);
         },
-        onPlayerPk: (id, pk, until) => {
+        onPlayerPk: (id, pk, lockMs) => {
           // Server-authoritative PK state → red nameplate + PvP eligibility. The
-          // lock expiry (until) only matters for the local player (menu gating).
+          // lock is sent as REMAINING in-game ms; convert to a local deadline for
+          // the menu's countdown (only matters for the local player). While the
+          // client stays connected, wall-clock ≈ in-game time, so this is accurate.
           if (id === this.localPlayerId) {
             this.player.pk = pk;
-            this.player.pkUntil = until;
+            this.player.pkUntil = lockMs > 0 ? Date.now() + lockMs : 0;
           } else {
             const rp = this.remotePlayers.get(id);
             if (rp) rp.pk = pk;
