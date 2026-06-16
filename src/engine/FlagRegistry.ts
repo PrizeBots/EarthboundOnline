@@ -11,8 +11,6 @@
  * that and leaves the catalog empty.
  */
 
-import { seedDefaults } from './PlayerFlags';
-
 export type FlagScope = 'player' | 'world';
 
 export interface FlagDef {
@@ -45,9 +43,11 @@ function reindex(): void {
 }
 
 /**
- * Load the catalog and seed default-on PLAYER flags into a fresh player's
- * store. Call once at startup (Game.startGame). World flags are not seeded into
- * PlayerFlags — they belong to the global world layer.
+ * Load the catalog. Call once at startup (Game.startGame). Default-on player
+ * flags are NOT seeded here — that must happen AFTER the server's `welcome`
+ * hydrates the saved flags (else a fresh seed would be overwritten). The game
+ * seeds them in onFlags using getPlayerDefaultFlags(). World flags are never
+ * seeded into PlayerFlags — they belong to the global world layer.
  */
 export async function loadFlagRegistry(): Promise<void> {
   const file = await fetch('/overrides/flags.json')
@@ -55,8 +55,11 @@ export async function loadFlagRegistry(): Promise<void> {
     .catch(() => null);
   registry = file?.flags ?? [];
   reindex();
-  const playerDefaults = registry.filter((f) => f.scope === 'player' && f.default).map((f) => f.id);
-  if (playerDefaults.length) seedDefaults(playerDefaults);
+}
+
+/** Ids of default-on PLAYER flags — seeded into a fresh character after hydrate. */
+export function getPlayerDefaultFlags(): number[] {
+  return registry.filter((f) => f.scope === 'player' && f.default).map((f) => f.id);
 }
 
 /** Replace the in-memory catalog (the Flag Editor calls this after an edit). */

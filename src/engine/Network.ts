@@ -63,6 +63,11 @@ type NetworkCallback = {
    * level-up icon + the spend pentagon.
    */
   onPoints?: (points: number, alloc: Record<string, number>) => void;
+  /**
+   * The LOCAL player's persisted quest/progress flags (PlayerFlags), restored
+   * from the character save on `welcome`. Anonymous joins get an empty list.
+   */
+  onFlags?: (ids: number[]) => void;
 };
 
 /** Progression block the server pushes (field names match StatusModal). */
@@ -144,6 +149,8 @@ export function connect(
         // live progression/equip handlers). Anonymous joins omit these.
         if (msg.stats) callbacks?.onPlayerStats(msg.playerId, msg.stats, false, 0);
         if (msg.equipped) callbacks?.onEquipped(msg.equipped);
+        // Restore saved player flags (empty for anonymous joins).
+        callbacks?.onFlags?.(Array.isArray(msg.flags) ? msg.flags : []);
         break;
       case 'join_error':
         console.error('Join rejected:', msg.error);
@@ -289,6 +296,20 @@ export function sendSell(item: string) {
 export function sendUsePsi(psiId: string) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'use_psi', psiId }));
+  }
+}
+
+/**
+ * Persist a player-flag change server-side (PlayerFlags' sink). `set`/`clear`
+ * carry an id; `reset` wipes all of this character's flags (dev Flag Editor).
+ * The server stores them in the character save — no echo, writes are optimistic.
+ */
+export function sendFlag(action: 'set' | 'clear' | 'reset', id?: number) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (action === 'reset') {
+    ws.send(JSON.stringify({ type: 'clear_all_flags' }));
+  } else {
+    ws.send(JSON.stringify({ type: action === 'set' ? 'set_flag' : 'clear_flag', id }));
   }
 }
 

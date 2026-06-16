@@ -159,6 +159,11 @@ class GameHost {
     // Persistence handles for signed-in characters: playerId -> {characterId,alloc}.
     // Held OUT of the player record so the DB id never rides along in a broadcast.
     this.saves = new Map();
+    // Per-player quest/progress flags (PlayerFlags): playerId -> Set<number>.
+    // Kept OUT of the player record too — flags are PRIVATE, never broadcast to
+    // other clients. Persisted in the character save for signed-in players;
+    // ephemeral (session-only) for anonymous dev/char-select joins.
+    this.flags = new Map();
 
     // Server-authoritative goods registry + shop catalog (shared loader in
     // server/shops.js). Each player's inventory is an array of numeric-string
@@ -272,6 +277,7 @@ class GameHost {
       direction: this.SPAWN.dir || 0,
       characterId: null,
       alloc: null,
+      flags: [],
     };
   }
 
@@ -320,6 +326,7 @@ class GameHost {
       alloc,
       unspentPoints:
         Number.isInteger(save.unspentPoints) && save.unspentPoints >= 0 ? save.unspentPoints : 0,
+      flags: Array.isArray(save.flags) ? save.flags.filter((n) => Number.isInteger(n)) : [],
     };
   }
 
@@ -343,6 +350,7 @@ class GameHost {
           x: p.x,
           y: p.y,
           direction: p.direction,
+          flags: [...(this.flags.get(playerId) || [])],
         },
         Date.now()
       );
@@ -495,6 +503,7 @@ class GameHost {
       console.log(`Player ${playerId} disconnected`);
       this._saveCharacter(playerId); // persist final state (signed-in only)
       this.saves.delete(playerId);
+      this.flags.delete(playerId);
       this.players.delete(playerId);
       this.broadcastAll({ type: 'player_leave', id: playerId });
     });
@@ -553,6 +562,10 @@ class GameHost {
         const entry = this.players.get(playerId);
         this.recomputeEquipStats(entry); // apply loaded gear + set held sprite
 
+        // Quest flags: restore the saved set (empty for anonymous joins). Kept
+        // private to this player — never broadcast.
+        this.flags.set(playerId, new Set(init.flags));
+
         // Remember the persistence handle (signed-in only) for save-back +
         // skill-point banking.
         if (init.characterId != null) {
@@ -585,6 +598,8 @@ class GameHost {
             self: { x: entry.x, y: entry.y, direction: entry.direction },
             stats: statsPayload(entry),
             equipped: entry.equipped,
+            // Saved quest/progress flags (PlayerFlags) — private to this player.
+            flags: [...this.flags.get(playerId)],
           })
         );
 
@@ -797,6 +812,31 @@ class GameHost {
         if (!text) break;
         // Broadcast to everyone else; the sender shows its own bubble locally.
         this.broadcastExcept({ type: 'chat', id: playerId, text }, playerId);
+        break;
+      }
+
+      case 'set_flag':
+      case 'clear_flag': {
+        // Persist a per-player quest flag change. Flags are PRIVATE (not
+        // broadcast) and the server owns the stored copy in the character save.
+        // NOTE: trigger validation (proving the player earned the flag) is a
+        // later anti-cheat step — today the request is trusted and just stored.
+        const set = this.flags.get(playerId);
+        if (!set || !Number.isInteger(msg.id)) break;
+        const changed = msg.type === 'set_flag' ? !set.has(msg.id) : set.has(msg.id);
+        if (!changed) break;
+        if (msg.type === 'set_flag') set.add(msg.id);
+        else set.delete(msg.id);
+        this._saveCharacter(playerId); // signed-in only; anon stays ephemeral
+        break;
+      }
+
+      case 'clear_all_flags': {
+        // Dev Flag Editor "reset progress": wipe this character's flags.
+        const set = this.flags.get(playerId);
+        if (!set || set.size === 0) break;
+        set.clear();
+        this._saveCharacter(playerId);
         break;
       }
 

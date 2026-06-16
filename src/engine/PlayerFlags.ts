@@ -6,103 +6,95 @@
  * single-player ROM keeps both in one global event-flag space; an MMO can't —
  * world state is shared, but quest progress is personal, so they split here.
  *
- * THE SEAM: today flags persist to localStorage (no DB/accounts exist yet — see
- * server/gameHost.js "No persistence yet"). For launch this MUST become
- * server-authoritative: the server validates the triggering event and owns the
- * write, or players fake progress by editing local storage. Everything that
- * *uses* flags goes through hasFlag/setFlag/clearFlag, so that migration is a
- * backend swap behind these functions — no caller changes.
+ * STORAGE: flags now live in the character's server save (gameHost.js persists
+ * them in the `save` JSON, same as level/inventory). This module keeps an
+ * in-memory Set for fast SYNCHRONOUS reads (every caller goes through
+ * hasFlag/setFlag/clearFlag unchanged), hydrated from the server's `welcome`
+ * (hydrateFlags) and mirrored back on every change through a registered SINK
+ * (setFlagSink → Network.sendFlag). Writes are optimistic: we update the local
+ * Set immediately and tell the server, which owns the persisted copy.
+ *
+ * Anonymous (dev / char-select) players have no save row, so the server keeps
+ * their flags only for the session — they reset on reload, by design (flags
+ * belong to a character, not a browser).
+ *
+ * NOTE: the server currently TRUSTS set/clear requests (it just stores them).
+ * Validating the triggering event server-side (so a client can't fake quest
+ * progress) is a later anti-cheat step; everything routes through this seam, so
+ * that stays a backend change with no caller churn.
  *
  * Player-flag ids are minted in a high range (>= 900000) to stay clear of the
  * ROM event-flag numbers world flags use — same convention as authored textIds.
  */
 
-const STORAGE_KEY = 'eb_player_flags_v1';
-
 let flags = new Set<number>();
-let loaded = false;
 
 type Listener = () => void;
 const listeners = new Set<Listener>();
 
-function ensureLoaded(): void {
-  if (loaded) return;
-  loaded = true;
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const ids = JSON.parse(raw) as number[];
-      if (Array.isArray(ids)) flags = new Set(ids.filter((n) => Number.isFinite(n)));
-    }
-  } catch (e) {
-    console.warn('[PlayerFlags] load failed, starting empty', e);
-  }
-}
+/** Mirror a flag change to the server (set via setFlagSink). null until wired. */
+type FlagSink = (action: 'set' | 'clear' | 'reset', id?: number) => void;
+let sink: FlagSink | null = null;
 
-function persist(): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify([...flags]));
-  } catch (e) {
-    console.warn('[PlayerFlags] persist failed', e);
-  }
+/** Register the network sink that persists flag changes server-side. */
+export function setFlagSink(fn: FlagSink | null): void {
+  sink = fn;
 }
 
 function notify(): void {
   for (const l of [...listeners]) l();
 }
 
+/**
+ * Replace the local flag set with the server's authoritative copy (from the
+ * `welcome` message). Does NOT echo back through the sink — this IS the server's
+ * state. Call default-seeding (seedDefaults) AFTER this so a fresh character
+ * still gets its default-on flags.
+ */
+export function hydrateFlags(ids: number[]): void {
+  flags = new Set(ids.filter((n) => Number.isFinite(n)));
+  notify();
+}
+
 /** Is this flag set for the current player? */
 export function hasFlag(id: number): boolean {
-  ensureLoaded();
   return flags.has(id);
 }
 
 /** Set a flag. Returns true if it changed (was previously clear). */
 export function setFlag(id: number): boolean {
-  ensureLoaded();
   if (flags.has(id)) return false;
   flags.add(id);
-  persist();
+  sink?.('set', id);
   notify();
   return true;
 }
 
 /** Clear a flag. Returns true if it changed (was previously set). */
 export function clearFlag(id: number): boolean {
-  ensureLoaded();
   if (!flags.has(id)) return false;
   flags.delete(id);
-  persist();
+  sink?.('clear', id);
   notify();
   return true;
 }
 
 /** All set flag ids (a snapshot). */
 export function allFlags(): number[] {
-  ensureLoaded();
   return [...flags];
 }
 
 /**
- * Seed default-on flags for a NEW player: set any id in `defaults` that has
- * never been recorded. A flag the player has explicitly cleared stays cleared
- * (we can't distinguish "never seen" from "cleared" with a bare Set, so seeding
- * only runs while the store is empty — i.e. a fresh player). Good enough until
- * the server owns this; revisit when defaults must override per-player history.
+ * Seed default-on flags for a NEW player: set any id in `defaults` not already
+ * present. Each seeded flag is pushed to the server (through setFlag) so it
+ * persists. Only runs while the store is empty — i.e. a fresh character — so a
+ * returning player's saved state is never re-seeded over (we can't distinguish
+ * "never seen" from "deliberately cleared" with a bare Set). Call AFTER
+ * hydrateFlags so server state wins. Good enough until the server owns defaults.
  */
 export function seedDefaults(defaults: number[]): void {
-  ensureLoaded();
-  if (flags.size > 0) return; // returning player — don't re-seed over their state
-  let changed = false;
-  for (const id of defaults)
-    if (!flags.has(id)) {
-      flags.add(id);
-      changed = true;
-    }
-  if (changed) {
-    persist();
-    notify();
-  }
+  if (flags.size > 0) return; // returning character — don't re-seed over their state
+  for (const id of defaults) setFlag(id); // setFlag persists each through the sink
 }
 
 /** Subscribe to flag changes (the Flag Editor's live-toggle redraws on this). */
@@ -113,9 +105,8 @@ export function onFlagsChanged(l: Listener): () => void {
 
 /** Dev: wipe all player flags (Flag Editor "reset progress"). */
 export function resetFlags(): void {
-  ensureLoaded();
   if (flags.size === 0) return;
   flags.clear();
-  persist();
+  sink?.('reset');
   notify();
 }

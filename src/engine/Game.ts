@@ -49,6 +49,7 @@ import {
   sendWarpState,
   sendEditorMode,
   sendSpendPoints,
+  sendFlag,
   JoinAuth,
 } from './Network';
 import { getToken, CharacterSummary } from './Auth';
@@ -103,7 +104,8 @@ import {
   renderDialogue,
 } from './DialogueManager';
 import { emitGameEvent } from './EventBus';
-import { loadFlagRegistry } from './FlagRegistry';
+import { loadFlagRegistry, getPlayerDefaultFlags } from './FlagRegistry';
+import { setFlagSink, hydrateFlags, seedDefaults } from './PlayerFlags';
 import { initFlagTriggers } from './FlagTriggers';
 import { installFlagConsole } from './flagConsole';
 import {
@@ -393,6 +395,10 @@ export class Game {
     initChat(getKeySet());
     initDialogue(getKeySet());
 
+    // Route player-flag writes to the server (it owns the persisted copy in the
+    // character save). Set before connect so optimistic writes always have a sink.
+    setFlagSink((action, id) => sendFlag(action, id));
+
     // Connect to multiplayer server (anonymous, or signed-in via opts.auth).
     connect(
       spriteGroupId,
@@ -406,6 +412,13 @@ export class Game {
             this.resolveRemoteSprite(p);
           }
           console.log(`Connected as ${playerId}, ${players.length} other players online`);
+        },
+        onFlags: (ids) => {
+          // Restore the character's saved flags, THEN seed default-on flags for a
+          // fresh character (seedDefaults no-ops if the save already had any).
+          hydrateFlags(ids);
+          const defaults = getPlayerDefaultFlags();
+          if (defaults.length) seedDefaults(defaults);
         },
         onPlayerJoin: (player) => {
           this.remotePlayers.set(player.id, player);

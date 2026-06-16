@@ -161,6 +161,35 @@ check('spend_points rejects cheats and applies a valid spend; persists', () => {
   assert.strictEqual(saved.alloc.muscle, muscle0 + 1, 'bumped alloc persists');
 });
 
+// ---- player flags persist in the save and restore on rejoin ----
+
+check('setting flags persists them; rejoin restores via welcome.flags', () => {
+  const s = new FakeSocket();
+  host.handleConnection(s);
+  s.recv({ type: 'join', sessionToken: 'sess-ok', characterId: character.id });
+  const id = s.last('welcome').playerId;
+
+  s.recv({ type: 'set_flag', id: 900001 });
+  s.recv({ type: 'set_flag', id: 900002 });
+  s.recv({ type: 'set_flag', id: 900001 }); // duplicate — no-op
+  s.recv({ type: 'clear_flag', id: 900002 }); // toggled back off
+  assert.deepStrictEqual([...host.flags.get(id)], [900001], 'live set should hold only 900001');
+
+  s.close(); // save-back
+  const saved = store.getCharacter(character.id).save;
+  assert.deepStrictEqual(saved.flags, [900001], 'flags persist to the save');
+
+  const s2 = new FakeSocket();
+  host.handleConnection(s2);
+  s2.recv({ type: 'join', sessionToken: 'sess-ok', characterId: character.id });
+  assert.deepStrictEqual(s2.last('welcome').flags, [900001], 'welcome restores saved flags');
+
+  s2.recv({ type: 'clear_all_flags' });
+  assert.strictEqual(host.flags.get(s2.last('welcome').playerId).size, 0, 'reset wipes flags');
+  s2.close();
+  assert.deepStrictEqual(store.getCharacter(character.id).save.flags, [], 'reset persists empty');
+});
+
 // ---- rejoin restores the saved progress ----
 
 check('rejoining restores the saved level', () => {
@@ -196,6 +225,7 @@ check('anonymous join (no token) still works for the dev/char-select path', () =
   const w = s.last('welcome');
   assert(w && w.playerId, 'anonymous welcome missing');
   assert.strictEqual(host.players.get(w.playerId).name, 'Guest');
+  assert.deepStrictEqual(w.flags, [], 'anonymous join starts with no flags');
   s.close();
 });
 
