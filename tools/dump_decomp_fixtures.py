@@ -130,6 +130,204 @@ def dump_table_fixtures(rom):
     out.write_text(json.dumps({"romSize": rom.size, "tables": tables}))
     print(f"Wrote {len(tables)} table fixtures -> {out}")
 
+    dump_tileset_fixtures(rom)
+
+
+def dump_tileset_fixtures(rom):
+    """Ground-truth decoded tilesets (via CoilSnake) for the TS tileset parity
+    test — minitiles, arrangement cells, collision bytes, and assigned palettes,
+    all 20 drawing tilesets. ROM-derived; gitignored."""
+    from coilsnake.model.eb.map_tilesets import EbTileset, EbMapPalette
+
+    NUM_TILESETS = 20
+    graphics = eb_table_from_offset(0xEF105B); graphics.from_block(rom, from_snes_address(0xEF105B))
+    arrange = eb_table_from_offset(0xEF10AB); arrange.from_block(rom, from_snes_address(0xEF10AB))
+    coll = eb_table_from_offset(0xEF117B); coll.from_block(rom, from_snes_address(0xEF117B))
+    mapts = eb_table_from_offset(0xEF101B); mapts.from_block(rom, from_snes_address(0xEF101B))
+    pal = eb_table_from_offset(0xEF10FB); pal.from_block(rom, from_snes_address(0xEF10FB))
+
+    tilesets = []
+    for ts in range(NUM_TILESETS):
+        t = EbTileset()
+        t.minitiles_from_block(rom, from_snes_address(graphics[ts][0]))
+        t.arrangements_from_block(rom, from_snes_address(arrange[ts][0]))
+        t.collisions_from_block(rom, from_snes_address(coll[ts][0]))
+        tilesets.append(t)
+
+    # palette assignment (same loop as extract_rom.py)
+    for map_ts_idx in range(mapts.num_rows):
+        draw_ts = mapts[map_ts_idx][0]
+        if map_ts_idx == 31:
+            num_pal = 8
+        else:
+            num_pal = (pal[map_ts_idx + 1][0] - pal[map_ts_idx][0]) // 0xC0
+        off = from_snes_address(pal[map_ts_idx][0])
+        for pal_idx in range(num_pal):
+            p = EbMapPalette(); p.from_block(block=rom, offset=off)
+            tilesets[draw_ts].add_palette(map_ts_idx, pal_idx, p)
+            off += 0xC0
+
+    result = []
+    for t in tilesets:
+        minitiles = [[[t.minitiles.tiles[n][y][x] for x in range(8)] for y in range(8)]
+                     for n in range(896)]
+        arrangements = []
+        for arr in t.arrangements:
+            if arr is None:
+                cells = [{"minitileIndex": 0, "subPalette": 0, "flipH": False, "flipV": False}] * 16
+            else:
+                cells = []
+                for row in arr:
+                    for val in row:
+                        cells.append({
+                            "minitileIndex": val & 0x3FF,
+                            "flipH": bool(val & 0x400),
+                            "flipV": bool(val & 0x800),
+                            "subPalette": (val >> 12) & 0xF,
+                        })
+            arrangements.append({"cells": cells})
+        collisions = [([c[j] for j in range(16)] if c is not None else [0] * 16)
+                      for c in t.collisions]
+        palettes = {}
+        for map_ts, map_pal, p in t.palettes:
+            palettes[f"{map_ts}_{map_pal}"] = [[[c.r, c.g, c.b, 255] for c in sub]
+                                               for sub in p.subpalettes]
+        result.append({
+            "minitiles": minitiles,
+            "arrangements": arrangements,
+            "collisions": collisions,
+            "palettes": palettes,
+        })
+
+    out = OUT_DIR / "tileset_fixtures.json"
+    out.write_text(json.dumps(result))
+    print(f"Wrote {len(result)} tileset fixtures -> {out}")
+
+    dump_map_fixtures(rom)
+
+
+def dump_map_fixtures(rom):
+    """Ground-truth map plane + sectors + tileset mapping, via the exact logic in
+    extract_rom.py's extract_map(). ROM-derived; gitignored."""
+    MAP_POINTERS_OFFSET = 0xA1DB
+    LOCAL_TILESETS_OFFSET = 0x175000
+    MAP_HEIGHT, MAP_WIDTH = 320, 256
+    SECTOR_TILESETS_PALETTES = 0xD7A800
+    SECTOR_MUSIC = 0xDCD637
+    NUM_SECTORS = 32 * 80
+
+    map_ptrs_addr = from_snes_address(rom.read_multi(MAP_POINTERS_OFFSET, 3))
+    map_addrs = [from_snes_address(rom.read_multi(map_ptrs_addr + x * 4, 4)) for x in range(8)]
+
+    tiles = []
+    for row_num in range(MAP_HEIGHT):
+        offset = map_addrs[row_num % 8] + ((row_num >> 3) << 8)
+        tiles.append(list(rom[offset:offset + MAP_WIDTH].to_list()))
+
+    k = LOCAL_TILESETS_OFFSET
+    for i in range(MAP_HEIGHT >> 3):
+        for j in range(MAP_WIDTH):
+            tiles[i << 3][j] |= (rom[k] & 3) << 8
+            tiles[(i << 3) | 1][j] |= ((rom[k] >> 2) & 3) << 8
+            tiles[(i << 3) | 2][j] |= ((rom[k] >> 4) & 3) << 8
+            tiles[(i << 3) | 3][j] |= ((rom[k] >> 6) & 3) << 8
+            tiles[(i << 3) | 4][j] |= (rom[k + 0x3000] & 3) << 8
+            tiles[(i << 3) | 5][j] |= ((rom[k + 0x3000] >> 2) & 3) << 8
+            tiles[(i << 3) | 6][j] |= ((rom[k + 0x3000] >> 4) & 3) << 8
+            tiles[(i << 3) | 7][j] |= ((rom[k + 0x3000] >> 6) & 3) << 8
+            k += 1
+
+    flat = [v for row in tiles for v in row]
+
+    sectors = []
+    for i in range(NUM_SECTORS):
+        val = rom[from_snes_address(SECTOR_TILESETS_PALETTES) + i]
+        sectors.append({
+            "tilesetId": val >> 3,
+            "paletteId": val & 7,
+            "musicId": rom[from_snes_address(SECTOR_MUSIC) + i],
+        })
+
+    mapts = eb_table_from_offset(0xEF101B); mapts.from_block(rom, from_snes_address(0xEF101B))
+    tileset_mapping = [mapts[i][0] for i in range(32)]
+
+    out = OUT_DIR / "map_fixtures.json"
+    out.write_text(json.dumps({
+        "tiles": flat,
+        "sectors": sectors,
+        "tilesetMapping": tileset_mapping,
+    }))
+    print(f"Wrote map fixtures ({len(flat)} tiles, {len(sectors)} sectors) -> {out}")
+
+    dump_sprite_fixtures(rom)
+
+
+def dump_sprite_fixtures(rom):
+    """Ground-truth sprite groups (via CoilSnake): per-group metadata + decoded
+    indexed pixel grid + the 8 shared palettes. ROM-derived; gitignored."""
+    from coilsnake.modules.eb.SpriteGroupModule import SpriteGroupModule
+
+    m = SpriteGroupModule()
+    m.read_from_rom(rom)
+
+    palettes = []
+    for pal_idx in range(m.palette_table.num_rows):
+        ep = m.palette_table[pal_idx][0]
+        palettes.append([[ep[0, c].r, ep[0, c].g, ep[0, c].b, 255]
+                          for c in range(ep.subpalette_length)])
+
+    groups = []
+    for gid, group in enumerate(m.groups):
+        if group is None or group.num_sprites == 0:
+            continue
+        pw, ph = group.width * 8, group.height * 8
+        if pw == 0 or ph == 0:
+            continue
+        img = group.image(m.palette_table[group.palette][0])  # indexed 'P' image
+        px = img.load()
+        pixels = [[px[x, y] for x in range(img.width)] for y in range(img.height)]
+        groups.append({
+            "meta": {"id": gid, "width": pw, "height": ph, "palette": group.palette},
+            "pixels": pixels,
+        })
+
+    out = OUT_DIR / "sprite_fixtures.json"
+    out.write_text(json.dumps({"groups": groups, "palettes": palettes}))
+    print(f"Wrote {len(groups)} sprite groups + {len(palettes)} palettes -> {out}")
+
+    dump_sector_settings_fixtures(rom)
+
+
+def dump_sector_settings_fixtures(rom):
+    """Ground-truth indoor/dungeon/town per sector, produced by add_sector_settings.py's
+    OWN yml parser — so the TS ROM-based bake is verified to reproduce it."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "add_sector_settings", Path(__file__).parent / "add_sector_settings.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    info = mod.parse_settings(Path(__file__).parent.parent / "eb_project" / "map_sectors.yml")
+    NUM_SECTORS = 32 * 80
+    out = []
+    for i in range(NUM_SECTORS):
+        entry = info.get(i, {})
+        setting = entry.get("setting", "none")
+        town = entry.get("town", "none")
+        rec = {
+            "indoor": setting == "indoors",
+            "dungeon": setting not in ("none", "indoors"),
+        }
+        if town and town != "none":
+            rec["town"] = town
+        out.append(rec)
+
+    p = OUT_DIR / "sector_settings_fixtures.json"
+    p.write_text(json.dumps(out))
+    n_in = sum(1 for r in out if r["indoor"])
+    n_dun = sum(1 for r in out if r["dungeon"])
+    print(f"Wrote sector-settings fixtures ({n_in} indoor, {n_dun} dungeon) -> {p}")
+
 
 if __name__ == "__main__":
     main()

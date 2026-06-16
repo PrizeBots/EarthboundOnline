@@ -3,6 +3,8 @@ import { WebSocketServer } from 'ws';
 import fs from 'fs';
 import path from 'path';
 import { GameHost } from './server/gameHost.js';
+import { createStore } from './server/store/index.js';
+import { createAuthApi } from './server/authApi.js';
 
 // --- Dev-only editor save channel (EDITOR_TOOLS.md "Save-Back Channel") ---
 // Lives ONLY in the Vite dev server: not bundled, never on the deployed
@@ -25,6 +27,7 @@ const OVERRIDE_ALLOW = new Set([
   'item_sprites.json',
   'custom_items.json',
   'rooms.json',
+  'stamps.json', // Room Builder sampler — reusable tile-stamp library (pure arrangement indices)
   'sprite_frames.json',
   'flags.json', // Flag Editor — flag catalog (id/name/scope/default)
   'triggers.json', // Flag Editor — event→flag rules
@@ -193,6 +196,13 @@ function gameServerPlugin() {
     // fine. apply:'serve' + lazy construction keeps build a pure, exiting step.
     apply: 'serve' as const,
     configureServer(server: any) {
+      // Auth + character API, same factory the deploy server mounts. Vite's
+      // middleware stack is plain connect; the Express app self-augments
+      // req/res, so res.json() works here too. Registered first so /api/* is
+      // handled before Vite's SPA/static fallthrough.
+      const store = createStore();
+      server.middlewares.use(createAuthApi(store));
+
       const host = new GameHost(path.resolve(__dirname, 'public', 'assets'));
       const wss = new WebSocketServer({ noServer: true });
       host.start();

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "stamps": [
+    {
+      "id": "stamp_mqg0bvea",
+      "label": "Stamp 1",
+      "w": 1,
+      "h": 1,
+      "tilesetId": 1,
+      "paletteId": 0,
+      "tiles": [351]
+    }
+  ]
+}

@@ -12,12 +12,19 @@ const { WebSocketServer } = require('ws');
 const http = require('http');
 const path = require('path');
 const { GameHost } = require('./gameHost');
+const { createStore } = require('./store');
+const { createAuthApi } = require('./authApi');
 
 const PORT = process.env.PORT || 3333;
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
+
+// Auth + character API (accounts/sessions/saves). Mounted before static so the
+// /api/* routes win; the app calls next() on anything it doesn't match.
+const store = createStore();
+app.use(createAuthApi(store));
 
 // Serve the built client. (Assets stay out of the deploy per the ROM policy —
 // see CLAUDE.md; this only ships code.)

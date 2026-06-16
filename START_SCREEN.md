@@ -87,12 +87,16 @@ equipment, so we wire writes:
 
 ## Build phases (after approval)
 
-1. `Store` interface + `SqliteStore` + schema/migrations.
-2. Auth API + sessions.
-3. Client TITLE + AUTH overlay.
-4. Character slots: create (START) + list/select (CONTINUE).
-5. Wire save read on join / write on change+disconnect; move flags into the save.
-6. Document the Supabase migration seam.
+1. ✅ `Store` interface + `SqliteStore` + schema/migrations. (`server/store/`)
+2. ✅ Auth API + sessions. (`server/authApi.js` — Express app mounted in BOTH
+   `server/index.js` and `vite.config.ts`; `server/authApi.test.js`, 16 tests.
+   Routes: `POST /api/register|login|logout`, `GET /api/me`,
+   `GET|POST /api/characters`, `DELETE /api/characters/:id`. bcryptjs hashing,
+   32-byte hex session tokens, 30-day TTL, Bearer-token auth.)
+3. ⬜ Client TITLE + AUTH overlay. ← NEXT
+4. ⬜ Character slots: create (START) + list/select (CONTINUE).
+5. ⬜ Wire save read on join / write on change+disconnect; move flags into the save.
+6. ⬜ Document the Supabase migration seam.
 
 ## Migration to Supabase (at MVP launch)
 

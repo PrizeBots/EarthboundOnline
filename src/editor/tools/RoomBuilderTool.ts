@@ -98,6 +98,7 @@ class RoomBuilderTool implements EditorTool {
   private painting = false;
   private hoverTile: { tx: number; ty: number } | null = null;
   private rooms: CustomRoom[] = []; // in-memory mirror of overrides/rooms.json
+  private roomsCollapsed = false; // collapse toggle for the custom-rooms list
   private lastPaintedKey = ''; // dedup within a drag stroke
   private strokeDirty = false; // a stroke touched tiles → persist on up
   private warnedStyle = false; // throttle the style-mismatch toast per stroke
@@ -105,29 +106,59 @@ class RoomBuilderTool implements EditorTool {
   activate(shell: EditorShellApi): void {
     this.shell = shell;
     this.buildPanel();
-    void this.reloadData();
+    this.refreshList(); // show whatever's already registered immediately
+    void this.reloadData(); // then sync stamps + rebuild the band to be sure
     this.updateStatus();
+    window.addEventListener('contextmenu', this.onContextMenu);
   }
 
   deactivate(): void {
+    window.removeEventListener('contextmenu', this.onContextMenu);
     this.panel?.remove();
     this.panel = null;
     this.selecting = false;
     this.painting = false;
+    this.pendingBlank = false;
     this.dragStart = null;
     this.sel = null;
     this.hoverTile = null;
   }
 
-  private async reloadData(): Promise<void> {
-    const sdoc = (await loadOverride<StampsDoc>('stamps.json')) ?? { version: 1, stamps: [] };
-    this.stamps = sdoc.stamps;
-    const rdoc = (await loadOverride<CustomRoomsDoc>('rooms.json')) ?? { version: 1, rooms: [] };
-    this.rooms = rdoc.rooms;
-    if (this.activeStampId && !this.stamps.some((s) => s.id === this.activeStampId)) {
-      this.activeStampId = null;
+  /** Right-click cancels stamp placement (left-click keeps stamping). */
+  private onContextMenu = (e: MouseEvent): void => {
+    if (!this.painting) return;
+    e.preventDefault();
+    this.setPainting(false);
+    this.shell?.toast('Placement cancelled');
+  };
+
+  /** Esc also cancels placement (consumed before the shell toggles the hub). */
+  onKey(key: string): boolean {
+    if (key === 'escape' && this.painting) {
+      this.setPainting(false);
+      this.shell?.toast('Placement cancelled');
+      return true;
     }
-    await this.primeActiveAtlas();
+    return false;
+  }
+
+  private async reloadData(): Promise<void> {
+    try {
+      const sdoc = (await loadOverride<StampsDoc>('stamps.json')) ?? { version: 1, stamps: [] };
+      this.stamps = sdoc.stamps;
+      const rdoc = (await loadOverride<CustomRoomsDoc>('rooms.json')) ?? { version: 1, rooms: [] };
+      this.rooms = rdoc.rooms;
+      if (this.activeStampId && !this.stamps.some((s) => s.id === this.activeStampId)) {
+        this.activeStampId = null;
+      }
+      await this.primeActiveAtlas();
+      // The band may not be registered yet on a fresh tool open (or after a
+      // dev-server restart cleared the cache) — rebuild it so listRooms() is
+      // populated immediately instead of only after the first edit.
+      await buildCustomRoomBand();
+    } catch (e) {
+      this.shell?.toast(`Room data load failed: ${e}`, true);
+    }
     this.refreshLibrary();
     this.refreshList();
   }
@@ -197,6 +228,27 @@ class RoomBuilderTool implements EditorTool {
   }
 
   drawOverlay(ctx: CanvasRenderingContext2D, camera: Camera): void {
+    // Custom-room footprints. Empty (unpainted) cells get a translucent blue
+    // fill so a freshly created blank room shows fully blue at exactly the size
+    // you dragged; the blue recedes tile-by-tile as you paint stamps in.
+    for (const r of this.rooms) {
+      const rx = r.bandX * TILE_SIZE - Math.round(camera.x);
+      const ry = r.bandY * TILE_SIZE - Math.round(camera.y);
+      ctx.fillStyle = 'rgba(77,182,232,0.22)';
+      for (let ly = 0; ly < r.h; ly++) {
+        for (let lx = 0; lx < r.w; lx++) {
+          if ((r.tiles[ly * r.w + lx] ?? 0) !== 0) continue; // painted cell — leave it
+          ctx.fillRect(rx + lx * TILE_SIZE, ry + ly * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+        }
+      }
+      ctx.strokeStyle = '#4db6e8';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(rx + 0.5, ry + 0.5, r.w * TILE_SIZE - 1, r.h * TILE_SIZE - 1);
+      ctx.fillStyle = '#bfe3ff';
+      ctx.font = '11px monospace';
+      ctx.fillText(`${r.label} · ${r.w}x${r.h}`, rx + 3, ry - 4);
+    }
+
     // Marquee selection box — green while sizing a new blank room, blue to sample.
     if (this.sel) {
       const x = this.sel.tx * TILE_SIZE - Math.round(camera.x);
@@ -371,10 +423,11 @@ class RoomBuilderTool implements EditorTool {
     } as SectorMeta;
 
     const doc = (await loadOverride<CustomRoomsDoc>('rooms.json')) ?? { version: 1, rooms: [] };
+    const name = (prompt('Name this room', `Room ${doc.rooms.length + 1}`) ?? '').trim();
     const bandY = this.nextBandY(doc.rooms);
     const room: CustomRoom = {
       id: `custom_${Date.now().toString(36)}`,
-      label: `Room ${doc.rooms.length + 1}`,
+      label: name || `Room ${doc.rooms.length + 1}`,
       town: 'custom',
       type: 'custom',
       bandX: 0,
@@ -506,6 +559,20 @@ class RoomBuilderTool implements EditorTool {
     this.shell!.toast(`Deleted room ${id}`);
   }
 
+  private async renameRoom(id: string, current: string): Promise<void> {
+    const name = (prompt('Rename room', current) ?? '').trim();
+    if (!name || name === current) return;
+    const doc = (await loadOverride<CustomRoomsDoc>('rooms.json')) ?? { version: 1, rooms: [] };
+    const room = doc.rooms.find((r) => r.id === id);
+    if (!room) return;
+    room.label = name;
+    await saveOverride('rooms.json', doc);
+    await buildCustomRoomBand();
+    this.rooms = doc.rooms;
+    this.refreshList();
+    this.shell!.toast(`Renamed → "${name}"`);
+  }
+
   // --- panel -----------------------------------------------------------------
 
   private buildPanel(): void {
@@ -550,16 +617,26 @@ class RoomBuilderTool implements EditorTool {
     this.paintBtn = this.mkBtn('Paint: off', () => this.setPainting(!this.painting), build);
     this.panel.appendChild(build);
 
-    // Custom-room list.
+    // Custom-room list — collapsible (click the header to toggle).
     const listTitle = document.createElement('div');
-    listTitle.textContent = 'Custom rooms';
-    listTitle.style.cssText = 'color:#9fb8cc;font-size:11px;margin-top:4px;';
+    listTitle.style.cssText =
+      'color:#9fb8cc;font-size:11px;margin-top:4px;cursor:pointer;user-select:none;';
     this.panel.appendChild(listTitle);
 
     this.listEl = document.createElement('div');
     this.listEl.style.cssText =
       'display:flex;flex-direction:column;gap:3px;max-height:160px;overflow:auto;';
     this.panel.appendChild(this.listEl);
+
+    const syncCollapse = () => {
+      listTitle.textContent = `${this.roomsCollapsed ? '▸' : '▾'} Custom rooms`;
+      this.listEl!.style.display = this.roomsCollapsed ? 'none' : 'flex';
+    };
+    listTitle.onclick = () => {
+      this.roomsCollapsed = !this.roomsCollapsed;
+      syncCollapse();
+    };
+    syncCollapse();
 
     this.shell!.panelHost.appendChild(this.panel);
   }
@@ -685,7 +762,9 @@ class RoomBuilderTool implements EditorTool {
     this.activeStampId = id;
     await this.primeActiveAtlas();
     this.refreshLibrary();
-    this.updateStatus();
+    // Clicking a stamp arms placement straight away: ghost follows the cursor,
+    // left-click stamps, right-click (or Esc) cancels.
+    this.setPainting(true);
   }
 
   /** Render a stamp to a small canvas thumbnail (atlas already primed at save). */
@@ -736,10 +815,11 @@ class RoomBuilderTool implements EditorTool {
       row.style.cssText = 'display:flex;align-items:center;gap:6px;';
       const name = document.createElement('span');
       name.textContent = r.label;
-      name.title = `${r.id} · ${r.rect.w / 32}x${r.rect.h / 32}t`;
+      name.title = `${r.id} · ${r.rect.w / 32}x${r.rect.h / 32}t · click=go, double-click=rename`;
       name.style.cssText =
         'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;color:#bfe3ff;';
       name.onclick = () => this.shell!.goTo(r.spawn?.x ?? r.rect.x, r.spawn?.y ?? r.rect.y);
+      name.ondblclick = () => void this.renameRoom(r.id, r.label);
       row.appendChild(name);
       const del = document.createElement('span');
       del.textContent = '✕';

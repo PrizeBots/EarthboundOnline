@@ -376,10 +376,48 @@ export function playSfx(id: string | undefined | null): void {
   });
 }
 
+// Listener (player) position for positional SFX, refreshed every frame by
+// updateMusic. World-pixel space, same as entity coords.
+let listenerX = 0;
+let listenerY = 0;
+const SFX_FULL_DIST = 160; // within this radius: full volume
+const SFX_MAX_DIST = 384; // beyond this radius: inaudible
+
+/**
+ * Positional one-shot SFX — like playSfx but attenuated by distance from the
+ * listener (the local player, tracked by updateMusic) so far-off world events
+ * (enemy deaths, remote swings) fade out instead of blasting at full volume.
+ */
+export function playSfxAt(id: string | undefined | null, x: number, y: number): void {
+  if (!id || id === 'none' || sfxMuted || !initialized || !audioContext) return;
+  const dist = Math.hypot(x - listenerX, y - listenerY);
+  if (dist >= SFX_MAX_DIST) return; // too far to hear
+  const vol =
+    dist <= SFX_FULL_DIST ? 1 : 1 - (dist - SFX_FULL_DIST) / (SFX_MAX_DIST - SFX_FULL_DIST);
+  const ctx = audioContext;
+  if (!sfxGain) {
+    sfxGain = ctx.createGain();
+    sfxGain.gain.value = 1;
+    sfxGain.connect(ctx.destination);
+  }
+  void loadSfx(id).then((buf) => {
+    if (!buf || sfxMuted) return; // re-check mute: load is async
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const g = ctx.createGain();
+    g.gain.value = vol;
+    src.connect(g);
+    g.connect(sfxGain!);
+    src.start();
+  });
+}
+
 let lastLoggedSong = -1;
 
 export function updateMusic(playerX: number, playerY: number): void {
   if (!initialized) return;
+  listenerX = playerX;
+  listenerY = playerY;
 
   // An authored area wins (sticky — see areaForPoint); otherwise fall back to
   // the sector's ROM musicId.

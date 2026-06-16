@@ -59,8 +59,8 @@ and test then.** ROM-intake step skipped for now (slots in after AUTH later). Th
 earlier "auth backlogged / OAuth-only / no DB yet" stance** — deliberate.
 
 - [x] `Store` interface + `SqliteStore` (`better-sqlite3`) + schema/migrations (accounts, sessions, characters) — `server/store/` (contract in `index.js`, swap point = `createStore`); `bcryptjs` installed; `data/eb.db` gitignored; 15 tests in `server/store.test.js`
-- [ ] Auth API + sessions (`POST /api/register|login|logout`, `bcryptjs` hashing, `crypto.randomBytes` token in `localStorage` as `eb_session`)
-- [ ] Character API (`GET/POST/DELETE /api/characters`, enforce ≤3 slots per account)
+- [x] Auth API + sessions — `server/authApi.js` (Express app mounted in BOTH transports: `server/index.js` + `vite.config.ts`). `/api/register|login|logout|me`, `bcryptjs` hashing (cost 10), 30-day `crypto.randomBytes` session tokens, login timing-safe against username enumeration. 16 tests in `server/authApi.test.js`; verified live on :4444
+- [x] Character API (`GET/POST/DELETE /api/characters`, enforce ≤3 slots) — same `authApi.js`, all routes behind `requireAuth`; delete returns 404 (not 403) for non-owned ids
 - [ ] Client TITLE + AUTH screens (DOM overlay over canvas, EB-styled)
 - [ ] NEW CHARACTER flow (START): name input → reuse canvas `CharacterSelect` picker → create in free slot
 - [ ] CHARACTER SLOTS flow (CONTINUE): list ≤3 saves (name/sprite/level), pick → join
@@ -89,7 +89,9 @@ decompression primitive (`EbCompressibleBlock`) + a parity harness.
 - [~] Port extraction pipeline to TypeScript in a Web Worker (order: fonts/sprites → map/atlases/collision → roster)
   - [x] **Decompression primitive** (`src/extract/decompress.ts`) — faithful TS port of exhal/inhal `unpack` (the format every ROM asset uses; CoilSnake's `native_comp.decomp`). DEcompress only (we never write ROMs). **Parity-proven**: `test/extract/decompress.test.ts` byte-matches native CoilSnake on 40 real ROM blocks (~971KB); fixtures via `tools/dump_decomp_fixtures.py` (ROM-derived, gitignored). This was the foundational/riskiest piece — green.
   - [x] **ROM container + addressing + table reader** (`src/extract/Rom.ts`) — header strip, `fromSnesAddress` (HiROM), little-endian `readMulti`, fixed-width `readTable`. **Parity-proven**: `test/extract/rom.test.ts` matches native CoilSnake `table[i][0]` for all 6 pointer/value tables (graphics/arrangements/collisions/map_tileset/palette/sprite_group). Parity caught a real bug (map_tileset is 2-byte stride, not 1).
-  - [ ] Next: **tilesets** — port `EbTileset.minitiles_from_block` (4bpp graphics decode), `arrangements_from_block` (16-bit cells), `collisions_from_block`, + `EbMapPalette` → parity vs `extract_rom.py` tileset JSON/PNG output
+  - [x] **Tilesets** (`src/extract/tileset.ts`) — ports `EbTileset`/`EbGraphicTileset`/`EbMapPalette`: 4bpp minitile graphics (two stacked 2bpp planes), 16-bit arrangement cells, uncompressed collision bytes (bank 0x18), 6×16 BGR→RGBA palettes with the per-map-tileset assignment loop. **Parity-proven**: `test/extract/tileset.test.ts` byte-matches native CoilSnake for ALL 20 drawing tilesets (minitiles pixel-for-pixel + arrangements + collisions + palettes).
+  - [x] **Map + sectors** (`src/extract/map.ts`) — ports `extract_map`: 8-interleaved-stream tile plane + local-tileset high-bit packing, 2560 sectors (tileset/palette/music), 32-entry tileset mapping. **Parity-proven**: `test/extract/map.test.ts` byte-matches native CoilSnake (81,920 tiles + 2,560 sectors + mapping).
+  - [ ] Next: **sprites** (`SpriteGroupModule` — group sheets/palettes), then the two BAKE steps (`apply_map_changes`, `add_sector_settings`), then doors/dialogue/shops/music
 - [ ] Asset cache in IndexedDB/OPFS; AssetLoader reads cache instead of HTTP
 - [ ] Exclude `public/assets/` from production build (dev keeps local pre-extracted assets for speed)
 - [ ] Scrub `public/assets/` from ALL git history (`git filter-repo`), force-push
@@ -110,7 +112,7 @@ decompression primitive (`EbCompressibleBlock`) + a parity harness.
 - [ ] Area-of-interest filtering (only send updates for nearby players)
 - [ ] Binary protocol (replace JSON with packed messages for bandwidth)
 - [ ] Server tick rate control (fixed 20Hz or 30Hz update loop)
-- [ ] Authentication — SUPERSEDED by **Main Start Screen + Accounts** (own username/password now, `bcryptjs`; see START_SCREEN.md). OAuth/magic-link reframed as a _later_ "claim your account" upgrade, not the first auth.
+- [ ] Authentication — SUPERSEDED by **Main Start Screen + Accounts** (own username/password now, `bcryptjs`; see START*SCREEN.md). OAuth/magic-link reframed as a \_later* "claim your account" upgrade, not the first auth.
 - [ ] Real backend for saves + auth — DECIDED: **SQLite in the Node server now** (swappable `Store` interface) → **migrate to Supabase/Postgres at MVP launch** (no paid infra until then). The custom Node game server stays for the real-time world (Supabase can't run the authoritative sim). See **Main Start Screen + Accounts** section + START_SCREEN.md.
 
 ## Phase 4: Build the Game

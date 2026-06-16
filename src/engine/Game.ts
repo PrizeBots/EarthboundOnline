@@ -108,7 +108,10 @@ import {
   spawnHealNumber,
   spawnXpNumber,
   spawnLevelUp,
+  spawnCritText,
+  spawnMissText,
 } from './Emitter';
+import { playEventSfx } from './SfxEvents';
 import { setGoods, getGoods } from './Inventory';
 import { setMoney } from './Wallet';
 import {
@@ -438,6 +441,18 @@ export class Game {
         setStatus(stats);
         if (gained > 0) spawnXpNumber(this.player.x, this.player.y, gained);
         if (leveled) spawnLevelUp(this.player.x, this.player.y);
+      },
+      onCombat: (evt, x, y, byPlayer, targetPlayer) => {
+        // Crit/miss events: floating SMAAAASH!/MISS text for everyone, plus the
+        // right SFX for the LOCAL player (see SfxEvents / ARCHITECTURE combat).
+        if (evt === 'crit') {
+          spawnCritText(x, y);
+          if (byPlayer === this.localPlayerId) playEventSfx('crit');
+        } else {
+          spawnMissText(x, y);
+          if (byPlayer === this.localPlayerId) playEventSfx('attack-miss');
+          else if (targetPlayer === this.localPlayerId) playEventSfx('player-dodge');
+        }
       },
     });
 

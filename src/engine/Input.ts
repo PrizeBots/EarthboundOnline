@@ -167,6 +167,16 @@ export function consumeHotbarSlot(): number {
   return -1;
 }
 
+/** G — cycle the held/equipped weapon through your inventory (+ none). Coexists
+ *  with the 1/2 hotbar (consumeHotbarSlot); Game.ts still drives equip via this. */
+export function isCycleItemPressed(): boolean {
+  if (keys.has('KeyG')) {
+    keys.delete('KeyG');
+    return true;
+  }
+  return false;
+}
+
 /** H — play the hurt animation (debug hook until combat deals damage). */
 export function isHurtPressed(): boolean {
   if (keys.has('KeyH')) {
