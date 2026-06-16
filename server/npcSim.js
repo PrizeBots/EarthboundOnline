@@ -1130,9 +1130,15 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       n.poseUntil = now + NPC_ATTACK_POSE_MS;
       n.frame = 0;
       n.dirty = true;
-      applyDamage(e, NPC_DAMAGE, now, null);
-      e.aggressor = n; // the enemy remembers (and may turn on) whoever hit it
-      e.aggroUntil = now + ENEMY_AGGRO_MEMORY_MS;
+      if (foe.isPlayer) {
+        // Swing at a PK player: HP lives on the host, so apply it there. Flat
+        // NPC_DAMAGE (no crit/dodge) — townsfolk are a deliberate PK deterrent.
+        if (onPlayerHitCb) onPlayerHitCb(e.id, NPC_DAMAGE, null);
+      } else {
+        applyDamage(e, NPC_DAMAGE, now, null);
+        e.aggressor = n; // the enemy remembers (and may turn on) whoever hit it
+        e.aggroUntil = now + ENEMY_AGGRO_MEMORY_MS;
+      }
     };
 
     n.dir = faceDir(e.x - n.x, e.y - n.y); // watch the threat by default
@@ -1176,13 +1182,13 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     // show (movement would overwrite the frame via stepAnimation).
     if ((n.pose === 'attack' || n.pose === 'hurt') && now < n.poseUntil) return;
 
-    // Self-defense (defend on sight): if a living enemy is within
-    // NPC_DETECT_RANGE the townsperson maneuvers per its combat personality
-    // (tickNpcCombat) and swings when in range — no longer a frozen statue.
-    // Players are never targeted (only enemies, gated by canHurt). Props/0-HP
-    // people can't fight.
+    // Self-defense (defend on sight): if a living foe is within NPC_DETECT_RANGE
+    // the townsperson maneuvers per its combat personality (tickNpcCombat) and
+    // swings when in range — no longer a frozen statue. Foes are enemies always,
+    // plus PK players (canHurt-gated, so a peaceful player is never attacked).
+    // Props/0-HP people can't fight.
     if (n.hp > 0) {
-      const foe = nearestEnemyTo(n, NPC_DETECT_RANGE);
+      const foe = nearestFoeTo(n, NPC_DETECT_RANGE, ppos);
       if (foe) {
         tickNpcCombat(n, foe, ppos, now);
         return; // combat owns this tick — skip the wander AI
@@ -1299,20 +1305,37 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     return target ? { target, dist: best, isPlayer: false } : null;
   }
 
-  // Nearest living enemy within `range` that `n` (a townsperson) may hurt, or
-  // null. Used by NPC self-defense — townsfolk only ever target enemies.
-  function nearestEnemyTo(n, range) {
+  // Nearest living foe within `range` that `n` (a townsperson) may hurt, or null.
+  // Used by NPC self-defense: townsfolk fight any enemy, AND turn on any PK player
+  // (canHurt gates both — a non-PK player is never a foe). Returns
+  // { enemy, dist, isPlayer } — `enemy` is the foe (enemy actor or player snapshot).
+  function nearestFoeTo(n, range, players) {
     let found = null;
     let best = range;
+    let isPlayer = false;
     for (const e of enemies) {
       if (e.dead || e.hp <= 0 || !canHurt(n, e)) continue;
       const d = Math.hypot(e.x - n.x, e.y - n.y);
       if (d <= best) {
         best = d;
         found = e;
+        isPlayer = false;
       }
     }
-    return found ? { enemy: found, dist: best } : null;
+    if (players) {
+      for (const p of players) {
+        if (p.editor) continue; // parked editor avatar is out of the fight
+        if (p.hp !== undefined && p.hp <= 0) continue;
+        if (!canHurt(n, { isEnemy: false, pk: p.pk })) continue; // only PKers
+        const d = Math.hypot(p.x - n.x, p.y - n.y);
+        if (d <= best) {
+          best = d;
+          found = p;
+          isPlayer = true;
+        }
+      }
+    }
+    return found ? { enemy: found, dist: best, isPlayer } : null;
   }
 
   // Repulsion from nearby actors so pursuers fan out around the target instead
