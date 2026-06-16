@@ -36,6 +36,16 @@ export const EntityStatsSchema = z
     name: z.string().optional(),
     defense: z.number().optional(),
     money: z.number().optional(),
+    // Loot: item dropped on death + roll chance (ROM "Item Rarity"). Sourced from
+    // the enemy catalog (enemies.json); the server rolls `rate` on each kill.
+    drop: z
+      .object({
+        item: z.number().int(),
+        itemName: z.string().optional(),
+        rate: z.number().min(0).max(1),
+        raw: z.string().optional(),
+      })
+      .optional(),
   })
   .catchall(z.unknown());
 

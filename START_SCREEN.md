@@ -93,8 +93,14 @@ equipment, so we wire writes:
    Routes: `POST /api/register|login|logout`, `GET /api/me`,
    `GET|POST /api/characters`, `DELETE /api/characters/:id`. bcryptjs hashing,
    32-byte hex session tokens, 30-day TTL, Bearer-token auth.)
-3. ⬜ Client TITLE + AUTH overlay. ← NEXT
-4. ⬜ Character slots: create (START) + list/select (CONTINUE).
+3. ✅ Client TITLE + AUTH overlay. (`src/engine/auth/authClient.ts` API client +
+   token in `localStorage['eb_session']`; `src/engine/auth/TitleScreen.ts` DOM
+   overlay — TITLE w/ START+CONTINUE, register/login tabs, signed-in/log-out
+   footer, CONTINUE disabled at 0 saves. Gated in `main.ts` before the game boots;
+   resolves `{account, action}`. Boot validates stored token via `/api/me`.)
+4. ⬜ Character slots: create (START) + list/select (CONTINUE). ← NEXT
+   `action` is plumbed through `main.ts` but both paths still fall through to the
+   existing canvas character-select; Phase 4 branches on it.
 5. ⬜ Wire save read on join / write on change+disconnect; move flags into the save.
 6. ⬜ Document the Supabase migration seam.
 

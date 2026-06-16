@@ -121,6 +121,16 @@ interface EnemyConfig {
   }[];
 }
 
+// ROM-derived enemy catalog (tools/extract_enemies.py -> assets/map/enemies.json):
+// the DEFAULTS layer of per-entity stats. Merged UNDER the authored entities.
+// KEEP merge order IN SYNC with server/npcSim.js: DEFAULT < catalog < authored.
+interface EnemyCatalog {
+  bySprite?: Record<string, { hp?: number; col?: EntityCol }>;
+}
+// Effective per-entity stats, sprite -> {hp,col}: catalog overlaid by authored
+// entities. Built in loadNPCs; the client uses hp (health bars) and col.
+const entityDefs = new Map<number, { hp?: number; col?: EntityCol }>();
+
 // Exact per-direction collision boxes for vehicles (tools/extract_vehicle_colboxes.py
 // -> sprites/colboxes.json): spriteId -> dir (0-7) -> box. A car collides by the
 // real shape of the frame it's currently facing, not the padded sprite cell.
@@ -223,36 +233,57 @@ export async function reloadNpcText(): Promise<void> {
 
 export async function loadNPCs(): Promise<void> {
   await loadShops(); // clerk->store map must be ready before we tag NPCs below
-  const [raw, overrides, text, dialogueOv, enemyOv, enemyBase, carOv, carBase, colBoxes] =
-    await Promise.all([
-      loadJSON<RawNPC[]>('/assets/map/npcs.json'),
-      // Editor-authored placement overrides — absent until something is authored.
-      loadJSON<NpcOverrides>('/overrides/npcs.json').catch(() => null),
-      loadJSON<Record<string, string[]>>('/assets/map/npc_text.json'),
-      // Dialogue Editor override — authored pages win over the decoded text.
-      loadJSON<DialogueOverrides>('/overrides/dialogue.json').catch(() => null),
-      // Enemy spawners: editor-authored override (Enemy Spawner tool) wins over
-      // the committed default. KEEP IN SYNC with server/npcSim.js — both build
-      // the same pool (disabled spawners skipped) so wire ids stay aligned.
-      loadJSON<EnemyConfig>('/overrides/enemy_spawns.json').catch(() => null),
-      loadJSON<EnemyConfig>('/assets/map/enemy_spawns.json').catch(() => ({}) as EnemyConfig),
-      // Traffic (Traffic Editor) — override wins over the committed default. KEEP
-      // IN SYNC with server/npcSim.js (same active-vehicle filter so ids align).
-      loadJSON<CarTraffic>('/overrides/car_traffic.json').catch(() => null),
-      loadJSON<CarTraffic>('/assets/map/car_traffic.json').catch(
-        () => ({ version: 1 }) as CarTraffic
-      ),
-      // Precomputed per-direction vehicle collision boxes (build artifact).
-      loadJSON<Record<string, Record<string, EntityCol>>>('/assets/sprites/colboxes.json').catch(
-        () => ({})
-      ),
-    ]);
+  const [
+    raw,
+    overrides,
+    text,
+    dialogueOv,
+    enemyOv,
+    enemyBase,
+    enemyCatalog,
+    carOv,
+    carBase,
+    colBoxes,
+  ] = await Promise.all([
+    loadJSON<RawNPC[]>('/assets/map/npcs.json'),
+    // Editor-authored placement overrides — absent until something is authored.
+    loadJSON<NpcOverrides>('/overrides/npcs.json').catch(() => null),
+    loadJSON<Record<string, string[]>>('/assets/map/npc_text.json'),
+    // Dialogue Editor override — authored pages win over the decoded text.
+    loadJSON<DialogueOverrides>('/overrides/dialogue.json').catch(() => null),
+    // Enemy spawners: editor-authored override (Enemy Spawner tool) wins over
+    // the committed default. KEEP IN SYNC with server/npcSim.js — both build
+    // the same pool (disabled spawners skipped) so wire ids stay aligned.
+    loadJSON<EnemyConfig>('/overrides/enemy_spawns.json').catch(() => null),
+    loadJSON<EnemyConfig>('/assets/map/enemy_spawns.json').catch(() => ({}) as EnemyConfig),
+    // ROM-derived enemy catalog (stat defaults). Absent until extracted.
+    loadJSON<EnemyCatalog>('/assets/map/enemies.json').catch(() => null),
+    // Traffic (Traffic Editor) — override wins over the committed default. KEEP
+    // IN SYNC with server/npcSim.js (same active-vehicle filter so ids align).
+    loadJSON<CarTraffic>('/overrides/car_traffic.json').catch(() => null),
+    loadJSON<CarTraffic>('/assets/map/car_traffic.json').catch(
+      () => ({ version: 1 }) as CarTraffic
+    ),
+    // Precomputed per-direction vehicle collision boxes (build artifact).
+    loadJSON<Record<string, Record<string, EntityCol>>>('/assets/sprites/colboxes.json').catch(
+      () => ({})
+    ),
+  ]);
   const enemyCfg = enemyOv ?? enemyBase;
   carColBoxes = colBoxes ?? {};
-  // Capture any manual per-sprite-group box overrides (Entity Manager).
+
+  // Effective per-entity stats = ROM catalog (defaults) overlaid by authored
+  // entities. KEEP merge order IN SYNC with server/npcSim.js buildEntityDefs.
+  entityDefs.clear();
+  const cat = enemyCatalog?.bySprite ?? {};
+  const authored = enemyCfg.entities ?? {};
+  for (const sprite of new Set([...Object.keys(cat), ...Object.keys(authored)])) {
+    entityDefs.set(Number(sprite), { ...cat[sprite], ...authored[sprite] });
+  }
+  // Per-sprite collision box overrides (Entity Manager) — col wins over kind default.
   entityCols.clear();
-  for (const [sprite, def] of Object.entries(enemyCfg.entities ?? {})) {
-    if (def?.col) entityCols.set(Number(sprite), def.col);
+  for (const [sprite, def] of entityDefs) {
+    if (def.col) entityCols.set(sprite, def.col);
   }
   npcText = mergeDialogue(text, dialogueOv);
   roamers.length = 0;
@@ -271,9 +302,9 @@ export async function loadNPCs(): Promise<void> {
   let id = npcsById.length;
   for (const sp of enemyCfg.spawners ?? []) {
     if (sp.enabled === false) continue; // disabled spawner: no pool (server skips it too)
-    // maxHp drives the health bar; it now lives per-entity (Entity Manager),
-    // with a legacy per-spawner hp fallback.
-    const maxHp = enemyCfg.entities?.[String(sp.sprite)]?.hp ?? sp.hp ?? enemyDefaultHp;
+    // maxHp drives the health bar; it lives per-entity (ROM catalog + Entity
+    // Manager), with a legacy per-spawner hp fallback.
+    const maxHp = entityDefs.get(sp.sprite)?.hp ?? sp.hp ?? enemyDefaultHp;
     for (let i = 0; i < (sp.poolSize ?? 0); i++) {
       const npc = new NPC(sp.x, sp.y, sp.sprite, Direction.N, 'enemy', null);
       npc.applyHp(0, maxHp);
@@ -313,9 +344,14 @@ function buildStaticNpcs(raw: RawNPC[], overrides: NpcOverrides | null): (NPC | 
   let addIdx = 0;
   const arr = mergeNpcOverrides(raw, overrides).map((r) => {
     if (!r) return null; // override-deleted slot
-    const kind: NPCKind = enemySpriteSet.has(r.sprite) ? 'enemy' : r.kind;
+    // Enemy if explicitly placed as one (PlacementTool) OR a legacy enemy
+    // sprite. KEEP IN SYNC with server/npcSim.js isEnemyPlacement.
+    const kind: NPCKind = r.kind === 'enemy' || enemySpriteSet.has(r.sprite) ? 'enemy' : r.kind;
     const npc = new NPC(r.x, r.y, r.sprite, r.dir as Direction, kind, r.t ?? null);
-    if (kind === 'enemy') npc.applyHp(enemyDefaultHp, enemyDefaultHp);
+    if (kind === 'enemy') {
+      const hp = entityDefs.get(r.sprite)?.hp ?? enemyDefaultHp;
+      npc.applyHp(hp, hp);
+    }
     // Shop clerks (by ROM config id) carry the store they sell — Game.tryTalk
     // opens the shop instead of dialogue. Custom/override NPCs have no ROM id.
     if (kind === 'person') npc.shopStore = shopStoreForNpc(npcIdFromKey(r.k));

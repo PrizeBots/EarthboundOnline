@@ -36,7 +36,11 @@ eb_project/  (CoilSnake decompile: scripts, NPC/door tables, music) ──┘   
 5. `tools/extract_npcs.py` — NPC/prop placements (`npcs.json`) **and dialogue**
    (`npc_text.json`), see below
 6. `tools/extract_shops.py` — shop catalog + clerk→store map (`shops.json`)
-7. `npm run dev` — Vite on port 4444 (game WebSocket server attaches to Vite
+7. `tools/extract_enemies.py` — enemy catalog (`enemies.json`) from
+   `enemy_configuration_table.yml`: per-sprite stats (HP/XP/level/money/damage)
+   - item drops & rates, keyed by sprite id. The DEFAULTS layer for combat (see
+     Combat & enemies).
+8. `npm run dev` — Vite on port 4444 (game WebSocket server attaches to Vite
    in dev; `server/index.js` is the standalone deployment)
 
 The event-flag state for the open world lives in `src/world_flags.json` — the
@@ -281,6 +285,20 @@ tracking. Saves go through `/__editor/save` — Vite dev-middleware only
 extraction so re-running the pipeline never clobbers authoring. Smoke test:
 `tools/verify_editor.mjs`.
 
+**DB-backed authored content (world_docs).** The **Places** outline is the
+first override to leave the file channel for the DB, so edits survive dev-server
+restarts in one place. `Store.getWorldDoc(name)`/`putWorldDoc(name,data,now)`
+back a generic `world_docs(name TEXT PK, data TEXT, updated_at)` table (`data` →
+Postgres `jsonb` at the Supabase swap, like the character `save` column). HTTP:
+`GET`/`PUT /api/world/:name`, allow-listed to `places`. **Editor is dev-only:**
+these routes are mounted ONLY when `createAuthApi(store,{editorApi:true})` — the
+Vite dev server passes it, the deploy server (`server/index.js`) does NOT, so the
+editing surface simply doesn't exist in production. They're loopback-gated too,
+so a LAN-exposed dev server stays local. (The client editor is already excluded
+from `dist/` via the `import.meta.env.DEV` dynamic import; this closes the server
+side.) The legacy `public/overrides/places.json` is imported into the DB once on
+first dev boot, then dormant.
+
 **Override apply path (canonical pattern):** runtime merge in the loaders, no
 py bake step. Per domain: `{version, edits: {stableKey: replacement|null},
 additions: [...]}` with stable keys emitted by the extraction tool. First
@@ -406,11 +424,33 @@ server never touches ROM assets beyond the pure-index JSON it simulates from.
 
 ## Combat & enemies
 
-Enemy is a third NPC kind. `public/assets/map/enemy_spawns.json` (OUR content,
-not ROM-derived) lists hostile sprite groups (currently `284`, the Onett
-Sharks) and spawners. Client (`NPCManager`) and server (`npcSim`) both
-reclassify any NPC whose sprite is hostile to kind `enemy` **by sprite**, and
-both build the same fixed enemy **pool** appended after the extracted NPCs so
+Enemy is a third NPC kind, **selectable per placement** in the Placement Editor
+(`kind: person | prop | enemy`). A placement is an enemy if its kind is `enemy`
+**or** its sprite is in the legacy hostile list — both `NPCManager` (client) and
+`npcSim` (server) apply the SAME rule (`isEnemyPlacement`), so they never
+disagree.
+
+**Stat layering (single source of truth).** Per-entity combat stats resolve as
+`DEFAULT_ENTITY_STATS < enemies.json (ROM catalog) < enemy_spawns.json entities
+(authored)`. `tools/extract_enemies.py` builds the catalog keyed by sprite id
+(the ROM "Overworld Sprite" field IS our sprite id — direct equality); the
+authored `entities` layer (Entity Manager) stores only hand-tuned changes. Both
+client and server build the same merged `entityDefs` (keep `buildEntityDefs` in
+sync). The catalog feeds **stats only** — it does NOT auto-classify its 77
+sprites as hostile (that stays the explicit kind / legacy list), so adding ROM
+enemies never silently turns existing NPCs aggressive. Static (placed) enemies
+now read full per-entity stats, same as the spawner pool — a placed and a
+spawned enemy of the same sprite are identical.
+
+**Loot.** On a player kill, `npcSim.rollLoot(sprite)` awards the enemy's money
+and rolls its item drop against the ROM rate (`drop.rate`, e.g. 1/128).
+`gameHost.awardKill` credits money and, if the item is a known good
+(`shops.js` GOODS) with bag room, grants it + a `loot` message. Drops of items
+not yet in the goods registry are skipped (data is present; granting deferred).
+
+`public/assets/map/enemy_spawns.json` (OUR content, not ROM-derived) lists the
+legacy hostile sprite list and the spawners. Client (`NPCManager`) and server
+(`npcSim`) both build the same fixed enemy **pool** appended after the extracted NPCs so
 wire ids stay aligned. The server spawner activates pool slots at the spawn
 point (the arcade overworld entrance ~1584,1680), they wander town-wide
 (bounded by `wanderRadius`, not leashed like townsfolk), and on death
@@ -582,6 +622,13 @@ wire new doors to it.
   room (`Game.updateRoomBounds`). The editor's **Places** column
   (`LocationNav.injectInstancedRooms`) lists authored rooms under their town.
   Absent `rooms.json` ⇒ overworld-only, no behavior change (current state).
+- **Places outline.** `LocationNav` composes a door-derived `area→building→room`
+  tree, then layers authored overrides (`PlacesDoc`: manual `areas`, reparent
+  `parent`, sort `order`, renames/hides, marquee `thumbRect`/`bounds`, room
+  `roomId` links). Edits drag-and-drop, rename inline, and persist to the DB
+  (`world_docs['places']` via the dev-only `/api/world/places` routes) — see the
+  DB-backed-content note above. Pure navigation metadata; no runtime/gameplay
+  consumer.
 
 ## NPC dialogue (talk/check)
 

@@ -8,6 +8,8 @@ import {
   isRoomCroppableTile,
 } from './MapManager';
 import { RoomBounds } from './Camera';
+import { isComposite, getComposite, unpackRef } from './CompositeTiles';
+import { isCustomRef } from './CustomTiles';
 import {
   MINITILE_SIZE,
   TILE_SIZE,
@@ -97,6 +99,21 @@ export function getPromotedMinitiles(tileX: number, tileY: number): number[] {
  */
 const ZERO_ROW: readonly number[] = new Array(16).fill(0);
 
+/** Collision row for a composite cell: each minitile keeps its source's byte. */
+function compositeRow(id: number): number[] {
+  const refs = getComposite(id);
+  if (!refs) return ZERO_ROW as number[];
+  const row = new Array(16).fill(0);
+  for (let mi = 0; mi < 16; mi++) {
+    const n = refs[mi] ?? -1;
+    if (n < 0 || isCustomRef(n)) continue; // custom tiles default to walkable
+    const r = unpackRef(n);
+    const cols = collisionData.get(getDrawTilesetId(r.ts));
+    if (cols && r.arr < cols.length) row[mi] = cols[r.arr][r.mi] ?? 0;
+  }
+  return row;
+}
+
 function effectiveRow(tileX: number, tileY: number): number[] | null {
   const sector = getSectorForTile(tileX, tileY);
   if (!sector) return null; // off-map → caller treats as solid
@@ -105,7 +122,13 @@ function effectiveRow(tileX: number, tileY: number): number[] | null {
   const arr = getTileAt(tileX, tileY);
   // Arrangement beyond the collision table = no data = non-solid (historically
   // skipped); per-cell overrides may still apply on top of an all-zero base.
-  const base = arr < collisions.length ? collisions[arr] : ZERO_ROW;
+  // Composite cells carry no ROM arrangement — their collision is assembled from
+  // each source minitile's own collision byte.
+  const base = isComposite(arr)
+    ? compositeRow(arr)
+    : arr < collisions.length
+      ? collisions[arr]
+      : ZERO_ROW;
   const ov = cellOverrides.get(tileY * MAP_WIDTH_TILES + tileX);
   if (!ov || ov.size === 0) return base as number[];
   const row = [...base];

@@ -41,6 +41,7 @@ async function main() {
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   const post = (path, body, token) => req('POST', path, { body, token });
+  const put = (path, body, token) => req('PUT', path, { body, token });
   const get = (path, token) => req('GET', path, { token });
   const del = (path, token) => req('DELETE', path, { token });
 
@@ -107,18 +108,36 @@ async function main() {
 
   // ----------------------------- characters -----------------------------
 
+  // A valid 5-stat allocation (sums to base+points = 15). Required by create.
+  const ALLOC = { muscle: 3, mental: 2, spirit: 3, speed: 3, knowledge: 4 };
+
   let charId;
   await check('create a character (201) in slot 0', async () => {
-    const r = await post('/api/characters', { name: 'Ness', spriteGroupId: 1 }, token);
+    const r = await post(
+      '/api/characters',
+      { name: 'Ness', spriteGroupId: 1, alloc: ALLOC },
+      token
+    );
     assert.strictEqual(r.status, 201);
     const j = await r.json();
     assert.strictEqual(j.character.slot, 0);
+    assert.deepStrictEqual(j.character.save.alloc, ALLOC, 'alloc persisted in the save');
     charId = j.character.id;
   });
 
   await check('creating without a token is 401', async () => {
-    const r = await post('/api/characters', { name: 'X', spriteGroupId: 1 });
+    const r = await post('/api/characters', { name: 'X', spriteGroupId: 1, alloc: ALLOC });
     assert.strictEqual(r.status, 401);
+  });
+
+  await check('creating with an invalid allocation is 400', async () => {
+    const bad = { muscle: 9, mental: 9, spirit: 9, speed: 9, knowledge: 9 }; // over-spent
+    const r = await post(
+      '/api/characters',
+      { name: 'Cheater', spriteGroupId: 1, alloc: bad },
+      token
+    );
+    assert.strictEqual(r.status, 400);
   });
 
   await check('list returns the roster + max', async () => {
@@ -129,9 +148,9 @@ async function main() {
   });
 
   await check('a 4th character is 409 (slots full)', async () => {
-    await post('/api/characters', { name: 'Paula', spriteGroupId: 2 }, token);
-    await post('/api/characters', { name: 'Jeff', spriteGroupId: 3 }, token);
-    const r = await post('/api/characters', { name: 'Poo', spriteGroupId: 4 }, token);
+    await post('/api/characters', { name: 'Paula', spriteGroupId: 2, alloc: ALLOC }, token);
+    await post('/api/characters', { name: 'Jeff', spriteGroupId: 3, alloc: ALLOC }, token);
+    const r = await post('/api/characters', { name: 'Poo', spriteGroupId: 4, alloc: ALLOC }, token);
     assert.strictEqual(r.status, 409);
   });
 
@@ -145,6 +164,51 @@ async function main() {
     assert.strictEqual(r.status, 200);
     const list = await (await get('/api/characters', token)).json();
     assert.strictEqual(list.characters.length, 2);
+  });
+
+  // -------------------------- world documents ---------------------------
+  // The default app is built WITHOUT editorApi: the editor's world-doc routes
+  // are NOT mounted, so production has no editing surface at all.
+
+  await check('world-doc GET is absent without editorApi (404)', async () => {
+    const r = await get('/api/world/places');
+    assert.strictEqual(r.status, 404);
+  });
+
+  await check('world-doc PUT is absent without editorApi (404, even with token)', async () => {
+    const r = await put('/api/world/places', { data: { version: 1 } }, token);
+    assert.strictEqual(r.status, 404);
+  });
+
+  // A dev-style app (editorApi:true) mounts them, loopback-gated. The test client
+  // connects over 127.0.0.1, so loopback passes — no token needed in dev.
+  await check('editorApi app: GET null before save, PUT persists, GET reflects', async () => {
+    const devApi = createAuthApi(store, { editorApi: true });
+    const devServer = http.createServer(devApi);
+    await new Promise((r) => devServer.listen(0, '127.0.0.1', r));
+    const devBase = `http://127.0.0.1:${devServer.address().port}`;
+    const dget = (p) => fetch(devBase + p);
+    const dput = (p, body) =>
+      fetch(devBase + p, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    assert.deepStrictEqual(await (await dget('/api/world/places')).json(), {
+      name: 'places',
+      data: null,
+    });
+
+    const doc = { version: 1, areas: [{ id: 'ma_1', label: 'Onett 2', x: 1, y: 2 }] };
+    assert.strictEqual((await dput('/api/world/places', { data: doc })).status, 200);
+    assert.deepStrictEqual((await (await dget('/api/world/places')).json()).data, doc);
+
+    assert.strictEqual((await dput('/api/world/places', {})).status, 400); // missing data
+    assert.strictEqual((await dget('/api/world/secrets')).status, 404); // unknown name
+    assert.strictEqual((await dput('/api/world/secrets', { data: {} })).status, 404);
+
+    devServer.close();
   });
 
   // ------------------------------- logout -------------------------------

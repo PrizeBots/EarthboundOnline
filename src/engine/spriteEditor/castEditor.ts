@@ -548,7 +548,7 @@ function applyImportedImage(img: HTMLImageElement): void {
   S.sheetCtx!.putImageData(snapImageToPalette(origBand, S.palette), 0, 0);
   S.sheetCtx!.putImageData(snapImageToPalette(custBand, S.palette), 0, EXPORT_CUST_SRC_Y);
   refreshDiagSupport(S.groupId); // import may add/remove diagonal frames
-  updateCharNote(' — imported (Ctrl+S to save)');
+  updateCharNote(' — imported (auto-saved)'); // pushUndo above schedules the save
   S.dirty = true;
 }
 

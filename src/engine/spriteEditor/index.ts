@@ -15,7 +15,8 @@ import { setMuteButtonHidden } from '../MuteButton';
 import { nextHeldItem, getItemName } from '../Items';
 import { DEFAULT_GROUP, EditMode, SpriteEditorCallbacks } from './constants';
 import { S } from './state';
-import { flashSaved, postOverride } from './saveChannel';
+import { flashSaved, postOverride, setSaveStatus } from './saveChannel';
+import { setAutosaver, flushAutosave, requestAutosave } from './autosave';
 import {
   clearSelection,
   undo,
@@ -94,12 +95,14 @@ export async function openSpriteEditor(callbacks: SpriteEditorCallbacks = {}): P
   window.addEventListener('keydown', onKeyDown, true);
   window.addEventListener('keyup', onKeyUp, true);
   window.addEventListener('mouseup', onGlobalMouseUp);
+  setAutosaver(() => persistGroup(true)); // realtime: edits save themselves
   S.dirty = true;
   S.rafId = requestAnimationFrame(tick);
 }
 
 export function closeSpriteEditor(): void {
   if (!S.open) return;
+  flushAutosave(); // write any pending edit before tearing down (still open here)
   S.open = false;
   setMuteButtonHidden(false); // back to the game — restore the mute button
   cancelAnimationFrame(S.rafId);
@@ -165,28 +168,52 @@ export function setEditMode(m: EditMode): void {
  * art and confirms on the item note. In Character mode it diffs the whole sheet
  * vs pristine into overrides/sprites.json (+ custom frames into sprite_frames.json).
  */
+/** Manual save (Ctrl+S). Edits already auto-save in realtime; this just forces
+ *  one now and flashes the banner. */
 export function saveCurrentGroup(): void {
-  if (!S.open || S.painting) return;
+  persistGroup(false);
+}
+
+/**
+ * Persist the active surface. `quiet` is the realtime auto-save path (status pip
+ * only); loud (false) is a manual Ctrl+S that also flashes the banner. Mid-stroke
+ * it re-arms the debounce so the finished stroke is what gets written.
+ */
+function persistGroup(quiet: boolean): void {
+  if (!S.open) return;
+  // An edit gesture in flight (paint stroke, marquee, move-drag, or transform)
+  // leaves the sheet mid-operation — e.g. a move lifts pixels, leaving a hole.
+  // Defer the save until it settles so we never persist a transient state.
+  if (S.painting || S.moveState || S.xformState || S.marqueeAnchor) {
+    requestAutosave();
+    return;
+  }
   if (S.editMode === 'item') {
     commitItemEdit();
     persistItem();
-    const label = `Item saved: ${getItemName(S.itemEditId) ?? S.itemEditId}`;
-    if (S.itemNote) S.itemNote.textContent = label;
-    flashSaved(`💾 ${label}`);
+    setSaveStatus('saved');
+    if (!quiet) {
+      const label = `Item saved: ${getItemName(S.itemEditId) ?? S.itemEditId}`;
+      if (S.itemNote) S.itemNote.textContent = label;
+      flashSaved(`💾 ${label}`);
+    }
     return;
   }
   if (!sheetReady()) return;
   captureGroupDiff();
   captureCustomFramePixels(); // snapshot each custom frame's pixels into framesDoc
+  setSaveStatus('saving');
   void Promise.all([
     postOverride('sprites.json', S.overridesDoc),
     postOverride('sprite_frames.json', S.framesDoc),
   ])
     .then(() => {
+      setSaveStatus('saved');
       updateCharNote(' — saved');
-      flashSaved('💾 Saved');
+      if (!quiet) flashSaved('💾 Saved');
     })
     .catch((err) => {
+      setSaveStatus('error');
       if (S.charNote) S.charNote.textContent = `save failed: ${String(err)}`;
       flashSaved(`⚠ Save failed: ${String(err)}`, true);
     });

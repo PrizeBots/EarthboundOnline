@@ -58,6 +58,20 @@ const MIGRATIONS = [
       CREATE INDEX idx_characters_account ON characters(account_id);
     `);
   },
+
+  // v2 — a generic key->JSON document store for authored world content (the
+  // Places outline is the first; other editor overrides can follow). Written
+  // ONLY by the localhost dev editor. `data` maps 1:1 to a Postgres `jsonb`
+  // column for the Supabase swap.
+  (db) => {
+    db.exec(`
+      CREATE TABLE world_docs (
+        name       TEXT    PRIMARY KEY,
+        data       TEXT    NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+  },
 ];
 
 class SqliteStore {
@@ -116,6 +130,12 @@ class SqliteStore {
         `UPDATE characters SET save = @save, updated_at = @updatedAt WHERE id = @id`
       ),
       deleteChar: db.prepare(`DELETE FROM characters WHERE id = ?`),
+
+      worldDocByName: db.prepare(`SELECT * FROM world_docs WHERE name = ?`),
+      upsertWorldDoc: db.prepare(
+        `INSERT INTO world_docs (name, data, updated_at) VALUES (@name, @data, @updatedAt)
+         ON CONFLICT(name) DO UPDATE SET data = @data, updated_at = @updatedAt`
+      ),
     };
   }
 
@@ -175,6 +195,22 @@ class SqliteStore {
 
   getAccountById(id) {
     return this._account(this._stmt.accountById.get(id));
+  }
+
+  // ========================== World documents ==========================
+  // A key->JSON store for authored world content (the Places outline; more
+  // editor overrides can follow). Written only by the localhost dev editor.
+
+  /** @returns the parsed JSON document for `name`, or null if none. */
+  getWorldDoc(name) {
+    const row = this._stmt.worldDocByName.get(name);
+    return row ? JSON.parse(row.data) : null;
+  }
+
+  /** Upsert a world document. @returns { name, updatedAt }. */
+  putWorldDoc(name, data, now) {
+    this._stmt.upsertWorldDoc.run({ name, data: JSON.stringify(data), updatedAt: now });
+    return { name, updatedAt: now };
   }
 
   // ============================ Sessions ============================

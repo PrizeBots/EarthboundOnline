@@ -143,6 +143,31 @@ function decodePalettes(rom: Rom): RGBA[][] {
   return out;
 }
 
+/**
+ * Render a decoded sprite group's indexed pixels into an RGBA buffer using its
+ * palette — the image extract_rom.py writes as `{id}.png`. Index 0 is
+ * transparent; the main thread turns the buffer into an ImageBitmap for the
+ * SpriteManager. Returns a flat RGBA Uint8ClampedArray of width*height.
+ */
+export function renderSpriteImage(pixels: number[][], palette: RGBA[]): Uint8ClampedArray {
+  const h = pixels.length;
+  const w = h > 0 ? pixels[0].length : 0;
+  const out = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const ci = pixels[y][x];
+      if (ci === 0) continue; // transparent
+      const c = palette[ci] ?? [255, 0, 255, 255];
+      const o = (y * w + x) * 4;
+      out[o] = c[0];
+      out[o + 1] = c[1];
+      out[o + 2] = c[2];
+      out[o + 3] = c[3];
+    }
+  }
+  return out;
+}
+
 /** Full sprite extraction — the TS equivalent of extract_rom.py's extract_sprites. */
 export function extractSprites(rom: Rom): ExtractedSprites {
   const groupPtrs = rom.readTable(GROUP_POINTER_TABLE, NUM_GROUPS, 4);

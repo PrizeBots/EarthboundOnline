@@ -18,6 +18,10 @@ const SCALE = 2;
 const SOUTH_ROW = 1;
 const SOUTH_COL = 0;
 
+// Dev toggle to the real TITLE/AUTH start screen (START_SCREEN.md). Char select
+// stays the boot screen in dev; this button opens the account overlay on top.
+const ACCT_BTN = { x: SCREEN_WIDTH - 62, y: 2, w: 60, h: 11, label: 'ACCOUNTS' };
+
 // Direction cycle for preview animation. `fallback` is the side-view cell a
 // 4-direction sheet shows instead of the (empty) diagonal cell — the same
 // NE,SE<-E / SW,NW<-W rule the in-game renderer uses.
@@ -156,7 +160,16 @@ export function handleCharSelectInput(key: string): 'confirm' | null {
  * / Enter on it). Coords are game-space pixels (256x224), matching the draw
  * layout. Returns 'confirm' to start the game, else null.
  */
-export function handleCharSelectClick(gx: number, gy: number): 'confirm' | null {
+export function handleCharSelectClick(gx: number, gy: number): 'confirm' | 'startscreen' | null {
+  // ACCOUNTS button (top-right) — checked first, it sits above the grid band.
+  if (
+    gx >= ACCT_BTN.x &&
+    gx < ACCT_BTN.x + ACCT_BTN.w &&
+    gy >= ACCT_BTN.y &&
+    gy < ACCT_BTN.y + ACCT_BTN.h
+  ) {
+    return 'startscreen';
+  }
   // Only the clipped grid band is clickable (mirror drawCharacterSelect's clip).
   if (gy < GRID_Y - 2 || gy > SCREEN_HEIGHT - 38) return null;
   for (let i = 0; i < characters.length; i++) {
@@ -191,6 +204,19 @@ export function drawCharacterSelect(ctx: CanvasRenderingContext2D) {
   }
   ctx.fillStyle = '#888';
   ctx.fillText(hint, SCREEN_WIDTH / 2, 24);
+  ctx.font = '8px monospace';
+
+  // ACCOUNTS button (top-right) — opens the TITLE/AUTH start screen overlay.
+  ctx.fillStyle = '#2b48d6';
+  ctx.fillRect(ACCT_BTN.x, ACCT_BTN.y, ACCT_BTN.w, ACCT_BTN.h);
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(ACCT_BTN.x + 0.5, ACCT_BTN.y + 0.5, ACCT_BTN.w - 1, ACCT_BTN.h - 1);
+  ctx.fillStyle = '#fff';
+  ctx.font = '7px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(ACCT_BTN.label, ACCT_BTN.x + ACCT_BTN.w / 2, ACCT_BTN.y + 8);
+  ctx.textAlign = 'left';
   ctx.font = '8px monospace';
 
   // Grid of south-facing sprites

@@ -26,6 +26,7 @@ import {
 } from './constants';
 import { S } from './state';
 import { commitItemEdit, persistItem } from './itemEditor';
+import { requestAutosave } from './autosave';
 
 /** True once a paintable character sheet is loaded (false for view-only groups). */
 export function sheetReady(): boolean {
@@ -109,12 +110,27 @@ function normRect(x0: number, y0: number, x1: number, y1: number): PixelRect {
   };
 }
 
+function pointInRect(x: number, y: number, r: PixelRect): boolean {
+  return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+}
+
+/** A real (drag-made) marquee, not a stray 1×1 click selection. */
+function isDraggableSelection(r: PixelRect | null): r is PixelRect {
+  return !!r && (r.w > 1 || r.h > 1);
+}
+
 /** Edit-canvas mousedown: dispatch by tool (marquee / move / fill / paint). */
 export function onEditDown(e: MouseEvent): void {
   if (S.editMode === 'char' && !sheetReady()) return; // view-only group: no editing
   const p = pixelAt(e);
   if (!p) return;
   if (S.tool === 'select') {
+    // Click INSIDE an existing selection → drag it (move), like any image editor.
+    // Click outside → start a fresh marquee.
+    if (isDraggableSelection(S.selection) && pointInRect(p.px, p.py, S.selection)) {
+      beginMove(p.px, p.py);
+      return;
+    }
     S.marqueeAnchor = { x: p.px, y: p.py };
     S.selection = { x: p.px, y: p.py, w: 1, h: 1 };
     S.dirty = true;
@@ -140,6 +156,16 @@ export function onEditDown(e: MouseEvent): void {
 }
 
 export function onEditMove(e: MouseEvent): void {
+  // Hover hint: a move cursor over a draggable selection signals you can grab it.
+  if (!S.marqueeAnchor && !S.xformState && !S.moveState && !S.painting && S.editCanvas) {
+    const hp = pixelAt(e, true);
+    const overSel =
+      S.tool === 'select' &&
+      isDraggableSelection(S.selection) &&
+      !!hp &&
+      pointInRect(hp.px, hp.py, S.selection);
+    S.editCanvas.style.cursor = overSel ? 'move' : '';
+  }
   if (S.marqueeAnchor) {
     const p = pixelAt(e, true);
     if (p) {
@@ -273,6 +299,7 @@ export function pushUndo(): void {
   if (!S.sheetCtx) return; // view-only group: no sheet to snapshot
   S.undoStack.push(S.sheetCtx.getImageData(0, 0, SHEET_W, SHEET_H));
   if (S.undoStack.length > UNDO_LIMIT) S.undoStack.shift();
+  requestAutosave(); // realtime save of character sheet edits (item art self-saves)
 }
 
 export function undo(): void {
@@ -290,6 +317,7 @@ export function undo(): void {
   S.sheetCtx!.putImageData(snap, 0, 0);
   refreshDiagSupport(S.groupId); // an undo may add/remove diagonal frames
   S.dirty = true;
+  requestAutosave(); // persist the undone state too
 }
 
 /** Persist whichever surface is currently being edited. Item art autosaves;

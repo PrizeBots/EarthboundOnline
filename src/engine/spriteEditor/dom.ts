@@ -57,7 +57,7 @@ import {
   setItemEditFrame,
 } from './itemEditor';
 import { onTestDown, onTestMove } from './testWalker';
-import { setEditMode, saveCurrentGroup } from './index';
+import { setEditMode } from './index';
 
 export function buildDom(): void {
   S.overlay = document.createElement('div');
@@ -72,7 +72,7 @@ export function buildDom(): void {
 
   const title = document.createElement('div');
   title.textContent =
-    'SPRITE EDITOR — attack/hurt frames + held items   (pick a character · Character/Item modes · WASD: test walk · F attack · H hurt · tools 1-8: pencil/eraser/eyedrop/select/move/fill/rotate/skew · marquee a region then ⇄⇅ mirror, ⟲⟳ 90°, or DRAG to free-rotate (Shift=15° snap) / skew · Alt+click: eyedrop · G: cycle item · Ctrl+C/V: copy/paste selection or frame · Ctrl+Z: undo · Esc: deselect/back · Ctrl+S: save · Export/Import PNG)';
+    'SPRITE EDITOR — attack/hurt frames + held items   (pick a character · Character/Item modes · WASD: test walk · F attack · H hurt · tools 1-8: pencil/eraser/eyedrop/select/move/fill/rotate/skew · marquee a region then ⇄⇅ mirror, ⟲⟳ 90°, or DRAG to free-rotate (Shift=15° snap) / skew · Alt+click: eyedrop · G: cycle item · Ctrl+C/V: copy/paste selection or frame · Ctrl+Z: undo · Esc: deselect/back · edits save automatically · Export/Import PNG)';
   title.style.cssText = 'padding:10px;color:#fff;letter-spacing:1px;';
   S.overlay.appendChild(title);
 
@@ -269,14 +269,13 @@ function buildToolPanel(): HTMLDivElement {
   reset.onclick = resetSelectedFrame;
   div.appendChild(reset);
 
-  const save = document.createElement('button');
-  save.textContent = '💾 Save (Ctrl+S)';
-  save.title = "Write this character's attack/hurt edits to overrides/sprites.json";
-  save.style.cssText =
-    'margin-top:4px;font:12px monospace;padding:6px 8px;background:#1f3a26;' +
-    'color:#9f9;border:1px solid #4a6;border-radius:3px;cursor:pointer;';
-  save.onclick = saveCurrentGroup;
-  div.appendChild(save);
+  // Realtime auto-save status — edits persist automatically; no Save button.
+  const status = document.createElement('div');
+  status.dataset.role = 'save-status';
+  status.textContent = '✓ saved';
+  status.title = 'Edits save automatically as you draw (Ctrl+S forces one now)';
+  status.style.cssText = 'margin-top:6px;font:11px monospace;color:#7c7;min-height:14px;';
+  div.appendChild(status);
 
   // Artist handoff: export the current sheet/item as a 1x PNG, import it back
   // (colors snap to palette). Acts on whichever surface (char vs item) is active.
@@ -298,7 +297,7 @@ function buildToolPanel(): HTMLDivElement {
   ioRow.appendChild(
     mkIoBtn(
       '⬆ Import PNG',
-      'Load an edited PNG back in (colors snap to palette). Ctrl+S to persist.',
+      'Load an edited PNG back in (colors snap to palette). Saves automatically.',
       importPNG
     )
   );

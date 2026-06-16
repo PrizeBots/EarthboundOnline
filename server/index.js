@@ -30,7 +30,8 @@ app.use(createAuthApi(store));
 // see CLAUDE.md; this only ships code.)
 app.use(express.static(path.join(__dirname, '..', 'dist')));
 
-const host = new GameHost(path.join(__dirname, '..', 'public', 'assets'));
+// Same store the API uses, so the game host loads/saves the same character rows.
+const host = new GameHost(path.join(__dirname, '..', 'public', 'assets'), store);
 host.start();
 
 wss.on('connection', (ws) => host.handleConnection(ws));

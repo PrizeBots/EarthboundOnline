@@ -3,7 +3,9 @@ import { Player } from './Player';
 import { NPC } from './NPC';
 import { getTileAt, getSectorForTile } from './MapManager';
 import { drawTile, drawForegroundTile, hasForegroundTile } from './TilesetManager';
+import { isComposite, drawComposite, drawCompositeFg } from './CompositeTiles';
 import { drawSprite, getSpriteGroupMeta, SpritePart } from './SpriteManager';
+import { getNameplate } from './NamePlate';
 import { drawHeldItem, isItemBehind } from './Items';
 import { getSpritePriority, getPromotedMinitiles } from './Collision';
 import { getStatus } from './StatusModal';
@@ -64,7 +66,7 @@ const DBG_DIR_VEC: [number, number][] = [
 
 const BAR_W = 21; // inner fill length (~30% longer than the original 16)
 const BAR_H = 1.5; // inner fill height (each bar thin — half the previous 3)
-const BAR_GAP = 4; // px between sprite top and bar
+const BAR_GAP = 1; // px between sprite top and bar (tucked close to the head)
 const DEFAULT_SPRITE_H = 24;
 
 function healthColor(ratio: number): string {
@@ -142,6 +144,32 @@ function drawHealthBar(
   if (hasPP) {
     drawBarCapsule(ctx, x, y + h, ppRatio, ppColor(ppRatio), INNER_R, R);
   }
+}
+
+// "Name Lv5" in the EB font, centered just above the health bar. `hasPP` tells us
+// whether the bar is one capsule (others) or two (your own HP+PSI) so the plate
+// clears it.
+function drawNameplate(
+  ctx: CanvasRenderingContext2D,
+  centerX: number,
+  feetY: number,
+  spriteGroupId: number,
+  name: string,
+  level: number,
+  hasPP: boolean
+): void {
+  const plate = getNameplate(name, level);
+  if (!plate) return;
+  const spriteH = getSpriteGroupMeta(spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
+  const capsule = BAR_H + 1; // one bar capsule (matches drawHealthBar's h)
+  const barTop = feetY - spriteH - BAR_GAP - (hasPP ? 2 : 1) * capsule;
+  // Draw at half logical size: the 2x supersampled backbuffer still renders the
+  // 8px font as crisp whole pixels, but it's half the on-screen height.
+  const w = plate.width / 2;
+  const h = plate.height / 2;
+  const x = Math.round(centerX - w / 2);
+  const y = Math.round(barTop - h);
+  ctx.drawImage(plate, x, y, w, h);
 }
 
 export class Renderer {
@@ -268,7 +296,11 @@ export class Renderer {
         const arrangementId = getTileAt(col, row);
         const screenX = col * TILE_SIZE - camX;
         const screenY = row * TILE_SIZE - camY;
-        drawTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, screenX, screenY);
+        if (isComposite(arrangementId)) {
+          drawComposite(this.ctx, arrangementId, screenX, screenY);
+        } else {
+          drawTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, screenX, screenY);
+        }
       }
     }
 
@@ -352,7 +384,7 @@ export class Renderer {
         ),
       () => {
         // Your own bar: HP + a PSI bar beneath it (PP from the authoritative
-        // stats mirror). Only you ever see this.
+        // stats mirror). Only you see the PSI bar; the nameplate sits above it.
         const s = getStatus();
         const ppRatio = s.ppMax > 0 ? Math.max(0, Math.min(1, s.pp / s.ppMax)) : 0;
         drawHealthBar(
@@ -363,6 +395,7 @@ export class Renderer {
           player.healthRatio,
           ppRatio
         );
+        drawNameplate(this.ctx, playerSx, playerSy, player.spriteGroupId, s.name, s.level, true);
       },
       true
     );
@@ -385,8 +418,22 @@ export class Renderer {
             rpScreenX,
             rpScreenY,
             part
-          )
-        // No bar: you never see other players' health/PSI bars.
+          ),
+        () => {
+          // Other players: an HP bar (no PSI — that's private) with their
+          // name + level above it, so everyone can read who's who and how strong.
+          const ratio = rp.maxHp ? Math.max(0, Math.min(1, (rp.hp ?? rp.maxHp) / rp.maxHp)) : 1;
+          drawHealthBar(this.ctx, rpScreenX, rpScreenY, rp.spriteGroupId, ratio);
+          drawNameplate(
+            this.ctx,
+            rpScreenX,
+            rpScreenY,
+            rp.spriteGroupId,
+            rp.name,
+            rp.level ?? 1,
+            false
+          );
+        }
       );
     }
 
@@ -428,8 +475,17 @@ export class Renderer {
         for (let col = startCol; col <= endCol; col++) {
           const sector = getSectorForTile(col, row);
           if (!sector) continue;
-          if (!hasForegroundTile(sector.tilesetId, sector.paletteId)) continue;
           const arrangementId = getTileAt(col, row);
+          if (isComposite(arrangementId)) {
+            drawCompositeFg(
+              this.ctx,
+              arrangementId,
+              col * TILE_SIZE - camX,
+              row * TILE_SIZE - camY
+            );
+            continue;
+          }
+          if (!hasForegroundTile(sector.tilesetId, sector.paletteId)) continue;
           drawForegroundTile(
             this.ctx,
             sector.tilesetId,
@@ -470,6 +526,11 @@ export class Renderer {
           const arrangementId = getTileAt(col, row);
           const sx = col * TILE_SIZE - camX;
           const sy = row * TILE_SIZE - camY;
+          if (isComposite(arrangementId)) {
+            // Composites just re-cover their FG over the sprite; no behind/reveal.
+            drawCompositeFg(this.ctx, arrangementId, sx, sy);
+            continue;
+          }
           if (hasForegroundTile(sector.tilesetId, sector.paletteId)) {
             drawForegroundTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, sx, sy);
           }

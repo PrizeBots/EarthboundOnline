@@ -15,6 +15,7 @@ import {
   CarTraffic,
   liveNpcForKey,
 } from '../../engine/NPCManager';
+import { NPCKind } from '../../engine/NPC';
 import { DoorOverrides, EditorDoor, getEditorDoorBase, loadDoors } from '../../engine/DoorManager';
 import { DOOR_SFX, DEFAULT_DOOR_SFX, normalizeDoorSfx } from '../../engine/DoorSfx';
 import { playSfx } from '../../engine/MusicManager';
@@ -67,7 +68,7 @@ interface NpcEntry {
   y: number;
   sprite: number;
   dir: number;
-  kind: 'person' | 'prop';
+  kind: NPCKind;
   t: number | null;
 }
 
@@ -1225,9 +1226,12 @@ class PlacementTool implements EditorTool {
       [
         ['person', 'person'],
         ['prop', 'prop'],
+        ['enemy', 'enemy'],
       ],
-      (v) =>
-        sel((e) => this.mutate('kind', e, { kind: v === 'person' ? 'person' : 'prop' }, 'npcs'))()
+      (v) => {
+        const kind: NPCKind = v === 'person' ? 'person' : v === 'enemy' ? 'enemy' : 'prop';
+        sel((e) => this.mutate('kind', e, { kind }, 'npcs'))();
+      }
     );
     this.mkInput(form, 't', 'text id', (v) =>
       sel((e) => {

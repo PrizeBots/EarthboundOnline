@@ -11,6 +11,7 @@ Remember our goal is beautiful architecture and tooling that lets us craft the g
 Lets go!
 
 ## Architecture
+
 - **The browser multiplayer game IS the project** — a custom SNES ROM (PVSnesLib) + ESP32
   co-processor port is a long-term ambition, currently backlogged and out of scope
 - Still implement features in ways that would port cleanly to SNES (SPC700 for audio,
@@ -20,8 +21,10 @@ Lets go!
   same change whenever you alter how they work.
 
 ## ROM & Asset Distribution (PokeMMO model)
+
 **We must never distribute ROM-derived data.** Target architecture (build-out is a
 pre-launch TODO; see TODO.md):
+
 - Players supply their own `EarthBound.sfc` via a file picker before character select.
   The ROM is checksum-verified and NEVER uploaded — it stays in the player's browser.
 - All assets (sprites, atlases, map, collision, fonts, music data) are
@@ -37,6 +40,7 @@ pre-launch TODO; see TODO.md):
   and pure-index metadata we author are fine.
 
 ## Dev Server
+
 - **The dev server is essentially always already running on port 4444** — the
   maintainer keeps `npm run dev` up. Assume `http://localhost:4444` is live;
   just open/refresh it rather than starting a new server. Don't spawn a second
@@ -50,6 +54,7 @@ pre-launch TODO; see TODO.md):
   so 4444 stays the only long-lived server.
 
 ## Project Structure
+
 - `tools/` — Python extraction scripts (uses CoilSnake libraries to parse EarthBound.sfc)
 - `public/assets/` — Extracted game data (atlases, sprites, map JSON, collision JSON)
 - `src/engine/` — TypeScript game engine (Canvas-based renderer, no emulation)
@@ -57,22 +62,28 @@ pre-launch TODO; see TODO.md):
 - ROM file: `EarthBound.sfc` (do not commit)
 
 ## Data Pipeline
+
 1. `python tools/extract_rom.py` — extracts tilesets, map, sprites, collision from ROM
 2. `python tools/apply_map_changes.py` — bakes the open-world event state into tiles.json
    (the ROM's base map is the game-intro state: police barricades block Onett's roads)
 3. `python tools/build_atlases.py` — pre-renders BG + FG tile atlases with correct palettes
-4. `npm run dev` — runs the game in browser
+4. `python tools/extract_enemies.py` — enemy catalog (`enemies.json`): per-sprite stats +
+   item drops from the ROM, keyed by sprite id. Combat's default stat layer (see ARCHITECTURE.md).
+5. `npm run dev` — runs the game in browser
 
 ## Rendering
+
 - Uses EarthBound's native dual-layer system: BG atlas (minitiles 0-383) behind sprites, FG atlas (minitiles 512-895) in front
 - Foreground atlas files: `{mapTS}_{pal}_fg.png` — transparent except where foreground pixels exist
 - Collision byte bit 7 (0x80) = solid wall; bits 0-1 = sprite priority flags
 
 ## Music
+
 - EarthBound music: SPC700 engine + BRR samples + EBM song data in `eb_project/Music/`
 - Each sector has a `musicId` in sectors.json
 - Use SPC700 emulation in browser (not pre-rendered audio) — same engine runs natively on real SNES hardware
 
 ## Python
+
 - Use full path: `C:/Users/zleer/AppData/Local/Programs/Python/Python310/python.exe`
 - The `python` alias may hang; always use the full path

@@ -19,6 +19,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const { DuplicateUsernameError, SlotsFullError, MAX_CHARACTERS } = require('./store/errors');
+const { validateAlloc } = require('./charStats');
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days; refreshed on each login
 const BCRYPT_ROUNDS = 10;
@@ -31,6 +32,17 @@ const newToken = () => crypto.randomBytes(32).toString('hex');
 // Views that strip server-only fields before they hit the wire. Passwords/hashes
 // must NEVER leave the process; account_id is implied by the session.
 const publicAccount = (a) => ({ id: a.id, username: a.username, createdAt: a.createdAt });
+
+// World documents the local editor persists to the DB (the Places outline; more
+// editor overrides can follow). Allow-list — only known doc names are valid.
+const WORLD_DOC_ALLOW = new Set(['places', 'stamps']);
+
+// Loopback check — the editor's world-doc routes are dev/localhost only, so even
+// when mounted they refuse non-loopback callers.
+const isLoopback = (req) => {
+  const a = (req.socket && req.socket.remoteAddress) || '';
+  return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+};
 const publicCharacter = (c) => ({
   id: c.id,
   slot: c.slot,
@@ -46,11 +58,18 @@ const publicCharacter = (c) => ({
  * @param {object} store  a Store impl (createStore()).
  * @param {object} [opts]
  * @param {() => number} [opts.now]  epoch-ms clock; injectable for tests.
+ * @param {boolean} [opts.editorApi]  mount the dev editor's world-document routes
+ *   (`/api/world/:name`). The Vite dev server passes this; the deploy server does
+ *   NOT — the editor and its persistence are localhost-dev only, never in prod.
  * @returns {import('express').Express} an Express app usable as middleware.
  */
-function createAuthApi(store, { now = () => Date.now() } = {}) {
+function createAuthApi(store, { now = () => Date.now(), editorApi = false } = {}) {
   const api = express();
-  api.use(express.json({ limit: '256kb' }));
+  // Scope the JSON body parser to OUR /api routes. Mounted globally on the Vite
+  // dev server, an unscoped parser would drain the body of every request —
+  // including the editor's raw-stream POSTs (/__editor/save, /__editor/hotreload),
+  // whose handlers then hang waiting on a stream that's already consumed.
+  api.use('/api', express.json({ limit: '256kb' }));
 
   const bearer = (req) => {
     const m = /^Bearer\s+(.+)$/i.exec(req.get('authorization') || '');
@@ -65,6 +84,13 @@ function createAuthApi(store, { now = () => Date.now() } = {}) {
     req.accountId = session.accountId;
     req.token = token;
     next();
+  };
+
+  // Gate: loopback only. The editor routes are dev-localhost; this refuses any
+  // non-loopback caller even if the routes are somehow reachable.
+  const requireLoopback = (req, res, next) => {
+    if (isLoopback(req)) return next();
+    res.status(403).json({ error: 'local editor only' });
   };
 
   // ------------------------------- accounts -------------------------------
@@ -136,20 +162,31 @@ function createAuthApi(store, { now = () => Date.now() } = {}) {
   });
 
   api.post('/api/characters', requireAuth, (req, res) => {
-    const { name, spriteGroupId, appearance, save } = req.body || {};
+    const { name, spriteGroupId, appearance, alloc } = req.body || {};
     if (typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ error: 'name required' });
     }
     if (!Number.isInteger(spriteGroupId)) {
       return res.status(400).json({ error: 'spriteGroupId must be an integer' });
     }
+    // The 5-stat creation allocation is the build's source of truth. Validate it
+    // here; combat stats are derived from it server-side on join (never trusted).
+    if (!validateAlloc(alloc)) {
+      return res.status(400).json({ error: 'invalid stat allocation' });
+    }
+    // The recolored sprite sheet (PNG data URL). Cap it so a row can't be huge.
+    if (appearance != null && (typeof appearance !== 'string' || appearance.length > 65536)) {
+      return res.status(400).json({ error: 'appearance too large' });
+    }
     try {
+      // Canonical starting save: only the build + level/exp. The game host fills
+      // in starting inventory/money/spawn on first join (it owns that state).
       const character = store.createCharacter({
         accountId: req.accountId,
         name: name.trim().slice(0, NAME_MAX),
         spriteGroupId,
         appearance: appearance ?? null,
-        save: save && typeof save === 'object' ? save : {},
+        save: { alloc, level: 1, exp: 0 },
         now: now(),
       });
       res.status(201).json({ character: publicCharacter(character) });
@@ -171,6 +208,30 @@ function createAuthApi(store, { now = () => Date.now() } = {}) {
     store.deleteCharacter(id);
     res.json({ ok: true });
   });
+
+  // ---------------------------- world documents ---------------------------
+  // The local editor's authored content (the Places outline; more editor
+  // overrides later). Mounted ONLY when editorApi is set — i.e. on the Vite dev
+  // server, never on the deploy server. Loopback-gated as a second guard, so the
+  // editing surface simply does not exist in production.
+  if (editorApi) {
+    api.get('/api/world/:name', requireLoopback, (req, res) => {
+      const name = req.params.name;
+      if (!WORLD_DOC_ALLOW.has(name))
+        return res.status(404).json({ error: `unknown world doc '${name}'` });
+      res.json({ name, data: store.getWorldDoc(name) });
+    });
+
+    api.put('/api/world/:name', requireLoopback, (req, res) => {
+      const name = req.params.name;
+      if (!WORLD_DOC_ALLOW.has(name))
+        return res.status(404).json({ error: `unknown world doc '${name}'` });
+      const data = req.body && req.body.data;
+      if (data === undefined) return res.status(400).json({ error: 'missing data' });
+      const r = store.putWorldDoc(name, data, now());
+      res.json({ ok: true, updatedAt: r.updatedAt });
+    });
+  }
 
   // Final error handler: any thrown/rejected handler lands here as JSON 500
   // instead of Express's default HTML page (the client only parses JSON).

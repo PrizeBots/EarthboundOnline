@@ -19,12 +19,17 @@ const fs = require('fs');
 const path = require('path');
 const { createNpcSim } = require('./npcSim');
 const { loadShops } = require('./shops');
+const { sanitizeAlloc, deriveCombatStats, STAT_KEYS } = require('./charStats');
 
 const POSES = ['walk', 'climb', 'attack', 'hurt'];
 const PLAYER_MAX_HP = 60;
 const MAX_SLOTS = 14; // EarthBound's Goods menu holds 14 items per character
 const STARTING_MONEY = 1000; // every player joins with $1000
 const EQUIP_SLOTS = ['weapon', 'body', 'arms', 'other'];
+// Skill points granted per level-up (banked until spent on the pentagon) and the
+// per-stat cap a spend can raise an allocation to. Both server-authoritative.
+const POINTS_PER_LEVEL = 1;
+const STAT_SPEND_MAX = 99;
 // Max lifetime of the door-transition damage shield (see player.warping). A
 // door fade + interior asset load is well under this; the cap only guards
 // against a dropped 'warp' end signal leaving a player permanently invulnerable.
@@ -85,6 +90,34 @@ function newProgression() {
   return p;
 }
 
+// Build a full progression block from a creation allocation. The 5 creation
+// stats set the LEVEL-1 combat baseline (deriveCombatStats); per-level GROWTH is
+// then replayed up to `level`, and `exp` is restored. Combat stats are always
+// derived from `alloc` — never trusted from the client save — so a tampered save
+// can't grant stats it didn't earn.
+function progressionFromAlloc(alloc, level = 1, exp = 0) {
+  const d = deriveCombatStats(alloc);
+  const p = {
+    level: 1,
+    hp: d.maxHp,
+    maxHp: d.maxHp,
+    pp: d.ppMax,
+    ppMax: d.ppMax,
+    exp: 0,
+    offense: d.offense,
+    defense: d.defense,
+    speed: d.speed,
+    guts: d.guts,
+    vitality: d.vitality,
+    iq: d.iq,
+    luck: d.luck,
+  };
+  while (p.level < level) levelUp(p); // replay growth (also tops up hp/pp)
+  p.exp = exp;
+  p.expToNext = expToReach(p.level + 1) - p.exp;
+  return p;
+}
+
 function levelUp(p) {
   p.level++;
   for (const k of Object.keys(GROWTH)) p[k] += GROWTH[k];
@@ -113,10 +146,19 @@ function statsPayload(p) {
 }
 
 class GameHost {
-  /** @param {string} assetsDir absolute path to public/assets */
-  constructor(assetsDir) {
+  /**
+   * @param {string} assetsDir absolute path to public/assets
+   * @param {object} [store] persistence Store (server/store/) for signed-in
+   *   characters. Optional: without it (tests / anonymous dev), join falls back
+   *   to a fresh ephemeral player and nothing is saved.
+   */
+  constructor(assetsDir, store = null) {
     this.players = new Map(); // id -> player record incl. _ws
     this.nextId = 1;
+    this.store = store;
+    // Persistence handles for signed-in characters: playerId -> {characterId,alloc}.
+    // Held OUT of the player record so the DB id never rides along in a broadcast.
+    this.saves = new Map();
 
     // Server-authoritative goods registry + shop catalog (shared loader in
     // server/shops.js). Each player's inventory is an array of numeric-string
@@ -163,7 +205,7 @@ class GameHost {
         })),
       (data) => this.broadcastAll(data),
       (playerId, dmg) => this.damagePlayer(playerId, dmg),
-      (playerId, xp) => this.awardXp(playerId, xp)
+      (playerId, xp, _enemy, loot) => this.awardKill(playerId, xp, loot)
     );
   }
 
@@ -207,6 +249,139 @@ class GameHost {
     entry.itemId = entry.equipped.weapon; // held sprite = weapon
   }
 
+  // A PNG data-URL sheet, capped so a hostile client can't make every join
+  // broadcast megabytes. Returns the string or null.
+  _validAppearance(a) {
+    return typeof a === 'string' && a.length <= 65536 ? a : null;
+  }
+
+  // Anonymous / dev join: a fresh ephemeral player from the join message. This
+  // is the existing char-select path (and what the tests drive) — nothing is
+  // persisted, every join starts at level 1.
+  _anonInit(playerId, msg) {
+    return {
+      name: msg.name || `Player${playerId}`,
+      spriteGroupId: msg.spriteGroupId || 1,
+      appearance: this._validAppearance(msg.appearance),
+      progression: newProgression(),
+      inventory: [...this.STARTING_INVENTORY],
+      money: STARTING_MONEY,
+      equipped: { weapon: null, body: null, arms: null, other: null },
+      x: this.SPAWN.x,
+      y: this.SPAWN.y,
+      direction: this.SPAWN.dir || 0,
+      characterId: null,
+      alloc: null,
+    };
+  }
+
+  // Signed-in join: validate the session, load the character it owns, and rebuild
+  // its world state from the save. Returns null if the token/character is invalid
+  // or not owned by the session's account. Combat stats are RE-DERIVED from the
+  // saved alloc (never trusted as raw numbers); inventory/equip are re-validated
+  // against the live catalog.
+  _loadCharacterInit(token, characterId) {
+    const session = this.store.getSession(token, Date.now());
+    if (!session) return null;
+    const character = this.store.getCharacter(Number(characterId));
+    if (!character || character.accountId !== session.accountId) return null;
+
+    const save = character.save && typeof character.save === 'object' ? character.save : {};
+    const alloc = sanitizeAlloc(save.alloc);
+    const level = Number.isInteger(save.level) && save.level >= 1 ? save.level : 1;
+    const exp = Number.isInteger(save.exp) && save.exp >= 0 ? save.exp : 0;
+
+    const inventory = Array.isArray(save.inventory)
+      ? save.inventory.filter((id) => this.GOODS[id])
+      : [...this.STARTING_INVENTORY];
+    const money = Number.isInteger(save.money) ? save.money : STARTING_MONEY;
+
+    const equipped = { weapon: null, body: null, arms: null, other: null };
+    if (save.equipped && typeof save.equipped === 'object') {
+      for (const s of ['weapon', 'body', 'arms', 'other']) {
+        const id = save.equipped[s];
+        const eq = id && this.GOODS[id] && this.GOODS[id].equip;
+        if (eq && eq.slot === s && inventory.includes(id)) equipped[s] = id;
+      }
+    }
+
+    return {
+      name: character.name,
+      spriteGroupId: character.spriteGroupId,
+      appearance: this._validAppearance(character.appearance),
+      progression: progressionFromAlloc(alloc, level, exp),
+      inventory,
+      money,
+      equipped,
+      x: Number.isFinite(save.x) ? save.x : this.SPAWN.x,
+      y: Number.isFinite(save.y) ? save.y : this.SPAWN.y,
+      direction: Number.isInteger(save.direction) ? save.direction : this.SPAWN.dir || 0,
+      characterId: character.id,
+      alloc,
+      unspentPoints:
+        Number.isInteger(save.unspentPoints) && save.unspentPoints >= 0 ? save.unspentPoints : 0,
+    };
+  }
+
+  // Write a signed-in player's mutable state back to its character row. No-op for
+  // anonymous players (no handle in this.saves) or when there's no store.
+  _saveCharacter(playerId) {
+    const handle = this.saves.get(playerId);
+    const p = this.players.get(playerId);
+    if (!handle || !p || !this.store) return;
+    try {
+      this.store.updateCharacterSave(
+        handle.characterId,
+        {
+          alloc: handle.alloc,
+          level: p.level,
+          exp: p.exp,
+          unspentPoints: handle.unspentPoints || 0,
+          inventory: [...p.inventory],
+          money: p.money,
+          equipped: { ...p.equipped },
+          x: p.x,
+          y: p.y,
+          direction: p.direction,
+        },
+        Date.now()
+      );
+    } catch (e) {
+      console.error('[save] failed for character', handle.characterId, e);
+    }
+  }
+
+  // Send a message to a single player's socket (private state like skill points).
+  sendTo(playerId, data) {
+    const entry = this.players.get(playerId);
+    if (entry && entry._ws.readyState === 1) entry._ws.send(JSON.stringify(data));
+  }
+
+  // Push a signed-in player their authoritative banked points + current alloc
+  // (drives the level-up icon + the spend pentagon). Private to the owner.
+  _sendPoints(playerId) {
+    const handle = this.saves.get(playerId);
+    if (!handle) return;
+    this.sendTo(playerId, {
+      type: 'points_update',
+      points: handle.unspentPoints || 0,
+      alloc: handle.alloc,
+    });
+  }
+
+  // Recompute a player's combat stats from a (server-side) allocation after a
+  // spend, keeping their current level/exp and clamping live HP/PP to the new
+  // caps (so spending a point doesn't full-heal). Authoritative.
+  reapplyAlloc(p, alloc) {
+    const block = progressionFromAlloc(alloc, p.level, p.exp);
+    const hp = Math.min(p.hp, block.maxHp);
+    const pp = Math.min(p.pp, block.ppMax);
+    Object.assign(p, block);
+    p.hp = hp;
+    p.pp = pp;
+    this.recomputeEquipStats(p);
+  }
+
   // Apply an enemy's landed hit to a player (server-authoritative HP). Broadcast
   // the new HP so every client updates that player's bar; the victim's own
   // client plays the hurt pose. At 0 HP the player respawns at the spawn point.
@@ -242,6 +417,7 @@ class GameHost {
     if (!p || xp <= 0) return;
     p.exp += xp;
     let leveled = false;
+    const fromLevel = p.level;
     while (p.exp >= expToReach(p.level + 1)) {
       levelUp(p);
       leveled = true;
@@ -254,8 +430,46 @@ class GameHost {
       leveled,
       gained: xp,
     });
-    if (leveled)
+    if (leveled) {
       this.broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: 0 });
+      // Grant skill points for each level gained (signed-in only) and push the
+      // new banked total to the owner — they alone decide where to spend it.
+      const handle = this.saves.get(playerId);
+      if (handle) {
+        handle.unspentPoints =
+          (handle.unspentPoints || 0) + POINTS_PER_LEVEL * (p.level - fromLevel);
+        this._sendPoints(playerId);
+      }
+    }
+    this._saveCharacter(playerId); // persist new exp/level/points (signed-in only)
+  }
+
+  // A player killed an enemy: award EXP, plus the ROM loot npcSim already rolled
+  // (money always; the item only if it's a known good and the bag has room — drops
+  // of items outside the goods registry are skipped until they're catalogued).
+  awardKill(playerId, xp, loot) {
+    this.awardXp(playerId, xp); // also persists; broadcasts player_stats
+    const p = this.players.get(playerId);
+    if (!p || !loot) return;
+    let changed = false;
+    if (loot.money > 0) {
+      p.money += loot.money;
+      p._ws.send(JSON.stringify({ type: 'money', money: p.money }));
+      changed = true;
+    }
+    if (loot.item && loot.item.item != null) {
+      const itemId = String(loot.item.item);
+      if (this.GOODS[itemId] && p.inventory.length < MAX_SLOTS) {
+        p.inventory.push(itemId);
+        p._ws.send(JSON.stringify({ type: 'inventory', items: this.inventoryView(p.inventory) }));
+        // Notify so the client can surface "Found <item>!" (unknown types ignored).
+        p._ws.send(
+          JSON.stringify({ type: 'loot', item: itemId, name: this.GOODS[itemId].name || '' })
+        );
+        changed = true;
+      }
+    }
+    if (changed) this._saveCharacter(playerId);
   }
 
   /**
@@ -279,6 +493,8 @@ class GameHost {
 
     ws.on('close', () => {
       console.log(`Player ${playerId} disconnected`);
+      this._saveCharacter(playerId); // persist final state (signed-in only)
+      this.saves.delete(playerId);
       this.players.delete(playerId);
       this.broadcastAll({ type: 'player_leave', id: playerId });
     });
@@ -288,50 +504,64 @@ class GameHost {
     const { GOODS } = this;
     switch (msg.type) {
       case 'join': {
+        // Two paths: a signed-in character (sessionToken + characterId, loaded
+        // from the store and saved back), or an anonymous ephemeral player (the
+        // dev char-select flow + tests). An invalid auth attempt errors cleanly
+        // rather than silently falling back to a fresh player.
+        let init;
+        if (this.store && msg.sessionToken && msg.characterId != null) {
+          init = this._loadCharacterInit(msg.sessionToken, msg.characterId);
+          if (!init) {
+            ws.send(JSON.stringify({ type: 'join_error', error: 'invalid session or character' }));
+            break;
+          }
+        } else {
+          init = this._anonInit(playerId, msg);
+        }
+
         const playerData = {
           id: playerId,
-          name: msg.name || `Player${playerId}`,
-          spriteGroupId: msg.spriteGroupId || 1,
-          // Pixel-edited sheet as a PNG data URL (~1-3KB); cap so a hostile
-          // client can't make every join broadcast megabytes.
-          appearance:
-            typeof msg.appearance === 'string' && msg.appearance.length <= 65536
-              ? msg.appearance
-              : null,
-          x: this.SPAWN.x,
-          y: this.SPAWN.y,
-          direction: this.SPAWN.dir || 0,
+          name: init.name,
+          spriteGroupId: init.spriteGroupId,
+          appearance: init.appearance,
+          x: init.x,
+          y: init.y,
+          direction: init.direction,
           frame: 0,
           pose: 'walk',
-          itemId: null, // held item (equipped weapon's sprite), set by 'equip'
-          // EarthBound equip slots. Server-authoritative; offense/defense from
-          // these apply to combat (see recomputeEquipStats).
-          equipped: { weapon: null, body: null, arms: null, other: null },
-          weaponOffense: 0, // offense from the equipped weapon
-          armorDefense: 0, // total defense from equipped body/arms/other
-          inventory: [...this.STARTING_INVENTORY], // Goods slots, mutated by 'use_item'
-          money: STARTING_MONEY, // starting cash, shown in the menu
-          // PK (player-kill) flag — see npcSim canHurt. All players start
-          // non-PK; a per-player toggle is backlogged (TODO). A PK player can
-          // hurt anyone; anyone can hurt a PK player.
+          itemId: null, // set by recomputeEquipStats (held = equipped weapon)
+          // EarthBound equip slots (loaded from the save or empty). Server-
+          // authoritative; offense/defense from these apply to combat.
+          equipped: init.equipped,
+          weaponOffense: 0,
+          armorDefense: 0,
+          inventory: init.inventory, // Goods slots, mutated by use/buy/sell
+          money: init.money,
+          // PK (player-kill) flag — see npcSim canHurt. All players start non-PK.
           pk: false,
-          // Door-transition shield: true while the client is mid door-fade. The
-          // client freezes its reported position for the whole fade, so without
-          // this an enemy that chased you to the doorway gets free swings on the
-          // motionless ghost you left behind. Set by 'warp', cleared by 'warp'
-          // end or the next 'move'; warpUntil backstops a lost end signal.
+          // Door-transition shield (see 'warp'): whiffs enemy swings on the
+          // frozen ghost left at a doorway mid-fade.
           warping: false,
           warpUntil: 0,
-          // Dev editor: true while this client is in the editor. The avatar stays
-          // in the sim as an anchor (the world keeps living around it) but is
-          // flagged so npcSim ignores it for targeting/collision/damage — enemies
-          // can't aggro or kill it, so a death can't respawn-yank the admin's free
-          // camera. Set by the 'editor' msg; cleared on exit.
+          // Dev editor anchor flag (see 'editor').
           editor: false,
-          // Full server-authoritative progression (level/hp/exp/stats).
-          ...newProgression(),
+          // Server-authoritative progression: fresh (anon) or rebuilt from the
+          // saved alloc + level (signed-in).
+          ...init.progression,
         };
         this.players.set(playerId, { ...playerData, _ws: ws });
+        const entry = this.players.get(playerId);
+        this.recomputeEquipStats(entry); // apply loaded gear + set held sprite
+
+        // Remember the persistence handle (signed-in only) for save-back +
+        // skill-point banking.
+        if (init.characterId != null) {
+          this.saves.set(playerId, {
+            characterId: init.characterId,
+            alloc: init.alloc,
+            unspentPoints: init.unspentPoints || 0,
+          });
+        }
 
         // The new player gets their id, the current roster, and their own state.
         const otherPlayers = [];
@@ -348,14 +578,21 @@ class GameHost {
             players: otherPlayers,
             npcs: this.npcSim.snapshot(),
             npcHps: this.npcSim.hpSnapshot(),
-            inventory: this.inventoryView(playerData.inventory), // own Goods
-            money: playerData.money, // own balance
+            inventory: this.inventoryView(entry.inventory), // own Goods
+            money: entry.money, // own balance
+            // Signed-in characters restore their saved spawn + stats + gear; the
+            // anonymous client ignores these (it spawns from its own spawn.json).
+            self: { x: entry.x, y: entry.y, direction: entry.direction },
+            stats: statsPayload(entry),
+            equipped: entry.equipped,
           })
         );
 
         // Tell everyone else about the new player.
         const { _ws, ...publicData } = this.players.get(playerId);
         this.broadcastExcept({ type: 'player_join', player: publicData }, playerId);
+        // Restore any banked skill points (shows the level-up icon on rejoin).
+        this._sendPoints(playerId);
         break;
       }
 
@@ -444,6 +681,7 @@ class GameHost {
         entry._ws.send(JSON.stringify({ type: 'equipped', slots: entry.equipped }));
         // ...everyone else just needs the held-weapon sprite.
         this.broadcastExcept({ type: 'equip', id: playerId, itemId: entry.itemId }, playerId);
+        this._saveCharacter(playerId);
         break;
       }
 
@@ -479,6 +717,7 @@ class GameHost {
         entry._ws.send(
           JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) })
         );
+        this._saveCharacter(playerId);
         break;
       }
 
@@ -499,6 +738,7 @@ class GameHost {
           JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) })
         );
         entry._ws.send(JSON.stringify({ type: 'money', money: entry.money }));
+        this._saveCharacter(playerId);
         break;
       }
 
@@ -515,6 +755,7 @@ class GameHost {
           JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) })
         );
         entry._ws.send(JSON.stringify({ type: 'money', money: entry.money }));
+        this._saveCharacter(playerId);
         break;
       }
 
@@ -556,6 +797,58 @@ class GameHost {
         if (!text) break;
         // Broadcast to everyone else; the sender shows its own bubble locally.
         this.broadcastExcept({ type: 'chat', id: playerId, text }, playerId);
+        break;
+      }
+
+      case 'spend_points': {
+        // Spend banked skill points on the 5 creation stats. SERVER-AUTHORITATIVE:
+        // the client only REQUESTS deltas; the server owns the point counter, the
+        // alloc, and the derived stats. A request that asks for more than is banked,
+        // for an unknown stat, for a negative/fractional amount, or that would blow
+        // the cap is rejected wholesale — the client can't grant itself anything.
+        const handle = this.saves.get(playerId); // signed-in only
+        const entry = this.players.get(playerId);
+        if (!handle || !entry) break;
+        const add = msg.add && typeof msg.add === 'object' ? msg.add : null;
+        if (!add) break;
+        if (Object.keys(add).some((k) => !STAT_KEYS.includes(k))) break; // unknown stat
+        let total = 0;
+        let ok = true;
+        for (const k of STAT_KEYS) {
+          const v = add[k] ?? 0;
+          if (!Number.isInteger(v) || v < 0) {
+            ok = false;
+            break;
+          }
+          if ((handle.alloc[k] || 0) + v > STAT_SPEND_MAX) {
+            ok = false;
+            break;
+          }
+          total += v;
+        }
+        if (!ok || total <= 0 || total > (handle.unspentPoints || 0)) break;
+
+        // Apply on the server side, then re-derive + persist.
+        for (const k of STAT_KEYS) handle.alloc[k] = (handle.alloc[k] || 0) + (add[k] || 0);
+        handle.unspentPoints -= total;
+        this.reapplyAlloc(entry, handle.alloc);
+        this.broadcastAll({
+          type: 'player_stats',
+          id: playerId,
+          stats: statsPayload(entry),
+          leveled: false,
+          gained: 0,
+        });
+        // maxHp may have grown — refresh every client's bar for this player.
+        this.broadcastAll({
+          type: 'player_hp',
+          id: playerId,
+          hp: entry.hp,
+          maxHp: entry.maxHp,
+          dmg: 0,
+        });
+        this._sendPoints(playerId); // echo the authoritative remaining points + alloc
+        this._saveCharacter(playerId);
         break;
       }
     }

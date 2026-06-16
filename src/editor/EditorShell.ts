@@ -37,6 +37,8 @@ const ZOOM_STEP = 1.25;
 
 const PAN_KEYS = new Set(['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
 
+type Rect = { x: number; y: number; w: number; h: number };
+
 // Pointer travel (device px) under which a press+release counts as a click, not
 // a pan — the threshold for click-to-teleport.
 const CLICK_SLOP = 4;
@@ -65,6 +67,12 @@ export class EditorShell {
   // building/room). Drawn on the map; drag it to move the link's coords.
   private placeAnchor: PlaceAnchor | null = null;
   private draggingAnchor = false;
+
+  // One-shot marquee capture requested by the Places nav: drag a box on the map
+  // to crop a building thumbnail or outline an area. Resolves the rect (or null).
+  private marqueeCb: ((rect: Rect | null) => void) | null = null;
+  private marqueeStart: WorldPoint | null = null;
+  private marqueeRect: Rect | null = null;
 
   // Overlay toggles
   private showTileGrid = true;
@@ -179,6 +187,11 @@ export class EditorShell {
           this.draggingAnchor = false;
         },
         toast: (m, e) => this.toast(m, e),
+        beginMarquee: (cb) => this.beginMarquee(cb),
+        currentPos: () => ({
+          x: Math.round(this.context.player.x),
+          y: Math.round(this.context.player.y),
+        }),
       }
     );
     void this.nav.mount();
@@ -203,10 +216,38 @@ export class EditorShell {
     if (!this.applyRoomCrop) this.context.camera.roomBounds = null;
   }
 
+  // --- marquee capture (for the Places nav) --------------------------------
+
+  /** Arm a one-shot map marquee; `cb` fires with the world-px rect (or null if
+   *  cancelled/too small). Replaces any in-flight request. */
+  private beginMarquee(cb: (rect: Rect | null) => void): void {
+    this.finishMarquee(false); // resolve a prior request as cancelled
+    this.marqueeCb = cb;
+    this.marqueeStart = null;
+    this.marqueeRect = null;
+    this.toast('Drag a box on the map to set it · Esc cancels');
+  }
+
+  /** Resolve the pending marquee. Commits the rect only if it's big enough. */
+  private finishMarquee(commit: boolean): void {
+    const cb = this.marqueeCb;
+    const r = this.marqueeRect;
+    this.marqueeCb = null;
+    this.marqueeStart = null;
+    this.marqueeRect = null;
+    if (!cb) return;
+    if (commit && r && r.w >= 8 && r.h >= 8) {
+      cb({ x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) });
+    } else {
+      cb(null);
+    }
+  }
+
   exit(): void {
     if (!this.active) return;
     this.active = false;
 
+    this.finishMarquee(false); // resolve any dangling marquee request
     this.flushPending(); // persist any debounced edits before tearing down
 
     // Rejoin the world sim — the avatar is a live, damageable target again.
@@ -614,6 +655,16 @@ export class EditorShell {
 
     this.activeTool?.drawOverlay?.(ctx, cam);
 
+    // Pending marquee (Places nav thumbnail / area outline): a green capture box.
+    if (this.marqueeRect) {
+      const r = this.marqueeRect;
+      ctx.fillStyle = 'rgba(124,252,106,0.16)';
+      ctx.fillRect(r.x - camX, r.y - camY, r.w, r.h);
+      ctx.strokeStyle = '#7CFC6A';
+      ctx.lineWidth = lw * 2;
+      ctx.strokeRect(r.x - camX + 0.5, r.y - camY + 0.5, r.w, r.h);
+    }
+
     // Selected quick-link anchor (from the Places nav): a pink pin you can drag.
     if (this.placeAnchor) {
       const ax = Math.round(this.placeAnchor.x) - camX;
@@ -685,6 +736,11 @@ export class EditorShell {
     // The active tool gets Escape first (e.g. closing its own overlay); otherwise
     // Esc deselects the current tool (the dock stays — no modal to close).
     if (k === 'escape') {
+      if (this.marqueeCb) {
+        this.finishMarquee(false);
+        this.toast('Marquee cancelled');
+        return;
+      }
       if (this.activeTool?.onKey?.('escape')) return;
       this.setTool(null);
       return;
@@ -763,6 +819,12 @@ export class EditorShell {
   private onMouseDown = (e: MouseEvent) => {
     if (e.button !== 0) return;
     const p = this.toWorld(e.clientX, e.clientY);
+    // A pending marquee owns the next drag entirely.
+    if (this.marqueeCb) {
+      this.marqueeStart = p;
+      this.marqueeRect = { x: p.x, y: p.y, w: 0, h: 0 };
+      return;
+    }
     // Grabbing the selected place anchor wins over panning / the active tool.
     if (this.placeAnchor) {
       const grab = 10 / this.context.camera.zoom; // ~10 device px
@@ -790,6 +852,17 @@ export class EditorShell {
 
   private onMouseMove = (e: MouseEvent) => {
     this.hover = this.toWorld(e.clientX, e.clientY);
+    if (this.marqueeCb && this.marqueeStart) {
+      const s = this.marqueeStart;
+      this.marqueeRect = {
+        x: Math.min(s.x, this.hover.x),
+        y: Math.min(s.y, this.hover.y),
+        w: Math.abs(this.hover.x - s.x),
+        h: Math.abs(this.hover.y - s.y),
+      };
+      this.updateReadout();
+      return;
+    }
     if (this.draggingAnchor && this.placeAnchor) {
       this.placeAnchor.x = Math.round(this.hover.x);
       this.placeAnchor.y = Math.round(this.hover.y);
@@ -813,6 +886,10 @@ export class EditorShell {
   };
 
   private onMouseUp = (e: MouseEvent) => {
+    if (this.marqueeCb) {
+      this.finishMarquee(true);
+      return;
+    }
     if (this.draggingAnchor) {
       this.draggingAnchor = false;
       this.placeAnchor?.onCommit();

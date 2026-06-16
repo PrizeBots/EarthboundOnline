@@ -52,6 +52,42 @@ export function hasForegroundTile(mapTilesetId: number, paletteId: number): bool
   return fgAtlasCache.has(`${mapTilesetId}_${paletteId}`);
 }
 
+const MINI = 8; // one minitile = 8x8 px (the SNES BG tile)
+
+/** Draw a single 8x8 minitile (sub-tile of an arrangement) from the BG atlas. */
+export function drawMinitile(
+  ctx: CanvasRenderingContext2D,
+  mapTilesetId: number,
+  paletteId: number,
+  arrangementId: number,
+  minitileIdx: number, // 0..15, row-major within the 4x4 arrangement
+  destX: number,
+  destY: number
+) {
+  const atlas = atlasCache.get(`${mapTilesetId}_${paletteId}`);
+  if (!atlas) return;
+  const srcX = (arrangementId % 32) * TILE_SIZE + (minitileIdx % 4) * MINI;
+  const srcY = Math.floor(arrangementId / 32) * TILE_SIZE + (minitileIdx >> 2) * MINI;
+  ctx.drawImage(atlas, srcX, srcY, MINI, MINI, destX, destY, MINI, MINI);
+}
+
+/** Same as drawMinitile but from the FG atlas (transparent except FG pixels). */
+export function drawMinitileFg(
+  ctx: CanvasRenderingContext2D,
+  mapTilesetId: number,
+  paletteId: number,
+  arrangementId: number,
+  minitileIdx: number,
+  destX: number,
+  destY: number
+) {
+  const atlas = fgAtlasCache.get(`${mapTilesetId}_${paletteId}`);
+  if (!atlas) return;
+  const srcX = (arrangementId % 32) * TILE_SIZE + (minitileIdx % 4) * MINI;
+  const srcY = Math.floor(arrangementId / 32) * TILE_SIZE + (minitileIdx >> 2) * MINI;
+  ctx.drawImage(atlas, srcX, srcY, MINI, MINI, destX, destY, MINI, MINI);
+}
+
 /**
  * Draw a single 32x32 tile from the foreground atlas (in front of sprites).
  */

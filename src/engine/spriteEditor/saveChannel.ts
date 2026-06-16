@@ -3,15 +3,43 @@
 import { primeJSONCache } from '../AssetLoader';
 import { S } from './state';
 
-/** Dev-only save-back channel (Vite middleware; absent in production builds). */
+/** Dev-only save-back channel (Vite middleware; absent in production builds).
+ *  Surfaces ANY failure as an error banner + status pip — several callers swallow
+ *  the rejection, so a silent save failure must never slip past here — then
+ *  rethrows so callers that do care still see it. */
 export async function postOverride(name: string, data: unknown): Promise<void> {
-  const res = await fetch('/__editor/save', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name, data }),
-  });
-  if (!res.ok) throw new Error(`save ${name}: ${res.status}`);
-  primeJSONCache(`/overrides/${name}`, data);
+  try {
+    const res = await fetch('/__editor/save', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name, data }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    primeJSONCache(`/overrides/${name}`, data);
+  } catch (err) {
+    setSaveStatus('error');
+    flashSaved(`⚠ Save failed (${name}) — ${String(err)}`, true);
+    throw err;
+  }
+}
+
+// Persistent realtime-save status pip (shown where the old Save button was).
+// Reflects the auto-save state so it's always clear edits are landing. The
+// element lives in the DOM (data-role=save-status); see dom.ts.
+export function setSaveStatus(state: 'saving' | 'saved' | 'error'): void {
+  if (!S.overlay) return;
+  const el = S.overlay.querySelector<HTMLDivElement>('[data-role=save-status]');
+  if (!el) return;
+  if (state === 'saving') {
+    el.textContent = '● saving…';
+    el.style.color = '#e8c34d';
+  } else if (state === 'saved') {
+    el.textContent = '✓ saved';
+    el.style.color = '#7c7';
+  } else {
+    el.textContent = '⚠ save failed';
+    el.style.color = '#f99';
+  }
 }
 
 // Transient save notification — a brief banner pinned to the top of the editor

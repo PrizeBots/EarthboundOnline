@@ -21,13 +21,15 @@ const OVERRIDE_ALLOW = new Set([
   'sprites.json',
   'names.json',
   'enemy_spawns.json',
-  'places.json',
+  // NOTE: places.json is NO LONGER a file override — the Places outline now lives
+  // in the DB (world_docs, via /api/world/places). Left out on purpose.
   'car_traffic.json',
   'music.json',
   'item_sprites.json',
   'custom_items.json',
   'rooms.json',
   'stamps.json', // Room Builder sampler — reusable tile-stamp library (pure arrangement indices)
+  'custom_tiles.json', // Room Builder pixel editor — author-drawn 8x8 RGBA tiles for custom rooms
   'sprite_frames.json',
   'flags.json', // Flag Editor — flag catalog (id/name/scope/default)
   'triggers.json', // Flag Editor — event→flag rules
@@ -55,12 +57,15 @@ function editorSavePlugin() {
   return {
     name: 'editor-save-channel',
     apply: 'serve' as const, // dev server only — excluded from `vite build`
-    // When the editor's Reload toggle is OFF, also swallow Vite's own HMR /
-    // full-page reloads for SOURCE edits (.ts etc.) — returning [] means "no
-    // modules to update", so Vite sends nothing and you stay in the editor.
-    // Flip the toggle ON (or reload manually) to pick the changes back up.
+    // The Reload toggle only governs OUR override-file saves (public/overrides):
+    // when OFF we swallow their HMR so an editor save doesn't kick you out of the
+    // editor. SOURCE edits (.ts/.js) must ALWAYS hot-reload — otherwise code
+    // changes never reach the browser even on a hard refresh, because Vite skips
+    // invalidating the cached module when we return [].
     handleHotUpdate(ctx: any) {
-      if (!overrideHotReload) return [];
+      const f = String(ctx.file || '').replace(/\\/g, '/');
+      const isOverride = f.includes('/public/overrides/');
+      if (isOverride && !overrideHotReload) return [];
       return ctx.modules;
     },
     configureServer(server: any) {
@@ -201,9 +206,30 @@ function gameServerPlugin() {
       // req/res, so res.json() works here too. Registered first so /api/* is
       // handled before Vite's SPA/static fallthrough.
       const store = createStore();
-      server.middlewares.use(createAuthApi(store));
 
-      const host = new GameHost(path.resolve(__dirname, 'public', 'assets'));
+      // One-time import of the legacy file-based Places outline into the DB (the
+      // DB is now the source of truth). Only runs if the DB has no places doc yet
+      // — after that, edits go straight to world_docs and the file is dormant.
+      try {
+        if (!store.getWorldDoc('places')) {
+          const f = path.join(OVERRIDES_DIR, 'places.json');
+          if (fs.existsSync(f)) {
+            store.putWorldDoc('places', JSON.parse(fs.readFileSync(f, 'utf8')), Date.now());
+            console.log('[editor] imported public/overrides/places.json into DB (world_docs)');
+          }
+        }
+      } catch (e) {
+        console.warn('[editor] places import skipped:', e);
+      }
+
+      // editorApi: mount the dev editor's /api/world/* persistence routes. ONLY
+      // the dev server passes this — the deploy server (server/index.js) does not,
+      // so the editor and its persistence simply don't exist in production. The
+      // routes are loopback-gated too, so a LAN-exposed dev server stays local.
+      server.middlewares.use(createAuthApi(store, { editorApi: true }));
+
+      // Same store as the API → the game host loads/saves the same characters.
+      const host = new GameHost(path.resolve(__dirname, 'public', 'assets'), store);
       const wss = new WebSocketServer({ noServer: true });
       host.start();
 

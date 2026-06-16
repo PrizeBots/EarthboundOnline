@@ -414,11 +414,69 @@ function createNpcSim(assetsDir) {
       return null; // no enemies if neither file is present
     }
   }
+  // ROM-derived enemy catalog (tools/extract_enemies.py -> assets/map/enemies.json):
+  // the DEFAULTS layer of per-entity stats, keyed by sprite id. Merged UNDER the
+  // authored enemy_spawns.json `entities`. Rarely changes (re-extracted from ROM),
+  // so it's loaded once, not file-watched. KEEP merge order IN SYNC with
+  // src/engine/NPCManager.ts: DEFAULT < catalog (ROM) < entities (authored).
+  const ENEMY_CAT_PATH = path.join(assetsDir, 'map', 'enemies.json');
+  function loadEnemyCatalog() {
+    try {
+      return JSON.parse(fs.readFileSync(ENEMY_CAT_PATH, 'utf8'));
+    } catch {
+      return null; // no catalog extracted — runtime falls back to authored/defaults
+    }
+  }
+  const enemyCatalog = loadEnemyCatalog();
+
+  // Effective per-entity stats = catalog (ROM defaults) overlaid by authored
+  // entities. Rebuilt whenever enemy_spawns.json changes (reloadEnemies).
+  function buildEntityDefs(cfg) {
+    const cat = (enemyCatalog && enemyCatalog.bySprite) || {};
+    const file = (cfg && cfg.entities) || {};
+    const out = {};
+    for (const k of new Set([...Object.keys(cat), ...Object.keys(file)])) {
+      out[k] = Object.assign({}, cat[k], file[k]);
+    }
+    return out;
+  }
+
   // `let` so the file watch can swap them in live.
   let enemyCfg = loadEnemyCfg();
+  let entityDefs = buildEntityDefs(enemyCfg);
+  // Sprites auto-classified as enemies regardless of placement kind (backward
+  // compat with placements authored before 'enemy' was a first-class kind).
+  // NOTE: intentionally NOT every catalog sprite — only the authored list — so
+  // adding 77 ROM enemies to the catalog doesn't silently turn existing NPC
+  // placements hostile. New enemies are placed via kind:'enemy' (PlacementTool).
   let ENEMY_SPRITES = new Set((enemyCfg && enemyCfg.enemySpriteGroups) || []);
   let SPAWNERS = ((enemyCfg && enemyCfg.spawners) || []).filter((s) => s.enabled !== false);
   let STATIC_ENEMY_HP = (SPAWNERS[0] && SPAWNERS[0].hp) || 24;
+
+  // True if a placement is an enemy: explicit kind, or a legacy enemy sprite.
+  function isEnemyPlacement(r) {
+    return r.kind === 'enemy' || ENEMY_SPRITES.has(r.sprite);
+  }
+  // One effective per-entity stat (merged catalog+authored), or `def`.
+  function entityStat(sprite, key, def) {
+    const e = entityDefs[String(sprite)];
+    return e && e[key] != null ? e[key] : def;
+  }
+
+  // Roll an enemy's loot on death from the merged catalog: money is always
+  // granted; the item drops with probability `drop.rate` (ROM "Item Rarity",
+  // e.g. 1/128). Returns {money, item:{item,itemName}|null} or null if neither.
+  // gameHost decides whether the item is grantable (must be a known good).
+  function rollLoot(sprite) {
+    const e = entityDefs[String(sprite)] || {};
+    const money = (e.money | 0) > 0 ? e.money | 0 : 0;
+    let item = null;
+    if (e.drop && e.drop.item) {
+      const rate = typeof e.drop.rate === 'number' ? e.drop.rate : 0;
+      if (Math.random() < rate) item = { item: e.drop.item, itemName: e.drop.itemName || '' };
+    }
+    return money || item ? { money, item } : null;
+  }
 
   // --- Traffic config (our own content — public/.../car_traffic.json) ---
   // The Traffic Editor writes the WHOLE file to the overrides layer; it wins
@@ -477,7 +535,7 @@ function createNpcSim(assetsDir) {
   // teleported to the respawned player. KEEP > the worst-case client catch-up.
   const respawnGuard = new Map();
   const RESPAWN_GUARD_MS = 1500;
-  let onEnemyKillCb = null; // set in start(): (playerId, xp, enemy) => void
+  let onEnemyKillCb = null; // set in start(): (playerId, xp, enemy, loot) => void
 
   function readOverrides() {
     try {
@@ -577,8 +635,13 @@ function createNpcSim(assetsDir) {
           dead: true,
         });
       }
-      const enemy = ENEMY_SPRITES.has(r.sprite);
+      const enemy = isEnemyPlacement(r);
       const person = !enemy && r.kind === 'person'; // props/deleted carry no HP
+      // Enemy stats come from the merged per-entity table (ROM catalog overlaid
+      // by authored entities), keyed by sprite — same source the spawner pool
+      // uses, so a placed enemy and a spawned one of the same sprite match.
+      const hp = enemy ? entityStat(r.sprite, 'hp', STATIC_ENEMY_HP) : person ? NPC_HP : 0;
+      const speed = enemy ? entityStat(r.sprite, 'speed', ENEMY_SPEED) : ENEMY_SPEED;
       return baseActor({
         id,
         kind: enemy ? 'enemy' : r.kind,
@@ -592,10 +655,18 @@ function createNpcSim(assetsDir) {
         indoor: !!(sectorForTile(Math.floor(r.x / TILE), Math.floor(r.y / TILE)) || {}).indoor,
         isEnemy: enemy,
         pk: enemy, // enemies are always PK; townsfolk never are
-        hp: enemy ? STATIC_ENEMY_HP : person ? NPC_HP : 0,
-        maxHp: enemy ? STATIC_ENEMY_HP : person ? NPC_HP : 0,
-        level: enemy ? DEFAULT_ENEMY_LEVEL : 1,
-        xp: enemy ? DEFAULT_ENEMY_XP : 0,
+        hp,
+        maxHp: hp,
+        level: enemy ? entityStat(r.sprite, 'level', DEFAULT_ENEMY_LEVEL) : 1,
+        xp: enemy ? entityStat(r.sprite, 'xp', DEFAULT_ENEMY_XP) : 0,
+        damage: enemy ? entityStat(r.sprite, 'damage', ENEMY_DAMAGE) : ENEMY_DAMAGE,
+        attackCooldown: enemy
+          ? entityStat(r.sprite, 'attackCooldownMs', ENEMY_ATTACK_COOLDOWN_MS)
+          : ENEMY_ATTACK_COOLDOWN_MS,
+        speed,
+        chaseSpeed: speed * CHASE_RATIO,
+        detectRange: enemy ? entityStat(r.sprite, 'detectRange', DETECT_RANGE) : DETECT_RANGE,
+        attackRange: enemy ? entityStat(r.sprite, 'attackRange', ATTACK_RANGE) : ATTACK_RANGE,
       });
     });
   }
@@ -607,9 +678,9 @@ function createNpcSim(assetsDir) {
   // the Entity Manager; spawners inherit them. Fall back to any legacy
   // per-spawner field (old files), then the global default.
   function spawnerStat(sp, key, def) {
-    const e = (enemyCfg && enemyCfg.entities && enemyCfg.entities[sp.sprite]) || {};
+    const e = entityDefs[String(sp.sprite)] || {};
     if (e[key] != null) return e[key];
-    if (sp[key] != null) return sp[key];
+    if (sp[key] != null) return sp[key]; // legacy per-spawner field (old files)
     return def;
   }
 
@@ -719,8 +790,10 @@ function createNpcSim(assetsDir) {
           n.life = 'idle';
           return;
         }
-        const enemy = ENEMY_SPRITES.has(r.sprite);
+        const enemy = isEnemyPlacement(r);
         const person = !enemy && r.kind === 'person';
+        const hp = enemy ? entityStat(r.sprite, 'hp', STATIC_ENEMY_HP) : person ? NPC_HP : 0;
+        const speed = enemy ? entityStat(r.sprite, 'speed', ENEMY_SPEED) : ENEMY_SPEED;
         n.kind = enemy ? 'enemy' : r.kind;
         n.sprite = r.sprite;
         n.x = r.x;
@@ -735,10 +808,18 @@ function createNpcSim(assetsDir) {
         n.timer = rand(60, 300);
         n.isEnemy = enemy;
         n.pk = enemy;
-        n.maxHp = enemy ? STATIC_ENEMY_HP : person ? NPC_HP : 0;
-        n.hp = enemy ? STATIC_ENEMY_HP : person ? NPC_HP : 0;
-        n.level = enemy ? DEFAULT_ENEMY_LEVEL : 1;
-        n.xp = enemy ? DEFAULT_ENEMY_XP : 0;
+        n.maxHp = hp;
+        n.hp = hp;
+        n.level = enemy ? entityStat(r.sprite, 'level', DEFAULT_ENEMY_LEVEL) : 1;
+        n.xp = enemy ? entityStat(r.sprite, 'xp', DEFAULT_ENEMY_XP) : 0;
+        n.damage = enemy ? entityStat(r.sprite, 'damage', ENEMY_DAMAGE) : ENEMY_DAMAGE;
+        n.attackCooldown = enemy
+          ? entityStat(r.sprite, 'attackCooldownMs', ENEMY_ATTACK_COOLDOWN_MS)
+          : ENEMY_ATTACK_COOLDOWN_MS;
+        n.speed = speed;
+        n.chaseSpeed = speed * CHASE_RATIO;
+        n.detectRange = enemy ? entityStat(r.sprite, 'detectRange', DETECT_RANGE) : DETECT_RANGE;
+        n.attackRange = enemy ? entityStat(r.sprite, 'attackRange', ATTACK_RANGE) : ATTACK_RANGE;
         n.dead = false;
         n.dirty = n.kind === 'person' || enemy;
         n.hpDirty = enemy;
@@ -768,6 +849,7 @@ function createNpcSim(assetsDir) {
   // hp, position) apply live without an id shift.
   function reloadEnemies() {
     enemyCfg = loadEnemyCfg();
+    entityDefs = buildEntityDefs(enemyCfg);
     ENEMY_SPRITES = new Set((enemyCfg && enemyCfg.enemySpriteGroups) || []);
     SPAWNERS = ((enemyCfg && enemyCfg.spawners) || []).filter((s) => s.enabled !== false);
     STATIC_ENEMY_HP = (SPAWNERS[0] && SPAWNERS[0].hp) || 24;
@@ -1635,7 +1717,7 @@ function createNpcSim(assetsDir) {
         target.respawnAt =
           now + (target.spawner ? target.spawner.respawnDelayMs || 9000 : STATIC_RESPAWN_MS);
         if (killerPlayerId != null && onEnemyKillCb)
-          onEnemyKillCb(killerPlayerId, target.xp || 0, target);
+          onEnemyKillCb(killerPlayerId, target.xp || 0, target, rollLoot(target.sprite));
       } else {
         target.respawnAt = now + NPC_RESPAWN_MS;
       }
@@ -1681,8 +1763,9 @@ function createNpcSim(assetsDir) {
      * broadcast: (obj) => void — sends to every connected client
      * onEnemyHit: (playerId, damage, enemy) => void — an enemy landed a swing;
      *   the host applies the damage to that player (server-authoritative HP).
-     * onEnemyKill: (playerId, xp, enemy) => void — a player landed a killing
-     *   blow; the host awards that player the enemy's EXP.
+     * onEnemyKill: (playerId, xp, enemy, loot) => void — a player landed a
+     *   killing blow; the host awards EXP and `loot` ({money, item} | null,
+     *   already rolled against the ROM drop rate).
      */
     start(getPlayers, broadcast, onEnemyHit, onEnemyKill) {
       onEnemyKillCb = onEnemyKill || null;

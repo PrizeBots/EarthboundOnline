@@ -165,6 +165,26 @@ check("one account's characters are isolated from another's", () => {
   assert.strictEqual(store.listCharacters(alice.id).length, 3, "Alice's roster unchanged");
 });
 
+// ========================== World documents ==========================
+
+check('getWorldDoc returns null before anything is saved', () => {
+  assert.strictEqual(store.getWorldDoc('places'), null);
+});
+
+check('putWorldDoc then getWorldDoc round-trips the JSON', () => {
+  const doc = { version: 1, areas: [{ id: 'ma_1', label: 'Test Area', x: 10, y: 20 }] };
+  const r = store.putWorldDoc('places', doc, T + 5);
+  assert.strictEqual(r.updatedAt, T + 5);
+  assert.deepStrictEqual(store.getWorldDoc('places'), doc);
+});
+
+check('putWorldDoc upserts (second write replaces, same key)', () => {
+  store.putWorldDoc('places', { version: 2, areas: [] }, T + 6);
+  const got = store.getWorldDoc('places');
+  assert.strictEqual(got.version, 2);
+  assert.strictEqual(got.areas.length, 0);
+});
+
 store.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -25,6 +25,17 @@ export function invalidateJSON(path: string): void {
   jsonCache.delete(path);
 }
 
+/**
+ * Seed the image cache with an already-decoded image. Used by the ROM-extraction
+ * path (romAssets.primeBundle): atlases/sprites rendered from the player's ROM
+ * are rasterized to HTMLImageElements and primed here, so loadImage() returns
+ * them instead of hitting HTTP. No prime → loadImage falls back to fetch exactly
+ * as before (dev keeps loading committed assets).
+ */
+export function primeImageCache(path: string, img: HTMLImageElement): void {
+  imageCache.set(path, img);
+}
+
 export async function loadImage(path: string): Promise<HTMLImageElement> {
   if (imageCache.has(path)) return imageCache.get(path)!;
   return new Promise((resolve, reject) => {

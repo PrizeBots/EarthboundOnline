@@ -57,6 +57,12 @@ type NetworkCallback = {
   onPlayerRespawn: (id: string, x: number, y: number, dir: Direction) => void;
   /** Server-authoritative progression: EXP gained / level-up / stat growth. */
   onPlayerStats: (id: string, stats: PlayerStatsPayload, leveled: boolean, gained: number) => void;
+  /**
+   * The LOCAL player's banked skill points + current stat allocation (private —
+   * server pushes this on level-up, after a spend, and on join). Drives the
+   * level-up icon + the spend pentagon.
+   */
+  onPoints?: (points: number, alloc: Record<string, number>) => void;
 };
 
 /** Progression block the server pushes (field names match StatusModal). */
@@ -84,11 +90,22 @@ let callbacks: NetworkCallback | null = null;
 // our avatar out of the world sim. null = nothing pending.
 let pendingEditorMode: boolean | null = null;
 
+/**
+ * Optional signed-in join: load a persistent character by id, authenticated by
+ * the session token. When present, the server ignores the anonymous sprite/name/
+ * appearance and rebuilds everything from the saved character.
+ */
+export interface JoinAuth {
+  sessionToken: string;
+  characterId: number;
+}
+
 export function connect(
   spriteGroupId: number,
   name: string,
   appearance: CharacterAppearance | null,
-  cb: NetworkCallback
+  cb: NetworkCallback,
+  auth?: JoinAuth | null
 ) {
   callbacks = cb;
 
@@ -97,16 +114,15 @@ export function connect(
   ws = new WebSocket(`${protocol}//${location.host}/ws`);
 
   ws.onopen = () => {
-    // Level is NOT sent: the server is authoritative on progression (every join
-    // starts at level 1 until the save system lands) and ignores client-supplied
-    // levels, so sending one would only imply a control the client doesn't have.
+    // Signed-in: join by token+characterId (server loads the save). Anonymous:
+    // the dev/char-select join (fresh ephemeral player; the server is still
+    // authoritative on progression, so no level is sent).
     ws!.send(
-      JSON.stringify({
-        type: 'join',
-        spriteGroupId,
-        name,
-        appearance,
-      })
+      JSON.stringify(
+        auth
+          ? { type: 'join', sessionToken: auth.sessionToken, characterId: auth.characterId }
+          : { type: 'join', spriteGroupId, name, appearance }
+      )
     );
     // Flush an editor toggle that fired while the socket was still connecting.
     if (pendingEditorMode !== null) {
@@ -124,6 +140,16 @@ export function connect(
         if (msg.npcHps) callbacks?.onNpcHp(msg.npcHps);
         if (msg.inventory) callbacks?.onInventory(msg.inventory);
         if (typeof msg.money === 'number') callbacks?.onMoney(msg.money);
+        // Signed-in characters restore saved stats + gear right away (reusing the
+        // live progression/equip handlers). Anonymous joins omit these.
+        if (msg.stats) callbacks?.onPlayerStats(msg.playerId, msg.stats, false, 0);
+        if (msg.equipped) callbacks?.onEquipped(msg.equipped);
+        break;
+      case 'join_error':
+        console.error('Join rejected:', msg.error);
+        break;
+      case 'points_update':
+        callbacks?.onPoints?.(msg.points ?? 0, msg.alloc ?? {});
         break;
       case 'inventory':
         callbacks?.onInventory(msg.items ?? []);
@@ -269,5 +295,16 @@ export function sendUsePsi(psiId: string) {
 export function sendChat(text: string) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'chat', text }));
+  }
+}
+
+/**
+ * Request to spend banked skill points: `add` maps stat -> points to add. The
+ * SERVER validates against the authoritative banked total + caps and rejects any
+ * cheat; the client just asks. The result comes back via onPoints + onPlayerStats.
+ */
+export function sendSpendPoints(add: Record<string, number>) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'spend_points', add }));
   }
 }

@@ -35,6 +35,11 @@
  *   updateCharacterSave(id, save, now) -> character     (persist gameplay state)
  *   deleteCharacter(id) -> void
  *
+ * World documents  (key->JSON authored content: the Places outline, etc.;
+ *                   written only by the localhost dev editor)
+ *   getWorldDoc(name) -> data | null
+ *   putWorldDoc(name, data, now) -> { name, updatedAt }
+ *
  *   account   = { id, username, passwordHash, createdAt }
  *   character = { id, accountId, slot, name, spriteGroupId, appearance,
  *                 save, createdAt, updatedAt }

@@ -10,6 +10,8 @@ import {
   setMapDimensions,
 } from '../types';
 import { setRoomList, RoomDef } from './Rooms';
+import { setComposites, unpackRef } from './CompositeTiles';
+import { loadAtlas } from './TilesetManager';
 
 let sectors: SectorMeta[] = [];
 let mapTiles: number[] = [];
@@ -32,20 +34,29 @@ interface CustomRoom {
   label: string;
   town?: string | null;
   type?: string | null;
-  bandX: number;        // top-left TILE position in the band (sector-aligned; bandY >= base height)
+  bandX: number; // top-left TILE position in the band (sector-aligned; bandY >= base height)
   bandY: number;
-  w: number;            // size in tiles
+  w: number; // size in tiles
   h: number;
-  sector: SectorMeta;   // tilesetId/paletteId/indoor/dungeon/musicId for the room
-  tiles: number[];      // w*h BG arrangement values, row-major
-  spawnDX: number;      // spawn offset in px within the room
+  sector: SectorMeta; // tilesetId/paletteId/indoor/dungeon/musicId for the room
+  tiles: number[]; // w*h BG arrangement values, row-major (>=COMPOSITE_BASE = composite cell)
+  // Composite cells (sub-tile authored tiles): id -> 16 packed minitile refs.
+  composites?: Record<string, number[]>;
+  spawnDX: number; // spawn offset in px within the room
   spawnDY: number;
   spawnDir: number;
 }
-interface CustomRoomsDoc { version: number; rooms: CustomRoom[]; }
+interface CustomRoomsDoc {
+  version: number;
+  rooms: CustomRoom[];
+}
 
 const DEFAULT_BAND_SECTOR: SectorMeta = {
-  tilesetId: 0, paletteId: 0, musicId: 0, indoor: false, dungeon: false,
+  tilesetId: 0,
+  paletteId: 0,
+  musicId: 0,
+  indoor: false,
+  dungeon: false,
 } as SectorMeta;
 
 export async function loadMapData(): Promise<void> {
@@ -62,7 +73,7 @@ export async function loadMapData(): Promise<void> {
   if (baseHeightTiles !== baseHeightSectors * SECTOR_TILES_Y) {
     console.warn(
       `Map height mismatch: ${baseHeightTiles} tile rows vs ${baseHeightSectors} sector rows ` +
-      `(*${SECTOR_TILES_Y} = ${baseHeightSectors * SECTOR_TILES_Y}) — tiles.json and sectors.json disagree`,
+        `(*${SECTOR_TILES_Y} = ${baseHeightSectors * SECTOR_TILES_Y}) — tiles.json and sectors.json disagree`
     );
   }
 
@@ -77,6 +88,31 @@ export async function loadMapData(): Promise<void> {
  * to apply it live. The arrays are COPIES of the base — the cached base is never
  * mutated, so this is idempotent.
  */
+/** Load the atlases + collision for every tileset a composite samples from. */
+async function preloadCompositeAssets(composites: Map<number, number[]>): Promise<void> {
+  const atlasKeys = new Set<string>();
+  const drawTs = new Set<number>();
+  for (const refs of composites.values()) {
+    for (const n of refs) {
+      if (n < 0) continue;
+      const r = unpackRef(n);
+      atlasKeys.add(`${r.ts}_${r.pal}`);
+      drawTs.add(getDrawTilesetId(r.ts));
+    }
+  }
+  const jobs: Promise<unknown>[] = [];
+  for (const k of atlasKeys) {
+    const [ts, pal] = k.split('_').map(Number);
+    jobs.push(loadAtlas(ts, pal));
+  }
+  if (drawTs.size) {
+    // Dynamic import avoids a static MapManager <-> Collision import cycle.
+    const { loadCollision } = await import('./Collision');
+    for (const dt of drawTs) jobs.push(loadCollision(dt));
+  }
+  await Promise.all(jobs);
+}
+
 export async function buildCustomRoomBand(): Promise<void> {
   mapTiles = baseTiles.slice();
   sectors = baseSectors.slice();
@@ -90,7 +126,8 @@ export async function buildCustomRoomBand(): Promise<void> {
   }
   const hTiles = hSectors * SECTOR_TILES_Y;
   for (let i = mapTiles.length; i < hTiles * MAP_WIDTH_TILES; i++) mapTiles.push(0);
-  for (let i = sectors.length; i < hSectors * MAP_WIDTH_SECTORS; i++) sectors.push({ ...DEFAULT_BAND_SECTOR });
+  for (let i = sectors.length; i < hSectors * MAP_WIDTH_SECTORS; i++)
+    sectors.push({ ...DEFAULT_BAND_SECTOR });
 
   const defs: RoomDef[] = [];
   for (const r of custom) {
@@ -99,24 +136,40 @@ export async function buildCustomRoomBand(): Promise<void> {
         mapTiles[(r.bandY + ly) * MAP_WIDTH_TILES + (r.bandX + lx)] = r.tiles[ly * r.w + lx] ?? 0;
       }
     }
-    const s0x = Math.floor(r.bandX / SECTOR_TILES_X), s1x = Math.floor((r.bandX + r.w - 1) / SECTOR_TILES_X);
-    const s0y = Math.floor(r.bandY / SECTOR_TILES_Y), s1y = Math.floor((r.bandY + r.h - 1) / SECTOR_TILES_Y);
+    const s0x = Math.floor(r.bandX / SECTOR_TILES_X),
+      s1x = Math.floor((r.bandX + r.w - 1) / SECTOR_TILES_X);
+    const s0y = Math.floor(r.bandY / SECTOR_TILES_Y),
+      s1y = Math.floor((r.bandY + r.h - 1) / SECTOR_TILES_Y);
     for (let sy = s0y; sy <= s1y; sy++) {
       for (let sx = s0x; sx <= s1x; sx++) sectors[sy * MAP_WIDTH_SECTORS + sx] = { ...r.sector };
     }
     defs.push({
-      id: r.id, label: r.label, town: r.town, type: r.type,
+      id: r.id,
+      label: r.label,
+      town: r.town,
+      type: r.type,
       rect: { x: r.bandX * 32, y: r.bandY * 32, w: r.w * 32, h: r.h * 32 },
       spawn: { x: r.bandX * 32 + r.spawnDX, y: r.bandY * 32 + r.spawnDY, dir: r.spawnDir },
     });
   }
+
+  // Gather every room's composite tiles into the global registry, and preload
+  // the source tilesets' atlases + collision so they render and collide.
+  const composites = new Map<number, number[]>();
+  for (const r of custom) {
+    for (const [id, refs] of Object.entries(r.composites ?? {})) composites.set(Number(id), refs);
+  }
+  setComposites(composites);
+  await preloadCompositeAssets(composites);
 
   setMapDimensions(hTiles, hSectors);
   setRoomList(defs);
   const bandRows = hSectors - baseHeightSectors;
   console.log(
     `Map loaded: ${MAP_WIDTH_TILES}x${baseHeightTiles} overworld` +
-    (bandRows > 0 ? ` + ${bandRows} sector-row band (${custom.length} custom rooms) -> ${hTiles} tall` : ''),
+      (bandRows > 0
+        ? ` + ${bandRows} sector-row band (${custom.length} custom rooms) -> ${hTiles} tall`
+        : '')
   );
 }
 

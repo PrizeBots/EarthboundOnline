@@ -1,7 +1,7 @@
 import { Camera, RoomBounds } from './Camera';
 import { Player } from './Player';
 import { Renderer, setDebugBoxes, debugBoxesOn } from './Renderer';
-import { loadJSON } from './AssetLoader';
+import { loadJSON, loadImage } from './AssetLoader';
 import {
   initInput,
   isActionPressed,
@@ -38,6 +38,7 @@ import {
   loadSpriteMetadata,
   loadSpriteGroup,
   registerCustomSheet,
+  registerRecoloredSprite,
   CUSTOM_GROUP_BASE,
 } from './SpriteManager';
 import {
@@ -47,12 +48,19 @@ import {
   sendAttack,
   sendWarpState,
   sendEditorMode,
+  sendSpendPoints,
+  JoinAuth,
 } from './Network';
+import { getToken, CharacterSummary } from './Auth';
+import { initNameplates } from './NamePlate';
+import { initLevelUpButton, setLevelUpPoints } from './LevelUpButton';
+import { openLevelUp, isLevelUpOpen } from './LevelUpModal';
 import { loadNameOverrides, getSpriteName } from './SpriteNames';
 import { loadSongNameOverrides } from './SongNames';
 import { setStatus } from './StatusModal';
 import { pushRemoteSnapshot, dropRemoteBuffer, interpolateRemotePlayer } from './RemoteInterp';
 import { getItemName, loadItemSprites } from './Items';
+import { loadCustomTiles } from './CustomTiles';
 import { itemEquip } from './Shop';
 import { getEquipped, setEquipped, setEquippedFromServer } from './Equipment';
 import {
@@ -71,6 +79,12 @@ import {
   handleCharSelectClick,
   getSelectedSpriteGroupId,
 } from './CharacterSelect';
+import {
+  initStartScreen,
+  openStartScreen,
+  isStartScreenOpen,
+  setStartScreenPlayHandler,
+} from './StartScreen';
 import { loadFont } from './TextRenderer';
 import { loadWindowStyle } from './WindowRenderer';
 import {
@@ -131,6 +145,15 @@ import {
 
 type GamePhase = 'loading' | 'charselect' | 'playing';
 
+/** Options for starting the game: anonymous (char-select) or a signed-in save. */
+interface StartOpts {
+  spriteGroupId?: number;
+  appearance?: CharacterAppearance | null;
+  name?: string;
+  spawn?: { x: number; y: number; dir: number };
+  auth?: JoinAuth | null;
+}
+
 // Unit facing vectors, indexed by Direction, for the talk/check probe.
 const DIAG = Math.SQRT1_2;
 const DIR_VECTORS: Record<Direction, [number, number]> = {
@@ -157,6 +180,10 @@ export class Game {
   private phase: GamePhase = 'loading';
   private remotePlayers = new Map<string, RemotePlayer>();
   private localPlayerId = '';
+  // Banked skill points + current allocation (server-authoritative; mirrored for
+  // the level-up icon + the spend pentagon).
+  private unspentPoints = 0;
+  private pointsAlloc: Record<string, number> = {};
   private sendTimer = 0;
   private transitioning = false;
   private transitionAlpha = 0;
@@ -228,12 +255,27 @@ export class Game {
     //   __eb.flags.set/clear/has/list/reset
     if (import.meta.env.DEV) installFlagConsole();
 
+    // TITLE/AUTH account overlay (START_SCREEN.md). Built hidden; opened from the
+    // ACCOUNTS button on character select. Char select stays the dev boot screen.
+    // The slot list spawns a chosen/created character into the game via playCharacter.
+    initStartScreen();
+    setStartScreenPlayHandler((char) => void this.playCharacter(char));
+    initNameplates(); // preload the EB font used for in-world name/level tags
+    // Corner level-up icon → opens the spend pentagon. The server validates the
+    // spend; sendSpendPoints only requests it.
+    initLevelUpButton(
+      () => void openLevelUp(this.pointsAlloc, this.unspentPoints, (add) => sendSpendPoints(add))
+    );
+
     this.phase = 'charselect';
     console.log('Character select ready!');
   }
 
   private onKeyDown(e: KeyboardEvent) {
     if (this.phase === 'charselect') {
+      // The account overlay (DOM) captures its own keys; ignore them here so
+      // typing a username doesn't also browse the character grid.
+      if (isStartScreenOpen()) return;
       // First key press is a user gesture — start the naming-screen music.
       playCharSelectMusic();
       const result = handleCharSelectInput(e.key);
@@ -255,7 +297,7 @@ export class Game {
         return;
       }
       // Dialogue owns Enter while open (it advances pages, not chat).
-      if (isMenuOpen() || this.transitioning || isDialogueOpen()) return;
+      if (isMenuOpen() || this.transitioning || isDialogueOpen() || isLevelUpOpen()) return;
       handleChatKey(e);
     }
   }
@@ -274,22 +316,29 @@ export class Game {
     return this.phase === 'playing';
   }
 
-  private async startGame(appearance?: CharacterAppearance) {
+  private async startGame(opts: StartOpts = {}) {
     this.phase = 'loading';
+    const appearance = opts.appearance ?? null;
 
     let spriteGroupId: number;
     if (appearance) {
       spriteGroupId = await registerCustomSheet(appearance);
       console.log(`Custom character sheet registered as group ${spriteGroupId}`);
     } else {
-      spriteGroupId = getSelectedSpriteGroupId();
+      spriteGroupId = opts.spriteGroupId ?? getSelectedSpriteGroupId();
       console.log(`Selected character: sprite group ${spriteGroupId}`);
     }
     this.player.spriteGroupId = spriteGroupId;
 
     // Load map, player sprite, and tilesets
     console.log('Loading map data...');
-    await Promise.all([loadMapData(), loadDoors(), loadNPCs(), loadItemSprites()]);
+    await Promise.all([
+      loadMapData(),
+      loadDoors(),
+      loadNPCs(),
+      loadItemSprites(),
+      loadCustomTiles(), // author-drawn custom room tiles (overrides/custom_tiles.json)
+    ]);
 
     // Flag/quest system: load the catalog (seeds new-player defaults) and the
     // trigger table (subscribes to the EventBus). After loadNPCs so dialogue
@@ -306,6 +355,12 @@ export class Game {
       this.player.y = spawnOv.y;
       this.player.direction = spawnOv.dir as Direction;
     }
+    // A signed-in character restores its saved position (wins over the defaults).
+    if (opts.spawn) {
+      this.player.x = opts.spawn.x;
+      this.player.y = opts.spawn.y;
+      this.player.direction = opts.spawn.dir as Direction;
+    }
 
     if (!appearance) {
       console.log('Loading player sprite...');
@@ -318,8 +373,9 @@ export class Game {
     // In case the spawn point is inside an interior, crop to that room.
     this.updateRoomBounds(this.player.x, this.player.y);
 
-    // Status screen shows the chosen character's name (custom sheets have none).
-    setStatus({ name: getSpriteName(spriteGroupId) ?? 'Player' });
+    // Status screen shows the character's name: the saved/created name if any,
+    // else the sprite's authored name.
+    setStatus({ name: opts.name ?? getSpriteName(spriteGroupId) ?? 'Player' });
 
     initInput(this.canvasEl);
     // Equip/hotbar hooks: the menu equips gear per EB slot. We update the local
@@ -337,130 +393,189 @@ export class Game {
     initChat(getKeySet());
     initDialogue(getKeySet());
 
-    // Connect to multiplayer server
-    connect(spriteGroupId, `Player`, appearance ?? null, {
-      onWelcome: (playerId, players) => {
-        this.localPlayerId = playerId;
-        for (const p of players) {
-          this.remotePlayers.set(p.id, p);
-          this.resolveRemoteSprite(p);
-        }
-        console.log(`Connected as ${playerId}, ${players.length} other players online`);
-      },
-      onPlayerJoin: (player) => {
-        this.remotePlayers.set(player.id, player);
-        this.resolveRemoteSprite(player);
-        console.log(`${player.name} joined`);
-      },
-      onPlayerMove: (id, x, y, direction, frame, pose) => {
-        // Buffered, not applied directly: update() interpolates each frame
-        // (RemoteInterp) so remote players glide instead of stepping once
-        // per packet.
-        if (this.remotePlayers.has(id)) {
-          pushRemoteSnapshot(id, x, y, direction, frame, pose);
-        }
-      },
-      onPlayerLeave: (id) => {
-        this.remotePlayers.delete(id);
-        dropRemoteBuffer(id);
-        removeBubble(id);
-        console.log(`Player ${id} left`);
-      },
-      onChat: (id, text) => {
-        addRemoteBubble(id, text);
-      },
-      onEquip: (id, itemId) => {
-        const rp = this.remotePlayers.get(id);
-        if (rp) rp.itemId = itemId;
-      },
-      onEquipped: (slots) => {
-        // Authoritative equipped set for the local player — re-sync the mirror
-        // and the held-weapon sprite.
-        setEquippedFromServer(slots);
-        this.player.heldItemId = slots.weapon ?? null;
-      },
-      onNpcUpdate: (rows) => {
-        applyNpcUpdates(rows);
-      },
-      onNpcHp: (rows) => {
-        applyNpcHp(rows);
-      },
-      onPlayerHp: (id, hp, maxHp, dmg, heal) => {
-        if (id === this.localPlayerId) {
-          this.player.hp = hp;
-          this.player.maxHp = maxHp;
-          if (dmg > 0) {
-            spawnDamageNumber(this.player.x, this.player.y, dmg);
-            this.player.hurt(); // flinch pose; broadcast to others via sendPosition
+    // Connect to multiplayer server (anonymous, or signed-in via opts.auth).
+    connect(
+      spriteGroupId,
+      opts.name ?? 'Player',
+      appearance,
+      {
+        onWelcome: (playerId, players) => {
+          this.localPlayerId = playerId;
+          for (const p of players) {
+            this.remotePlayers.set(p.id, p);
+            this.resolveRemoteSprite(p);
           }
-          if (heal > 0) spawnHealNumber(this.player.x, this.player.y, heal);
-          setStatus({ hp, hpMax: maxHp }); // reflect in the Status screen
-        } else {
+          console.log(`Connected as ${playerId}, ${players.length} other players online`);
+        },
+        onPlayerJoin: (player) => {
+          this.remotePlayers.set(player.id, player);
+          this.resolveRemoteSprite(player);
+          console.log(`${player.name} joined`);
+        },
+        onPlayerMove: (id, x, y, direction, frame, pose) => {
+          // Buffered, not applied directly: update() interpolates each frame
+          // (RemoteInterp) so remote players glide instead of stepping once
+          // per packet.
+          if (this.remotePlayers.has(id)) {
+            pushRemoteSnapshot(id, x, y, direction, frame, pose);
+          }
+        },
+        onPlayerLeave: (id) => {
+          this.remotePlayers.delete(id);
+          dropRemoteBuffer(id);
+          removeBubble(id);
+          console.log(`Player ${id} left`);
+        },
+        onChat: (id, text) => {
+          addRemoteBubble(id, text);
+        },
+        onEquip: (id, itemId) => {
           const rp = this.remotePlayers.get(id);
-          if (rp) {
-            rp.hp = hp;
-            rp.maxHp = maxHp;
-            if (dmg > 0) spawnDamageNumber(rp.x, rp.y, dmg);
-            if (heal > 0) spawnHealNumber(rp.x, rp.y, heal);
+          if (rp) rp.itemId = itemId;
+        },
+        onEquipped: (slots) => {
+          // Authoritative equipped set for the local player — re-sync the mirror
+          // and the held-weapon sprite.
+          setEquippedFromServer(slots);
+          this.player.heldItemId = slots.weapon ?? null;
+        },
+        onNpcUpdate: (rows) => {
+          applyNpcUpdates(rows);
+        },
+        onNpcHp: (rows) => {
+          applyNpcHp(rows);
+        },
+        onPlayerHp: (id, hp, maxHp, dmg, heal) => {
+          if (id === this.localPlayerId) {
+            this.player.hp = hp;
+            this.player.maxHp = maxHp;
+            if (dmg > 0) {
+              spawnDamageNumber(this.player.x, this.player.y, dmg);
+              this.player.hurt(); // flinch pose; broadcast to others via sendPosition
+            }
+            if (heal > 0) spawnHealNumber(this.player.x, this.player.y, heal);
+            setStatus({ hp, hpMax: maxHp }); // reflect in the Status screen
+          } else {
+            const rp = this.remotePlayers.get(id);
+            if (rp) {
+              rp.hp = hp;
+              rp.maxHp = maxHp;
+              if (dmg > 0) spawnDamageNumber(rp.x, rp.y, dmg);
+              if (heal > 0) spawnHealNumber(rp.x, rp.y, heal);
+            }
           }
-        }
-      },
-      onInventory: (items) => {
-        setGoods(items); // mirror the server's Goods list for the menu
-      },
-      onMoney: (amount) => {
-        setMoney(amount); // mirror the server's balance for the menu
-      },
-      onPlayerRespawn: (id, x, y, dir) => {
-        if (id === this.localPlayerId) {
-          this.player.x = x;
-          this.player.y = y;
-          this.player.direction = dir;
-          this.player.moving = false;
-          this.player.frame = 0;
-          // While editing (dev), the free camera owns the view — don't yank it
-          // back to the avatar. The server shouldn't respawn us at all in editor
-          // mode (we're pulled from the sim); this guards a late in-flight hit.
-          if (!this.editor?.isActive()) {
-            this.camera.follow(x, y);
-            this.updateRoomBounds(x, y);
+        },
+        onInventory: (items) => {
+          setGoods(items); // mirror the server's Goods list for the menu
+        },
+        onMoney: (amount) => {
+          setMoney(amount); // mirror the server's balance for the menu
+        },
+        onPlayerRespawn: (id, x, y, dir) => {
+          if (id === this.localPlayerId) {
+            this.player.x = x;
+            this.player.y = y;
+            this.player.direction = dir;
+            this.player.moving = false;
+            this.player.frame = 0;
+            // While editing (dev), the free camera owns the view — don't yank it
+            // back to the avatar. The server shouldn't respawn us at all in editor
+            // mode (we're pulled from the sim); this guards a late in-flight hit.
+            if (!this.editor?.isActive()) {
+              this.camera.follow(x, y);
+              this.updateRoomBounds(x, y);
+            }
+          } else {
+            const rp = this.remotePlayers.get(id);
+            if (rp) {
+              rp.x = x;
+              rp.y = y;
+            }
+            dropRemoteBuffer(id); // snap across the map, don't glide
           }
-        } else {
-          const rp = this.remotePlayers.get(id);
-          if (rp) {
-            rp.x = x;
-            rp.y = y;
+        },
+        onPlayerStats: (id, stats, leveled, gained) => {
+          if (id !== this.localPlayerId) {
+            // Keep remote players' nameplate level current on their level-ups.
+            const rp = this.remotePlayers.get(id);
+            if (rp) rp.level = stats.level;
+            return;
           }
-          dropRemoteBuffer(id); // snap across the map, don't glide
-        }
+          // Server-authoritative progression — mirror it into the Status screen
+          // and the local HP bar (welcome sends the saved stats this way too, so a
+          // high-level character spawns with the right max HP), and pop floats off
+          // the player so kills/level-ups feel rewarding.
+          setStatus(stats);
+          this.player.maxHp = stats.hpMax;
+          this.player.hp = stats.hp;
+          if (gained > 0) spawnXpNumber(this.player.x, this.player.y, gained);
+          if (leveled) spawnLevelUp(this.player.x, this.player.y);
+        },
+        onPoints: (points, alloc) => {
+          // Authoritative banked points + alloc (server pushes on level-up / spend /
+          // join). Mirror for the icon + spend pentagon.
+          this.unspentPoints = points;
+          this.pointsAlloc = alloc;
+          setLevelUpPoints(points);
+        },
+        onCombat: (evt, x, y, byPlayer, targetPlayer) => {
+          // Crit/miss events: floating SMAAAASH!/MISS text for everyone, plus the
+          // right SFX for the LOCAL player (see SfxEvents / ARCHITECTURE combat).
+          if (evt === 'crit') {
+            spawnCritText(x, y);
+            if (byPlayer === this.localPlayerId) playEventSfx('crit');
+          } else {
+            spawnMissText(x, y);
+            if (byPlayer === this.localPlayerId) playEventSfx('attack-miss');
+            else if (targetPlayer === this.localPlayerId) playEventSfx('player-dodge');
+          }
+        },
       },
-      onPlayerStats: (id, stats, leveled, gained) => {
-        if (id !== this.localPlayerId) return;
-        // Server-authoritative progression — mirror it into the Status screen
-        // and pop floats off the player so kills/level-ups feel rewarding.
-        setStatus(stats);
-        if (gained > 0) spawnXpNumber(this.player.x, this.player.y, gained);
-        if (leveled) spawnLevelUp(this.player.x, this.player.y);
-      },
-      onCombat: (evt, x, y, byPlayer, targetPlayer) => {
-        // Crit/miss events: floating SMAAAASH!/MISS text for everyone, plus the
-        // right SFX for the LOCAL player (see SfxEvents / ARCHITECTURE combat).
-        if (evt === 'crit') {
-          spawnCritText(x, y);
-          if (byPlayer === this.localPlayerId) playEventSfx('crit');
-        } else {
-          spawnMissText(x, y);
-          if (byPlayer === this.localPlayerId) playEventSfx('attack-miss');
-          else if (targetPlayer === this.localPlayerId) playEventSfx('player-dodge');
-        }
-      },
-    });
+      opts.auth ?? null
+    );
 
     // Drop the confirm keypress (E/Enter) that started the game so the first
     // playing frame doesn't read it as a Talk/Check ("no problem here").
     flushKeys();
     this.phase = 'playing';
     console.log('Ready! Use arrow keys or WASD to move');
+  }
+
+  /**
+   * Spawn into the game as a signed-in, persistent character: join by session
+   * token + characterId so the server loads the save (level/inventory/equip/
+   * stats), and restore the saved world position. Called by the Start Screen's
+   * slot list (new character → spawn, or Continue an existing one).
+   */
+  async playCharacter(char: CharacterSummary) {
+    const token = getToken();
+    if (!token) {
+      console.error('playCharacter: not signed in');
+      return;
+    }
+    const save = (char.save ?? {}) as { x?: number; y?: number; direction?: number };
+    const spawn =
+      typeof save.x === 'number' && typeof save.y === 'number'
+        ? { x: save.x, y: save.y, dir: typeof save.direction === 'number' ? save.direction : 0 }
+        : undefined;
+    // The recolored sheet is a ROM-format sprite (not the editor's band format),
+    // so register it via registerRecoloredSprite and spawn by that group id —
+    // never pass it as `appearance` (registerCustomSheet would reject it).
+    let spriteGroupId = char.spriteGroupId;
+    if (char.appearance) {
+      try {
+        const img = await loadImage(char.appearance);
+        spriteGroupId = await registerRecoloredSprite(char.spriteGroupId, img);
+      } catch (e) {
+        console.error('recolored sprite failed; using the base sprite', e);
+      }
+    }
+    await this.startGame({
+      spriteGroupId,
+      name: char.name,
+      spawn,
+      auth: { sessionToken: token, characterId: char.id },
+    });
   }
 
   /**
@@ -473,7 +588,14 @@ export class Game {
       loadSpriteGroup(1);
     };
     if (rp.appearance) {
-      registerCustomSheet(rp.appearance)
+      // Discriminate the two appearance formats by the sprite-group id: a real
+      // roster id (< CUSTOM_GROUP_BASE) means a recolored ROM sprite from the
+      // creator; a synthetic id means the sprite editor's band sheet.
+      const resolved =
+        rp.spriteGroupId < CUSTOM_GROUP_BASE
+          ? loadImage(rp.appearance).then((img) => registerRecoloredSprite(rp.spriteGroupId, img))
+          : registerCustomSheet(rp.appearance);
+      resolved
         .then((id) => {
           rp.spriteGroupId = id;
         })
@@ -766,12 +888,20 @@ export class Game {
   private update() {
     if (this.phase === 'charselect') {
       updateCharacterSelect();
+      // While the account overlay is up it owns input (DOM); don't also drive
+      // the canvas grid underneath it.
+      if (isStartScreenOpen()) return;
       // Mouse: a click selects a character; clicking the selected one confirms.
       // The click is also a user gesture, so it can start the naming music.
       const click = consumePointerClick();
       if (click) {
+        const result = handleCharSelectClick(click.x, click.y);
+        if (result === 'startscreen') {
+          openStartScreen();
+          return;
+        }
         playCharSelectMusic();
-        if (handleCharSelectClick(click.x, click.y) === 'confirm') {
+        if (result === 'confirm') {
           initMusic();
           void this.startGame();
         }
@@ -816,6 +946,9 @@ export class Game {
     // Update menu state — when open, suppress game movement
     updateMenu();
     if (isMenuOpen()) return;
+
+    // Spending skill points freezes the world behind the pentagon.
+    if (isLevelUpOpen()) return;
 
     // NPC dialogue — while open, freeze movement, doors, and music updates.
     if (isDialogueOpen()) {

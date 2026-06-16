@@ -439,6 +439,28 @@ export async function registerCustomSheet(dataUrl: string): Promise<number> {
   return groupId;
 }
 
+/**
+ * Register a RECOLORED ROM roster sprite (the character creator's output) as a
+ * drawable custom group. Unlike registerCustomSheet (which takes the sprite
+ * editor's 64px band format), this takes a recolored copy of a real ROM group's
+ * sheet — same 16x24 / 4-column layout — and runs it through the SAME pose
+ * pipeline ROM groups get (generated attack/hurt bands), so created characters
+ * animate in combat. `sourceGroupId` supplies the frame dimensions + hero poses.
+ */
+export async function registerRecoloredSprite(
+  sourceGroupId: number,
+  recolored: CanvasImageSource
+): Promise<number> {
+  const meta = getSpriteGroupMeta(sourceGroupId);
+  if (!meta) throw new Error(`No metadata for source sprite group ${sourceGroupId}`);
+  const srcRows = Math.floor(sourceHeight(recolored) / meta.height);
+  const sheet = generatePoseSheet(recolored, meta.width, meta.height, srcRows);
+  await applyHeroPoses(sourceGroupId, sheet, meta.width, meta.height);
+  const groupId = nextCustomId++;
+  registerCustomSprite(groupId, sheet, meta.width, meta.height);
+  return groupId;
+}
+
 export function getSpriteGroupMeta(groupId: number): SpriteGroupMeta | undefined {
   return customMetadata.get(groupId) ?? spriteMetadata.find((s) => s.id === groupId);
 }
