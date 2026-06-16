@@ -3,30 +3,7 @@
 > Active work is up top. **Phase 1 is fully complete** and has been moved to the
 > bottom (see "Completed Phases").
 
-## 🔧 Loose ends from the last session (in progress — knock these out)
-
-Captured from the WIP committed as "stage 2". Most of last night's work landed
-green (accounts, char creation, the whole ROM extraction pipeline); these are the
-threads that were left mid-flight:
-
-- [x] **Crit/dodge combat — SERVER half.** Done: `npcSim.resolveMelee(crit,
-dodge, base, rng)` (pure, dodge rolled BEFORE crit, crit = 2× `CRIT_MULT`),
-      injectable rng via `createNpcSim(assetsDir, rng = Math.random)`, `critChance`
-      arg on `handleAttack` that broadcasts `{type:'combat', evt:'crit'|'miss', …}`
-      on dodge/crit, `resolveMelee` exported. `gameHost` passes a Luck-derived crit
-      chance (`critChanceFromLuck`, ~1%/Luck, capped 50%). `combat.test.js` GREEN
-      (12/12). Client side was already wired (`onCombat`→crit/miss text + SFX).
-- [x] **Enemy→player crit/dodge.** Done: the enemy swing path (`tickEnemy`) now
-      runs `resolveMelee` too — the player's Speed gives a dodge chance
-      (`dodgeChanceFromSpeed`, ~0.5%/Speed, capped 30%) that turns an enemy hit
-      into a broadcast MISS. Enemy crit hook is in place (`n.crit`, default 0) for
-      per-enemy tuning later. Player dodge plumbed through the `getPlayers()` snapshot.
-- [x] **`PlayerFlags` → save** — DONE this session (see Start Screen section).
-- [x] **`SupabaseStore` migration seam doc** — DONE: full seam guide in
-      START_SCREEN.md (swap point, contract, schema mapping, sync→async gotcha,
-      security parity, cutover steps). Closes the last open Start-Screen item.
-
-## Phase 2: Multiplayer (Browser)
+## Phase 2: Multiplayer (Browser) — ✅ COMPLETE
 
 - [x] Player name tags above sprites — `NamePlate.ts`: "Name Lv#" in the EB font (outlined), drawn above each player's health bar (local + remote) in `Renderer`. Remote players now also show an HP bar; remote levels stay current via `player_stats`.
 - [x] Server-side validation (speed, position bounds) — `gameHost` 'move' drops non-finite coords, clamps to the map (`npcSim.bounds()`), and caps non-warp jumps to `MAX_MOVE_STEP` (=WARP_DELTA); door warps exempt via the warp shield. Tested.
@@ -184,8 +161,8 @@ decompression primitive (`EbCompressibleBlock`) + a parity harness.
 - [x] Basic melee attack (bat swing) — player swing deals `ATTACK_DAMAGE`, enemies flinch/die/respawn; attack/hurt poses synced over the wire
 - [x] Enemy AI (aggro range, chase, attack) — `npcSim` roamers detect within `DETECT_RANGE`, chase at `chaseSpeed`, swing on cooldown; per-spawner damage/rate/speed/level
 - [x] Health/damage system — server-authoritative HP for enemies AND players (`onPlayerHp`/`onPlayerRespawn`, `player_hp`/`player_respawn` msgs), death + respawn, floating damage numbers (Emitter)
-- [x] Experience/leveling — per-spawner **XP** (Enemy Spawner editor) → server-authoritative EXP-on-kill + level-up with **full stat growth** (geometric curve `30·1.5^(lvl-1)`; HP/offense/defense wired into combat, all 7 stats grow + display); pushed to client via `player_stats` → StatusModal. No persistence yet (resets on rejoin — needs the save system)
-- [~] Inventory + equipment system — Goods (buy/use/sell, server-authoritative) + full ROM item table extracted (offense/defense/slot/who-can-equip → `extract_shops.py`). **Equipment**: EB 4-slot screen (Weapon/Body/Arms/Other) + a 2-slot quick-select hotbar; equipped **weapon offense → attack damage**, **armor defense → damage taken** (`Equipment.ts` mirror, server-authoritative per-slot equip). TODO: armor types beyond offense/defense (status resist, etc.), more hotbar slots, and **persistence** (equipped gear + hotbar + inventory reset on rejoin — needs the save system). DEV: a Cracked bat is granted on join for testing (`server/shops.js` — remove before launch)
+- [x] Experience/leveling — per-spawner **XP** (Enemy Spawner editor) → server-authoritative EXP-on-kill + level-up with **full stat growth** (geometric curve `30·1.5^(lvl-1)`; HP/offense/defense wired into combat, all 7 stats grow + display); pushed to client via `player_stats` → StatusModal. **Persists** now (per-character save: level/exp/all stats survive rejoin)
+- [~] Inventory + equipment system — Goods (buy/use/sell, server-authoritative) + full ROM item table extracted (offense/defense/slot/who-can-equip → `extract_shops.py`). **Equipment**: EB 4-slot screen (Weapon/Body/Arms/Other) + a 2-slot quick-select hotbar; equipped **weapon offense → attack damage**, **armor defense → damage taken** (`Equipment.ts` mirror, server-authoritative per-slot equip). Inventory/money/equipped gear now **persist** (per-character save). TODO: armor types beyond offense/defense (status resist, etc.), more hotbar slots, and **hotbar persistence** (the 2 quick-slots are still client-only/in-memory). DEV: a Cracked bat is granted on join for testing (`server/shops.js` — remove before launch)
 - [~] Custom sprites for combat animations — player attack/hurt bands done (SpriteEditor); enemy bands still need the NPC Sprite Animator
 - [~] Sound effects / music integration — music PLAYS, but region triggers come from the ROM's per-sector musicId, which the door-stitched world often gets wrong. Fix is authoring-driven: the **Sound Manager** editor tool (`overrides/music.json` areas win over the sector lookup). Still to do: author correct regions across the map, then SFX (hit/attack/etc.)
 
