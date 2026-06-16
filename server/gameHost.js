@@ -48,6 +48,17 @@ const dodgeChanceFromSpeed = (speed) =>
 // door fade + interior asset load is well under this; the cap only guards
 // against a dropped 'warp' end signal leaving a player permanently invulnerable.
 const WARP_SHIELD_MAX_MS = 8000;
+// Move validation: a single non-warp position update bigger than this is a
+// teleport / speed hack and gets clamped to this step. Matches npcSim's
+// WARP_DELTA (the sim already treats bigger one-tick jumps as door warps), and
+// honest walking is ~6px per send, far below it — so this never touches legit
+// movement; door warps are exempt while the warp shield is up.
+const MAX_MOVE_STEP = 96;
+// Graceful disconnect: live clients send a move every ~3 frames (~50ms), so a
+// player silent this long is a dead/zombie socket — close it (the close handler
+// saves + cleans up). Generous, so only true zombies are reaped.
+const IDLE_TIMEOUT_MS = 30000;
+const HEARTBEAT_MS = 5000;
 
 // PSI abilities (server-authoritative). `pp` is the cost; `heal` restores HP.
 // Lifeup α heal amount is a placeholder — set it to the exact EarthBound value
@@ -194,6 +205,11 @@ class GameHost {
 
     // Server-authoritative NPC simulation: same world for every client.
     this.npcSim = createNpcSim(assetsDir);
+    // World pixel bounds for move validation (clamp players onto the map).
+    this.WORLD = this.npcSim.bounds();
+
+    // Idle-connection sweep handle (set in start()).
+    this._heartbeat = null;
   }
 
   static _readSpawn(root) {
@@ -233,6 +249,32 @@ class GameHost {
       // server-authoritative HP (same path as an enemy hit).
       (targetId, dmg) => this.damagePlayer(targetId, dmg)
     );
+    // Graceful disconnects: reap dead/zombie sockets that stopped sending. A live
+    // client sends a move every ~3 frames, so silence past IDLE_TIMEOUT_MS means
+    // the connection is gone; close it so the close handler saves + cleans up.
+    this._heartbeat = setInterval(() => this._reapIdle(), HEARTBEAT_MS);
+    if (this._heartbeat.unref) this._heartbeat.unref(); // don't keep tests alive
+  }
+
+  // Close any connection silent longer than IDLE_TIMEOUT_MS. Closing triggers the
+  // ws 'close' handler (save-back + roster cleanup + player_leave broadcast).
+  _reapIdle() {
+    const now = Date.now();
+    for (const [, entry] of this.players) {
+      if (now - (entry.lastSeen || 0) <= IDLE_TIMEOUT_MS) continue;
+      try {
+        if (entry._ws.terminate) entry._ws.terminate();
+        else entry._ws.close();
+      } catch {
+        /* socket already gone */
+      }
+    }
+  }
+
+  /** Stop the heartbeat (tests / shutdown). */
+  stop() {
+    if (this._heartbeat) clearInterval(this._heartbeat);
+    this._heartbeat = null;
   }
 
   // Project an inventory (array of ids) to the wire shape the client renders:
@@ -517,6 +559,9 @@ class GameHost {
       } catch {
         return;
       }
+      // Mark the connection alive for the idle-disconnect sweep (any message).
+      const entry = this.players.get(playerId);
+      if (entry) entry.lastSeen = Date.now();
       this._handleMessage(playerId, ws, msg);
     });
 
@@ -575,6 +620,8 @@ class GameHost {
           warpUntil: 0,
           // Dev editor anchor flag (see 'editor').
           editor: false,
+          // Last-message timestamp for the idle-disconnect sweep (_reapIdle).
+          lastSeen: Date.now(),
           // Server-authoritative progression: fresh (anon) or rebuilt from the
           // saved alloc + level (signed-in).
           ...init.progression,
@@ -658,24 +705,41 @@ class GameHost {
       case 'move': {
         const entry = this.players.get(playerId);
         if (!entry) break;
+        // --- Server-side validation (anti-cheat; lenient so honest play is never
+        // affected). Drop garbage, clamp into the map, cap implausible jumps. ---
+        let nx = Number(msg.x);
+        let ny = Number(msg.y);
+        if (!Number.isFinite(nx) || !Number.isFinite(ny)) break;
+        nx = Math.max(0, Math.min(this.WORLD.w, nx));
+        ny = Math.max(0, Math.min(this.WORLD.h, ny));
+        // Read the warp shield BEFORE clearing it: a real door warp is exactly
+        // the big jump we'd otherwise clamp as a speed hack.
+        const warping = entry.warping && Date.now() < entry.warpUntil;
+        if (!warping) {
+          const dx = nx - entry.x;
+          const dy = ny - entry.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist > MAX_MOVE_STEP) {
+            const s = MAX_MOVE_STEP / dist; // clamp the step toward the request
+            nx = Math.round(entry.x + dx * s);
+            ny = Math.round(entry.y + dy * s);
+          }
+        }
         // A move means the client is live again — the fade is over, drop the
         // shield (fallback in case the 'warp' end signal was missed).
         entry.warping = false;
-        entry.x = msg.x;
-        entry.y = msg.y;
-        entry.direction = msg.direction;
-        entry.frame = msg.frame;
+        const direction =
+          Number.isInteger(msg.direction) && msg.direction >= 0 && msg.direction <= 7
+            ? msg.direction
+            : entry.direction;
+        const frame = Number.isInteger(msg.frame) && msg.frame >= 0 ? msg.frame : 0;
+        entry.x = nx;
+        entry.y = ny;
+        entry.direction = direction;
+        entry.frame = frame;
         entry.pose = POSES.includes(msg.pose) ? msg.pose : 'walk';
         this.broadcastExcept(
-          {
-            type: 'player_move',
-            id: playerId,
-            x: msg.x,
-            y: msg.y,
-            direction: msg.direction,
-            frame: msg.frame,
-            pose: entry.pose,
-          },
+          { type: 'player_move', id: playerId, x: nx, y: ny, direction, frame, pose: entry.pose },
           playerId
         );
         break;

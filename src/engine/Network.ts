@@ -97,6 +97,20 @@ let callbacks: NetworkCallback | null = null;
 // our avatar out of the world sim. null = nothing pending.
 let pendingEditorMode: boolean | null = null;
 
+// --- Auto-reconnect state ---
+// The args from the last connect() call, replayed to re-join after a dropped
+// socket (server restart, network blip, idle-timeout). null until first connect.
+let joinArgs: {
+  spriteGroupId: number;
+  name: string;
+  appearance: CharacterAppearance | null;
+  auth: JoinAuth | null;
+} | null = null;
+let reconnectAttempt = 0;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let closedByUs = false; // a deliberate disconnect() must not trigger reconnect
+const MAX_RECONNECT_ATTEMPTS = 10;
+
 /**
  * Optional signed-in join: load a persistent character by id, authenticated by
  * the session token. When present, the server ignores the anonymous sprite/name/
@@ -115,12 +129,32 @@ export function connect(
   auth?: JoinAuth | null
 ) {
   callbacks = cb;
+  joinArgs = { spriteGroupId, name, appearance, auth: auth ?? null };
+  closedByUs = false;
+  reconnectAttempt = 0;
+  openSocket();
+}
 
-  // Connect to WS server — same host/port, /ws path
+/** Deliberately close the socket and stop auto-reconnect. */
+export function disconnect() {
+  closedByUs = true;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (ws) ws.close();
+}
+
+// Open (or re-open) the socket and replay the stored join. Wired by connect() and
+// the reconnect backoff; all handlers read module state so they survive re-opens.
+function openSocket() {
+  if (!joinArgs) return;
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${protocol}//${location.host}/ws`);
 
   ws.onopen = () => {
+    reconnectAttempt = 0; // a clean connection resets the backoff
+    const { spriteGroupId, name, appearance, auth } = joinArgs!;
     // Signed-in: join by token+characterId (server loads the save). Anonymous:
     // the dev/char-select join (fresh ephemeral player; the server is still
     // authoritative on progression, so no level is sent).
@@ -211,7 +245,20 @@ export function connect(
   };
 
   ws.onclose = () => {
-    console.log('Disconnected from server');
+    if (closedByUs || !joinArgs) return; // deliberate disconnect — stay down
+    // Unexpected drop: retry with exponential backoff (1s, 2s, 4s … capped 8s)
+    // so a server restart or network blip transparently re-joins. The server
+    // treats the re-join as a fresh connection; a signed-in player reloads their
+    // save, the old socket is reaped server-side by the idle sweep.
+    if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+      console.error(`Disconnected — gave up after ${MAX_RECONNECT_ATTEMPTS} reconnect attempts`);
+      return;
+    }
+    const delay = Math.min(8000, 1000 * 2 ** reconnectAttempt);
+    reconnectAttempt++;
+    console.log(`Disconnected — reconnecting in ${delay}ms (attempt ${reconnectAttempt})`);
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(openSocket, delay);
   };
 }
 

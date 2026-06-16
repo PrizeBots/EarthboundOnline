@@ -107,13 +107,47 @@ check("Bob's welcome roster includes Alice", () => {
 
 alice.clear();
 bob.clear();
-alice.recv({ type: 'move', x: 100, y: 200, direction: 2, frame: 1, pose: 'walk' });
+// Move relative to Alice's actual spawn: a small step the validation accepts (a
+// huge teleport from spawn would be clamped as a speed hack — covered below).
+const aSpawn = host.players.get(aliceId);
+const moveX = Math.round(aSpawn.x + 10);
+const moveY = Math.round(aSpawn.y + 10);
+alice.recv({ type: 'move', x: moveX, y: moveY, direction: 2, frame: 1, pose: 'walk' });
 
 check('move → others get player_move with the coords', () => {
   const m = bob.last('player_move');
   assert(m, 'Bob got no player_move');
-  assert.strictEqual(m.x, 100);
-  assert.strictEqual(m.y, 200);
+  assert.strictEqual(m.x, moveX);
+  assert.strictEqual(m.y, moveY);
+});
+
+// --- Server-side move validation (anti-cheat) ---
+check('move validation: a teleport (huge non-warp jump) is clamped, not trusted', () => {
+  alice.clear();
+  const before = host.players.get(aliceId);
+  const fromX = before.x;
+  const fromY = before.y;
+  alice.recv({ type: 'move', x: fromX + 5000, y: fromY, direction: 3, frame: 0, pose: 'walk' });
+  const m = bob.last('player_move'); // bob is still in range; reuse him
+  const moved = Math.hypot(m.x - fromX, m.y - fromY);
+  assert(moved <= 96 + 0.5, `clamped step should be <= 96px, was ${moved}`);
+  assert.strictEqual(host.players.get(aliceId).x, m.x, 'server position matches the clamp');
+});
+
+check('move validation: garbage coords are dropped', () => {
+  const before = { ...host.players.get(aliceId) };
+  alice.recv({ type: 'move', x: 'NaN', y: null, direction: 0, frame: 0, pose: 'walk' });
+  assert.strictEqual(host.players.get(aliceId).x, before.x, 'x unchanged');
+  assert.strictEqual(host.players.get(aliceId).y, before.y, 'y unchanged');
+});
+
+check('move validation: a door warp is exempt from the speed cap', () => {
+  const p = host.players.get(aliceId);
+  const fromX = p.x;
+  alice.recv({ type: 'warp', warping: true });
+  alice.recv({ type: 'move', x: fromX + 5000, y: p.y, direction: 3, frame: 0, pose: 'walk' });
+  // Warp shield lets the big jump through (clamped only to the map bounds).
+  assert(host.players.get(aliceId).x > fromX + 96, 'warp jump should not be speed-clamped');
 });
 
 check('move → sender does NOT echo to itself', () => {
@@ -326,6 +360,21 @@ check('a level-up also broadcasts refreshed (full) HP', () => {
   assert.strictEqual(hpMsg.hp, after.maxHp);
 });
 
+// ===================== 4b. PK toggle =====================
+
+check('set_pk flips the flag and broadcasts player_pk to everyone', () => {
+  alice.clear();
+  bob.clear();
+  alice.recv({ type: 'set_pk', on: true });
+  assert.strictEqual(host.players.get(aliceId).pk, true, 'server pk flag set');
+  const self = alice.last('player_pk');
+  const other = bob.last('player_pk');
+  assert(self && self.id === aliceId && self.pk === true, 'sender sees own pk');
+  assert(other && other.id === aliceId && other.pk === true, 'others see the pk');
+  alice.recv({ type: 'set_pk', on: false });
+  assert.strictEqual(host.players.get(aliceId).pk, false, 'pk cleared');
+});
+
 // ============================ 5. Leave ============================
 
 alice.clear();
@@ -334,6 +383,31 @@ bob.close();
 check('close → remaining players get player_leave', () => {
   const pl = alice.last('player_leave');
   assert(pl, 'Alice got no player_leave');
+});
+
+// ===================== 6. Idle-disconnect sweep =====================
+// _reapIdle closes connections that went silent (dead/zombie sockets); a live
+// client (lastSeen fresh) is left alone. Closing runs the close handler, which
+// removes the player from the roster.
+
+check('_reapIdle reaps a silent connection but keeps a live one', () => {
+  const zombie = new FakeSocket();
+  host.handleConnection(zombie);
+  zombie.recv({ type: 'join', name: 'Zombie', spriteGroupId: 1 });
+  const zid = zombie.last('welcome').playerId;
+
+  const live = new FakeSocket();
+  host.handleConnection(live);
+  live.recv({ type: 'join', name: 'Live', spriteGroupId: 1 });
+  const lid = live.last('welcome').playerId;
+
+  host.players.get(zid).lastSeen = Date.now() - 60000; // silent a minute ago
+  host.players.get(lid).lastSeen = Date.now(); // active now
+  host._reapIdle();
+
+  assert(!host.players.has(zid), 'silent zombie should be reaped');
+  assert(host.players.has(lid), 'live player must survive the sweep');
+  live.close();
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

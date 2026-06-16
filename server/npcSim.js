@@ -2063,6 +2063,11 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     /** Resolve a player's melee swing (server-authoritative). */
     handleAttack,
 
+    /** World pixel bounds {w, h} — the host clamps player positions to these. */
+    bounds() {
+      return { w: MAP_W_TILES * TILE, h: mapHTiles * TILE };
+    },
+
     /**
      * True if a solid wall sits on the line between two actor foot positions —
      * the line-of-sight gate every melee swing uses (no reaching through walls).
