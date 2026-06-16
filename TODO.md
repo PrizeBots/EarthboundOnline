@@ -10,17 +10,21 @@ green (accounts, char creation, the whole ROM extraction pipeline); these are th
 threads that were left mid-flight:
 
 - [x] **Crit/dodge combat — SERVER half.** Done: `npcSim.resolveMelee(crit,
-    dodge, base, rng)` (pure, dodge rolled BEFORE crit, crit = 2× `CRIT_MULT`),
+  dodge, base, rng)` (pure, dodge rolled BEFORE crit, crit = 2× `CRIT_MULT`),
       injectable rng via `createNpcSim(assetsDir, rng = Math.random)`, `critChance`
       arg on `handleAttack` that broadcasts `{type:'combat', evt:'crit'|'miss', …}`
       on dodge/crit, `resolveMelee` exported. `gameHost` passes a Luck-derived crit
       chance (`critChanceFromLuck`, ~1%/Luck, capped 50%). `combat.test.js` GREEN
       (12/12). Client side was already wired (`onCombat`→crit/miss text + SFX).
-- [ ] **Enemy→player crit/dodge** (follow-up to the above): the enemy swing path
-      (`tickEnemy` → `onEnemyHit`) still deals flat damage — no crit/miss text on
-      the player. Needs player dodge plumbed through the `getPlayers()` snapshot.
-- [ ] **`PlayerFlags` → save** — ✅ DONE this session (see Start Screen section).
-- [ ] **`SupabaseStore` migration seam doc** — last open Start-Screen item.
+- [x] **Enemy→player crit/dodge.** Done: the enemy swing path (`tickEnemy`) now
+      runs `resolveMelee` too — the player's Speed gives a dodge chance
+      (`dodgeChanceFromSpeed`, ~0.5%/Speed, capped 30%) that turns an enemy hit
+      into a broadcast MISS. Enemy crit hook is in place (`n.crit`, default 0) for
+      per-enemy tuning later. Player dodge plumbed through the `getPlayers()` snapshot.
+- [x] **`PlayerFlags` → save** — DONE this session (see Start Screen section).
+- [x] **`SupabaseStore` migration seam doc** — DONE: full seam guide in
+      START_SCREEN.md (swap point, contract, schema mapping, sync→async gotcha,
+      security parity, cutover steps). Closes the last open Start-Screen item.
 
 ## Phase 2: Multiplayer (Browser)
 
@@ -86,7 +90,7 @@ earlier "auth backlogged / OAuth-only / no DB yet" stance** — deliberate.
 - [x] CHARACTER SLOTS / CONTINUE UI — `StartScreen.ts` slots view (after login): 3 boxes, empty=Create New, filled=sprite+name+Lv; click filled → resume. Verified create→persist→list live on :4444.
 - [x] Client join-by-token wiring — `Network.connect(...auth)` token mode + welcome `stats`/`equipped` routed through existing handlers; `Game.startGame(opts)` + `Game.playCharacter(char)` spawn from the saved position; HP bar synced from stats.
 - [x] Move `PlayerFlags` off `localStorage` into the save — flags now live in the character `save` JSON (gameHost `this.flags` map, persisted with level/inventory/etc; private, never broadcast). Client `PlayerFlags` keeps a synchronous in-memory Set hydrated from `welcome.flags`, mirroring every change to the server via a sink (`setFlagSink`→`Network.sendFlag`→`set_flag`/`clear_flag`/`clear_all_flags`). Defaults seed after hydrate (`getPlayerDefaultFlags`). Anon dev joins keep ephemeral flags (reset on reload, by design). Round-trip tested in `persistence.test.js`.
-- [ ] Migration seam doc'd for `SupabaseStore` (swap at launch)
+- [x] Migration seam doc'd for `SupabaseStore` (swap at launch) — full guide in START_SCREEN.md ("Migration to Supabase"): swap point, contract, schema mapping, sync→async gotcha, security parity, cutover.
 
 ## Pre-Launch: User-Supplied ROM Architecture (PokeMMO model — REQUIRED before going live)
 

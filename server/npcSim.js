@@ -1543,7 +1543,32 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           n.dirty = true;
           // Player HP lives on the host; an NPC target is ours to damage.
           if (isPlayer) {
-            if (onEnemyHit) onEnemyHit(target.id, n.damage, n);
+            // The player's Speed can dodge the swing (broadcast a MISS, no
+            // damage). Enemies don't crit yet (n.crit defaults 0) but the hook is
+            // here for per-enemy crit tuning later.
+            const res = resolveMelee(n.crit || 0, target.dodge || 0, n.damage, rng);
+            if (res.miss) {
+              if (broadcastCb)
+                broadcastCb({
+                  type: 'combat',
+                  evt: 'miss',
+                  x: target.x,
+                  y: target.y,
+                  byPlayer: null,
+                  targetPlayer: target.id,
+                });
+            } else {
+              if (onEnemyHit) onEnemyHit(target.id, res.dmg, n);
+              if (res.crit && broadcastCb)
+                broadcastCb({
+                  type: 'combat',
+                  evt: 'crit',
+                  x: target.x,
+                  y: target.y,
+                  byPlayer: null,
+                  targetPlayer: target.id,
+                });
+            }
           } else {
             applyDamage(target, n.damage, now, null);
           }

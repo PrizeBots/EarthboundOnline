@@ -101,16 +101,74 @@ equipment, so we wire writes:
 4. ⬜ Character slots: create (START) + list/select (CONTINUE). ← NEXT
    `action` is plumbed through `main.ts` but both paths still fall through to the
    existing canvas character-select; Phase 4 branches on it.
-5. ⬜ Wire save read on join / write on change+disconnect; move flags into the save.
-6. ⬜ Document the Supabase migration seam.
+5. ✅ Wire save read on join / write on change+disconnect; move flags into the save.
+   (`GameHost._loadCharacterInit`/`_saveCharacter`; flags now in the save —
+   `this.flags` map ↔ `save.flags`, mirrored from the client `PlayerFlags` sink.)
+6. ✅ Document the Supabase migration seam. (See "Migration to Supabase" below.)
 
-## Migration to Supabase (at MVP launch)
+## Migration to Supabase (at MVP launch) — the seam, documented
 
-- Add a `SupabaseStore` implementing the same `Store` interface; swap the impl, keep the
-  game server for the real-time sim (Supabase can't run the authoritative loop).
-- SQLite tables map 1:1 to Postgres; JSON cols → `jsonb`.
-- Migrate existing rows or have users re-register (decide at launch). Test the full flow
-  before going live.
+Everything above the persistence layer (auth API, character API, `GameHost`'s
+save read/write) depends ONLY on the `Store` contract, never on `better-sqlite3`.
+So the whole migration is: write one new class and change one line.
+
+**The swap point** is `createStore()` in `server/store/index.js`:
+
+```js
+// SQLite now ↓ — at launch, swap this single line:
+return new SqliteStore(opts.filename);
+// return new SupabaseStore(opts);
+```
+
+Nothing else imports `SqliteStore` directly — grep to confirm before/after.
+
+**The contract `SupabaseStore` must implement** (full signatures in the
+`server/store/index.js` header comment). Every method below already has SQLite
+parity + tests (`store.test.js`), so they double as the acceptance spec:
+
+- Accounts: `createAccount({username,passwordHash,now})` (throws
+  `DuplicateUsernameError` on case-insensitive dup), `getAccountByUsername`,
+  `getAccountById` — both return the row INCLUDING `passwordHash`.
+- Sessions: `createSession({token,accountId,now,ttlMs})`, `getSession(token,now)`
+  (returns null AND GCs the row when expired), `deleteSession`,
+  `deleteExpiredSessions(now)`.
+- Characters (≤ `MAX_CHARACTERS` per account; `save` is opaque JSON —
+  progression/inventory/money/equipment/position/**flags**): `listCharacters`,
+  `getCharacter`, `createCharacter` (auto-assigns lowest free slot; throws
+  `SlotsFullError`), `updateCharacterSave(id,save,now)`, `deleteCharacter`.
+- World docs: `getWorldDoc(name)`, `putWorldDoc(name,data,now)`.
+
+**Schema mapping** (tables in `SqliteStore.js`):
+
+- `accounts`, `sessions`, `characters`, `world_docs` map 1:1 to Postgres tables.
+- JSON `TEXT` columns (`characters.save`, `world_docs.data`) → `jsonb`. SqliteStore
+  `JSON.parse`/`JSON.stringify`es at the boundary; with `jsonb` the driver returns
+  objects directly — so `SupabaseStore` SKIPS those parse/stringify steps. Keep the
+  return SHAPE identical (parsed object, not a string).
+- Username uniqueness is **case-insensitive** in SQLite (see the `LOWER()` index/
+  lookup). Reproduce with a `citext` column or a unique index on `lower(username)`.
+
+**The one real gotcha — sync vs async.** `SqliteStore` methods are SYNCHRONOUS;
+the contract permits async, and callers already `await` (a no-op on a non-promise),
+so a Promise-returning `SupabaseStore` works WITHOUT caller changes. Verify the
+two hot paths still behave:
+
+- `GameHost._loadCharacterInit` (join) — already inside an async message handler.
+- `GameHost._saveCharacter` (level-up/equip/buy/disconnect) — fire-and-forget is
+  fine, but make sure the **disconnect** save isn't dropped when the process is
+  shutting down (await it, or flush on `SIGTERM`).
+- `authApi.js` route handlers — already async; just `await` the store calls.
+
+**Security parity to preserve:** login stays timing-safe against username
+enumeration (compare a dummy hash when the user is missing — see `authApi.js`);
+session tokens stay 32-byte `crypto.randomBytes` hex; bcrypt cost 10.
+
+**Cutover:** decide migrate-rows vs. fresh-start at launch (likely fresh-start —
+the dev `data/eb.db` is throwaway). Run the FULL flow against `SupabaseStore`
+before going live: register → login → create char → play → level/equip → logout →
+login → CONTINUE restores everything. The existing `store.test.js` /
+`authApi.test.js` / `persistence.test.js` should pass against the new store with
+only the `createStore` swap.
 
 ## Deferred (noted, not built)
 

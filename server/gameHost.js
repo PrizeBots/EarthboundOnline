@@ -37,6 +37,13 @@ const CRIT_PER_LUCK = 1;
 const CRIT_CHANCE_CAP = 50;
 const critChanceFromLuck = (luck) =>
   Math.min(CRIT_CHANCE_CAP, Math.max(0, (luck | 0) * CRIT_PER_LUCK));
+// Chance to dodge an incoming enemy swing, from the defender's Speed. ~0.5%/
+// Speed (a fresh hero at Speed 8 dodges ~4% of hits), capped so no build is
+// untouchable. npcSim rolls this against the enemy's swing (see resolveMelee).
+const DODGE_PER_SPEED = 0.5;
+const DODGE_CHANCE_CAP = 30;
+const dodgeChanceFromSpeed = (speed) =>
+  Math.min(DODGE_CHANCE_CAP, Math.max(0, (speed | 0) * DODGE_PER_SPEED));
 // Max lifetime of the door-transition damage shield (see player.warping). A
 // door fade + interior asset load is well under this; the cap only guards
 // against a dropped 'warp' end signal leaving a player permanently invulnerable.
@@ -214,6 +221,8 @@ class GameHost {
           level: p.level,
           hp: p.hp,
           editor: !!p.editor,
+          // Speed-derived chance to dodge an enemy swing (npcSim resolves it).
+          dodge: dodgeChanceFromSpeed(p.speed),
         })),
       (data) => this.broadcastAll(data),
       (playerId, dmg) => this.damagePlayer(playerId, dmg),
