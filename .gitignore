@@ -10,6 +10,12 @@ eb_project/
 # Extraction output (intermediate)
 extracted/
 
+# ROM-derived game assets (atlases, sprites, map/collision JSON extracted from
+# the ROM). NEVER commit — players supply their own ROM and assets are extracted
+# client-side (PokeMMO model; see CLAUDE.md). Kept on disk locally for fast dev,
+# but untracked so they never enter the repo or a production build.
+public/assets/
+
 # Build output
 dist/
 
