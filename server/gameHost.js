@@ -30,6 +30,13 @@ const EQUIP_SLOTS = ['weapon', 'body', 'arms', 'other'];
 // per-stat cap a spend can raise an allocation to. Both server-authoritative.
 const POINTS_PER_LEVEL = 1;
 const STAT_SPEND_MAX = 99;
+// Crit (SMAAAASH!) chance as a percentage, derived from the attacker's Luck.
+// Tunable in one place; ~1%/Luck so a fresh hero (Luck 9) crits ~9% of landed
+// hits, capped so a maxed build can't crit on (nearly) every swing.
+const CRIT_PER_LUCK = 1;
+const CRIT_CHANCE_CAP = 50;
+const critChanceFromLuck = (luck) =>
+  Math.min(CRIT_CHANCE_CAP, Math.max(0, (luck | 0) * CRIT_PER_LUCK));
 // Max lifetime of the door-transition damage shield (see player.warping). A
 // door fade + interior asset load is well under this; the cap only guards
 // against a dropped 'warp' end signal leaving a player permanently invulnerable.
@@ -664,14 +671,16 @@ class GameHost {
         const entry = this.players.get(playerId);
         if (!entry) break;
         // Server-authoritative: resolve from the tracked position so reach can't
-        // be spoofed. Damage scales with the player's Offense stat + weapon.
+        // be spoofed. Damage scales with the player's Offense stat + weapon; crit
+        // chance comes from Luck (SMAAAASH! → 2× damage, broadcast to all).
         this.npcSim.handleAttack(
           entry.x,
           entry.y,
           msg.dir | 0,
           playerId,
           entry.offense + (entry.weaponOffense || 0),
-          entry.pk
+          entry.pk,
+          critChanceFromLuck(entry.luck)
         );
         break;
       }

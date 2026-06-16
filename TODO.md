@@ -3,6 +3,25 @@
 > Active work is up top. **Phase 1 is fully complete** and has been moved to the
 > bottom (see "Completed Phases").
 
+## 🔧 Loose ends from the last session (in progress — knock these out)
+
+Captured from the WIP committed as "stage 2". Most of last night's work landed
+green (accounts, char creation, the whole ROM extraction pipeline); these are the
+threads that were left mid-flight:
+
+- [x] **Crit/dodge combat — SERVER half.** Done: `npcSim.resolveMelee(crit,
+    dodge, base, rng)` (pure, dodge rolled BEFORE crit, crit = 2× `CRIT_MULT`),
+      injectable rng via `createNpcSim(assetsDir, rng = Math.random)`, `critChance`
+      arg on `handleAttack` that broadcasts `{type:'combat', evt:'crit'|'miss', …}`
+      on dodge/crit, `resolveMelee` exported. `gameHost` passes a Luck-derived crit
+      chance (`critChanceFromLuck`, ~1%/Luck, capped 50%). `combat.test.js` GREEN
+      (12/12). Client side was already wired (`onCombat`→crit/miss text + SFX).
+- [ ] **Enemy→player crit/dodge** (follow-up to the above): the enemy swing path
+      (`tickEnemy` → `onEnemyHit`) still deals flat damage — no crit/miss text on
+      the player. Needs player dodge plumbed through the `getPlayers()` snapshot.
+- [ ] **`PlayerFlags` → save** — ✅ DONE this session (see Start Screen section).
+- [ ] **`SupabaseStore` migration seam doc** — last open Start-Screen item.
+
 ## Phase 2: Multiplayer (Browser)
 
 - [x] Player name tags above sprites — `NamePlate.ts`: "Name Lv#" in the EB font (outlined), drawn above each player's health bar (local + remote) in `Renderer`. Remote players now also show an HP bar; remote levels stay current via `player_stats`.

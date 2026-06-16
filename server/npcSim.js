@@ -68,6 +68,7 @@ const HURT_W = 14; // enemy hurtbox, anchored on the feet (center-bottom)
 const HURT_H = 18;
 const HURT_OY = -18;
 const ATTACK_DAMAGE = 6;
+const CRIT_MULT = 2; // a crit (SMAAAASH!) deals double damage
 const ATTACK_COOLDOWN_MS = 250; // min time between a player's resolved attacks
 const HURT_MS = 300; // how long a struck enemy shows its flinch pose
 
@@ -195,7 +196,27 @@ function canHurt(attacker, target) {
   return !!target.pk; // others hurt only PKers
 }
 
-function createNpcSim(assetsDir) {
+/**
+ * Resolve one landed melee swing's outcome, independent of geometry (the caller
+ * already confirmed the hitbox connects). Order matters: DODGE is rolled FIRST
+ * (a dodge beats a would-be crit), then CRIT. `critChance`/`dodgeChance` are
+ * percentages (0..100); `rng()` returns [0, 1). Pure + injectable-rng so combat
+ * is deterministically testable (see combat.test.js).
+ */
+function resolveMelee(critChance, dodgeChance, base, rng) {
+  if (rng() * 100 < dodgeChance) return { miss: true, crit: false, dmg: 0 };
+  if (rng() * 100 < critChance) return { miss: false, crit: true, dmg: base * CRIT_MULT };
+  return { miss: false, crit: false, dmg: base };
+}
+
+function createNpcSim(assetsDir, rngFn = Math.random) {
+  // Injectable RNG: production uses Math.random; tests pass a fixed function so
+  // crit/dodge rolls are deterministic.
+  const rng = typeof rngFn === 'function' ? rngFn : Math.random;
+  // The broadcast fn, captured in start() — handleAttack uses it to push crit/
+  // miss events. Null until start() runs (combat.test.js drives handleAttack
+  // without start(), so every use is guarded).
+  let broadcastCb = null;
   const readJSON = (rel) => JSON.parse(fs.readFileSync(path.join(assetsDir, rel), 'utf8'));
 
   const sectors = readJSON('map/sectors.json');
@@ -1727,7 +1748,7 @@ function createNpcSim(assetsDir) {
   // Resolve a player's melee swing: a hitbox in front of the attacker damages
   // every live enemy whose hurtbox it overlaps. Authoritative — the client only
   // requests the swing; HP, death, and respawn all live here.
-  function handleAttack(x, y, dir, playerId, offense, attackerPk) {
+  function handleAttack(x, y, dir, playerId, offense, attackerPk, critChance = 0) {
     const now = Date.now();
     if (now - (lastAttackAt[playerId] || 0) < ATTACK_COOLDOWN_MS) return;
     lastAttackAt[playerId] = now;
@@ -1738,7 +1759,7 @@ function createNpcSim(assetsDir) {
     const attacker = { isEnemy: false, pk: !!attackerPk };
     // Damage scales with the attacker's Offense stat (leveling makes you hit
     // harder); falls back to the flat constant if none was passed.
-    const dmg = offense > 0 ? offense : ATTACK_DAMAGE;
+    const base = offense > 0 ? offense : ATTACK_DAMAGE;
     const v = DIR_VEC[dir] || DIR_VEC[0];
     const hx = x + v[0] * ATTACK_REACH - ATTACK_HALF;
     const hy = y - 10 + v[1] * ATTACK_REACH - ATTACK_HALF;
@@ -1749,8 +1770,33 @@ function createNpcSim(assetsDir) {
       if (!canHurt(attacker, n)) continue; // PK rules decide if this lands
       if (!aabb(hx, hy, hw, hh, n.x - HURT_W / 2, n.y + HURT_OY, HURT_W, HURT_H)) continue;
       if (wallBetween(x, y, n.x, n.y)) continue; // no reaching through a wall
+      // The hitbox connected — now roll the outcome. The enemy's own dodge can
+      // turn a connecting swing into a clean miss; a crit doubles the damage.
+      const res = resolveMelee(critChance, n.dodge || 0, base, rng);
+      if (res.miss) {
+        // Dodged: floating "MISS" text for everyone; no damage.
+        if (broadcastCb)
+          broadcastCb({
+            type: 'combat',
+            evt: 'miss',
+            x: n.x,
+            y: n.y,
+            byPlayer: playerId,
+            targetPlayer: null,
+          });
+        continue;
+      }
       // Shared death path: flinch, HP broadcast, respawn, and EXP to the killer.
-      applyDamage(n, dmg, now, playerId);
+      applyDamage(n, res.dmg, now, playerId);
+      if (res.crit && broadcastCb)
+        broadcastCb({
+          type: 'combat',
+          evt: 'crit',
+          x: n.x,
+          y: n.y,
+          byPlayer: playerId,
+          targetPlayer: null,
+        });
     }
   }
 
@@ -1769,6 +1815,7 @@ function createNpcSim(assetsDir) {
      */
     start(getPlayers, broadcast, onEnemyHit, onEnemyKill) {
       onEnemyKillCb = onEnemyKill || null;
+      broadcastCb = broadcast; // handleAttack uses this for crit/miss events
       tickInterval = setInterval(() => {
         const players = getPlayers();
         const now = Date.now();
@@ -1976,4 +2023,4 @@ function createNpcSim(assetsDir) {
   };
 }
 
-module.exports = { createNpcSim };
+module.exports = { createNpcSim, resolveMelee };
