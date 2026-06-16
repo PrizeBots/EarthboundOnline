@@ -557,6 +557,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   const respawnGuard = new Map();
   const RESPAWN_GUARD_MS = 1500;
   let onEnemyKillCb = null; // set in start(): (playerId, xp, enemy, loot) => void
+  let onPlayerHitCb = null; // set in start(): (targetPlayerId, dmg, byPlayerId) => void (PvP)
+  let getPlayersCb = null; // set in start(): () => player snapshots (PvP targeting)
 
   function readOverrides() {
     try {
@@ -1823,6 +1825,43 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           targetPlayer: null,
         });
     }
+
+    // PvP: the SAME swing also lands on other players the PK rules allow (PK
+    // players hurt anyone; anyone hurts a PKer). Player HP lives on the host, so
+    // a connecting hit is applied via onPlayerHitCb (→ GameHost.damagePlayer).
+    if (getPlayersCb && onPlayerHitCb) {
+      for (const t of getPlayersCb()) {
+        if (t.id === playerId) continue; // never hit yourself
+        if (t.editor) continue; // parked editor avatar is out of the fight
+        if (t.hp !== undefined && t.hp <= 0) continue; // already down
+        if (!canHurt(attacker, { isEnemy: false, pk: t.pk })) continue; // PK gate
+        if (!aabb(hx, hy, hw, hh, t.x - HURT_W / 2, t.y + HURT_OY, HURT_W, HURT_H)) continue;
+        if (wallBetween(x, y, t.x, t.y)) continue; // no reaching through a wall
+        const res = resolveMelee(critChance, t.dodge || 0, base, rng);
+        if (res.miss) {
+          if (broadcastCb)
+            broadcastCb({
+              type: 'combat',
+              evt: 'miss',
+              x: t.x,
+              y: t.y,
+              byPlayer: playerId,
+              targetPlayer: t.id,
+            });
+          continue;
+        }
+        onPlayerHitCb(t.id, res.dmg, playerId);
+        if (res.crit && broadcastCb)
+          broadcastCb({
+            type: 'combat',
+            evt: 'crit',
+            x: t.x,
+            y: t.y,
+            byPlayer: playerId,
+            targetPlayer: t.id,
+          });
+      }
+    }
   }
 
   let tickInterval = null;
@@ -1838,8 +1877,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
      *   killing blow; the host awards EXP and `loot` ({money, item} | null,
      *   already rolled against the ROM drop rate).
      */
-    start(getPlayers, broadcast, onEnemyHit, onEnemyKill) {
+    start(getPlayers, broadcast, onEnemyHit, onEnemyKill, onPlayerHit) {
       onEnemyKillCb = onEnemyKill || null;
+      onPlayerHitCb = onPlayerHit || null; // PvP: apply a landed swing to a player
+      getPlayersCb = getPlayers || null; // PvP: who else is in the world
       broadcastCb = broadcast; // handleAttack uses this for crit/miss events
       tickInterval = setInterval(() => {
         const players = getPlayers();

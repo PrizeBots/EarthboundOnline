@@ -50,6 +50,7 @@ import {
   sendEditorMode,
   sendSpendPoints,
   sendFlag,
+  sendSetPk,
   JoinAuth,
 } from './Network';
 import { getToken, CharacterSummary } from './Auth';
@@ -127,7 +128,7 @@ import {
   spawnCritText,
   spawnMissText,
 } from './Emitter';
-import { playEventSfx } from './SfxEvents';
+import { playEventSfx, loadSfxEvents } from './SfxEvents';
 import { setGoods, getGoods } from './Inventory';
 import { setMoney } from './Wallet';
 import {
@@ -216,6 +217,7 @@ export class Game {
       loadCharacterSelect(),
       loadMusicMap(),
       loadMusicAreas(), // authored music regions (overrides/music.json)
+      loadSfxEvents(), // authored event→sfx assignments (overrides/sfx_events.json)
       loadFont(0), // regular EB dialogue font (chat input, command menu)
       loadFont(1), // Mr. Saturn font (backlogged chat option)
       loadFont(4), // small 8px battle font (speech bubbles)
@@ -300,6 +302,12 @@ export class Game {
       }
       // Dialogue owns Enter while open (it advances pages, not chat).
       if (isMenuOpen() || this.transitioning || isDialogueOpen() || isLevelUpOpen()) return;
+      // 'K' toggles PK (player-kill) mode: ask the server to flip our flag; it
+      // replies with an authoritative player_pk broadcast (onPlayerPk applies it).
+      if (e.key === 'k' || e.key === 'K') {
+        sendSetPk(!this.player.pk);
+        return;
+      }
       handleChatKey(e);
     }
   }
@@ -390,6 +398,7 @@ export class Game {
         setEquipped(slot, id);
         if (slot === 'weapon') this.player.heldItemId = id;
         sendEquip(slot, id);
+        if (id) playEventSfx('equip'); // only on equip, not take-off
       },
     });
     initChat(getKeySet());
@@ -419,6 +428,14 @@ export class Game {
           hydrateFlags(ids);
           const defaults = getPlayerDefaultFlags();
           if (defaults.length) seedDefaults(defaults);
+        },
+        onPlayerPk: (id, pk) => {
+          // Server-authoritative PK state → red nameplate + PvP eligibility.
+          if (id === this.localPlayerId) this.player.pk = pk;
+          else {
+            const rp = this.remotePlayers.get(id);
+            if (rp) rp.pk = pk;
+          }
         },
         onPlayerJoin: (player) => {
           this.remotePlayers.set(player.id, player);
@@ -465,6 +482,8 @@ export class Game {
             if (dmg > 0) {
               spawnDamageNumber(this.player.x, this.player.y, dmg);
               this.player.hurt(); // flinch pose; broadcast to others via sendPosition
+              // Lethal blow gets the death sting instead of the hurt grunt.
+              playEventSfx(hp <= 0 ? 'player-die' : 'player-hurt');
             }
             if (heal > 0) spawnHealNumber(this.player.x, this.player.y, heal);
             setStatus({ hp, hpMax: maxHp }); // reflect in the Status screen
@@ -522,7 +541,10 @@ export class Game {
           this.player.maxHp = stats.hpMax;
           this.player.hp = stats.hp;
           if (gained > 0) spawnXpNumber(this.player.x, this.player.y, gained);
-          if (leveled) spawnLevelUp(this.player.x, this.player.y);
+          if (leveled) {
+            spawnLevelUp(this.player.x, this.player.y);
+            playEventSfx('level-up');
+          }
         },
         onPoints: (points, alloc) => {
           // Authoritative banked points + alloc (server pushes on level-up / spend /
@@ -991,6 +1013,7 @@ export class Game {
     // hit against enemies (server-authoritative damage).
     if (isAttackPressed() && this.player.attack()) {
       sendAttack(this.player.x, this.player.y, this.player.direction);
+      playEventSfx('player-attack');
     }
     if (isHurtPressed()) this.player.hurt();
     if (isToggleBoxesPressed()) setDebugBoxes(!debugBoxesOn());
@@ -1006,6 +1029,7 @@ export class Game {
       this.player.heldItemId = next;
       setEquipped('weapon', next);
       sendEquip('weapon', next);
+      if (next) playEventSfx('equip');
       console.log(`Equip weapon: ${next ? getItemName(next) : 'none'}`);
     }
 

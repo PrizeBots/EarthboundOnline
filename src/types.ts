@@ -78,6 +78,8 @@ export interface RemotePlayer {
   maxHp?: number;
   /** Entity level (no flee AI yet — tracked for a future leveling system). */
   level?: number;
+  /** PK (player-kill) flag — server-synced; drives the red nameplate + PvP rules. */
+  pk?: boolean;
 }
 
 export enum Direction {

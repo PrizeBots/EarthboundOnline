@@ -29,6 +29,8 @@ const HURT_TOTAL = 20;
 export class Player extends Entity {
   pose: Pose = 'walk';
   heldItemId: string | null = null;
+  /** PK (player-kill) flag — server-authoritative; red nameplate when on. */
+  pk = false;
   private poseTimer = 0;
 
   constructor() {

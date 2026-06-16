@@ -221,12 +221,17 @@ class GameHost {
           level: p.level,
           hp: p.hp,
           editor: !!p.editor,
-          // Speed-derived chance to dodge an enemy swing (npcSim resolves it).
+          // Speed-derived chance to dodge a swing (enemy OR PvP; npcSim resolves it).
           dodge: dodgeChanceFromSpeed(p.speed),
+          // PK flag, so npcSim's canHurt can gate PvP (and NPC aggro on PKers).
+          pk: !!p.pk,
         })),
       (data) => this.broadcastAll(data),
       (playerId, dmg) => this.damagePlayer(playerId, dmg),
-      (playerId, xp, _enemy, loot) => this.awardKill(playerId, xp, loot)
+      (playerId, xp, _enemy, loot) => this.awardKill(playerId, xp, loot),
+      // PvP: a player's swing landed on another player — apply it to the victim's
+      // server-authoritative HP (same path as an enemy hit).
+      (targetId, dmg) => this.damagePlayer(targetId, dmg)
     );
   }
 
@@ -830,6 +835,18 @@ class GameHost {
         if (!text) break;
         // Broadcast to everyone else; the sender shows its own bubble locally.
         this.broadcastExcept({ type: 'chat', id: playerId, text }, playerId);
+        break;
+      }
+
+      case 'set_pk': {
+        // A player flips their own PK (player-kill) flag. Runtime-only (never
+        // persisted, so everyone rejoins non-PK — see all-non-PK-until-shipped).
+        // Broadcast so every client can render the PK marker; npcSim reads it
+        // live through the getPlayers snapshot for PvP + NPC aggro gating.
+        const entry = this.players.get(playerId);
+        if (!entry) break;
+        entry.pk = !!msg.on;
+        this.broadcastAll({ type: 'player_pk', id: playerId, pk: entry.pk });
         break;
       }
 

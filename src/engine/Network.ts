@@ -68,6 +68,8 @@ type NetworkCallback = {
    * from the character save on `welcome`. Anonymous joins get an empty list.
    */
   onFlags?: (ids: number[]) => void;
+  /** A player toggled their PK (player-kill) flag — update marker + PvP rules. */
+  onPlayerPk?: (id: string, pk: boolean) => void;
 };
 
 /** Progression block the server pushes (field names match StatusModal). */
@@ -202,6 +204,9 @@ export function connect(
       case 'player_stats':
         callbacks?.onPlayerStats(msg.id, msg.stats, !!msg.leveled, msg.gained ?? 0);
         break;
+      case 'player_pk':
+        callbacks?.onPlayerPk?.(msg.id, !!msg.pk);
+        break;
     }
   };
 
@@ -296,6 +301,13 @@ export function sendSell(item: string) {
 export function sendUsePsi(psiId: string) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'use_psi', psiId }));
+  }
+}
+
+/** Toggle this player's PK (player-kill) flag. Server broadcasts `player_pk`. */
+export function sendSetPk(on: boolean) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'set_pk', on }));
   }
 }
 

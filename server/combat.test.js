@@ -146,5 +146,63 @@ check('handleAttack: a forced crit (crit=100) deals double damage', () => {
   assert.strictEqual(hpOf(e.id).hp, e.maxHp - 6, 'crit should deal 2x the 3 base');
 });
 
+// --- PvP melee (player-vs-player, PK-gated) ---
+// Drive handleAttack against a synthetic player roster supplied through start()'s
+// getPlayers. start() arms the tick timer, but its setInterval callback can't
+// interleave our synchronous checks, so this stays deterministic; process.exit()
+// at the end clears it.
+let pvpRoster = [];
+const pvpHits = []; // {targetId, dmg, byId} captured from onPlayerHit
+sim.start(
+  () => pvpRoster,
+  () => {}, // broadcast (combat crit/miss events) — ignored here
+  () => {}, // onEnemyHit
+  () => {}, // onEnemyKill
+  (targetId, dmg, byId) => pvpHits.push({ targetId, dmg, byId })
+);
+
+// Attacker A swings EAST from 14px west of B (spawn street: walkable, open), so
+// the hitbox centre lands on B's hurtbox.
+const BX = 1296;
+const BY = 1168;
+const AX = BX - ATTACK_REACH;
+const AY = BY;
+const roster = (aPk, bPk) => [
+  { id: 'A', x: AX, y: AY, hp: 60, pk: aPk, dodge: 0, editor: false },
+  { id: 'B', x: BX, y: BY, hp: 60, pk: bPk, dodge: 0, editor: false },
+];
+
+check('PvP: a PK attacker hits a non-PK target', () => {
+  pvpHits.length = 0;
+  pvpRoster = roster(true, false);
+  sim.handleAttack(AX, AY, 3, 'A', 5, true, 0);
+  const h = pvpHits.find((x) => x.targetId === 'B');
+  assert(h && h.dmg === 5, `expected B hit for 5, got ${JSON.stringify(pvpHits)}`);
+});
+
+check('PvP: a non-PK attacker CANNOT hit a non-PK target', () => {
+  pvpHits.length = 0;
+  pvpRoster = roster(false, false);
+  sim.handleAttack(AX, AY, 3, 'A2', 5, false, 0);
+  assert(!pvpHits.some((x) => x.targetId === 'B'), 'non-PK must not hit a non-PK player');
+});
+
+check('PvP: anyone hurts a PKer (non-PK attacker vs PK target)', () => {
+  pvpHits.length = 0;
+  pvpRoster = roster(false, true);
+  sim.handleAttack(AX, AY, 3, 'A3', 5, false, 0);
+  assert(
+    pvpHits.some((x) => x.targetId === 'B' && x.dmg === 5),
+    'should hit the PKer'
+  );
+});
+
+check('PvP: a swing never hits the attacker themselves', () => {
+  pvpHits.length = 0;
+  pvpRoster = [{ id: 'A4', x: BX, y: BY, hp: 60, pk: true, dodge: 0, editor: false }];
+  sim.handleAttack(AX, AY, 3, 'A4', 5, true, 0);
+  assert(!pvpHits.some((x) => x.targetId === 'A4'), 'must never self-hit');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

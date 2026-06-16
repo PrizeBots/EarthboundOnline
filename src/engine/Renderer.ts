@@ -156,9 +156,10 @@ function drawNameplate(
   spriteGroupId: number,
   name: string,
   level: number,
-  hasPP: boolean
+  hasPP: boolean,
+  pk = false
 ): void {
-  const plate = getNameplate(name, level);
+  const plate = getNameplate(name, level, pk);
   if (!plate) return;
   const spriteH = getSpriteGroupMeta(spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
   const capsule = BAR_H + 1; // one bar capsule (matches drawHealthBar's h)
@@ -395,7 +396,16 @@ export class Renderer {
           player.healthRatio,
           ppRatio
         );
-        drawNameplate(this.ctx, playerSx, playerSy, player.spriteGroupId, s.name, s.level, true);
+        drawNameplate(
+          this.ctx,
+          playerSx,
+          playerSy,
+          player.spriteGroupId,
+          s.name,
+          s.level,
+          true,
+          player.pk
+        );
       },
       true
     );
@@ -431,7 +441,8 @@ export class Renderer {
             rp.spriteGroupId,
             rp.name,
             rp.level ?? 1,
-            false
+            false,
+            rp.pk ?? false
           );
         }
       );

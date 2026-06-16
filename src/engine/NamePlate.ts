@@ -31,14 +31,18 @@ const OUTLINE: [number, number][] = [
   [1, 1],
 ];
 
-/** Cached outlined nameplate canvas, or null if the font isn't loaded yet. */
-export function getNameplate(name: string, level: number): HTMLCanvasElement | null {
+/**
+ * Cached outlined nameplate canvas, or null if the font isn't loaded yet. PK
+ * players render in red so everyone can spot who's hostile at a glance.
+ */
+export function getNameplate(name: string, level: number, pk = false): HTMLCanvasElement | null {
   if (!ready) return null;
   const label = `Lv${level} ${name}`;
-  const hit = cache.get(label);
+  const key = pk ? `pk:${label}` : label;
+  const hit = cache.get(key);
   if (hit) return hit;
 
-  const white = ebText(label, 1, '#ffffff', NAME_FONT);
+  const white = ebText(label, 1, pk ? '#ff4040' : '#ffffff', NAME_FONT);
   const dark = ebText(label, 1, '#101018', NAME_FONT);
   const cv = document.createElement('canvas');
   cv.width = white.width + 2;
@@ -48,6 +52,6 @@ export function getNameplate(name: string, level: number): HTMLCanvasElement | n
   for (const [dx, dy] of OUTLINE) ctx.drawImage(dark, 1 + dx, 1 + dy);
   ctx.drawImage(white, 1, 1);
 
-  cache.set(label, cv);
+  cache.set(key, cv);
   return cv;
 }
