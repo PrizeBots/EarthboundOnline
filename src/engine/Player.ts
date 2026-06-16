@@ -31,6 +31,8 @@ export class Player extends Entity {
   heldItemId: string | null = null;
   /** PK (player-kill) flag — server-authoritative; red nameplate when on. */
   pk = false;
+  /** Epoch-ms the PK enable-lock expires (can't disable PK before this). */
+  pkUntil = 0;
   private poseTimer = 0;
 
   constructor() {

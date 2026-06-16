@@ -291,6 +291,12 @@ let shopSellCursor = 0;
 let shopNote = ''; // transient line under the shop (e.g. "Not enough money")
 let phoneCursor = 0; // selected contact in the telephone menu
 let saveCursor = 0; // 0 = Yes, 1 = No, on the phone-save prompt
+// Generic Yes/No confirm state (currently the PK warning). The prompt text, the
+// action to run on Yes, and an optional follow-up message are set by onSelect.
+let confirmCursor = 0;
+let confirmPrompt = '';
+let confirmYesMsg = '';
+let confirmOnYes: (() => void) | null = null;
 
 const prevKeys = new Set<string>();
 let liveKeys: Set<string>;
@@ -352,7 +358,10 @@ export function updateMenu(): void {
         row = (row + 1) % ROWS;
         moveAxis = 'vertical';
       }
-      cursorIndex = row * COLS + col;
+      // The 2-wide grid has one empty trailing cell (5 items); don't let the
+      // cursor land on it.
+      const next = row * COLS + col;
+      if (next < MENU_ITEMS.length) cursorIndex = next;
       if (moveAxis && cursorIndex !== prevCursor) {
         playEventSfx(moveAxis === 'horizontal' ? 'cursor-horizontal' : 'cursor-vertical');
       }
@@ -602,6 +611,39 @@ export function updateMenu(): void {
         menuState = 'closed'; // hung up without saving
       }
     }
+  } else if (menuState === 'confirm') {
+    // Generic Yes/No prompt (PK warning). Cancel (Esc/Backspace) = No → command.
+    if (toggle || justPressed('Backspace')) {
+      menuState = 'command';
+    } else {
+      const prev = confirmCursor;
+      if (justPressed('ArrowUp') || justPressed('KeyW'))
+        confirmCursor = (confirmCursor + SAVE_CHOICES.length - 1) % SAVE_CHOICES.length;
+      if (justPressed('ArrowDown') || justPressed('KeyS'))
+        confirmCursor = (confirmCursor + 1) % SAVE_CHOICES.length;
+      if (confirmCursor !== prev) playEventSfx('cursor-vertical');
+
+      const p = getPointer();
+      const hovered = confirmChoiceAt(p.x, p.y);
+      if (hovered >= 0) confirmCursor = hovered;
+
+      let pick = confirm ? confirmCursor : -1;
+      if (click) {
+        const clicked = confirmChoiceAt(click.x, click.y);
+        if (clicked >= 0) pick = clicked;
+      }
+      if (pick === 0) {
+        confirmOnYes?.();
+        if (confirmYesMsg) {
+          message = confirmYesMsg;
+          menuState = 'message';
+        } else {
+          menuState = 'command';
+        }
+      } else if (pick === 1) {
+        menuState = 'command';
+      }
+    }
   }
 
   prevKeys.clear();
@@ -680,6 +722,11 @@ function renderMenuBody(ctx: CanvasRenderingContext2D, view: MenuView): void {
     renderSave(ctx);
     return;
   }
+  if (menuState === 'confirm') {
+    renderCommand(ctx, view); // keep the command grid behind the warning
+    renderPrompt(ctx, confirmPrompt, confirmCursor);
+    return;
+  }
 
   renderCommand(ctx, view);
 }
@@ -723,9 +770,10 @@ function renderPhone(ctx: CanvasRenderingContext2D): void {
   }
 }
 
-// Phone-save UI: Dad's question in a full-width window at the bottom (same as a
+// Yes/No prompt UI: a full-width question window at the bottom (same as a
 // dialogue message) with a small Yes/No chooser tucked just above its right end.
-function saveLayout(): {
+// Shared by the phone-save flow and the generic 'confirm' state (e.g. PK).
+function promptLayout(promptText: string): {
   lines: string[];
   promptX: number;
   promptY: number;
@@ -738,7 +786,7 @@ function saveLayout(): {
   chInnerW: number;
 } {
   const innerW = SCREEN_WIDTH - 16 - BORDER * 2 - PADDING * 2;
-  const lines = wrapText(SAVE_PROMPT, innerW);
+  const lines = wrapText(promptText, innerW);
   const promptW = SCREEN_WIDTH - 16;
   const promptH = lines.length * FONT_LINE_HEIGHT + PADDING * 2 + BORDER * 2;
   const promptX = 8;
@@ -755,8 +803,8 @@ function saveLayout(): {
 }
 
 /** Index of the Yes/No choice under a game-space point, or -1. */
-function saveChoiceAt(px: number, py: number): number {
-  const { chX, chY, chInnerW } = saveLayout();
+function choiceAt(prompt: string, px: number, py: number): number {
+  const { chX, chY, chInnerW } = promptLayout(prompt);
   for (let i = 0; i < SAVE_CHOICES.length; i++) {
     const x = chX + BORDER + PADDING;
     const y = chY + BORDER + PADDING + i * ITEM_H;
@@ -764,9 +812,13 @@ function saveChoiceAt(px: number, py: number): number {
   }
   return -1;
 }
+const saveChoiceAt = (px: number, py: number) => choiceAt(SAVE_PROMPT, px, py);
+const confirmChoiceAt = (px: number, py: number) => choiceAt(confirmPrompt, px, py);
 
-function renderSave(ctx: CanvasRenderingContext2D): void {
-  const { lines, promptX, promptY, promptW, promptH, chX, chY, chW, chH } = saveLayout();
+// Draw a Yes/No prompt (question window + chooser) with `cursor` highlighted.
+function renderPrompt(ctx: CanvasRenderingContext2D, promptText: string, cursor: number): void {
+  const { lines, promptX, promptY, promptW, promptH, chX, chY, chW, chH } =
+    promptLayout(promptText);
   drawWindow(ctx, promptX, promptY, promptW, promptH, MENU_STYLE);
   for (let i = 0; i < lines.length; i++) {
     drawText(
@@ -781,9 +833,13 @@ function renderSave(ctx: CanvasRenderingContext2D): void {
   for (let i = 0; i < SAVE_CHOICES.length; i++) {
     const x = chX + BORDER + PADDING;
     const y = chY + BORDER + PADDING + i * ITEM_H;
-    if (i === saveCursor) drawCursor(ctx, x, y + 3);
+    if (i === cursor) drawCursor(ctx, x, y + 3);
     drawText(ctx, SAVE_CHOICES[i], x + CURSOR_W, y, FONT_ID);
   }
+}
+
+function renderSave(ctx: CanvasRenderingContext2D): void {
+  renderPrompt(ctx, SAVE_PROMPT, saveCursor);
 }
 
 function onSelect(action: string): void {
@@ -809,6 +865,31 @@ function onSelect(action: string): void {
   if (action === 'equip') {
     equipCursor = 0;
     menuState = 'equip';
+    return;
+  }
+  if (action === 'pk') {
+    const pk = hooks?.getPk() ?? { on: false, lockedUntil: 0 };
+    const now = Date.now();
+    if (!pk.on) {
+      // Enabling is a big commitment — warn, and default the cursor to "No".
+      confirmPrompt =
+        'Enable PK mode? Anyone will be able to attack you, and you CANNOT turn it off for 5 minutes.';
+      confirmYesMsg = 'PK mode ON. Anyone can attack you now — watch your back!';
+      confirmOnYes = () => hooks?.setPk(true);
+      confirmCursor = 1; // default to "No"
+      menuState = 'confirm';
+    } else if (now < pk.lockedUntil) {
+      const secs = Math.ceil((pk.lockedUntil - now) / 1000);
+      const mm = Math.floor(secs / 60);
+      const ss = String(secs % 60).padStart(2, '0');
+      message = `PK mode is locked.\nYou can turn it off in ${mm}:${ss}.`;
+      menuState = 'message';
+    } else {
+      // Lock expired — turning PK back off is allowed immediately (no warning).
+      hooks?.setPk(false);
+      message = 'PK mode OFF.\nYou are safe from other players again.';
+      menuState = 'message';
+    }
     return;
   }
   message = STUB_MESSAGES[action] ?? '...';

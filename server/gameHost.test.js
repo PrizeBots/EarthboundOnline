@@ -362,17 +362,32 @@ check('a level-up also broadcasts refreshed (full) HP', () => {
 
 // ===================== 4b. PK toggle =====================
 
-check('set_pk flips the flag and broadcasts player_pk to everyone', () => {
+check('set_pk on → flag set, lock armed, broadcast to everyone', () => {
   alice.clear();
   bob.clear();
   alice.recv({ type: 'set_pk', on: true });
-  assert.strictEqual(host.players.get(aliceId).pk, true, 'server pk flag set');
+  const p = host.players.get(aliceId);
+  assert.strictEqual(p.pk, true, 'server pk flag set');
+  assert(p.pkUntil > Date.now(), 'enable arms the 5-minute lock');
   const self = alice.last('player_pk');
   const other = bob.last('player_pk');
   assert(self && self.id === aliceId && self.pk === true, 'sender sees own pk');
   assert(other && other.id === aliceId && other.pk === true, 'others see the pk');
+});
+
+check('set_pk off while locked is REFUSED (and re-asserts pk:true)', () => {
+  alice.clear();
   alice.recv({ type: 'set_pk', on: false });
-  assert.strictEqual(host.players.get(aliceId).pk, false, 'pk cleared');
+  assert.strictEqual(host.players.get(aliceId).pk, true, 'cannot disable while locked');
+  const re = alice.last('player_pk');
+  assert(re && re.pk === true, 'server re-asserts the locked-on state to the owner');
+});
+
+check('set_pk off after the lock expires → cleared', () => {
+  host.players.get(aliceId).pkUntil = Date.now() - 1; // pretend 5 min elapsed
+  alice.recv({ type: 'set_pk', on: false });
+  assert.strictEqual(host.players.get(aliceId).pk, false, 'pk clears once the lock expires');
+  assert.strictEqual(host.players.get(aliceId).pkUntil, 0, 'lock reset');
 });
 
 // ============================ 5. Leave ============================

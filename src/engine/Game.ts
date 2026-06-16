@@ -302,12 +302,6 @@ export class Game {
       }
       // Dialogue owns Enter while open (it advances pages, not chat).
       if (isMenuOpen() || this.transitioning || isDialogueOpen() || isLevelUpOpen()) return;
-      // 'K' toggles PK (player-kill) mode: ask the server to flip our flag; it
-      // replies with an authoritative player_pk broadcast (onPlayerPk applies it).
-      if (e.key === 'k' || e.key === 'K') {
-        sendSetPk(!this.player.pk);
-        return;
-      }
       handleChatKey(e);
     }
   }
@@ -400,6 +394,10 @@ export class Game {
         sendEquip(slot, id);
         if (id) playEventSfx('equip'); // only on equip, not take-off
       },
+      // PK toggle (server-authoritative): the menu reads our flag + lock expiry
+      // and asks the server to flip it; the result returns via onPlayerPk.
+      getPk: () => ({ on: this.player.pk, lockedUntil: this.player.pkUntil }),
+      setPk: (on) => sendSetPk(on),
     });
     initChat(getKeySet());
     initDialogue(getKeySet());
@@ -429,10 +427,13 @@ export class Game {
           const defaults = getPlayerDefaultFlags();
           if (defaults.length) seedDefaults(defaults);
         },
-        onPlayerPk: (id, pk) => {
-          // Server-authoritative PK state → red nameplate + PvP eligibility.
-          if (id === this.localPlayerId) this.player.pk = pk;
-          else {
+        onPlayerPk: (id, pk, until) => {
+          // Server-authoritative PK state → red nameplate + PvP eligibility. The
+          // lock expiry (until) only matters for the local player (menu gating).
+          if (id === this.localPlayerId) {
+            this.player.pk = pk;
+            this.player.pkUntil = until;
+          } else {
             const rp = this.remotePlayers.get(id);
             if (rp) rp.pk = pk;
           }

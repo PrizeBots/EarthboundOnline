@@ -45,9 +45,12 @@ export const MENU_ITEMS = [
   { label: 'PSI', action: 'psi' },
   { label: 'Equip', action: 'equip' },
   { label: 'Status', action: 'status' },
+  { label: 'PK', action: 'pk' },
 ];
 export const COLS = 2;
-export const ROWS = 2;
+// 5 items in a 2-wide grid → 3 rows (the last has one cell; nav guards the empty
+// slot, see MenuManager). Window height uses ROWS so it sizes to all items.
+export const ROWS = 3;
 
 // PSI abilities castable from the PSI command. Static for now; the server
 // validates the PP cost and resolves the effect (so a client can't self-heal).

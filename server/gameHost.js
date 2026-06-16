@@ -59,6 +59,9 @@ const MAX_MOVE_STEP = 96;
 // saves + cleans up). Generous, so only true zombies are reaped.
 const IDLE_TIMEOUT_MS = 30000;
 const HEARTBEAT_MS = 5000;
+// PK enable-lock: once a player turns PK on they're committed for this long and
+// can't turn it off. Persisted (pkUntil), so relogging doesn't escape it.
+const PK_LOCK_MS = 5 * 60 * 1000;
 
 // PSI abilities (server-authoritative). `pp` is the cost; `heal` restores HP.
 // Lifeup α heal amount is a placeholder — set it to the exact EarthBound value
@@ -341,6 +344,8 @@ class GameHost {
       characterId: null,
       alloc: null,
       flags: [],
+      pk: false,
+      pkUntil: 0,
     };
   }
 
@@ -390,6 +395,11 @@ class GameHost {
       unspentPoints:
         Number.isInteger(save.unspentPoints) && save.unspentPoints >= 0 ? save.unspentPoints : 0,
       flags: Array.isArray(save.flags) ? save.flags.filter((n) => Number.isInteger(n)) : [],
+      // PK mode + its enable-lock survive relogging (you can't escape PK by
+      // disconnecting); pkUntil is an absolute epoch-ms, so a long-gone lock has
+      // simply expired by the time they return.
+      pk: !!save.pk,
+      pkUntil: Number.isFinite(save.pkUntil) ? save.pkUntil : 0,
     };
   }
 
@@ -414,6 +424,8 @@ class GameHost {
           y: p.y,
           direction: p.direction,
           flags: [...(this.flags.get(playerId) || [])],
+          pk: !!p.pk,
+          pkUntil: p.pkUntil || 0,
         },
         Date.now()
       );
@@ -612,8 +624,10 @@ class GameHost {
           armorDefense: 0,
           inventory: init.inventory, // Goods slots, mutated by use/buy/sell
           money: init.money,
-          // PK (player-kill) flag — see npcSim canHurt. All players start non-PK.
-          pk: false,
+          // PK (player-kill) flag + enable-lock expiry — see npcSim canHurt and
+          // the set_pk handler. Loaded from the save (anon: off).
+          pk: init.pk,
+          pkUntil: init.pkUntil,
           // Door-transition shield (see 'warp'): whiffs enemy swings on the
           // frozen ghost left at a doorway mid-fade.
           warping: false,
@@ -668,6 +682,9 @@ class GameHost {
             equipped: entry.equipped,
             // Saved quest/progress flags (PlayerFlags) — private to this player.
             flags: [...this.flags.get(playerId)],
+            // Restore PK state + lock (a player who logged out PK stays PK).
+            pk: entry.pk,
+            pkUntil: entry.pkUntil,
           })
         );
 
@@ -903,14 +920,33 @@ class GameHost {
       }
 
       case 'set_pk': {
-        // A player flips their own PK (player-kill) flag. Runtime-only (never
-        // persisted, so everyone rejoins non-PK — see all-non-PK-until-shipped).
-        // Broadcast so every client can render the PK marker; npcSim reads it
-        // live through the getPlayers snapshot for PvP + NPC aggro gating.
+        // Server-authoritative PK with a 5-minute enable-LOCK that can't be
+        // escaped by relogging (pkUntil is persisted in the save). Enabling
+        // (re)arms the lock; disabling is refused until it expires. Broadcast so
+        // every client renders the PK marker; npcSim reads pk live through the
+        // getPlayers snapshot for PvP + NPC aggro gating.
         const entry = this.players.get(playerId);
         if (!entry) break;
-        entry.pk = !!msg.on;
-        this.broadcastAll({ type: 'player_pk', id: playerId, pk: entry.pk });
+        const now = Date.now();
+        if (msg.on) {
+          entry.pk = true;
+          entry.pkUntil = now + PK_LOCK_MS; // committed to PK for 5 minutes
+        } else {
+          if (now < (entry.pkUntil || 0)) {
+            // Still locked — refuse, and re-assert the truth so the client snaps back.
+            this.sendTo(playerId, {
+              type: 'player_pk',
+              id: playerId,
+              pk: true,
+              until: entry.pkUntil,
+            });
+            break;
+          }
+          entry.pk = false;
+          entry.pkUntil = 0;
+        }
+        this.broadcastAll({ type: 'player_pk', id: playerId, pk: entry.pk, until: entry.pkUntil });
+        this._saveCharacter(playerId);
         break;
       }
 

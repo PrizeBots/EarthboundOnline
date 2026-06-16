@@ -68,8 +68,11 @@ type NetworkCallback = {
    * from the character save on `welcome`. Anonymous joins get an empty list.
    */
   onFlags?: (ids: number[]) => void;
-  /** A player toggled their PK (player-kill) flag — update marker + PvP rules. */
-  onPlayerPk?: (id: string, pk: boolean) => void;
+  /**
+   * A player's PK (player-kill) state changed. `until` is the epoch-ms the
+   * enable-lock expires (only meaningful for the LOCAL player; 0 when off).
+   */
+  onPlayerPk?: (id: string, pk: boolean, until: number) => void;
 };
 
 /** Progression block the server pushes (field names match StatusModal). */
@@ -187,6 +190,8 @@ function openSocket() {
         if (msg.equipped) callbacks?.onEquipped(msg.equipped);
         // Restore saved player flags (empty for anonymous joins).
         callbacks?.onFlags?.(Array.isArray(msg.flags) ? msg.flags : []);
+        // Restore PK state + lock (a player who logged out PK stays PK).
+        callbacks?.onPlayerPk?.(msg.playerId, !!msg.pk, msg.pkUntil ?? 0);
         break;
       case 'join_error':
         console.error('Join rejected:', msg.error);
@@ -239,7 +244,7 @@ function openSocket() {
         callbacks?.onPlayerStats(msg.id, msg.stats, !!msg.leveled, msg.gained ?? 0);
         break;
       case 'player_pk':
-        callbacks?.onPlayerPk?.(msg.id, !!msg.pk);
+        callbacks?.onPlayerPk?.(msg.id, !!msg.pk, msg.until ?? 0);
         break;
     }
   };

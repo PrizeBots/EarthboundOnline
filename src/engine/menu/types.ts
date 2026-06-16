@@ -17,14 +17,18 @@ export type MenuName =
   | 'shop_sell'
   | 'phone'
   | 'save'
+  | 'confirm'
   | 'equip';
 
-// Hooks into the local player's equipment, wired by Game (the menu has no player
-// ref). getEquipped reads a slot; equip sets it (held sprite for a weapon +
-// server 'equip', which applies offense/defense).
+// Hooks into the local player's equipment + PK state, wired by Game (the menu
+// has no player ref). getEquipped reads a slot; equip sets it (held sprite for a
+// weapon + server 'equip', which applies offense/defense). getPk reads the
+// server-authoritative PK flag + lock expiry; setPk asks the server to toggle it.
 export interface MenuHooks {
   getEquipped(slot: EquipSlot): string | null;
   equip(slot: EquipSlot, itemId: string | null): void;
+  getPk(): { on: boolean; lockedUntil: number };
+  setPk(on: boolean): void;
 }
 
 /** One row of the combined Equip list: a slot, or an unequipped gear item. */
