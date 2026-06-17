@@ -13,7 +13,7 @@ import { drawText, measureText, FONT_LINE_HEIGHT } from '../TextRenderer';
 import { getGoods, goodsCount } from '../Inventory';
 import { getMoney } from '../Wallet';
 import { itemEquip } from '../Shop';
-import { drawItemIcon, getItemName } from '../Items';
+import { drawItemIcon } from '../Items';
 import { drawPsiIcon } from '../PsiFx';
 import { getPointer } from '../Input';
 import { EQUIP_SLOTS, SLOT_LABELS } from '../Equipment';
@@ -31,11 +31,13 @@ import {
   PSI_TAG,
   isPsiEntry,
   psiName,
+  psiAnimId,
   SHOP_ROOT,
   drawCursor,
   commandLayout,
   goodsLayout,
   equipListLayout,
+  equipSelectLayout,
   psiLayout,
   shopListLayout,
   hotbarLayout,
@@ -131,51 +133,61 @@ export function renderGoods(ctx: CanvasRenderingContext2D, v: MenuView): void {
   }
 }
 
+/** Trim `text` so it fits in `maxW` px, adding ".." if it had to be cut. */
+function fitText(text: string, maxW: number): string {
+  if (measureText(text, FONT_ID) <= maxW) return text;
+  let s = text;
+  while (s.length > 1 && measureText(s + '..', FONT_ID) > maxW) s = s.slice(0, -1);
+  return s + '..';
+}
+
+/** The Equip slot list (center third): Weapon / Body / Arms / Other, each
+ *  showing the equipped item's icon at the right. A small Offense/Defense panel
+ *  sits below. The right-third sub-modal is drawn separately (renderEquipSelect). */
 export function renderEquip(ctx: CanvasRenderingContext2D, v: MenuView): void {
-  const rows = v.equipRows;
-  const { winX, winY, winW, winH, rows: cells } = equipListLayout(rows.length);
+  const { winX, winY, winW, winH, rows } = equipListLayout();
   drawWindow(ctx, winX, winY, winW, winH, MENU_STYLE);
-  for (let i = 0; i < rows.length; i++) {
-    const { x, y } = cells[i];
+  for (let i = 0; i < EQUIP_SLOTS.length; i++) {
+    const slot = EQUIP_SLOTS[i];
+    const { x, y, w } = rows[i];
     if (i === v.equipCursor) drawCursor(ctx, x, y + 3);
-    const r = rows[i];
-    if (r.kind === 'slot') {
-      const id = v.hooks?.getEquipped(r.slot) ?? null;
-      drawText(ctx, SLOT_LABELS[r.slot], x + CURSOR_W, y, FONT_ID);
-      drawText(ctx, id ? (getItemName(id) ?? '?') : '-', x + CURSOR_W + 42, y, FONT_ID);
-    } else {
-      const eq = itemEquip(r.id);
-      const tag = eq
-        ? eq.slot === 'weapon'
-          ? `+${eq.offense ?? 0} off`
-          : `+${eq.defense ?? 0} def`
-        : '';
-      drawText(ctx, r.name, x + CURSOR_W, y, FONT_ID);
-      drawText(ctx, tag, x + CURSOR_W + 84, y, FONT_ID);
-    }
-  }
-  // Faint divider between the slots and the gear list.
-  if (rows.length > EQUIP_SLOTS.length) {
-    const sepY = cells[EQUIP_SLOTS.length].y - 1;
-    ctx.fillStyle = '#4a5a78';
-    ctx.fillRect(cells[0].x, sepY, cells[0].w, 1);
+    drawText(ctx, SLOT_LABELS[slot], x + CURSOR_W, y, FONT_ID);
+    // Equipped item's icon flush right (so the narrow modal still shows it).
+    const id = v.hooks?.getEquipped(slot) ?? null;
+    if (id) drawItemIcon(ctx, id, x + w - ITEM_H, y - 1, ITEM_H);
+    else drawText(ctx, '-', x + w - measureText('-', FONT_ID), y, FONT_ID);
   }
 
-  // Live status panel (Offense/Defense incl. equipped gear) to the right.
+  // Offense/Defense (incl. equipped gear) just below the slot list.
   const st = v.equipStats;
   const lines: [string, number][] = [
     ['Offense', st.offense],
     ['Defense', st.defense],
   ];
-  const sx = winX + winW + 2;
-  const sw = 76;
+  const sy0 = winY + winH + 2;
   const sh = lines.length * ITEM_H + PADDING * 2 + BORDER * 2;
-  drawWindow(ctx, sx, winY, sw, sh, MENU_STYLE);
+  drawWindow(ctx, winX, sy0, winW, sh, MENU_STYLE);
   for (let i = 0; i < lines.length; i++) {
-    const yy = winY + BORDER + PADDING + i * ITEM_H;
-    drawText(ctx, lines[i][0], sx + BORDER + PADDING, yy, FONT_ID);
+    const yy = sy0 + BORDER + PADDING + i * ITEM_H;
+    drawText(ctx, lines[i][0], winX + BORDER + PADDING, yy, FONT_ID);
     const value = String(lines[i][1]);
-    drawText(ctx, value, sx + sw - BORDER - PADDING - measureText(value, FONT_ID), yy, FONT_ID);
+    drawText(ctx, value, winX + winW - BORDER - PADDING - measureText(value, FONT_ID), yy, FONT_ID);
+  }
+}
+
+/** The Equip sub-modal (right third): the gear the player owns for the chosen
+ *  slot, plus a "(Take off)" row. The currently-equipped item is marked. */
+export function renderEquipSelect(ctx: CanvasRenderingContext2D, v: MenuView): void {
+  const items = v.equipSelectItems;
+  const { winX, winY, winW, winH, rows } = equipSelectLayout(items.length);
+  drawWindow(ctx, winX, winY, winW, winH, MENU_STYLE);
+  const equippedId = v.hooks?.getEquipped(v.equipSlotSel) ?? null;
+  for (let i = 0; i < items.length; i++) {
+    const { x, y, w } = rows[i];
+    if (i === v.equipSelectCursor) drawCursor(ctx, x, y + 3);
+    const worn = items[i].id !== '' && items[i].id === equippedId;
+    const label = (worn ? '*' : '') + items[i].name;
+    drawText(ctx, fitText(label, w - CURSOR_W), x + CURSOR_W, y, FONT_ID);
   }
 }
 
@@ -221,8 +233,10 @@ function drawHotbarGlyph(
   if (isPsiEntry(id)) {
     const abilityId = id.slice(PSI_TAG.length);
     // Use the PSI's first animation frame as the slot icon, like weapons/items.
+    // The hotbar stores the game id (e.g. 'fire'), whose anim is 'psi_fire_alpha'
+    // — resolve through psiAnimId rather than guessing the catalog id.
     const s = Math.min(16, bw - 2);
-    if (drawPsiIcon(ctx, abilityId, bx + (bw - s) / 2, by + (bh - s) / 2, s)) return;
+    if (drawPsiIcon(ctx, psiAnimId(abilityId), bx + (bw - s) / 2, by + (bh - s) / 2, s)) return;
     // Fallback (frames still decoding / no art authored): abbreviated name.
     let label = psiName(abilityId);
     while (label.length > 1 && measureText(label, FONT_ID) > bw - 2) label = label.slice(0, -1);

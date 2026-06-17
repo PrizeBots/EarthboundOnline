@@ -60,6 +60,7 @@ import {
   cellAt,
   goodsRowAt,
   equipRowAt,
+  equipSelectRowAt,
   psiRowAt,
   shopListLayout,
   shopRowAt,
@@ -73,6 +74,7 @@ import {
   renderCommand,
   renderGoods,
   renderEquip,
+  renderEquipSelect,
   renderPsi,
   renderMessage,
   renderHotbar,
@@ -131,11 +133,12 @@ export function reconcileHotbarStock(): void {
   if (changed) persistHotbar();
 }
 
-// Equip screen: one combined list — the 4 slots (each showing the equipped
-// item; selecting an occupied slot takes it off) followed by the player's
-// UNEQUIPPED gear (selecting equips it into its slot). A live status panel
-// (Offense/Defense) sits to the right so stat changes are visible.
+// Equip screen: the slot list (Weapon / Body / Arms / Other) in the center
+// third; equipCursor indexes it. Picking a slot opens the sub-modal (right
+// third) for equipSlotSel, where equipSelectCursor indexes the gear list.
 let equipCursor = 0;
+let equipSlotSel: EquipSlot = 'weapon';
+let equipSelectCursor = 0;
 
 // EarthBound's telephone menu — pick who to call. Dad saves your game; Mom
 // eases homesickness. (Escargo Express / other EB contacts can join once item
@@ -221,20 +224,46 @@ export function openAtmMenu(): void {
 
 // --- Equip screen (EB 4-slot) + hotbar geometry/logic ------------------------
 
-// One combined list: the 4 slots, then the player's UNEQUIPPED gear.
-
-/** Equippable inventory gear that is NOT currently worn in its slot. */
-function unequippedGear(): { id: string; name: string }[] {
-  return getGoods().filter((g) => {
-    const eq = itemEquip(g.id);
-    return eq && (hooks?.getEquipped(eq.slot) ?? null) !== g.id;
-  });
-}
+// The Equip screen is a slot list (Weapon / Body / Arms / Other) in the center
+// third. Picking a slot opens a sub-modal in the right third listing the gear
+// the player owns for that slot; picking an item there equips it.
 
 function equipRows(): EquipRow[] {
-  const rows: EquipRow[] = EQUIP_SLOTS.map((slot) => ({ kind: 'slot', slot }));
-  for (const it of unequippedGear()) rows.push({ kind: 'item', id: it.id, name: it.name });
-  return rows;
+  return EQUIP_SLOTS.map((slot) => ({ kind: 'slot', slot }));
+}
+
+/** Gear the player owns that fits `slot` (deduped by id). */
+function equipItemsForSlot(slot: EquipSlot): { id: string; name: string }[] {
+  const seen = new Set<string>();
+  const out: { id: string; name: string }[] = [];
+  for (const g of getGoods()) {
+    if (itemEquip(g.id)?.slot === slot && !seen.has(g.id)) {
+      seen.add(g.id);
+      out.push({ id: g.id, name: g.name });
+    }
+  }
+  return out;
+}
+
+/** Rows for the open sub-modal: a "(Take off)" option (id '') then the gear. */
+function equipSelectItems(): { id: string; name: string }[] {
+  return [{ id: '', name: '(Take off)' }, ...equipItemsForSlot(equipSlotSel)];
+}
+
+/** Open the sub-modal for the slot under the equip cursor. */
+function openEquipSelect(): void {
+  equipSlotSel = EQUIP_SLOTS[equipCursor];
+  equipSelectCursor = 0;
+  menuState = 'equip_select';
+}
+
+/** Act on a sub-modal row: equip the chosen item, or take off (id ''). */
+function activateEquipSelect(i: number): void {
+  const sel = equipSelectItems()[i];
+  if (!sel) return;
+  hooks?.equip(equipSlotSel, sel.id === '' ? null : sel.id);
+  playEventSfx('cursor-vertical');
+  menuState = 'equip'; // back to the slot list
 }
 
 /** Current Offense/Defense INCLUDING equipped gear (for the live status panel). */
@@ -248,26 +277,16 @@ function equipStats(): { offense: number; defense: number } {
   return { offense, defense };
 }
 
-/** Act on an equip-list row: take off an occupied slot, or equip a gear item. */
-function activateEquipRow(i: number): void {
-  const r = equipRows()[i];
-  if (!r) return;
-  if (r.kind === 'slot') {
-    if (hooks?.getEquipped(r.slot)) hooks?.equip(r.slot, null); // take off
-  } else {
-    const eq = itemEquip(r.id);
-    if (eq) hooks?.equip(eq.slot, r.id); // equip (server swaps out any occupant)
-  }
-}
-
 /** Auto-equip a Good if it's gear (else use it). Shows the resulting stat. */
 /** Use a consumable from EITHER the Goods menu or a hotbar slot: ask the server
  *  to apply it, and — only for FOOD (the item's category folder, see
- *  ItemFolders) — play the eat SFX. Non-food consumables (sprays, key items…)
- *  use the same path but don't chomp. The server validates/may refuse, but the
- *  cue fires on send, matching how PSI/equip play their SFX. */
+ *  ItemFolders) that can actually be eaten — play the eat SFX. At full HP the
+ *  server refuses a heal item (and floats "HP is full"), so we skip the chomp
+ *  for a bite that won't happen. getStatus().hp is kept live by onPlayerHp.
+ *  Non-food consumables (sprays, key items…) use the same path but never chomp. */
 function useConsumable(id: string): void {
-  if (isFoodItem(id)) playEventSfx('eat');
+  const st = getStatus();
+  if (isFoodItem(id) && st.hp < st.hpMax) playEventSfx('eat');
   sendUseItem(id);
 }
 
@@ -367,9 +386,9 @@ export function syncWeaponHotbar(weaponId: string | null): void {
 }
 
 // Pointer drag/drop. Goods: drag a row to a hotbar box to assign it, or release
-// on the same row to use/equip it. Equip: drag a gear ITEM row (ghost only —
-// the equip itself fires from the click latch, since each item has exactly one
-// valid slot). Press/release use their own Input latches, distinct from clicks.
+// on the same row to use/equip it. PSI: drag a move onto a box to quick-cast it.
+// Press/release use their own Input latches, distinct from clicks. (Equipping is
+// done entirely on the Equip slot list + its sub-modal, not via drag.)
 function updateHotbarDrag(): void {
   const press = consumePointerPress();
   if (press && !drag) {
@@ -377,9 +396,6 @@ function updateHotbarDrag(): void {
       const items = getGoods();
       const i = goodsRowAt(press.x, press.y);
       if (i >= 0 && items[i]) drag = { id: items[i].id };
-    } else if (menuState === 'equip') {
-      const r = equipRows()[equipRowAt(press.x, press.y, equipRows().length)];
-      if (r && r.kind === 'item') drag = { id: r.id };
     } else if (menuState === 'psi') {
       // Drag a PSI move onto a hotbar box to quick-cast it with 1/2.
       const i = psiRowAt(press.x, press.y);
@@ -410,7 +426,6 @@ function updateHotbarDrag(): void {
       if (i >= 0 && PSI_ABILITIES[i] && PSI_TAG + PSI_ABILITIES[i].id === drag.id)
         usePsi(PSI_ABILITIES[i].id);
     }
-    // Equip: the click latch performs the equip; drag here is purely the ghost.
     drag = null;
   }
   if (drag && !isPointerDown()) drag = null; // safety: never get stuck dragging
@@ -613,23 +628,44 @@ export function updateMenu(): void {
     if (toggle || justPressed('Backspace')) {
       menuState = 'command'; // back to the command grid
     } else {
-      const n = equipRows().length;
-      if (n > 0) {
-        const prevEquip = equipCursor;
-        if (justPressed('ArrowUp') || justPressed('KeyW')) equipCursor = (equipCursor + n - 1) % n;
-        if (justPressed('ArrowDown') || justPressed('KeyS')) equipCursor = (equipCursor + 1) % n;
-        if (equipCursor !== prevEquip) playEventSfx('cursor-vertical');
-        if (equipCursor >= n) equipCursor = n - 1;
-        const p = getPointer();
-        const hov = equipRowAt(p.x, p.y, equipRows().length);
-        if (hov >= 0) equipCursor = hov;
-        // E/Enter on the cursor, or a click on any row: equip a gear item into
-        // its slot / take off an equipped slot.
-        if (confirm) activateEquipRow(equipCursor);
-        if (click) {
-          const ci = equipRowAt(click.x, click.y, equipRows().length);
-          if (ci >= 0) activateEquipRow(ci);
+      const n = EQUIP_SLOTS.length;
+      const prevEquip = equipCursor;
+      if (justPressed('ArrowUp') || justPressed('KeyW')) equipCursor = (equipCursor + n - 1) % n;
+      if (justPressed('ArrowDown') || justPressed('KeyS')) equipCursor = (equipCursor + 1) % n;
+      if (equipCursor !== prevEquip) playEventSfx('cursor-vertical');
+      const p = getPointer();
+      const hov = equipRowAt(p.x, p.y);
+      if (hov >= 0) equipCursor = hov;
+      // E/Enter on the cursor, or a click on a slot: open that slot's sub-modal.
+      if (confirm) openEquipSelect();
+      if (click) {
+        const ci = equipRowAt(click.x, click.y);
+        if (ci >= 0) {
+          equipCursor = ci;
+          openEquipSelect();
         }
+      }
+    }
+  } else if (menuState === 'equip_select') {
+    if (toggle || justPressed('Backspace')) {
+      menuState = 'equip'; // back to the slot list
+    } else {
+      const items = equipSelectItems();
+      const n = items.length;
+      const prevSel = equipSelectCursor;
+      if (justPressed('ArrowUp') || justPressed('KeyW'))
+        equipSelectCursor = (equipSelectCursor + n - 1) % n;
+      if (justPressed('ArrowDown') || justPressed('KeyS'))
+        equipSelectCursor = (equipSelectCursor + 1) % n;
+      if (equipSelectCursor !== prevSel) playEventSfx('cursor-vertical');
+      if (equipSelectCursor >= n) equipSelectCursor = n - 1;
+      const p = getPointer();
+      const hov = equipSelectRowAt(p.x, p.y, n);
+      if (hov >= 0) equipSelectCursor = hov;
+      if (confirm) activateEquipSelect(equipSelectCursor);
+      if (click) {
+        const ci = equipSelectRowAt(click.x, click.y, n);
+        if (ci >= 0) activateEquipSelect(ci);
       }
     }
   } else if (menuState === 'shop') {
@@ -887,6 +923,9 @@ function buildView(): MenuView {
     hooks,
     equipRows: equipRows(),
     equipStats: equipStats(),
+    equipSlotSel,
+    equipSelectCursor,
+    equipSelectItems: equipSelectItems(),
   };
 }
 
@@ -895,9 +934,10 @@ function renderMenuBody(ctx: CanvasRenderingContext2D, view: MenuView): void {
     renderMessage(ctx, view);
     return;
   }
-  if (menuState === 'equip') {
+  if (menuState === 'equip' || menuState === 'equip_select') {
     renderCommand(ctx, view); // command grid stays visible behind the modal
     renderEquip(ctx, view);
+    if (menuState === 'equip_select') renderEquipSelect(ctx, view);
     return;
   }
   if (menuState === 'status') {

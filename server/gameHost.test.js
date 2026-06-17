@@ -374,6 +374,27 @@ check('a level-up also broadcasts refreshed (full) HP', () => {
   assert.strictEqual(hpMsg.hp, after.maxHp);
 });
 
+check('an ANONYMOUS player banks skill points on level-up (drives the level-up button)', () => {
+  // alice is an anonymous join; the prior test leveled her up several times.
+  const pts = alice.last('points_update');
+  assert(pts, 'no points_update sent to anon player on level-up');
+  assert(pts.points > 0, `anon should bank points on level-up, got ${pts.points}`);
+  assert(pts.alloc && typeof pts.alloc === 'object', 'points_update carries the alloc');
+  assert(host.points.get(aliceId).unspentPoints > 0, 'points banked on the per-player record');
+});
+
+check('an anonymous player can spend banked points (server-authoritative)', () => {
+  const before = host.points.get(aliceId).unspentPoints;
+  assert(before > 0, 'precondition: has points to spend');
+  const offBefore = host.players.get(aliceId).offense;
+  alice.clear();
+  alice.recv({ type: 'spend_points', add: { muscle: 1 } });
+  assert.strictEqual(host.points.get(aliceId).unspentPoints, before - 1, 'one point spent');
+  assert.strictEqual(host.points.get(aliceId).alloc.muscle, 4, 'alloc muscle incremented (3→4)');
+  assert(host.players.get(aliceId).offense > offBefore, 'spending muscle raised offense');
+  assert.strictEqual(alice.last('points_update').points, before - 1, 'echoed remaining points');
+});
+
 // ===================== 4b. PK toggle =====================
 
 check('set_pk on → flag set, lock armed, broadcast to everyone', () => {

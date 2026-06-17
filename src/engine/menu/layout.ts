@@ -11,6 +11,7 @@
 import { measureText, FONT_LINE_HEIGHT } from '../TextRenderer';
 import { getGoods } from '../Inventory';
 import { getStoreItems, sellPrice } from '../Shop';
+import { EQUIP_SLOTS } from '../Equipment';
 import { SCREEN_WIDTH, SCREEN_HEIGHT } from '../../types';
 
 export const MENU_STYLE = 0; // EB "Plain" dark-blue window flavor
@@ -52,22 +53,42 @@ export const COLS = 2;
 // slot, see MenuManager). Window height uses ROWS so it sizes to all items.
 export const ROWS = 3;
 
-// PSI abilities castable from the PSI command. Static for now; the server
-// validates the PP cost and resolves the effect (so a client can't self-heal).
-// `pp` cost MIRRORS the server PSI table (gameHost.js PSI) — keep in sync.
+// PSI abilities castable from the PSI command. DEV: every family is available to
+// every player (no learn/level gate yet — that's wired to level + Mental later);
+// the server validates PP + resolves the effect. `pp` MIRRORS the server PSI
+// table (gameHost.js PSI). `anim` is the PsiAnim catalog id whose authored frames
+// play on cast AND show as the hotbar icon (the game id differs, e.g. fire →
+// psi_fire_alpha, so we carry the mapping explicitly).
 export const PSI_ABILITIES = [
-  { id: 'lifeup', name: 'Lifeup α', pp: 3 }, // restores HP (on the caster)
-  { id: 'healing', name: 'Healing α', pp: 4 }, // clears your status conditions
-  { id: 'fire', name: 'PSI Fire α', pp: 5 }, // strikes the nearest enemy (projectile)
-  { id: 'hypnosis', name: 'Hypnosis α', pp: 4 }, // sleeps the nearest enemy
-  { id: 'paralysis', name: 'Paralysis α', pp: 5 }, // paralyzes the nearest enemy
-  { id: 'brainshock', name: 'Brainshock α', pp: 6 }, // feeling strange + can't-concentrate
+  { id: 'lifeup', name: 'Lifeup α', pp: 3, anim: 'lifeup_alpha' }, // heal self
+  { id: 'healing', name: 'Healing α', pp: 4, anim: 'healing_alpha' }, // cure your statuses
+  { id: 'fire', name: 'PSI Fire α', pp: 5, anim: 'psi_fire_alpha' }, // offense (projectile)
+  { id: 'freeze', name: 'PSI Freeze α', pp: 4, anim: 'psi_freeze_alpha' }, // offense
+  { id: 'thunder', name: 'PSI Thunder α', pp: 3, anim: 'psi_thunder_alpha' }, // offense
+  { id: 'flash', name: 'PSI Flash α', pp: 8, anim: 'psi_flash_alpha' }, // offense + paralyze
+  { id: 'starstorm', name: 'PSI Starstorm α', pp: 24, anim: 'psi_starstorm_alpha' }, // big offense
+  { id: 'rockin', name: 'PSI Rockin α', pp: 6, anim: 'psi_alpha' }, // offense (the ???? move)
+  { id: 'hypnosis', name: 'Hypnosis α', pp: 4, anim: 'hypnosis_alpha' }, // sleep a foe
+  { id: 'paralysis', name: 'Paralysis α', pp: 5, anim: 'paralysis_alpha' }, // paralyze a foe
+  { id: 'brainshock', name: 'Brainshock α', pp: 6, anim: 'brainshock_alpha' }, // strange + noPsi
+  { id: 'shield', name: 'Shield α', pp: 6, anim: 'shield_alpha' }, // (effect TODO — anim only)
+  { id: 'psishield', name: 'PSI Shield α', pp: 8, anim: 'psi_shield_alpha' }, // (anim only)
+  { id: 'offenseup', name: 'Offense up α', pp: 10, anim: 'offense_up_alpha' }, // (anim only)
+  { id: 'defensedown', name: 'Defense down α', pp: 6, anim: 'defense_down_alpha' }, // (anim only)
+  { id: 'magnet', name: 'PSI Magnet α', pp: 1, anim: 'psi_magnet_alpha' }, // (anim only)
+  { id: 'teleport', name: 'Teleport α', pp: 2, anim: 'teleport_alpha' }, // (anim only)
 ];
 
 /** PP cost of a PSI ability (0 if unknown). The server is authoritative; the
  *  client uses this only to gate the cast (don't fire FX/SFX with too little PP). */
 export function psiCost(abilityId: string): number {
   return PSI_ABILITIES.find((a) => a.id === abilityId)?.pp ?? 0;
+}
+
+/** The PsiAnim catalog id for a PSI ability (for the cast/hotbar icon), or the
+ *  id itself as a fallback. */
+export function psiAnimId(abilityId: string): string {
+  return PSI_ABILITIES.find((a) => a.id === abilityId)?.anim ?? abilityId;
 }
 
 // Hotbar entries are normally item ids; a PSI ability is stored tagged as
@@ -126,8 +147,9 @@ export function cellAt(px: number, py: number): number {
   return -1;
 }
 
-// The Goods list: a vertical window under the command grid, one row per item.
-const GOODS_MIN_W = 96;
+// The Goods list: a tall panel over the right two-thirds of the screen, bounded
+// by the top/bottom margins (the command grid stays visible on the left).
+const GOODS_MARGIN = 8;
 export function goodsLayout(): {
   winX: number;
   winY: number;
@@ -136,25 +158,22 @@ export function goodsLayout(): {
   rows: Cell[];
 } {
   const items = getGoods();
-  const labels = items.map((i) => i.name);
-  const maxLabelW = labels.length ? Math.max(...labels.map((l) => measureText(l, FONT_ID))) : 0;
-  const innerW = Math.max(GOODS_MIN_W, CURSOR_W + maxLabelW);
-  const count = Math.max(1, items.length); // keep a non-zero box even if empty
-  const innerH = count * ITEM_H + PADDING * 2;
-  const cmd = commandLayout();
-  const winX = cmd.winX;
-  const winY = cmd.winY + cmd.winH + 2; // tucked just below the command window
+  const winW = Math.floor((SCREEN_WIDTH * 2) / 3);
+  const winX = SCREEN_WIDTH - winW - GOODS_MARGIN;
+  const winY = GOODS_MARGIN;
+  const winH = SCREEN_HEIGHT - GOODS_MARGIN * 2;
+  const rowW = winW - (BORDER + PADDING) * 2;
 
   const rows: Cell[] = [];
   for (let i = 0; i < items.length; i++) {
     rows.push({
       x: winX + BORDER + PADDING,
       y: winY + BORDER + PADDING + i * ITEM_H,
-      w: innerW,
+      w: rowW,
       h: ITEM_H,
     });
   }
-  return { winX, winY, winW: innerW + PADDING * 2 + BORDER * 2, winH: innerH + BORDER * 2, rows };
+  return { winX, winY, winW, winH, rows };
 }
 
 /** Index of the Goods row under a game-space point, or -1. */
@@ -167,42 +186,76 @@ export function goodsRowAt(px: number, py: number): number {
   return -1;
 }
 
-const EQUIP_ROW_W = 132; // inner width (slot label + item name)
+// Equip screen geometry: the slot list sits in the center third of the screen;
+// picking a slot opens an item sub-modal in the right third.
+const EQUIP_THIRD = Math.floor(SCREEN_WIDTH / 3);
+const EQUIP_TOP = 8;
 
-/** The combined Equip list window (slots + unequipped gear). `rowCount` is the
- *  number of rows (4 slots + unequipped gear), supplied by MenuManager. */
-export function equipListLayout(rowCount: number): {
+/** The slot list window (Weapon / Body / Arms / Other), centered third. */
+export function equipListLayout(): {
   winX: number;
   winY: number;
   winW: number;
   winH: number;
   rows: Cell[];
 } {
-  const cmd = commandLayout();
-  const winX = cmd.winX;
-  const winY = cmd.winY + cmd.winH + 2;
-  const n = Math.max(1, rowCount);
-  const innerH = n * ITEM_H + PADDING * 2;
+  const n = EQUIP_SLOTS.length;
+  const winW = EQUIP_THIRD;
+  const winX = (SCREEN_WIDTH - winW) >> 1; // centered → occupies the middle third
+  const winY = EQUIP_TOP;
+  const winH = n * ITEM_H + PADDING * 2 + BORDER * 2;
+  const rowW = winW - (BORDER + PADDING) * 2;
   const rows: Cell[] = [];
   for (let i = 0; i < n; i++) {
     rows.push({
       x: winX + BORDER + PADDING,
       y: winY + BORDER + PADDING + i * ITEM_H,
-      w: EQUIP_ROW_W,
+      w: rowW,
       h: ITEM_H,
     });
   }
-  return {
-    winX,
-    winY,
-    winW: EQUIP_ROW_W + PADDING * 2 + BORDER * 2,
-    winH: innerH + BORDER * 2,
-    rows,
-  };
+  return { winX, winY, winW, winH, rows };
 }
 
-export function equipRowAt(px: number, py: number, rowCount: number): number {
-  const { rows } = equipListLayout(rowCount);
+export function equipRowAt(px: number, py: number): number {
+  const { rows } = equipListLayout();
+  for (let i = 0; i < rows.length; i++) {
+    const c = rows[i];
+    if (px >= c.x && px < c.x + c.w && py >= c.y && py < c.y + c.h) return i;
+  }
+  return -1;
+}
+
+/** The item sub-modal (right third) listing gear for the chosen slot. */
+export function equipSelectLayout(itemCount: number): {
+  winX: number;
+  winY: number;
+  winW: number;
+  winH: number;
+  rows: Cell[];
+} {
+  const list = equipListLayout();
+  const winX = list.winX + list.winW + 4; // just right of the slot list
+  const winW = SCREEN_WIDTH - winX - 6; // out to the right margin
+  const winY = EQUIP_TOP;
+  const n = Math.max(1, itemCount);
+  const maxH = SCREEN_HEIGHT - winY - 8;
+  const winH = Math.min(n * ITEM_H + PADDING * 2 + BORDER * 2, maxH);
+  const rowW = winW - (BORDER + PADDING) * 2;
+  const rows: Cell[] = [];
+  for (let i = 0; i < itemCount; i++) {
+    rows.push({
+      x: winX + BORDER + PADDING,
+      y: winY + BORDER + PADDING + i * ITEM_H,
+      w: rowW,
+      h: ITEM_H,
+    });
+  }
+  return { winX, winY, winW, winH, rows };
+}
+
+export function equipSelectRowAt(px: number, py: number, itemCount: number): number {
+  const { rows } = equipSelectLayout(itemCount);
   for (let i = 0; i < rows.length; i++) {
     const c = rows[i];
     if (px >= c.x && px < c.x + c.w && py >= c.y && py < c.y + c.h) return i;
@@ -219,12 +272,16 @@ export function psiLayout(): {
   winH: number;
   rows: Cell[];
 } {
+  const PSI_MIN_W = 96;
   const maxLabelW = Math.max(...PSI_ABILITIES.map((a) => measureText(a.name, FONT_ID)));
-  const innerW = Math.max(GOODS_MIN_W, CURSOR_W + maxLabelW);
+  const innerW = Math.max(PSI_MIN_W, CURSOR_W + maxLabelW);
   const innerH = PSI_ABILITIES.length * ITEM_H + PADDING * 2;
   const cmd = commandLayout();
-  const winX = cmd.winX;
-  const winY = cmd.winY + cmd.winH + 2;
+  // The list grew (every PSI is dev-available), so it sits to the RIGHT of the
+  // command window at the top edge — full screen height — instead of tucked
+  // under it (which overflowed the bottom). Mirrors the shop/equip-select lists.
+  const winX = cmd.winX + cmd.winW + 4;
+  const winY = cmd.winY;
   const rows: Cell[] = PSI_ABILITIES.map((_, i) => ({
     x: winX + BORDER + PADDING,
     y: winY + BORDER + PADDING + i * ITEM_H,

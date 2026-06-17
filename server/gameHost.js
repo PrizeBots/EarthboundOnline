@@ -19,11 +19,10 @@ const fs = require('fs');
 const path = require('path');
 const { createNpcSim } = require('./npcSim');
 const { loadShops } = require('./shops');
-const { sanitizeAlloc, deriveCombatStats, STAT_KEYS } = require('./charStats');
+const { sanitizeAlloc, deriveCombatStats, STAT_KEYS, defaultAlloc } = require('./charStats');
 const status = require('./status'); // EB status-condition engine (shared with npcSim)
 
 const POSES = ['walk', 'climb', 'attack', 'hurt'];
-const PLAYER_MAX_HP = 60;
 const MAX_SLOTS = 14; // EarthBound's Goods menu holds 14 items per character
 // Present boxes: each ROM gift's Event Flag maps to a PRIVATE per-player flag at
 // this base, so every player can open each gift exactly once. KEEP IN SYNC with
@@ -126,6 +125,33 @@ const PSI = {
       { type: 'noPsi', chance: 80 },
     ],
   },
+  // more offense families (strike the nearest enemy)
+  freeze: { name: 'PSI Freeze α', pp: 4, damage: 12, range: 240, anim: 'psi_freeze_alpha' },
+  thunder: { name: 'PSI Thunder α', pp: 3, damage: 16, range: 280, anim: 'psi_thunder_alpha' },
+  flash: {
+    name: 'PSI Flash α',
+    pp: 8,
+    damage: 10,
+    range: 240,
+    anim: 'psi_flash_alpha',
+    inflict: [{ type: 'paralysis', chance: 40 }], // Flash's signature random-ish stun
+  },
+  starstorm: {
+    name: 'PSI Starstorm α',
+    pp: 24,
+    damage: 30,
+    range: 340,
+    anim: 'psi_starstorm_alpha',
+  },
+  rockin: { name: 'PSI Rockin α', pp: 6, damage: 18, range: 240, anim: 'psi_alpha' },
+  // assist / utility — DEV: castable for testing; effects (buffs/teleport/magnet)
+  // aren't wired yet, so these just play their animation + spend PP.
+  shield: { name: 'Shield α', pp: 6, anim: 'shield_alpha' },
+  psishield: { name: 'PSI Shield α', pp: 8, anim: 'psi_shield_alpha' },
+  offenseup: { name: 'Offense up α', pp: 10, anim: 'offense_up_alpha' },
+  defensedown: { name: 'Defense down α', pp: 6, anim: 'defense_down_alpha' },
+  magnet: { name: 'PSI Magnet α', pp: 1, anim: 'psi_magnet_alpha' },
+  teleport: { name: 'Teleport α', pp: 2, anim: 'teleport_alpha' },
 };
 // Unit facing vectors by Direction (S,N,W,E,NW,SW,SE,NE) — where an offense PSI
 // fizzles toward when no enemy is in range (so the projectile still reads).
@@ -141,24 +167,10 @@ const PSI_DIR = [
 ];
 
 // --- Player progression (server-authoritative; full stat growth) ---
-// Level-1 baseline mirrors StatusModal's defaults so the client's display
-// matches before the first server stats arrive. No persistence yet, so every
-// join starts at level 1 (a save system is a separate TODO).
-const BASE_STATS = {
-  level: 1,
-  hp: PLAYER_MAX_HP,
-  maxHp: PLAYER_MAX_HP,
-  pp: 7,
-  ppMax: 7,
-  exp: 0,
-  offense: 7,
-  defense: 3,
-  speed: 8,
-  guts: 7,
-  vitality: 6,
-  iq: 9,
-  luck: 9,
-};
+// Every player's level-1 combat baseline is DERIVED from a creation allocation
+// (progressionFromAlloc below); anonymous/dev sessions use defaultAlloc(). One
+// stat model for everyone means banked skill points only ever ADD to a build
+// (no baseline that a spend would silently re-derive away from).
 // Per-level stat gains (tunable). HP/maxHp, offense and defense feed combat;
 // SPEED now drives both dodge (dodgeChanceFromSpeed) AND the player's walk speed
 // (client Player.moveSpeedFor) — so leveling visibly quickens your legs. guts/
@@ -182,12 +194,6 @@ const expToReach = (level) => {
   for (let i = 1; i < level; i++) s += expCost(i);
   return s;
 };
-
-function newProgression() {
-  const p = { ...BASE_STATS };
-  p.expToNext = expCost(1); // EXP remaining to next level (display)
-  return p;
-}
 
 // Build a full progression block from a creation allocation. The 5 creation
 // stats set the LEVEL-1 combat baseline (deriveCombatStats); per-level GROWTH is
@@ -263,6 +269,12 @@ class GameHost {
     // other clients. Persisted in the character save for signed-in players;
     // ephemeral (session-only) for anonymous dev/char-select joins.
     this.flags = new Map();
+    // Per-player skill points + creation-stat allocation (drives the level-up
+    // icon + spend pentagon): playerId -> {alloc, unspentPoints}. Like flags,
+    // kept OUT of the player record (PRIVATE, never broadcast). Lives here for
+    // EVERY player — anonymous/dev sessions bank + spend ephemerally (reset on
+    // reload); signed-in players also persist it via the character save.
+    this.points = new Map();
 
     // Server-authoritative goods registry + shop catalog (shared loader in
     // server/shops.js). Each player's inventory is an array of numeric-string
@@ -311,7 +323,7 @@ class GameHost {
    */
   static _loadGifts(assetsDir, root) {
     const gifts = new Map();
-    let base = [];
+    let base;
     try {
       base = JSON.parse(fs.readFileSync(path.join(assetsDir, 'map', 'gifts.json'), 'utf8'));
     } catch {
@@ -501,7 +513,7 @@ class GameHost {
       name: msg.name || `Player${playerId}`,
       spriteGroupId: msg.spriteGroupId || 1,
       appearance: this._validAppearance(msg.appearance),
-      progression: newProgression(),
+      progression: progressionFromAlloc(defaultAlloc(), 1, 0),
       inventory: [...this.STARTING_INVENTORY],
       money: STARTING_MONEY, // on-hand cash (shops spend this)
       bank: 0, // ATM balance — kill money lands here; withdraw to spend
@@ -515,7 +527,8 @@ class GameHost {
       y: this.SPAWN.y,
       direction: this.SPAWN.dir || 0,
       characterId: null,
-      alloc: null,
+      alloc: defaultAlloc(),
+      unspentPoints: 0,
       flags: [],
       pk: false,
       pkLockMs: 0,
@@ -640,14 +653,15 @@ class GameHost {
     const p = this.players.get(playerId);
     if (!handle || !p || !this.store) return;
     this._tickPkLock(p); // bank the in-game time served so the saved lock is current
+    const prog = this.points.get(playerId);
     try {
       this.store.updateCharacterSave(
         handle.characterId,
         {
-          alloc: handle.alloc,
+          alloc: prog ? prog.alloc : handle.alloc,
           level: p.level,
           exp: p.exp,
-          unspentPoints: handle.unspentPoints || 0,
+          unspentPoints: prog ? prog.unspentPoints || 0 : 0,
           inventory: [...p.inventory],
           money: p.money,
           bank: p.bank,
@@ -679,15 +693,15 @@ class GameHost {
     if (entry && entry._ws.readyState === 1) entry._ws.send(JSON.stringify(data));
   }
 
-  // Push a signed-in player their authoritative banked points + current alloc
-  // (drives the level-up icon + the spend pentagon). Private to the owner.
+  // Push a player their authoritative banked points + current alloc (drives the
+  // level-up icon + the spend pentagon). Private to the owner; works for anon too.
   _sendPoints(playerId) {
-    const handle = this.saves.get(playerId);
-    if (!handle) return;
+    const prog = this.points.get(playerId);
+    if (!prog) return;
     this.sendTo(playerId, {
       type: 'points_update',
-      points: handle.unspentPoints || 0,
-      alloc: handle.alloc,
+      points: prog.unspentPoints || 0,
+      alloc: prog.alloc,
     });
   }
 
@@ -821,12 +835,12 @@ class GameHost {
     });
     if (leveled) {
       this.broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: 0 });
-      // Grant skill points for each level gained (signed-in only) and push the
-      // new banked total to the owner — they alone decide where to spend it.
-      const handle = this.saves.get(playerId);
-      if (handle) {
-        handle.unspentPoints =
-          (handle.unspentPoints || 0) + POINTS_PER_LEVEL * (p.level - fromLevel);
+      // Grant skill points for each level gained and push the new banked total to
+      // the owner — they alone decide where to spend it. Banked for everyone
+      // (anon sessions too); signed-in players persist it in _saveCharacter.
+      const prog = this.points.get(playerId);
+      if (prog) {
+        prog.unspentPoints = (prog.unspentPoints || 0) + POINTS_PER_LEVEL * (p.level - fromLevel);
         this._sendPoints(playerId);
       }
     }
@@ -915,6 +929,7 @@ class GameHost {
       this._saveCharacter(playerId); // persist final state (signed-in only)
       this.saves.delete(playerId);
       this.flags.delete(playerId);
+      this.points.delete(playerId);
       this.players.delete(playerId);
       this.broadcastAll({ type: 'player_leave', id: playerId });
     });
@@ -1001,12 +1016,24 @@ class GameHost {
         // private to this player — never broadcast.
         this.flags.set(playerId, new Set(init.flags));
 
+        // Skill points + alloc (private). Banked for EVERY player so the
+        // level-up icon + spend pentagon work in anonymous/dev sessions too;
+        // signed-in players also persist it (see _saveCharacter).
+        this.points.set(playerId, {
+          alloc: init.alloc ? { ...init.alloc } : defaultAlloc(),
+          unspentPoints: init.unspentPoints || 0,
+        });
+
         // Remember the persistence handle (signed-in only) for save-back +
-        // skill-point banking.
+        // skill-point banking. `alloc` MUST be the SAME object `this.points`
+        // holds (the copy above) — spend_points mutates that one, and both
+        // _saveCharacter and tests read it back through this handle. (Pointing it
+        // at the raw `init.alloc` instead decoupled them, so a valid spend didn't
+        // show up here.)
         if (init.characterId != null) {
           this.saves.set(playerId, {
             characterId: init.characterId,
-            alloc: init.alloc,
+            alloc: this.points.get(playerId).alloc,
             unspentPoints: init.unspentPoints || 0,
           });
         }
@@ -1574,9 +1601,9 @@ class GameHost {
         // alloc, and the derived stats. A request that asks for more than is banked,
         // for an unknown stat, for a negative/fractional amount, or that would blow
         // the cap is rejected wholesale — the client can't grant itself anything.
-        const handle = this.saves.get(playerId); // signed-in only
+        const prog = this.points.get(playerId);
         const entry = this.players.get(playerId);
-        if (!handle || !entry) break;
+        if (!prog || !entry) break;
         const add = msg.add && typeof msg.add === 'object' ? msg.add : null;
         if (!add) break;
         if (Object.keys(add).some((k) => !STAT_KEYS.includes(k))) break; // unknown stat
@@ -1588,18 +1615,18 @@ class GameHost {
             ok = false;
             break;
           }
-          if ((handle.alloc[k] || 0) + v > STAT_SPEND_MAX) {
+          if ((prog.alloc[k] || 0) + v > STAT_SPEND_MAX) {
             ok = false;
             break;
           }
           total += v;
         }
-        if (!ok || total <= 0 || total > (handle.unspentPoints || 0)) break;
+        if (!ok || total <= 0 || total > (prog.unspentPoints || 0)) break;
 
         // Apply on the server side, then re-derive + persist.
-        for (const k of STAT_KEYS) handle.alloc[k] = (handle.alloc[k] || 0) + (add[k] || 0);
-        handle.unspentPoints -= total;
-        this.reapplyAlloc(entry, handle.alloc);
+        for (const k of STAT_KEYS) prog.alloc[k] = (prog.alloc[k] || 0) + (add[k] || 0);
+        prog.unspentPoints -= total;
+        this.reapplyAlloc(entry, prog.alloc);
         this.broadcastAll({
           type: 'player_stats',
           id: playerId,

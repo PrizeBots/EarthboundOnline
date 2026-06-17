@@ -534,8 +534,14 @@ function buildStripPanel(): HTMLDivElement {
   S.stripCanvas.style.cssText = 'image-rendering:pixelated;cursor:pointer;';
   S.stripCanvas.onmousedown = (e) => {
     const r = S.stripCanvas.getBoundingClientRect();
-    const x = e.clientX - r.left;
-    const y = e.clientY - r.top;
+    // Map the click from CSS pixels to CANVAS pixels: the strip is sized to its
+    // content (e.g. 184px for 3 item frames) but the panel may shrink it, so a
+    // raw clientX-left lands in the wrong cell — and the error grows left→right,
+    // which is why the last frame was hardest to hit. Scale by the display ratio.
+    const sx = r.width ? S.stripCanvas.width / r.width : 1;
+    const sy = r.height ? S.stripCanvas.height / r.height : 1;
+    const x = (e.clientX - r.left) * sx;
+    const y = (e.clientY - r.top) * sy;
     // Item / PSI mode: the strip IS the frame selector — click a frame to edit it.
     if (S.editMode === 'item' || S.editMode === 'psi') {
       const i = S.stripCellRects.findIndex(

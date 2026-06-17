@@ -79,23 +79,24 @@ export function getStatus(): Readonly<PlayerStats> {
  */
 export function renderStatus(ctx: CanvasRenderingContext2D): void {
   const winW = 248;
-  const winH = 160;
+  const winH = 168;
   const winX = (SCREEN_WIDTH - winW) >> 1;
   const winY = (SCREEN_HEIGHT - winH) >> 1;
   drawWindow(ctx, winX, winY, winW, winH, STYLE);
 
   const x = winX + BORDER + PADDING;
-  const top = winY + BORDER + PADDING;
+  const top = winY + BORDER + PADDING + 6;
   const innerRight = winX + winW - (BORDER + PADDING);
   const lh = FONT_LINE_HEIGHT;
 
   // Name plate on the top border (like the game) — notch the border with the
-  // window fill, then draw the name straddling the top edge.
+  // window fill, then draw the name sitting on the top edge. The plate stays
+  // within the window: its top is the window's top, never above it.
   const nameX = winX + 14;
   const nameW = measureText(stats.name, FONT_ID);
   ctx.fillStyle = windowFillColor(STYLE);
-  ctx.fillRect(nameX - 4, winY - 5, nameW + 8, 8);
-  drawText(ctx, stats.name, nameX, winY - 6, FONT_ID);
+  ctx.fillRect(nameX - 4, winY, nameW + 8, 8);
+  drawText(ctx, stats.name, nameX, winY - 2, FONT_ID);
 
   // --- Right column: the seven stats, in EB order, values flush to the edge. ---
   const statRows: [string, number][] = [

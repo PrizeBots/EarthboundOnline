@@ -157,9 +157,21 @@ export function setItemEditFrame(frame: number): void {
   S.dirty = true;
 }
 
-/** Push all 3 frame buffers as runtime overrides + refresh the preview. */
+/** Push all 3 frame buffers as runtime overrides + refresh the preview.
+ *  Stores an independent COPY of each buffer, not the shared buffer canvas
+ *  itself: the 3 itemFrameBuffers are reused for every item, so aliasing them
+ *  into the override map meant switching items (which redraws the buffers)
+ *  silently overwrote the previous item's art — it'd show the wrong sprite (or
+ *  none) until a reload rebuilt overrides from the saved file. Snapshotting here
+ *  gives each item its own pixels. */
 export function commitItemEdit(): void {
-  for (let f = 0; f < ITEM_FRAMES; f++) setItemOverride(S.itemEditId, f, S.itemFrameBuffers[f]);
+  for (let f = 0; f < ITEM_FRAMES; f++) {
+    const copy = document.createElement('canvas');
+    copy.width = ITEM_W;
+    copy.height = ITEM_H;
+    copy.getContext('2d')!.drawImage(S.itemFrameBuffers[f], 0, 0);
+    setItemOverride(S.itemEditId, f, copy);
+  }
   S.walkerItem = S.itemEditId;
   renderItemThumb();
 }

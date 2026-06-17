@@ -1718,6 +1718,63 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     return true;
   }
 
+  // Anti-stack nudge (runs every tick, separate from the AI). Normal movement
+  // (tryStep→footFree) treats actors as solid, so a step INTO another actor is
+  // always rejected — which means two that somehow end up OVERLAPPING (shoved
+  // together by knockback, a door-follow drop, or a spawn) can each find no
+  // clear step and lock up on top of each other forever. This pushes `n` out of
+  // any actor its box penetrates, checking ONLY walls (never other actors), so a
+  // stacked pair can always pull apart. Edge-touching (adjacent) doesn't trigger
+  // it — aabb needs real overlap — so swarming a target still works. Exactly
+  // co-located actors scatter on a stable per-id angle so they don't push the
+  // same way and re-stack.
+  const UNSTACK_STEP = 2; // px/tick separation nudge
+  function unstack(n) {
+    const [bx, by, bw, bh] = actorBox(n, n.x, n.y);
+    let sx = 0;
+    let sy = 0;
+    let stacked = false;
+    for (const o of actors) {
+      if (o === n || o.dead || o.kind === 'deleted') continue;
+      const [ox, oy, ow, oh] = actorBox(o, o.x, o.y);
+      if (!aabb(bx, by, bw, bh, ox, oy, ow, oh)) continue; // not overlapping
+      stacked = true;
+      let dx = n.x - o.x;
+      let dy = n.y - o.y;
+      if (dx === 0 && dy === 0) {
+        const ang = ((n.id % 16) / 16) * Math.PI * 2; // stable per-id scatter
+        dx = Math.cos(ang);
+        dy = Math.sin(ang);
+      }
+      const d = Math.hypot(dx, dy) || 1;
+      sx += dx / d;
+      sy += dy / d;
+    }
+    if (!stacked) return;
+    const len = Math.hypot(sx, sy) || 1;
+    const ux = (sx / len) * UNSTACK_STEP;
+    const uy = (sy / len) * UNSTACK_STEP;
+    const free = (mx, my) => {
+      const [fx, fy, fw, fh] = actorBox(n, mx, my);
+      return !blocked(fx, fy, fw, fh);
+    };
+    // Push apart; if a wall blocks that, slide along it (either perpendicular)
+    // so the pile still drains instead of jamming in a corner.
+    if (free(n.x + ux, n.y + uy)) {
+      n.x += ux;
+      n.y += uy;
+    } else if (free(n.x - uy, n.y + ux)) {
+      n.x -= uy;
+      n.y += ux;
+    } else if (free(n.x + uy, n.y - ux)) {
+      n.x += uy;
+      n.y -= ux;
+    } else {
+      return; // boxed in by walls on every side — can't move this tick
+    }
+    n.dirty = true;
+  }
+
   // Steer one tick toward (tx,ty) at `speed`, using the same separation +
   // angled-routing as the chase: straight first, then widening left/right
   // angles, first clear heading wins, so a blocked mover fans around walls and
@@ -2488,6 +2545,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             else if (n.roam) tickEnemy(n, players, now, onEnemyHit, recentWarps);
             else if (n.isVehicle) tickVehicle(n, players, now);
             else tickNpc(n, players, now);
+            // Never let two bodies stay stacked: nudge apart if this tick ended
+            // overlapping another actor. Enemies + townsfolk only — cars and
+            // vehicles are meant to plow THROUGH actors, not separate from them.
+            if (n.kind === 'enemy' || (n.kind === 'person' && !n.isVehicle)) unstack(n);
           } else if (n.roam && n.mode !== 'patrol') {
             // Off-station with no player nearby (the target fled far): keep
             // ticking so it finishes heading back to spawn instead of freezing
