@@ -267,7 +267,7 @@
       "wanderRadius": 100,
       "poolSize": 32,
       "maxActive": 20,
-      "spawnIntervalMs": 1000,
+      "spawnIntervalMs": 25000,
       "respawnDelayMs": 1000,
       "enabled": true
     },
@@ -336,11 +336,47 @@
       "sprite": 284,
       "x": 1165,
       "y": 603,
-      "wanderRadius": 600,
+      "wanderRadius": 300,
       "poolSize": 7,
       "maxActive": 4,
       "spawnIntervalMs": 3500,
       "respawnDelayMs": 9000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-23",
+      "sprite": 283,
+      "x": 2069,
+      "y": 451,
+      "wanderRadius": 100,
+      "poolSize": 6,
+      "maxActive": 3,
+      "spawnIntervalMs": 55000,
+      "respawnDelayMs": 55000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-24",
+      "sprite": 330,
+      "x": 2817,
+      "y": 689,
+      "wanderRadius": 200,
+      "poolSize": 6,
+      "maxActive": 3,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-25",
+      "sprite": 330,
+      "x": 2348,
+      "y": 847,
+      "wanderRadius": 300,
+      "poolSize": 6,
+      "maxActive": 3,
+      "spawnIntervalMs": 44000,
+      "respawnDelayMs": 44000,
       "enabled": true
     }
   ]

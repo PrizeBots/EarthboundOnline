@@ -1,0 +1,209 @@
+import { EditorTool, EditorShellApi } from '../types';
+import { FolderDesktop, FolderDesktopStore, FolderDesktopFolder } from '../FolderDesktop';
+import { loadJSON } from '../../engine/AssetLoader';
+
+// Source Assets — a VIEW-ONLY browser of every graphic CoilSnake decompiled from
+// the ROM, including art we never imported into the game (battle sprites, battle
+// backgrounds, swirls, title/logos, town maps, cutscene anims). A discovery aid:
+// scan the full ROM for anything worth turning into an entity/object later, then
+// we build the cut/import tooling. Reuses FolderDesktop (categories = folders),
+// fed by public/assets/rom_sources/ (staged by tools/copy_rom_sources.py).
+
+interface RomAsset {
+  id: string; // path sans ".png", e.g. "BattleSprites/000"
+  folder: string; // category, e.g. "BattleSprites"
+  file: string; // served path under /assets/rom_sources/, e.g. "BattleSprites/000.png"
+  w: number;
+  h: number;
+}
+interface RomIndex {
+  categories: { id: string; name: string; count: number }[];
+  assets: RomAsset[];
+}
+
+const BASE = '/assets/rom_sources/';
+
+class SourceAssetsTool implements EditorTool {
+  id = 'source-assets';
+  name = 'Source Assets';
+  description = 'Browse every ROM graphic (incl. un-imported battle/UI/cutscene art).';
+  status = 'ready' as const;
+
+  private shell: EditorShellApi | null = null;
+  private index: RomIndex = { categories: [], assets: [] };
+  private byId = new Map<string, RomAsset>();
+  private byFolder = new Map<string, RomAsset[]>();
+  private desktop: FolderDesktop | null = null;
+  private images = new Map<string, HTMLImageElement>(); // file -> loaded (thumb cache)
+  private panel: HTMLDivElement | null = null;
+  private detailEl: HTMLDivElement | null = null;
+  private selected: string | null = null;
+
+  activate(shell: EditorShellApi): void {
+    this.shell = shell;
+    void this.loadAndBuild();
+  }
+
+  deactivate(): void {
+    this.desktop?.close();
+    this.desktop = null;
+    this.panel?.remove();
+    this.panel = null;
+    this.detailEl = null;
+    this.images.clear();
+  }
+
+  private async loadAndBuild(): Promise<void> {
+    this.index = await loadJSON<RomIndex>(`${BASE}index.json`).catch(() => null as never);
+    if (!this.index) {
+      this.index = { categories: [], assets: [] };
+      this.shell?.toast('No ROM sources staged — run tools/copy_rom_sources.py', true);
+    }
+    this.byId.clear();
+    this.byFolder.clear();
+    for (const a of this.index.assets) {
+      this.byId.set(a.id, a);
+      const list = this.byFolder.get(a.folder) ?? [];
+      list.push(a);
+      this.byFolder.set(a.folder, list);
+    }
+    this.buildPanel();
+    this.buildDesktop();
+    this.desktop?.open();
+  }
+
+  /** Read-only store: categories ARE the folders; assets live in them. */
+  private store(): FolderDesktopStore {
+    const folders = (): FolderDesktopFolder[] =>
+      this.index.categories.map((c) => ({ id: c.id, name: c.name, parent: null }));
+    return {
+      foldersWithParent: (parent) => (parent === null ? folders() : []),
+      folderOf: (id) => this.byId.get(id)?.folder ?? null,
+      itemsInFolder: (parent) =>
+        parent === null ? [] : (this.byFolder.get(parent) ?? []).map((a) => a.id),
+      folderName: (id) => id,
+      childCount: (folderId) => this.byFolder.get(folderId)?.length ?? 0,
+      // View-only — the ROM source tree isn't editable here.
+      addFolder: () => '',
+      renameFolder: () => {},
+      deleteFolder: () => {},
+      assignTo: () => {},
+      setParent: () => false,
+      autoOrganize: () => {},
+      allIds: () => this.index.assets.map((a) => a.id),
+    };
+  }
+
+  private buildDesktop(): void {
+    this.desktop = new FolderDesktop({
+      title: 'ROM SOURCE ASSETS',
+      accent: '#4ec9b0',
+      store: this.store(),
+      drawThumb: (c, id) => this.drawThumb(c, id),
+      labelFor: (id) => {
+        const a = this.byId.get(id);
+        if (!a) return id;
+        const base = a.file.split('/').pop() ?? a.file;
+        return `${base}  ${a.w}×${a.h}`;
+      },
+      matches: (id, q) => id.toLowerCase().includes(q),
+      onFocus: (id) => {
+        this.selected = id;
+        this.refreshDetail();
+      },
+      onSave: () => {}, // nothing to persist — read-only
+      toast: (m, err) => this.shell?.toast(m, err),
+    });
+  }
+
+  /** Draw a ROM image fit into the thumb canvas (async load, pixelated). */
+  private drawThumb(canvas: HTMLCanvasElement, id: string): void {
+    const a = this.byId.get(id);
+    if (!a) return;
+    const paint = (img: HTMLImageElement) => {
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.imageSmoothingEnabled = false;
+      const scale = Math.min(canvas.width / img.width, canvas.height / img.height, 4);
+      const w = Math.max(1, Math.round(img.width * scale));
+      const h = Math.max(1, Math.round(img.height * scale));
+      ctx.drawImage(img, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+    };
+    const cached = this.images.get(a.file);
+    if (cached?.complete && cached.naturalWidth) {
+      paint(cached);
+      return;
+    }
+    const img = cached ?? new Image();
+    if (!cached) {
+      img.src = `${BASE}${a.file}`;
+      this.images.set(a.file, img);
+    }
+    img.onload = () => paint(img);
+  }
+
+  // --- right-dock panel (selected asset detail) ----------------------------------------
+
+  private buildPanel(): void {
+    this.panel = document.createElement('div');
+    this.panel.style.cssText =
+      'width:100%;box-sizing:border-box;background:#101418f2;color:#cde;font:12px monospace;' +
+      'border:1px solid #4ec9b0;border-radius:5px;padding:10px;display:flex;flex-direction:column;gap:7px;user-select:none;';
+    this.panel.addEventListener('keydown', (e) => e.stopPropagation());
+
+    const title = document.createElement('div');
+    title.textContent = 'SOURCE ASSETS';
+    title.style.cssText = 'color:#4ec9b0;font-weight:bold;letter-spacing:1px;';
+    this.panel.appendChild(title);
+
+    const hint = document.createElement('div');
+    hint.style.cssText = 'color:#9fb8cc;font-size:11px;line-height:1.5;';
+    hint.textContent =
+      `${this.index.assets.length} ROM graphics in ${this.index.categories.length} categories. ` +
+      'View-only — find art worth importing, then we build the cut/import tooling.';
+    this.panel.appendChild(hint);
+
+    this.detailEl = document.createElement('div');
+    this.detailEl.style.cssText =
+      'display:flex;flex-direction:column;gap:6px;border-top:1px solid #2a3540;padding-top:7px;';
+    this.panel.appendChild(this.detailEl);
+
+    this.shell!.panelHost.appendChild(this.panel);
+    this.refreshDetail();
+  }
+
+  private refreshDetail(): void {
+    if (!this.detailEl) return;
+    this.detailEl.innerHTML = '';
+    const a = this.selected ? this.byId.get(this.selected) : null;
+    if (!a) {
+      this.detailEl.textContent = 'Click an asset to preview it.';
+      return;
+    }
+    // Large pixelated preview (native <img>, capped width).
+    const img = document.createElement('img');
+    img.src = `${BASE}${a.file}`;
+    img.style.cssText =
+      'max-width:100%;align-self:center;image-rendering:pixelated;background:#0c1014;border:1px solid #243;border-radius:4px;';
+    this.detailEl.appendChild(img);
+
+    const info = document.createElement('div');
+    info.style.cssText = 'color:#9fb8cc;font-size:11px;line-height:1.5;word-break:break-all;';
+    info.innerHTML =
+      `<b style="color:#cde">${a.folder}</b><br>` +
+      `${a.file.split('/').pop()}  ·  ${a.w}×${a.h}px<br>` +
+      `<span style="color:#667">${BASE}${a.file}</span>`;
+    this.detailEl.appendChild(info);
+
+    // Open the raw image in a new tab (full-res inspection).
+    const open = document.createElement('button');
+    open.textContent = '↗ Open full image';
+    open.style.cssText =
+      'font:11px monospace;padding:2px 7px;cursor:pointer;border-radius:3px;background:#1d2530;color:#cde;border:1px solid #3a4a5a;align-self:flex-start;';
+    open.onclick = () => window.open(`${BASE}${a.file}`, '_blank');
+    this.detailEl.appendChild(open);
+  }
+}
+
+export const sourceAssetsTool = new SourceAssetsTool();

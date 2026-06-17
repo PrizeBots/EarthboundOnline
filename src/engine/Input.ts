@@ -18,6 +18,9 @@ let clickPending: { x: number; y: number } | null = null;
 let pointerHeld = false;
 let pressPending: { x: number; y: number } | null = null;
 let releasePending: { x: number; y: number } | null = null;
+// Mouse-wheel notches accumulated since the last consume (+down / -up). Read by
+// the menu to scroll its lists; clamped so a fast spin can't pile up unbounded.
+let wheelAccum = 0;
 
 /** Expose the live key set so other systems (e.g. MenuManager) can read it. */
 export function getKeySet(): Set<string> {
@@ -92,6 +95,20 @@ export function initInput(gameCanvas?: HTMLCanvasElement) {
     const t = e.target as HTMLElement | null;
     if (t && (t === canvas || t.tagName === 'CANVAS')) e.preventDefault();
   });
+  // Mouse wheel over the game canvas scrolls menu lists (and must not scroll the
+  // page). One notch per event; accumulate so a fast flick moves several rows.
+  window.addEventListener(
+    'wheel',
+    (e) => {
+      const t = e.target as HTMLElement | null;
+      const onCanvas = t && (t === canvas || t.tagName === 'CANVAS');
+      if (!onCanvas) return;
+      e.preventDefault();
+      wheelAccum += e.deltaY > 0 ? 1 : e.deltaY < 0 ? -1 : 0;
+      wheelAccum = Math.max(-8, Math.min(8, wheelAccum));
+    },
+    { passive: false }
+  );
 }
 
 /** True while the left button is held down (for drag interactions). */
@@ -116,6 +133,14 @@ export function consumePointerRelease(): { x: number; y: number } | null {
 /** Pointer position in game-space pixels (256x224). */
 export function getPointer(): { x: number; y: number } {
   return { x: pointerX, y: pointerY };
+}
+
+/** Take the accumulated wheel notches (+down / -up) since the last call, reset
+ *  to 0. Call once per frame so stale scroll can't build up while idle. */
+export function consumeWheelDelta(): number {
+  const w = wheelAccum;
+  wheelAccum = 0;
+  return w;
 }
 
 /**
@@ -164,7 +189,10 @@ export function isAttackPressed(): boolean {
  *  the assigned consumable). Returns the 0-based slot just pressed, or -1.
  *  Consumes the key so a single press fires once. Replaces the old G cycle key. */
 export function consumeHotbarSlot(): number {
-  for (let i = 0; i < 2; i++) {
+  // Scan number keys 1-9 → slot index 0-8. We don't import HOTBAR_SLOTS here;
+  // the hotbar array length bounds it (a press past the last slot hits an empty
+  // slot and no-ops), so adding/removing slots needs no change in this file.
+  for (let i = 0; i < 9; i++) {
     const code = `Digit${i + 1}`;
     if (keys.has(code)) {
       keys.delete(code);

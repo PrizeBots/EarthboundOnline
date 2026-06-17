@@ -33,11 +33,12 @@ const GIFT_FLAG_BASE = 910000;
 // ready-at timestamp persists in the save, so relogging can't reset the timer.
 const MOM_FOOD_HEAL = 50; // HP restored per home-cooked meal
 const MOM_FOOD_COOLDOWN_MS = 5 * 60 * 1000; // 5 min between meals
-// Quick-select hotbar: 2 slots (keys 1/2), each holding a weapon, a usable item,
+// Quick-select hotbar: 6 slots (keys 1-6), each holding a weapon, a usable item,
 // or a PSI move tagged 'psi:<id>'. Persisted per character so an assigned PSI
 // (which, unlike a weapon, can't be re-derived from the equip set) survives a
-// relog. KEEP IN SYNC with the client (menu/layout HOTBAR_SLOTS + PSI_TAG).
-const HOTBAR_SLOTS = 2;
+// relog. KEEP IN SYNC with the client (menu/layout HOTBAR_SLOTS + PSI_TAG). An
+// old save's shorter array is padded with nulls on load (sanitize fixes length).
+const HOTBAR_SLOTS = 6;
 const HOTBAR_PSI_TAG = 'psi:';
 const BAG_FULL_NOTICE_MS = 2500; // min gap between "bag full" popups (anti-spam)
 const STARTING_MONEY = 1000; // every player joins with $1000
@@ -99,7 +100,8 @@ const PSI = {
   lifeup: { name: 'Lifeup α', pp: 3, heal: 30, anim: 'lifeup_alpha' },
   healing: { name: 'Healing α', pp: 4, cures: true, anim: 'healing_alpha' }, // clears the caster's statuses
   // offense (strikes the nearest enemy)
-  fire: { name: 'PSI Fire α', pp: 5, damage: 14, range: 240, anim: 'psi_fire_alpha' },
+  // multi: ROM target "row"/"all" — the bolt penetrates and hits EVERY enemy in range.
+  fire: { name: 'PSI Fire α', pp: 5, damage: 14, range: 240, anim: 'psi_fire_alpha', multi: true },
   // ailment (status on the nearest enemy; chances are element-scaled by its resist)
   hypnosis: {
     name: 'Hypnosis α',
@@ -127,7 +129,14 @@ const PSI = {
   },
   // more offense families (strike the nearest enemy)
   freeze: { name: 'PSI Freeze α', pp: 4, damage: 12, range: 240, anim: 'psi_freeze_alpha' },
-  thunder: { name: 'PSI Thunder α', pp: 3, damage: 16, range: 280, anim: 'psi_thunder_alpha' },
+  thunder: {
+    name: 'PSI Thunder α',
+    pp: 3,
+    damage: 16,
+    range: 280,
+    anim: 'psi_thunder_alpha',
+    multi: true,
+  },
   flash: {
     name: 'PSI Flash α',
     pp: 8,
@@ -135,6 +144,7 @@ const PSI = {
     range: 240,
     anim: 'psi_flash_alpha',
     inflict: [{ type: 'paralysis', chance: 40 }], // Flash's signature random-ish stun
+    multi: true,
   },
   starstorm: {
     name: 'PSI Starstorm α',
@@ -142,8 +152,9 @@ const PSI = {
     damage: 30,
     range: 340,
     anim: 'psi_starstorm_alpha',
+    multi: true,
   },
-  rockin: { name: 'PSI Rockin α', pp: 6, damage: 18, range: 240, anim: 'psi_alpha' },
+  rockin: { name: 'PSI Rockin α', pp: 6, damage: 18, range: 240, anim: 'psi_alpha', multi: true },
   // assist / utility — DEV: castable for testing; effects (buffs/teleport/magnet)
   // aren't wired yet, so these just play their animation + spend PP.
   shield: { name: 'Shield α', pp: 6, anim: 'shield_alpha' },
@@ -290,8 +301,11 @@ class GameHost {
     this.SPAWN = GameHost._readSpawn(root);
 
     // Present box catalog: placement key -> { romFlag, item }. ROM-derived
-    // (assets/map/gifts.json) with authored contents layered on
-    // (overrides/gifts.json). Drives the one-time 'open_gift' grant.
+    // (assets/map/gifts.json) with authored contents + new boxes layered on
+    // (overrides/gifts.json). Drives the one-time 'open_gift' grant. Paths kept
+    // so start() can hot-reload it when the Gift Manager saves (dev).
+    this._assetsDir = assetsDir;
+    this._root = root;
     this.GIFTS = GameHost._loadGifts(assetsDir, root);
 
     // Server-authoritative NPC simulation: same world for every client.
@@ -303,6 +317,8 @@ class GameHost {
     this._heartbeat = null;
     // Player status-condition tick handle (DoT + expiry; set in start()).
     this._statusTimer = null;
+    // Gift-override file watcher handle (set in start()).
+    this._giftsWatchPath = null;
   }
 
   static _readSpawn(root) {
@@ -339,6 +355,10 @@ class GameHost {
       for (const [k, e] of Object.entries(ov?.edits || {})) {
         const g = gifts.get(k);
         if (g && e && e.item !== undefined) g.item = e.item;
+      }
+      // Admin-placed gift boxes (Gift Manager additions).
+      for (const a of ov?.additions || []) {
+        if (a && typeof a.k === 'string') gifts.set(a.k, { romFlag: a.romFlag, item: a.item });
       }
     } catch {
       /* no authored overrides yet */
@@ -390,6 +410,18 @@ class GameHost {
     // worn-off statuses (re-broadcasting the set). 4Hz is plenty for ~1s DoT.
     this._statusTimer = setInterval(() => this._tickPlayerStatuses(), STATUS_TICK_MS);
     if (this._statusTimer.unref) this._statusTimer.unref();
+
+    // Hot-reload the gift catalog when the Gift Manager saves overrides/gifts.json
+    // (dev), so newly-placed boxes are openable without a server restart. Polling
+    // watcher (cross-platform); harmless if the file never appears.
+    this._giftsWatchPath = path.join(this._root, 'public', 'overrides', 'gifts.json');
+    try {
+      fs.watchFile(this._giftsWatchPath, { interval: 1500 }, () => {
+        this.GIFTS = GameHost._loadGifts(this._assetsDir, this._root);
+      });
+    } catch {
+      /* watch unavailable — gifts still load at startup */
+    }
   }
 
   // Per-tick player status upkeep: apply due DoT, drop worn-off statuses, and
@@ -446,6 +478,8 @@ class GameHost {
     this._heartbeat = null;
     if (this._statusTimer) clearInterval(this._statusTimer);
     this._statusTimer = null;
+    if (this._giftsWatchPath) fs.unwatchFile(this._giftsWatchPath);
+    this._giftsWatchPath = null;
   }
 
   // Project an inventory (array of ids) to the wire shape the client renders:
@@ -569,12 +603,20 @@ class GameHost {
     const spentSinceCall =
       Number.isInteger(save.spentSinceCall) && save.spentSinceCall >= 0 ? save.spentSinceCall : 0;
 
+    // Worn gear is stored SEPARATELY from Goods now, so validate it by item
+    // type + slot (not by inventory membership), then pull any equipped id back
+    // OUT of the loaded Goods — which also migrates old saves that kept a worn
+    // item in both places (it would otherwise show in the bag while equipped).
     const equipped = { weapon: null, body: null, arms: null, other: null };
     if (save.equipped && typeof save.equipped === 'object') {
       for (const s of ['weapon', 'body', 'arms', 'other']) {
         const id = save.equipped[s];
         const eq = id && this.GOODS[id] && this.GOODS[id].equip;
-        if (eq && eq.slot === s && inventory.includes(id)) equipped[s] = id;
+        if (eq && eq.slot === s) {
+          equipped[s] = id;
+          const i = inventory.indexOf(id);
+          if (i !== -1) inventory.splice(i, 1);
+        }
       }
     }
 
@@ -1043,6 +1085,9 @@ class GameHost {
         for (const [id, p] of this.players) {
           if (id !== playerId) {
             const { _ws, ...data } = p;
+            // Send the active-status ARRAY (not the internal {} map) so the
+            // client can iterate pips — matches _broadcastPlayerStatus.
+            data.statuses = status.activeStatuses(p, Date.now());
             otherPlayers.push(data);
           }
         }
@@ -1076,6 +1121,7 @@ class GameHost {
 
         // Tell everyone else about the new player.
         const { _ws, ...publicData } = this.players.get(playerId);
+        publicData.statuses = status.activeStatuses(this.players.get(playerId), Date.now());
         this.broadcastExcept({ type: 'player_join', player: publicData }, playerId);
         // Restore any banked skill points (shows the level-up icon on rejoin).
         this._sendPoints(playerId);
@@ -1191,26 +1237,60 @@ class GameHost {
       case 'equip': {
         const entry = this.players.get(playerId);
         if (!entry) break;
-        // Per-slot equip: { slot, itemId|null }. Authoritative — equipping
-        // requires owning the item and it fitting that slot (no spoofing); null
-        // unequips. Offense/defense recompute from the whole set.
+        // Per-slot equip: { slot, itemId|null }. Authoritative; null unequips.
+        // Worn gear is moved OUT of Goods and the worn piece returns to Goods on
+        // unequip (so the bag count reflects only what you're carrying, not what
+        // you're wearing). Offense/defense recompute from the whole set.
         const slot = typeof msg.slot === 'string' ? msg.slot : null;
         const itemId =
           typeof msg.itemId === 'string' && msg.itemId.length <= 24 ? msg.itemId : null;
         if (!slot || !EQUIP_SLOTS.includes(slot)) break;
+        const prev = entry.equipped[slot]; // the piece currently worn here (or null)
         if (itemId !== null) {
+          // EQUIP: must own it (in Goods) and it must fit the slot. Take it out
+          // of Goods; a swap returns the old piece, so the count never overflows.
           const eq = GOODS[itemId] && GOODS[itemId].equip;
-          if (!eq || eq.slot !== slot || !entry.inventory.includes(itemId)) break;
+          const idx = entry.inventory.indexOf(itemId);
+          if (!eq || eq.slot !== slot || idx === -1) break;
+          entry.inventory.splice(idx, 1);
+          if (prev) entry.inventory.push(prev);
+          entry.equipped[slot] = itemId;
+        } else {
+          // UNEQUIP: the worn piece goes back into Goods — refuse if the bag is
+          // full (it would have nowhere to land), and tell the player why. Resend
+          // the unchanged equipped set so the client reverts its optimistic take-off.
+          if (!prev) break; // nothing worn here
+          if (entry.inventory.length >= MAX_SLOTS) {
+            entry._ws.send(
+              JSON.stringify({
+                type: 'notice',
+                code: 'bag_full',
+                text: 'Your bag is full — make room before taking that off.',
+              })
+            );
+            entry._ws.send(
+              JSON.stringify({
+                type: 'equipped',
+                slots: entry.equipped,
+                attackSpeed: entry.attackSpeed,
+              })
+            );
+            break;
+          }
+          entry.inventory.push(prev);
+          entry.equipped[slot] = null;
         }
-        entry.equipped[slot] = itemId;
         this.recomputeEquipStats(entry);
-        // The owner gets their authoritative equipped set...
+        // The owner gets their authoritative equipped set + the updated Goods...
         entry._ws.send(
           JSON.stringify({
             type: 'equipped',
             slots: entry.equipped,
             attackSpeed: entry.attackSpeed,
           })
+        );
+        entry._ws.send(
+          JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) })
         );
         // ...everyone else just needs the held-weapon sprite.
         this.broadcastExcept({ type: 'equip', id: playerId, itemId: entry.itemId }, playerId);
@@ -1273,6 +1353,19 @@ class GameHost {
         entry.inventory.splice(slot, 1);
         entry._ws.send(
           JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) })
+        );
+        // The item was actually consumed — let OTHER clients play its "use"
+        // animation on this player (the user already spawned their own locally,
+        // same model as psi_cast). Visual only.
+        this.broadcastExcept(
+          {
+            type: 'item_use',
+            id: playerId,
+            item: itemId,
+            x: Math.round(entry.x),
+            y: Math.round(entry.y),
+          },
+          playerId
         );
         this._saveCharacter(playerId);
         break;
@@ -1404,10 +1497,15 @@ class GameHost {
           this._broadcastPlayerStatus(entry);
         }
         if (def.damage || def.inflict) {
-          // Server picks the target: nearest live enemy in range with line of
-          // sight (it owns enemy positions). Damage + knockback + the PSI's status
-          // inflict (element-scaled by the enemy's resist) resolve in the sim.
-          const hit = this.npcSim.psiStrike(
+          // Server picks the target(s) — it owns enemy positions. A single-target
+          // PSI hits the nearest live enemy in range with line of sight; a multi
+          // PSI (ROM "row"/"all": Fire, Thunder, Flash, Starstorm, Rockin) hits
+          // EVERY enemy in range. Damage + knockback + the PSI's status inflict
+          // (each element-scaled by the enemy's resist) resolve in the sim. The
+          // returned spot is the nearest hit, used as the projectile anim target.
+          const strike = def.multi ? this.npcSim.psiStrikeAll : this.npcSim.psiStrike;
+          const hit = strike.call(
+            this.npcSim,
             entry.x,
             entry.y,
             def.range || 240,
@@ -1623,9 +1721,14 @@ class GameHost {
         }
         if (!ok || total <= 0 || total > (prog.unspentPoints || 0)) break;
 
-        // Apply on the server side, then re-derive + persist.
+        // Apply on the server side, then re-derive + persist. `prog` (this.points)
+        // is the live source of truth; mirror the spent count onto the save handle
+        // so its in-memory view stays consistent (alloc is already the SAME object,
+        // shared at join).
         for (const k of STAT_KEYS) prog.alloc[k] = (prog.alloc[k] || 0) + (add[k] || 0);
         prog.unspentPoints -= total;
+        const spHandle = this.saves.get(playerId);
+        if (spHandle) spHandle.unspentPoints = prog.unspentPoints;
         this.reapplyAlloc(entry, prog.alloc);
         this.broadcastAll({
           type: 'player_stats',

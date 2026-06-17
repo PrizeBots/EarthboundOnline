@@ -21,6 +21,7 @@ import {
   isPointerDown,
   consumePointerPress,
   consumePointerRelease,
+  consumeWheelDelta,
 } from './Input';
 import { getGoods, goodsCount } from './Inventory';
 import { getMoney, getBank } from './Wallet';
@@ -59,16 +60,21 @@ import {
   drawCursor,
   cellAt,
   goodsRowAt,
+  GOODS_COLS,
   equipRowAt,
+  equipSelectLayout,
   equipSelectRowAt,
+  psiLayout,
   psiRowAt,
+  shopListItems,
   shopListLayout,
   shopRowAt,
   shopRootRowAt,
   hotbarBoxAt,
   wrapText,
+  ListLayout,
 } from './menu/layout';
-import { MenuName, MenuHooks, EquipRow, MenuView } from './menu/types';
+import { MenuName, MenuHooks, EquipRow, MenuView, ShopPreview } from './menu/types';
 import {
   renderShop,
   renderCommand,
@@ -104,6 +110,60 @@ const hotbar: (string | null)[] = new Array(HOTBAR_SLOTS).fill(null);
 // A drag in progress: the item id being dragged onto a hotbar box.
 let drag: { id: string } | null = null;
 
+// --- Scrollable-list mouse control (wheel + draggable scrollbar) -------------
+// Scroll follows the cursor (see layout.scrollList), so the wheel and a
+// scrollbar-thumb drag both work by MOVING the list cursor; the list then
+// scrolls to keep it visible. scrollbarDragging latches a thumb grab so the
+// drag keeps tracking even when the pointer slips off the 3px-wide bar.
+let scrollbarDragging = false;
+let wasPointerDown = false;
+let frameWheel = 0; // wheel notches consumed at the top of this frame's update
+// Last pointer position, so we only let mouse-HOVER move the cursor when the
+// mouse actually moved — otherwise a stationary pointer resting on the UI would
+// re-snap the cursor every frame and override keyboard (W/S / arrows) nav.
+let lastPointerX = -1;
+let lastPointerY = -1;
+
+/** Map a vertical pointer position to the cursor row that puts the thumb under
+ *  it. Centres the cursor in the visible window so layout.scrollList reproduces
+ *  the desired first-visible row. */
+function cursorFromScrollbar(lay: ListLayout, py: number): number {
+  const sb = lay.scroll;
+  if (!sb) return 0;
+  const maxFirst = Math.max(0, lay.count - lay.visible);
+  const span = sb.h - sb.thumbH; // travel range of the thumb's top edge
+  const thumbTop = Math.max(sb.y, Math.min(sb.y + span, py - sb.thumbH / 2));
+  const first = span > 0 ? Math.round(((thumbTop - sb.y) / span) * maxFirst) : 0;
+  return Math.max(0, Math.min(lay.count - 1, first + Math.floor(lay.visible / 2)));
+}
+
+/** Apply this frame's wheel + scrollbar drag to a list, returning the new cursor
+ *  and whether the mouse took control (so the caller suppresses row-hover). */
+function applyListScroll(
+  lay: ListLayout,
+  count: number,
+  cursor: number
+): { cursor: number; active: boolean } {
+  if (!lay.scroll || count <= 0) return { cursor, active: false };
+  let active = false;
+  if (frameWheel !== 0) {
+    cursor = Math.max(0, Math.min(count - 1, cursor + frameWheel));
+    active = true;
+  }
+  const p = getPointer();
+  const sb = lay.scroll;
+  const overBar =
+    p.x >= sb.x - 4 && p.x <= sb.x + sb.w + 4 && p.y >= sb.y - 2 && p.y <= sb.y + sb.h + 2;
+  const down = isPointerDown();
+  if (down && !wasPointerDown && overBar) scrollbarDragging = true; // grab the thumb/track
+  if (!down) scrollbarDragging = false;
+  if (scrollbarDragging) {
+    cursor = cursorFromScrollbar(lay, p.y);
+    active = true;
+  }
+  return { cursor, active };
+}
+
 /** Push the current hotbar layout to the server so it persists with the
  *  character (the server re-validates + saves it). Call after any user edit. */
 function persistHotbar(): void {
@@ -116,20 +176,36 @@ export function setHotbar(slots: (string | null)[]): void {
   for (let i = 0; i < HOTBAR_SLOTS; i++) hotbar[i] = slots[i] ?? null;
 }
 
-/** Clear any hotbar slot whose CONSUMABLE has run out (count 0) so the slot
- *  goes empty when you use the last one. Gear (re-derived from the equip set)
- *  and PSI (not an inventory item) are never auto-cleared. Persists if changed.
- *  Call after every inventory update. */
-export function reconcileHotbarStock(): void {
-  let changed = false;
-  for (let i = 0; i < hotbar.length; i++) {
-    const id = hotbar[i];
-    if (!id || isPsiEntry(id) || itemEquip(id)) continue; // only plain consumables
-    if (goodsCount(id) === 0) {
-      hotbar[i] = null;
-      changed = true;
-    }
+// NOTE: a depleted consumable slot is intentionally KEPT (not cleared) — it
+// greys to a faded "x0" icon (see renderHotbar) and works again the moment you
+// restock, with no reassigning. So there's no stock-reconcile step.
+
+// Auto-hotbar: when you ACQUIRE a new weapon/consumable and have an open slot,
+// drop it on the bar so it's usable right away (no menu trip). We track the item
+// TYPES we've seen so only genuinely-new ones auto-assign — existing items you
+// deliberately left off the bar, and the saved hotbar restored on join, are
+// never disturbed. Armor/PSI aren't hotbar-eligible, so they're skipped.
+let knownGoodsIds: Set<string> | null = null; // null until the first inventory
+
+export function autoHotbarNewItems(): void {
+  const ids = getGoods().map((g) => g.id);
+  const idSet = new Set(ids);
+  if (knownGoodsIds === null) {
+    // First inventory (join): just record what we start with — the saved hotbar
+    // restores right after, so don't auto-fill from the starting bag.
+    knownGoodsIds = idSet;
+    return;
   }
+  let changed = false;
+  for (const id of ids) {
+    if (knownGoodsIds.has(id)) continue; // not newly acquired this update
+    if (hotbar.includes(id) || !hotbarEligible(id)) continue; // already slotted / not quick-usable
+    const empty = hotbar.indexOf(null);
+    if (empty === -1) break; // no open slots — leave the rest for manual placement
+    hotbar[empty] = id;
+    changed = true;
+  }
+  knownGoodsIds = idSet;
   if (changed) persistHotbar();
 }
 
@@ -277,6 +353,32 @@ function equipStats(): { offense: number; defense: number } {
   return { offense, defense };
 }
 
+/** Stat-change preview for the item under the Buy cursor: how Offense (weapon)
+ *  or Defense (armor) would read AFTER buying it and wearing it — accounting for
+ *  the piece it would replace in that slot. null for consumables (no stat to
+ *  show). Lets the player see the +/- before spending. */
+function shopBuyPreview(): ShopPreview | null {
+  const row = shopListItems('buy', shopStore)[shopBuyCursor];
+  if (!row) return null;
+  const eq = itemEquip(row.id);
+  if (!eq) return null; // consumable / key item — no stat preview
+  const cur = equipStats(); // current totals INCLUDING worn gear
+  if (eq.slot === 'weapon') {
+    const wornNow = itemOffense(hooks?.getEquipped('weapon') ?? '');
+    return {
+      lines: [
+        { label: 'Offense', from: cur.offense, to: cur.offense - wornNow + itemOffense(row.id) },
+      ],
+    };
+  }
+  const wornNow = itemDefense(hooks?.getEquipped(eq.slot) ?? '');
+  return {
+    lines: [
+      { label: 'Defense', from: cur.defense, to: cur.defense - wornNow + itemDefense(row.id) },
+    ],
+  };
+}
+
 /** Auto-equip a Good if it's gear (else use it). Shows the resulting stat. */
 /** Use a consumable from EITHER the Goods menu or a hotbar slot: ask the server
  *  to apply it, and — only for FOOD (the item's category folder, see
@@ -286,7 +388,16 @@ function equipStats(): { offense: number; defense: number } {
  *  Non-food consumables (sprays, key items…) use the same path but never chomp. */
 function useConsumable(id: string): void {
   const st = getStatus();
-  if (isFoodItem(id) && st.hp < st.hpMax) playEventSfx('eat');
+  const food = isFoodItem(id);
+  // A heal food at full HP heals 0 and the server refuses it, so don't cue an
+  // eat/use that won't happen. Otherwise: eat SFX (food only) + the item's "use"
+  // animation on the player. The FX is also networked (server broadcasts the use
+  // so other players see it) — this is the local caster's optimistic copy.
+  const refused = food && st.hp >= st.hpMax;
+  if (!refused) {
+    if (food) playEventSfx('eat');
+    hooks?.itemUseFx?.(id);
+  }
   sendUseItem(id);
 }
 
@@ -349,9 +460,15 @@ function activateSlot(i: number): void {
     return;
   }
   const eq = itemEquip(id);
-  if (eq?.slot === 'weapon')
+  if (eq?.slot === 'weapon') {
     equipToggle(id); // swap to this weapon
-  else useConsumable(id); // consumable (food → eat SFX + server use)
+    return;
+  }
+  // Consumable: a depleted slot stays ASSIGNED but does nothing (the faded x0
+  // icon shows it's empty). Restock the item and the same slot works again with
+  // no reassigning.
+  if (goodsCount(id) === 0) return;
+  useConsumable(id); // food → eat SFX + server use
 }
 
 /** Trigger hotbar slot `n` (0-based) — keys 1/2 in the field. Toggle-brandishes
@@ -398,7 +515,7 @@ function updateHotbarDrag(): void {
       if (i >= 0 && items[i]) drag = { id: items[i].id };
     } else if (menuState === 'psi') {
       // Drag a PSI move onto a hotbar box to quick-cast it with 1/2.
-      const i = psiRowAt(press.x, press.y);
+      const i = psiRowAt(press.x, press.y, psiCursor);
       if (i >= 0 && PSI_ABILITIES[i]) drag = { id: PSI_TAG + PSI_ABILITIES[i].id };
     }
   }
@@ -422,7 +539,7 @@ function updateHotbarDrag(): void {
       if (i >= 0 && items[i] && items[i].id === drag.id) useOrEquipGood(items[i].id);
     } else if (menuState === 'psi') {
       // Released back on the same PSI row (not a box): treat as a click → cast.
-      const i = psiRowAt(rel.x, rel.y);
+      const i = psiRowAt(rel.x, rel.y, psiCursor);
       if (i >= 0 && PSI_ABILITIES[i] && PSI_TAG + PSI_ABILITIES[i].id === drag.id)
         usePsi(PSI_ABILITIES[i].id);
     }
@@ -476,6 +593,9 @@ let confirmCursor = 0;
 let confirmPrompt = '';
 let confirmYesMsg = '';
 let confirmOnYes: (() => void) | null = null;
+// Where No / a message-less Yes returns to (the screen the confirm popped over).
+// PK warns from the command grid; the shop's "Equip now?" pops over shop_buy.
+let confirmReturn: MenuName = 'command';
 
 const prevKeys = new Set<string>();
 let liveKeys: Set<string>;
@@ -495,6 +615,15 @@ export function updateMenu(): void {
     justPressed('KeyZ') || justPressed('Space') || justPressed('Enter') || justPressed('KeyE');
   // A left-click anywhere this frame (game-space coords), consumed once.
   const click = menuState === 'closed' ? null : consumePointerClick();
+  // Wheel notches for this frame — consumed unconditionally so idle frames can't
+  // let scroll pile up; only the active list's handler reads frameWheel.
+  frameWheel = consumeWheelDelta();
+  // Did the mouse move this frame? Hover only steals the cursor when it did, so
+  // keyboard nav works even while the pointer rests on the UI.
+  const ptr = getPointer();
+  const mouseMoved = ptr.x !== lastPointerX || ptr.y !== lastPointerY;
+  lastPointerX = ptr.x;
+  lastPointerY = ptr.y;
 
   // Hotbar (browsing screens only — not the modal prompts): number keys 1-2
   // trigger their slot (toggle-equip gear / use a consumable). Drag-drop
@@ -548,7 +677,7 @@ export function updateMenu(): void {
 
       // Mouse hover moves the cursor to the item under the pointer.
       const p = getPointer();
-      const hovered = cellAt(p.x, p.y);
+      const hovered = mouseMoved ? cellAt(p.x, p.y) : -1;
       if (hovered >= 0) cursorIndex = hovered;
 
       // Activate via keyboard confirm, or by clicking directly on an item.
@@ -578,16 +707,36 @@ export function updateMenu(): void {
     if (toggle || justPressed('Backspace') || items.length === 0) {
       menuState = 'command'; // cancel, or nothing left to show
     } else {
+      // 2-column grid (row-major): ↑/↓ jump a whole row (±GOODS_COLS), ←/→ step
+      // a column, all clamped to the list (no wrap, so the cursor can't land on
+      // an empty cell past the last item).
+      if (goodsCursor >= items.length) goodsCursor = items.length - 1;
       const prevGoods = goodsCursor;
-      if (justPressed('ArrowUp') || justPressed('KeyW'))
-        goodsCursor = (goodsCursor + items.length - 1) % items.length;
-      if (justPressed('ArrowDown') || justPressed('KeyS'))
-        goodsCursor = (goodsCursor + 1) % items.length;
-      if (goodsCursor !== prevGoods) playEventSfx('cursor-vertical');
+      let horiz = false;
+      if ((justPressed('ArrowUp') || justPressed('KeyW')) && goodsCursor - GOODS_COLS >= 0)
+        goodsCursor -= GOODS_COLS;
+      if (
+        (justPressed('ArrowDown') || justPressed('KeyS')) &&
+        goodsCursor + GOODS_COLS < items.length
+      )
+        goodsCursor += GOODS_COLS;
+      if ((justPressed('ArrowLeft') || justPressed('KeyA')) && goodsCursor % GOODS_COLS !== 0) {
+        goodsCursor -= 1;
+        horiz = true;
+      }
+      if (
+        (justPressed('ArrowRight') || justPressed('KeyD')) &&
+        goodsCursor % GOODS_COLS !== GOODS_COLS - 1 &&
+        goodsCursor + 1 < items.length
+      ) {
+        goodsCursor += 1;
+        horiz = true;
+      }
+      if (goodsCursor !== prevGoods) playEventSfx(horiz ? 'cursor-horizontal' : 'cursor-vertical');
 
-      // Mouse hover moves the cursor to the row under the pointer.
+      // Mouse hover moves the cursor to the cell under the pointer.
       const p = getPointer();
-      const hovered = goodsRowAt(p.x, p.y);
+      const hovered = !mouseMoved ? -1 : goodsRowAt(p.x, p.y);
       if (hovered >= 0) goodsCursor = hovered;
 
       // Use via keyboard confirm. Mouse use (and drag-to-hotbar) is handled by
@@ -612,8 +761,11 @@ export function updateMenu(): void {
         psiCursor = (psiCursor + 1) % PSI_ABILITIES.length;
       if (psiCursor !== prevPsi) playEventSfx('cursor-vertical');
 
+      const sc = applyListScroll(psiLayout(psiCursor), PSI_ABILITIES.length, psiCursor);
+      psiCursor = sc.cursor;
+
       const p = getPointer();
-      const hovered = psiRowAt(p.x, p.y);
+      const hovered = sc.active || !mouseMoved ? -1 : psiRowAt(p.x, p.y, psiCursor);
       if (hovered >= 0) psiCursor = hovered;
 
       // Cast via keyboard confirm only. Mouse cast (and drag-to-hotbar) is
@@ -634,7 +786,7 @@ export function updateMenu(): void {
       if (justPressed('ArrowDown') || justPressed('KeyS')) equipCursor = (equipCursor + 1) % n;
       if (equipCursor !== prevEquip) playEventSfx('cursor-vertical');
       const p = getPointer();
-      const hov = equipRowAt(p.x, p.y);
+      const hov = mouseMoved ? equipRowAt(p.x, p.y) : -1;
       if (hov >= 0) equipCursor = hov;
       // E/Enter on the cursor, or a click on a slot: open that slot's sub-modal.
       if (confirm) openEquipSelect();
@@ -659,12 +811,16 @@ export function updateMenu(): void {
         equipSelectCursor = (equipSelectCursor + 1) % n;
       if (equipSelectCursor !== prevSel) playEventSfx('cursor-vertical');
       if (equipSelectCursor >= n) equipSelectCursor = n - 1;
+
+      const sc = applyListScroll(equipSelectLayout(n, equipSelectCursor), n, equipSelectCursor);
+      equipSelectCursor = sc.cursor;
+
       const p = getPointer();
-      const hov = equipSelectRowAt(p.x, p.y, n);
+      const hov = sc.active || !mouseMoved ? -1 : equipSelectRowAt(p.x, p.y, n, equipSelectCursor);
       if (hov >= 0) equipSelectCursor = hov;
       if (confirm) activateEquipSelect(equipSelectCursor);
       if (click) {
-        const ci = equipSelectRowAt(click.x, click.y, n);
+        const ci = equipSelectRowAt(click.x, click.y, n, equipSelectCursor);
         if (ci >= 0) activateEquipSelect(ci);
       }
     }
@@ -679,7 +835,7 @@ export function updateMenu(): void {
       if (shopRootCursor !== prevShopRoot) playEventSfx('cursor-vertical');
       // Mouse: hover highlights, click chooses Buy/Sell.
       const p = getPointer();
-      const hov = shopRootRowAt(p.x, p.y);
+      const hov = mouseMoved ? shopRootRowAt(p.x, p.y) : -1;
       if (hov >= 0) shopRootCursor = hov;
       let choose = confirm ? shopRootCursor : -1;
       if (click) {
@@ -692,59 +848,90 @@ export function updateMenu(): void {
       }
     }
   } else if (menuState === 'shop_buy') {
-    const rows = shopListLayout('buy', shopStore).rows;
+    const items = shopListItems('buy', shopStore); // ALL rows (the list scrolls)
     if (toggle || justPressed('Backspace')) {
       menuState = 'shop';
-    } else if (rows.length) {
+    } else if (items.length) {
       const prevShopBuy = shopBuyCursor;
       if (justPressed('ArrowUp') || justPressed('KeyW'))
-        shopBuyCursor = (shopBuyCursor + rows.length - 1) % rows.length;
+        shopBuyCursor = (shopBuyCursor + items.length - 1) % items.length;
       if (justPressed('ArrowDown') || justPressed('KeyS'))
-        shopBuyCursor = (shopBuyCursor + 1) % rows.length;
+        shopBuyCursor = (shopBuyCursor + 1) % items.length;
       if (shopBuyCursor !== prevShopBuy) playEventSfx('cursor-vertical');
+
+      const sc = applyListScroll(
+        shopListLayout('buy', shopStore, shopBuyCursor),
+        items.length,
+        shopBuyCursor
+      );
+      shopBuyCursor = sc.cursor;
+
       const p = getPointer();
-      const hovered = shopRowAt('buy', shopStore, p.x, p.y);
+      const hovered =
+        sc.active || !mouseMoved ? -1 : shopRowAt('buy', shopStore, p.x, p.y, shopBuyCursor);
       if (hovered >= 0) shopBuyCursor = hovered;
       let pick = confirm ? shopBuyCursor : -1;
       if (click) {
-        const clicked = shopRowAt('buy', shopStore, click.x, click.y);
+        const clicked = shopRowAt('buy', shopStore, click.x, click.y, shopBuyCursor);
         if (clicked >= 0) pick = clicked;
       }
-      if (pick >= 0 && rows[pick]) {
+      if (pick >= 0 && items[pick]) {
         const item = getStoreItems(shopStore)[pick];
         // Pre-check affordability for instant feedback; the server re-validates.
         if (item && getMoney() < item.cost) shopNote = 'Not enough money.';
         else {
-          sendBuy(shopStore, rows[pick].id);
+          const boughtId = items[pick].id;
+          sendBuy(shopStore, boughtId);
           playEventSfx('shop-purchase');
           shopNote = `Bought ${item?.name ?? 'item'}!`; // the money window confirms the spend
+          // Equippable gear (weapon/body/arms/other) → offer to wear it now. The
+          // buy round-trips well before the player picks Yes, so the server has
+          // the item in Goods by the time the equip lands.
+          const eq = itemEquip(boughtId);
+          if (eq) {
+            confirmPrompt = `Equip ${item?.name ?? 'it'} now?`;
+            confirmYesMsg = '';
+            confirmReturn = 'shop_buy'; // back to the store after either choice
+            confirmOnYes = () => hooks?.equip(eq.slot, boughtId);
+            confirmCursor = 0; // default to Yes
+            menuState = 'confirm';
+          }
         }
       }
     }
   } else if (menuState === 'shop_sell') {
-    const rows = shopListLayout('sell', shopStore).rows;
+    const items = shopListItems('sell', shopStore); // ALL rows (the list scrolls)
     if (toggle || justPressed('Backspace')) {
       menuState = 'shop';
     } else if (getGoods().length) {
       const prevShopSell = shopSellCursor;
       if (justPressed('ArrowUp') || justPressed('KeyW'))
-        shopSellCursor = (shopSellCursor + rows.length - 1) % rows.length;
+        shopSellCursor = (shopSellCursor + items.length - 1) % items.length;
       if (justPressed('ArrowDown') || justPressed('KeyS'))
-        shopSellCursor = (shopSellCursor + 1) % rows.length;
+        shopSellCursor = (shopSellCursor + 1) % items.length;
       if (shopSellCursor !== prevShopSell) playEventSfx('cursor-vertical');
+
+      const sc = applyListScroll(
+        shopListLayout('sell', shopStore, shopSellCursor),
+        items.length,
+        shopSellCursor
+      );
+      shopSellCursor = sc.cursor;
+
       const p = getPointer();
-      const hovered = shopRowAt('sell', shopStore, p.x, p.y);
+      const hovered =
+        sc.active || !mouseMoved ? -1 : shopRowAt('sell', shopStore, p.x, p.y, shopSellCursor);
       if (hovered >= 0) shopSellCursor = hovered;
       let pick = confirm ? shopSellCursor : -1;
       if (click) {
-        const clicked = shopRowAt('sell', shopStore, click.x, click.y);
+        const clicked = shopRowAt('sell', shopStore, click.x, click.y, shopSellCursor);
         if (clicked >= 0) pick = clicked;
       }
-      if (pick >= 0 && rows[pick]) {
+      if (pick >= 0 && items[pick]) {
         shopNote = '';
-        sendSell(rows[pick].id);
+        sendSell(items[pick].id);
         playEventSfx('shop-sell');
-        if (shopSellCursor >= rows.length - 1) shopSellCursor = Math.max(0, rows.length - 2);
+        if (shopSellCursor >= items.length - 1) shopSellCursor = Math.max(0, items.length - 2);
       }
     } else {
       menuState = 'shop'; // sold the last item
@@ -762,7 +949,7 @@ export function updateMenu(): void {
       if (phoneCursor !== prevPhone) playEventSfx('cursor-vertical');
 
       const p = getPointer();
-      const hovered = phoneRowAt(p.x, p.y);
+      const hovered = mouseMoved ? phoneRowAt(p.x, p.y) : -1;
       if (hovered >= 0) phoneCursor = hovered;
 
       let pick = confirm ? phoneCursor : -1;
@@ -795,7 +982,7 @@ export function updateMenu(): void {
       if (saveCursor !== prevSave) playEventSfx('cursor-vertical');
 
       const p = getPointer();
-      const hovered = saveChoiceAt(p.x, p.y);
+      const hovered = mouseMoved ? saveChoiceAt(p.x, p.y) : -1;
       if (hovered >= 0) saveCursor = hovered;
 
       let pick = confirm ? saveCursor : -1;
@@ -842,9 +1029,10 @@ export function updateMenu(): void {
       }
     }
   } else if (menuState === 'confirm') {
-    // Generic Yes/No prompt (PK warning). Cancel (Esc/Backspace) = No → command.
+    // Generic Yes/No prompt (PK warning, shop "Equip now?"). Cancel = No → return
+    // to whatever screen opened the prompt (confirmReturn).
     if (toggle || justPressed('Backspace')) {
-      menuState = 'command';
+      menuState = confirmReturn;
     } else {
       const prev = confirmCursor;
       if (justPressed('ArrowUp') || justPressed('KeyW'))
@@ -854,7 +1042,7 @@ export function updateMenu(): void {
       if (confirmCursor !== prev) playEventSfx('cursor-vertical');
 
       const p = getPointer();
-      const hovered = confirmChoiceAt(p.x, p.y);
+      const hovered = mouseMoved ? confirmChoiceAt(p.x, p.y) : -1;
       if (hovered >= 0) confirmCursor = hovered;
 
       let pick = confirm ? confirmCursor : -1;
@@ -868,13 +1056,15 @@ export function updateMenu(): void {
           message = confirmYesMsg;
           menuState = 'message';
         } else {
-          menuState = 'command';
+          menuState = confirmReturn;
         }
       } else if (pick === 1) {
-        menuState = 'command';
+        menuState = confirmReturn;
       }
     }
   }
+
+  wasPointerDown = isPointerDown(); // for next frame's scrollbar grab edge-detect
 
   prevKeys.clear();
   for (const k of liveKeys) prevKeys.add(k);
@@ -887,13 +1077,12 @@ export function isMenuOpen(): boolean {
 export function renderMenu(ctx: CanvasRenderingContext2D): void {
   if (menuState === 'closed') return;
   const view = buildView();
+  // The hot-slot bar is the BOTTOM of the UI depth stack: draw it FIRST so every
+  // modal window (command grid, lists, prompts) renders ON TOP of it. Only the
+  // drag ghost (which follows the cursor) sits above the modals.
+  if (hotbarActive()) renderHotbar(ctx, view);
   renderMenuBody(ctx, view);
-  // The hotbar (and any in-flight drag) overlay the browsing screens only —
-  // hidden on the modal prompts where its keys are suppressed (hotbarActive).
-  if (hotbarActive()) {
-    renderHotbar(ctx, view);
-    renderDragGhost(ctx, view);
-  }
+  if (hotbarActive()) renderDragGhost(ctx, view);
 }
 
 /** Draw just the quick-select hotbar as an overworld HUD element — so the 1/2
@@ -917,6 +1106,7 @@ function buildView(): MenuView {
     shopSellCursor,
     shopStore,
     shopNote,
+    shopPreview: menuState === 'shop_buy' ? shopBuyPreview() : null,
     message,
     hotbar,
     drag,
@@ -971,7 +1161,11 @@ function renderMenuBody(ctx: CanvasRenderingContext2D, view: MenuView): void {
     return;
   }
   if (menuState === 'confirm') {
-    renderCommand(ctx, view); // keep the command grid behind the warning
+    // Keep the originating screen behind the prompt (shop for "Equip now?",
+    // command grid for the PK warning).
+    if (confirmReturn === 'shop' || confirmReturn === 'shop_buy' || confirmReturn === 'shop_sell')
+      renderShop(ctx, view);
+    else renderCommand(ctx, view);
     renderPrompt(ctx, confirmPrompt, confirmCursor);
     return;
   }
@@ -1149,6 +1343,7 @@ function onSelect(action: string): void {
         'Enable PK mode? Anyone will be able to attack you, and you CANNOT turn it off for 5 minutes.';
       confirmYesMsg = 'PK mode ON. Anyone can attack you now — watch your back!';
       confirmOnYes = () => hooks?.setPk(true);
+      confirmReturn = 'command'; // No / dismissed → back to the command grid
       confirmCursor = 1; // default to "No"
       menuState = 'confirm';
     } else if (now < pk.lockedUntil) {

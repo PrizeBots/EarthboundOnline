@@ -8,6 +8,7 @@ import { trafficEditorTool } from './tools/TrafficEditorTool';
 import { dialogueTool } from './tools/DialogueTool';
 import { itemManagerTool } from './tools/ItemManagerTool';
 import { giftManagerTool } from './tools/GiftManagerTool';
+import { sourceAssetsTool } from './tools/SourceAssetsTool';
 import { soundTool } from './tools/SoundTool';
 import { roomBuilderTool } from './tools/RoomBuilderTool';
 import { registerEditorTool, registerSaveHandler } from './registry';
@@ -41,6 +42,7 @@ export function initEditorTools(context: EditorContext): EditorHooks {
   registerEditorTool(dialogueTool);
   registerEditorTool(itemManagerTool);
   registerEditorTool(giftManagerTool);
+  registerEditorTool(sourceAssetsTool);
   registerEditorTool(soundTool);
   registerEditorTool(roomBuilderTool);
   for (const t of PLANNED) registerEditorTool({ ...t, status: 'wip' });

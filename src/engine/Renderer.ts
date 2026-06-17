@@ -8,7 +8,6 @@ import { drawSprite, getSpriteGroupMeta, SpritePart } from './SpriteManager';
 import { getNameplate, getLevelPlate } from './NamePlate';
 import { drawHeldItem, isItemBehind } from './Items';
 import { renderDrops } from './DropManager';
-import { giftAlpha } from './Gifts';
 import { getSpritePriority, getPromotedMinitiles } from './Collision';
 import { getStatus } from './StatusModal';
 import {
@@ -370,10 +369,6 @@ export class Renderer {
       }
     }
 
-    // Ground loot sits on the floor, under every sprite — draw it between the tile
-    // pass and the Y-sorted sprite pass so players/NPCs walk over it.
-    renderDrops(this.ctx, camX, camY);
-
     // Depth model: ALL sprites draw in ONE feet-Y-sorted pass, so a sprite in
     // front (larger feet-Y) always paints over one behind it — sprite-vs-sprite
     // is pure Y-sort. The FG layer (native foreground tiles + "Behind"/0x40
@@ -541,17 +536,10 @@ export class Renderer {
               drawStatusPips(this.ctx, nScreenX, nScreenY, npc.spriteGroupId, false, npc.statuses);
             }
           : undefined;
-      // An opening present fades out (sprite already swapped to the open box);
-      // everything else draws fully opaque.
-      const alpha = npc.isGift ? giftAlpha(npc, now) : 1;
       addSprite(
         npc.x,
         npc.y,
-        (part) => {
-          if (alpha < 1) {
-            this.ctx.save();
-            this.ctx.globalAlpha = alpha;
-          }
+        (part) =>
           drawSprite(
             this.ctx,
             npc.spriteGroupId,
@@ -562,9 +550,7 @@ export class Renderer {
             part,
             npc.pose,
             npc.flashUntil > now
-          );
-          if (alpha < 1) this.ctx.restore();
-        },
+          ),
         drawBar
       );
     }
@@ -600,6 +586,13 @@ export class Renderer {
         }
       }
     }
+
+    // Ground loot lies flat ON the floor, so draw it AFTER the foreground tile
+    // pass (else floor-detail FG pixels paint over a dropped item — a cookie on
+    // the ground vanishing under the ground), but BEFORE the Y-sorted sprite pass
+    // so players/NPCs still walk over it. It's never occluded by FG: a ground
+    // item is always visible where it lies, like the ROM's item boxes.
+    renderDrops(this.ctx, camX, camY);
 
     // "See-through while hiding": when the LOCAL player is behind a building, a
     // soft CIRCLE of reveal ghosts the Behind/0x40 redraw so you can see yourself

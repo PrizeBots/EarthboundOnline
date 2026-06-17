@@ -44,6 +44,13 @@ eb_project/  (CoilSnake decompile: scripts, NPC/door tables, music) ──┘   
 9. `npm run dev` — Vite on port 4444 (game WebSocket server attaches to Vite
    in dev; `server/index.js` is the standalone deployment)
 
+Dev aid (not part of the game build): `tools/copy_rom_sources.py` stages EVERY
+graphic CoilSnake decompiled (eb_project/**/\*.png — battle sprites, battle BGs,
+swirls, title/logos, town maps, cutscene anims, plus the imported sprite groups)
+into the gitignored `public/assets/rom_sources/` with an `index.json`, so the
+editor's **Source Assets\*\* tool can browse the full ROM art set (view-only) to
+spot art worth importing. `eb_project/` isn't served, hence the copy.
+
 The event-flag state for the open world lives in `src/world_flags.json` — the
 single source of truth shared by `apply_map_changes.py`, `extract_npcs.py`,
 `eb_dialogue.py`, and the engine's DoorManager. Change a flag there and re-run
@@ -729,22 +736,41 @@ flag state baked in, so flag-conditional NPCs always say their open-world
 line. Runtime flag evaluation means porting the decoder into the engine,
 which fits the planned client-side Web Worker extraction (CLAUDE.md).
 
-### Gifts (present boxes)
+### Gifts (item-containers)
 
-EarthBound present boxes are `Type: item` TPT entries on overworld sprite group
-195 (closed) / 196 (open). Each one's data lives entirely in its
+Every EarthBound item-container you open/check is a `Type: item` TPT entry; they
+share ONE mechanism and differ only by overworld sprite group (the look): **195
+present** (opens to 196), **214 trash can**, **233 gift box**, **262 crate**,
+**322 jar**, **33 basket**. Each one's data lives entirely in its
 `npc_config_table.yml` entry: **`Text Pointer 2`** is the item id (`$XX` hex),
-and **`Event Flag`** is the box's unique ROM identity. (All real presents share
-one opener script, so the contents are NOT in the script — they're that field.)
-A handful carry a 2-byte `Text Pointer 2` (a custom-script pointer, not an item)
-and are flagged `special` with `item: null` for manual authoring, never guessed.
+and **`Event Flag`** is the container's unique ROM identity. (All share one
+opener script, so contents are NOT in the script — they're that field.) A few
+carry a 2-byte `Text Pointer 2` (a custom-script pointer, not an item) and are
+flagged `special` with `item: null` for manual authoring, never guessed.
 
-`tools/extract_gifts.py` joins the sprite-195 placements already in `npcs.json`
-(so each gift's `k` matches its rendered prop) with those config fields and
-writes `public/assets/map/gifts.json` =
-`[{k, x, y, romFlag, item, itemName, special?}, ...]`. Authored contents layer
-on via `overrides/gifts.json` (`{edits: {k: {item}}}`), edited in the **Gift
-Manager** tool — same overrides pattern as enemies/npcs.
+`tools/extract_gifts.py` joins the `Type: item` placements already in `npcs.json`
+(so each `k` matches its rendered prop) with those config fields and writes
+`public/assets/map/gifts.json` =
+`[{k, x, y, sprite, romFlag, item, itemName, special?}, ...]` (`sprite` = the
+container type). Authored changes layer on via `overrides/gifts.json` =
+`{edits: {k: {item}}, additions: [{k,x,y,sprite,romFlag,item}]}`, edited in the
+**Gift Manager** tool (a type tab per container sprite + All). `edits` re-author
+a ROM container's contents; `additions` are brand-NEW containers the admin placed
+(click-to-place; the active tab picks the type) with a minted key (`gift+N`) and
+a private flag (romFlag ≥ 1000, clear of ROM containers). NPCManager spawns a
+prop for each addition (into the area buckets + npcByKey, NOT npcsById — that
+stays aligned with the server's enemy/car pool). The server hot-reloads
+`overrides/gifts.json` (fs.watchFile) so new containers are openable without a
+restart.
+
+**Visual.** A present (sprite 195) packs BOTH states in its own sheet: the
+wrapped/closed box faces **South** (row 1 — the baked direction of every ROM
+present), the lidless/**open** box faces **North** (row 0). Opening just flips
+the box to face North (`beginGiftOpen`), and it PERSISTS that way — the box is
+never removed. On load, a present whose flag is already set starts North (open).
+Other containers (trash cans, jars…) have no open frame — they grant once and
+stay unchanged. (Sprite 196 is a "?" thought-bubble, NOT an open box — unused.)
+`giftOpened(npc)` = the player's flag is set; it gates re-opening.
 
 **Per-player one-time open.** The ROM's single global "opened" flag can't model
 an MMO (shared world, personal progress), so each gift maps to a PRIVATE

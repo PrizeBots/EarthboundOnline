@@ -40,8 +40,10 @@ import {
   equipSelectLayout,
   psiLayout,
   shopListLayout,
+  shopListItems,
   hotbarLayout,
   wrapText,
+  ListLayout,
 } from './layout';
 
 /** Shop UI: a Buy/Sell chooser top-left, the active list beside it, money
@@ -68,21 +70,50 @@ export function renderShop(ctx: CanvasRenderingContext2D, v: MenuView): void {
   // of the chooser, at the layout's own coords so rows line up with shopRowAt.
   if (v.state === 'shop_buy' || v.state === 'shop_sell') {
     const mode = v.state === 'shop_buy' ? 'buy' : 'sell';
-    const { winX, winY, winW, winH, rows } = shopListLayout(mode, v.shopStore);
-    drawWindow(ctx, winX, winY, winW, winH, MENU_STYLE);
     const cursor = mode === 'buy' ? v.shopBuyCursor : v.shopSellCursor;
-    for (let i = 0; i < rows.length; i++) {
-      if (i === cursor) drawCursor(ctx, rows[i].x, rows[i].y + 3);
-      drawText(ctx, rows[i].label, rows[i].x + CURSOR_W, rows[i].y, FONT_ID);
+    const lay = shopListLayout(mode, v.shopStore, cursor);
+    const items = shopListItems(mode, v.shopStore);
+    drawWindow(ctx, lay.winX, lay.winY, lay.winW, lay.winH, MENU_STYLE);
+    for (const r of lay.rows) {
+      const it = items[r.index];
+      if (!it) continue;
+      if (r.index === cursor) drawCursor(ctx, r.x, r.y + 3);
+      drawText(ctx, fitText(it.label, r.w - CURSOR_W), r.x + CURSOR_W, r.y, FONT_ID);
     }
-    if (rows.length === 0) {
+    if (items.length === 0) {
       drawText(
         ctx,
         mode === 'buy' ? '(nothing)' : '(empty)',
-        winX + BORDER + PADDING + CURSOR_W,
-        winY + BORDER + PADDING,
+        lay.winX + BORDER + PADDING + CURSOR_W,
+        lay.winY + BORDER + PADDING,
         FONT_ID
       );
+    }
+    drawScrollbar(ctx, lay.scroll);
+
+    // Stat preview for the highlighted Buy item (gear only): "Offense 12->17 (+5)"
+    // so the player sees the +/- before spending. Sits under the list window.
+    if (v.shopPreview && v.shopPreview.lines.length) {
+      const texts = v.shopPreview.lines.map((ln) => {
+        const d = ln.to - ln.from;
+        const sign = d >= 0 ? `+${d}` : `${d}`;
+        return `${ln.label}  ${ln.from}->${ln.to} (${sign})`;
+      });
+      const innerW = Math.max(...texts.map((t) => measureText(t, FONT_ID)));
+      const pw = innerW + PADDING * 2 + BORDER * 2;
+      const ph = texts.length * FONT_LINE_HEIGHT + PADDING * 2 + BORDER * 2;
+      const px = lay.winX;
+      const py = lay.winY + lay.winH + 4;
+      drawWindow(ctx, px, py, pw, ph, MENU_STYLE);
+      texts.forEach((t, i) => {
+        drawText(
+          ctx,
+          t,
+          px + BORDER + PADDING,
+          py + BORDER + PADDING + i * FONT_LINE_HEIGHT,
+          FONT_ID
+        );
+      });
     }
   }
 
@@ -124,12 +155,13 @@ export function renderMoney(ctx: CanvasRenderingContext2D): void {
 
 export function renderGoods(ctx: CanvasRenderingContext2D, v: MenuView): void {
   const items = getGoods();
-  const { winX, winY, winW, winH, rows } = goodsLayout();
-  drawWindow(ctx, winX, winY, winW, winH, MENU_STYLE);
-  for (let i = 0; i < items.length; i++) {
-    const { x, y } = rows[i];
-    if (i === v.goodsCursor) drawCursor(ctx, x, y + 3);
-    drawText(ctx, items[i].name, x + CURSOR_W, y, FONT_ID);
+  const lay = goodsLayout();
+  drawWindow(ctx, lay.winX, lay.winY, lay.winW, lay.winH, MENU_STYLE);
+  for (const r of lay.rows) {
+    const it = items[r.index];
+    if (!it) continue;
+    if (r.index === v.goodsCursor) drawCursor(ctx, r.x, r.y + 3);
+    drawText(ctx, fitText(it.name, r.w - CURSOR_W), r.x + CURSOR_W, r.y, FONT_ID);
   }
 }
 
@@ -139,6 +171,15 @@ function fitText(text: string, maxW: number): string {
   let s = text;
   while (s.length > 1 && measureText(s + '..', FONT_ID) > maxW) s = s.slice(0, -1);
   return s + '..';
+}
+
+/** Draw a scroll-list's scrollbar (track + thumb), or nothing if it fits. */
+function drawScrollbar(ctx: CanvasRenderingContext2D, sb: ListLayout['scroll']): void {
+  if (!sb) return;
+  ctx.fillStyle = 'rgba(255,255,255,0.16)';
+  ctx.fillRect(sb.x, sb.y, sb.w, sb.h);
+  ctx.fillStyle = '#aebbd6';
+  ctx.fillRect(sb.x, sb.thumbY, sb.w, sb.thumbH);
 }
 
 /** The Equip slot list (center third): Weapon / Body / Arms / Other, each
@@ -179,26 +220,35 @@ export function renderEquip(ctx: CanvasRenderingContext2D, v: MenuView): void {
  *  slot, plus a "(Take off)" row. The currently-equipped item is marked. */
 export function renderEquipSelect(ctx: CanvasRenderingContext2D, v: MenuView): void {
   const items = v.equipSelectItems;
-  const { winX, winY, winW, winH, rows } = equipSelectLayout(items.length);
-  drawWindow(ctx, winX, winY, winW, winH, MENU_STYLE);
+  const lay = equipSelectLayout(items.length, v.equipSelectCursor);
+  drawWindow(ctx, lay.winX, lay.winY, lay.winW, lay.winH, MENU_STYLE);
   const equippedId = v.hooks?.getEquipped(v.equipSlotSel) ?? null;
-  for (let i = 0; i < items.length; i++) {
-    const { x, y, w } = rows[i];
-    if (i === v.equipSelectCursor) drawCursor(ctx, x, y + 3);
-    const worn = items[i].id !== '' && items[i].id === equippedId;
-    const label = (worn ? '*' : '') + items[i].name;
-    drawText(ctx, fitText(label, w - CURSOR_W), x + CURSOR_W, y, FONT_ID);
+  for (const r of lay.rows) {
+    const it = items[r.index];
+    if (!it) continue;
+    if (r.index === v.equipSelectCursor) drawCursor(ctx, r.x, r.y + 3);
+    const worn = it.id !== '' && it.id === equippedId;
+    drawText(
+      ctx,
+      fitText((worn ? '*' : '') + it.name, r.w - CURSOR_W),
+      r.x + CURSOR_W,
+      r.y,
+      FONT_ID
+    );
   }
+  drawScrollbar(ctx, lay.scroll);
 }
 
 export function renderPsi(ctx: CanvasRenderingContext2D, v: MenuView): void {
-  const { winX, winY, winW, winH, rows } = psiLayout();
-  drawWindow(ctx, winX, winY, winW, winH, MENU_STYLE);
-  for (let i = 0; i < PSI_ABILITIES.length; i++) {
-    const { x, y } = rows[i];
-    if (i === v.psiCursor) drawCursor(ctx, x, y + 3);
-    drawText(ctx, PSI_ABILITIES[i].name, x + CURSOR_W, y, FONT_ID);
+  const lay = psiLayout(v.psiCursor);
+  drawWindow(ctx, lay.winX, lay.winY, lay.winW, lay.winH, MENU_STYLE);
+  for (const r of lay.rows) {
+    const a = PSI_ABILITIES[r.index];
+    if (!a) continue;
+    if (r.index === v.psiCursor) drawCursor(ctx, r.x, r.y + 3);
+    drawText(ctx, fitText(a.name, r.w - CURSOR_W), r.x + CURSOR_W, r.y, FONT_ID);
   }
+  drawScrollbar(ctx, lay.scroll);
 }
 
 export function renderMessage(ctx: CanvasRenderingContext2D, v: MenuView): void {
@@ -260,32 +310,37 @@ export function renderHotbar(ctx: CanvasRenderingContext2D, v: MenuView): void {
     ctx.strokeRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
     const id = v.hotbar[i];
     if (id) {
-      drawHotbarGlyph(ctx, id, b.x, b.y, b.w, b.h);
-      // Green ring if this slot's gear is currently equipped in its slot.
       const eq = itemEquip(id);
+      const isConsumable = !isPsiEntry(id) && !eq;
+      const count = isConsumable ? goodsCount(id) : -1; // live stock; -1 = gear/PSI
+      const empty = count === 0; // used them all — slot STAYS assigned, just greys out
+      // Glyph, faded when the consumable is out of stock so the slot reads as
+      // empty without losing the assignment (pick more up → usable again).
+      if (empty) ctx.globalAlpha = 0.35;
+      drawHotbarGlyph(ctx, id, b.x, b.y, b.w, b.h);
+      if (empty) ctx.globalAlpha = 1;
+      // Green ring if this slot's gear is currently equipped in its slot.
       if (eq && v.hooks?.getEquipped(eq.slot) === id) {
         ctx.strokeStyle = '#7ee07e';
         ctx.strokeRect(b.x + 1.5, b.y + 1.5, b.w - 3, b.h - 3);
       }
-      // Stack count for a CONSUMABLE (not gear/PSI): "x12" in the bottom-right,
-      // only when you hold more than one. It reads getGoods live, so it ticks
-      // down as you use them; at 0 the slot is cleared (reconcileHotbarStock).
-      if (!isPsiEntry(id) && !eq) {
-        const n = goodsCount(id);
-        if (n > 1) {
-          const label = `x${n}`;
-          ctx.save();
-          ctx.font = '5px monospace';
-          ctx.textBaseline = 'bottom';
-          ctx.textAlign = 'right';
-          const rx = b.x + b.w - 1;
-          const ry = b.y + b.h;
-          ctx.fillStyle = '#000'; // 1px shadow so it reads over the icon
-          ctx.fillText(label, rx + 0.5, ry);
-          ctx.fillStyle = '#fff';
-          ctx.fillText(label, rx, ry - 0.5);
-          ctx.restore();
-        }
+      // Stack count for a CONSUMABLE (not gear/PSI): "x12" bottom-right. Shown
+      // when you hold more than one OR when the slot is EMPTY ("x0", reddish), so
+      // a depleted-but-still-assigned slot is obvious. Reads getGoods live, so it
+      // ticks down as you use them and reappears the moment you restock.
+      if (isConsumable && count !== 1) {
+        const label = `x${count}`;
+        ctx.save();
+        ctx.font = '5px monospace';
+        ctx.textBaseline = 'bottom';
+        ctx.textAlign = 'right';
+        const rx = b.x + b.w - 1;
+        const ry = b.y + b.h;
+        ctx.fillStyle = '#000'; // 1px shadow so it reads over the icon
+        ctx.fillText(label, rx + 0.5, ry);
+        ctx.fillStyle = empty ? '#f88' : '#fff'; // reddish at x0 to flag empty
+        ctx.fillText(label, rx, ry - 0.5);
+        ctx.restore();
       }
     }
     // Tiny number-key label in the top-left corner (native small font — the

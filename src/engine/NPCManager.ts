@@ -18,7 +18,7 @@ import { createInterpolator } from './RemoteInterp';
 import { loadShops, shopStoreForNpc } from './Shop';
 import type { EntityCol } from './EntityStats';
 import { hasFlag } from './PlayerFlags';
-import { loadGifts, tagGift, giftGone } from './Gifts';
+import { loadGifts, tagGift, giftAdditions, GIFT_SPRITE_CLOSED } from './Gifts';
 
 /** ROM NPC config id from a placement key "areaIdx:npcId:occ", or -1. */
 function npcIdFromKey(k: string | undefined): number {
@@ -377,6 +377,25 @@ function buildStaticNpcs(raw: RawNPC[], overrides: NpcOverrides | null): (NPC | 
     }
     bucket.push(npc);
   }
+  // Admin-placed gift boxes (Gift Manager additions) aren't ROM placements, so
+  // spawn a present-box prop for each. Added to the area buckets + npcByKey (so
+  // they render, open, and resolve via liveNpcForKey) but deliberately NOT to
+  // `arr`/npcsById — that array is wire-indexed and must stay aligned with the
+  // server's enemy/car pool, which knows nothing about authored gifts.
+  for (const g of giftAdditions()) {
+    if (npcByKey.has(g.k)) continue; // never shadow a real placement
+    const npc = new NPC(g.x, g.y, g.sprite ?? GIFT_SPRITE_CLOSED, Direction.S, 'prop', null);
+    npc.placementKey = g.k;
+    npcByKey.set(g.k, npc);
+    tagGift(npc);
+    const area = Math.floor(g.y / AREA_PX) * AREA_COLS + Math.floor(g.x / AREA_PX);
+    let bucket = npcsByArea.get(area);
+    if (!bucket) {
+      bucket = [];
+      npcsByArea.set(area, bucket);
+    }
+    bucket.push(npc);
+  }
   return arr;
 }
 
@@ -670,7 +689,6 @@ export function getNearbyNPCs(px: number, py: number): NPC[] {
   const ax = Math.floor(px / AREA_PX);
   const ay = Math.floor(py / AREA_PX);
   const result: NPC[] = [];
-  const now = Date.now();
 
   for (let dy = -NEAR_RANGE; dy <= NEAR_RANGE; dy++) {
     for (let dx = -NEAR_RANGE; dx <= NEAR_RANGE; dx++) {
@@ -681,8 +699,7 @@ export function getNearbyNPCs(px: number, py: number): NPC[] {
       if (!bucket) continue;
       for (const npc of bucket) {
         if (npc.dead) continue; // dead enemy / inactive slot — hidden
-        if (npc.isGift && giftGone(npc, now)) continue; // present already opened by this player
-        ensureSheet(npc);
+        ensureSheet(npc); // opened presents persist (shown open), so nothing to skip
         result.push(npc);
       }
     }

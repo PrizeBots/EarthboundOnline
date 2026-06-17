@@ -30,7 +30,7 @@ import {
   liveNpcForKey,
 } from './NPCManager';
 import { NPC } from './NPC';
-import { beginGiftOpen } from './Gifts';
+import { beginGiftOpen, giftOpened } from './Gifts';
 import { loadAtlas } from './TilesetManager';
 import {
   loadCollision,
@@ -105,7 +105,7 @@ import {
   triggerHotbarSlot,
   syncWeaponHotbar,
   setHotbar,
-  reconcileHotbarStock,
+  autoHotbarNewItems,
   openShop,
   openPhoneMenu,
   openAtmMenu,
@@ -146,6 +146,7 @@ import {
 } from './Emitter';
 import { triggerHitstop, tickHitstop, addShake, tickShake, FLASH_MS } from './Juice';
 import { initPsiFx, updatePsiFx, renderPsiFx, spawnPsiFx } from './PsiFx';
+import { updateItemFx, renderItemFx, spawnItemFx } from './ItemFx';
 import { setDrops, addDrop, removeDrop } from './DropManager';
 import { playEventSfx, loadSfxEvents } from './SfxEvents';
 import { setGoods } from './Inventory';
@@ -444,6 +445,8 @@ export class Game {
       // Float a short notice over the player (e.g. a blocked "Not enough PP" cast).
       notify: (text) => spawnNoticeText(this.player.x, this.player.y, text),
       psiBlocked: () => this.player.statuses.includes('noPsi'),
+      // Play a used item's animation on the local player (server networks it to others).
+      itemUseFx: (id) => spawnItemFx(id, this.player.x, this.player.y),
     });
     initChat(getKeySet());
     initDialogue(getKeySet());
@@ -455,7 +458,9 @@ export class Game {
     // Connect to multiplayer server (anonymous, or signed-in via opts.auth).
     connect(
       spriteGroupId,
-      opts.name ?? 'Player',
+      // Broadcast the SAME name shown locally (line ~422): fall back to the
+      // sprite's name so others don't just see a generic 'Player'.
+      opts.name ?? getSpriteName(spriteGroupId) ?? 'Player',
       appearance,
       {
         onWelcome: (playerId, players) => {
@@ -569,8 +574,9 @@ export class Game {
           }
         },
         onInventory: (items) => {
-          setGoods(items); // mirror the server's Goods list for the menu
-          reconcileHotbarStock(); // empty a hotbar slot whose consumable just ran out
+          setGoods(items); // mirror the server's Goods list for the menu (hotbar
+          // count badges read this live; a depleted slot greys out, see renderHotbar)
+          autoHotbarNewItems(); // a newly-picked-up weapon/consumable fills an open hot slot
         },
         onMoney: (amount) => {
           setMoney(amount); // mirror the server's on-hand cash for the menu
@@ -675,6 +681,11 @@ export class Game {
           // Server-driven (everyone incl. the caster): play the effect, flying
           // caster (x,y) → target (tx,ty) for projectile-delivery PSI.
           spawnPsiFx(id, x, y, tx, ty);
+        },
+        onItemUse: (_id, item, x, y) => {
+          // Another player used a consumable — play its "use" animation on them
+          // (the local user already spawned their own via the itemUseFx hook).
+          spawnItemFx(item, x, y);
         },
         onPlayerRespawn: (id, x, y, dir) => {
           if (id === this.localPlayerId) {
@@ -1148,6 +1159,7 @@ export class Game {
     updateChatBubbles();
     updateEmitters();
     updatePsiFx(); // PSI cast animations advance even while a menu/dialogue is up
+    updateItemFx(); // item-use animations (eating a Cookie, etc.) advance too
 
     // Remote players + server NPCs/enemies keep gliding even while menus/
     // dialogue/transitions freeze the local world — their senders haven't stopped.
@@ -1397,11 +1409,12 @@ export class Game {
         this.faceTalkingNpc();
         return;
       }
-      // A present box: ask the server to open it (server grants the item once
-      // per player and acks 'gift_opened', which plays the open→fade).
+      // An item-container (present/trash can/jar…): ask the server to open it
+      // (server grants the item once per player and acks 'gift_opened', which
+      // flips a present to its open frame). Already-opened → nothing to do.
       if (target.isGift) {
-        if (target.placementKey && !target.giftOpenedAt) {
-          console.log(`Talk: present -> open_gift ${target.placementKey}`);
+        if (target.placementKey && !giftOpened(target)) {
+          console.log(`Talk: container -> open_gift ${target.placementKey}`);
           sendOpenGift(target.placementKey);
         }
         return;
@@ -1499,11 +1512,13 @@ export class Game {
       this.ctx.save();
       this.ctx.scale(this.camera.zoom, this.camera.zoom);
       renderPsiFx(this.ctx, this.camera);
+      renderItemFx(this.ctx, this.camera);
       renderEmitters(this.ctx, this.camera);
       renderChat(this.ctx, this.camera, this.player, this.remotePlayers);
       this.ctx.restore();
     } else {
       renderPsiFx(this.ctx, this.camera);
+      renderItemFx(this.ctx, this.camera);
       renderEmitters(this.ctx, this.camera);
       renderChat(this.ctx, this.camera, this.player, this.remotePlayers);
     }

@@ -36,6 +36,15 @@ export interface MenuHooks {
   /** True if PSI is currently disabled by a status (the "can't concentrate"
    *  noPsi debuff). Casting is blocked while set. Optional. */
   psiBlocked?(): boolean;
+  /** Play an item's "use" animation on the local player (e.g. eating a Cookie).
+   *  Visual only — the server broadcasts it so other players see it too. */
+  itemUseFx?(itemId: string): void;
+}
+
+/** Stat-change preview for the highlighted Buy item: how a stat would read after
+ *  buying + wearing it (vs the piece it'd replace). null for non-gear (no stat). */
+export interface ShopPreview {
+  lines: { label: string; from: number; to: number }[];
 }
 
 /** One row of the combined Equip list: a slot, or an unequipped gear item. */
@@ -60,6 +69,8 @@ export interface MenuView {
   shopSellCursor: number;
   shopStore: number;
   shopNote: string;
+  /** Stat preview for the highlighted Buy row (null unless on shop_buy + gear). */
+  shopPreview: ShopPreview | null;
   message: string;
   hotbar: (string | null)[];
   drag: { id: string } | null;

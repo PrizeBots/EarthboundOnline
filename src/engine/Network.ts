@@ -88,6 +88,9 @@ type NetworkCallback = {
   /** A PSI was cast — play its effect. (x,y)=caster, (tx,ty)=target (projectile
    *  flies between them). Sent to everyone incl. the caster. Visual only. */
   onPsiCast?: (id: string, casterId: string, x: number, y: number, tx: number, ty: number) => void;
+  /** Another player used a consumable — play its "use" animation at (x,y).
+   *  `item` is the item id; the caster already plays its own. Visual only. */
+  onItemUse?: (id: string, item: string, x: number, y: number) => void;
   /**
    * A status was just inflicted on a player — drives the floating EB battle-text
    * ("became numb!") at (x, y). `blocks` = it locks action (paralysis/sleep/
@@ -329,6 +332,9 @@ function openSocket() {
           typeof msg.tx === 'number' ? msg.tx : msg.x,
           typeof msg.ty === 'number' ? msg.ty : msg.y
         );
+        break;
+      case 'item_use':
+        callbacks?.onItemUse?.(msg.id, msg.item, msg.x, msg.y);
         break;
       case 'status_applied':
         callbacks?.onStatusApplied?.(

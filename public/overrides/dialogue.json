@@ -2,9 +2,10 @@
   "version": 1,
   "edits": {
     "900003": ["Hey, do you smell that?", "I just farted."],
-    "900004": [""],
+    "900004": ["Can I help you, sir?"],
     "900005": ["Scram, we're busy!"],
     "900006": ["Shouldn't you be at work?"],
-    "900007": ["I love a juicy burger!"]
+    "900007": ["I love a juicy burger!"],
+    "900008": ["Sure is nice out today!"]
   }
 }

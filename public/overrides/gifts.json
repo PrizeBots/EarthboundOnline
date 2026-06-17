@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "edits": {},
+  "additions": [
+    {
+      "k": "gift+1",
+      "x": 1883,
+      "y": 1118,
+      "romFlag": 1000,
+      "item": 8
+    }
+  ]
+}

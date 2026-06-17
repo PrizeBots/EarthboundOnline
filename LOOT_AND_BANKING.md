@@ -8,6 +8,21 @@ No client ever sets a balance or an inventory — anti-cheat by construction.
 
 - **Pickup:** pure first-touch FFA — first player to touch a ground drop claims it
   (killer has no priority).
+- **NPC/enemy carrying:** enemies and townsfolk also grab item drops they walk over
+  (first-touch, _after_ the player pass each tick — players win contested drops),
+  holding up to `ACTOR_CARRY_CAP` (= **2**) in an actor `carried` list. Pickup is
+  positional only — actors don't path toward loot, they grab what lands near them.
+  Vehicles/cars never carry. On **any** death (player/NPC kill or poison) an actor
+  ejects its whole haul (carried + equipped) as fresh ground drops, then respawns
+  empty. This is separate from its own `drops` table — carried loot is what it picked up.
+- **Townsfolk USE their loot (enemies do NOT):** in `tickNpc` a townsperson runs
+  `npcUseCarried` each tick — heals if hurt (consumes a `heal>0` item), else equips a
+  looted weapon (`weaponBonus` → bigger swing damage + held sprite id) or armor
+  (`armorBonus` → flat incoming-damage soak, min 1 still lands). Equipped gear moves
+  `carried → equipped` and drops on death. Enemies never call this (item-use lives in
+  the townsfolk-only tick) — they just carry + drop. Item stats come from the shared
+  `shops.js` GOODS catalog, now loaded read-only into npcSim. _Held-weapon visual on
+  NPCs is server-side only so far — the npc move-wire carries no `itemId` yet (TODO)._
 - **Drop tables:** each enemy has `drops: [{item, rate}]`; every entry is rolled
   independently on death (`rate` = probability, from ROM "Item Rarity", e.g. 1/128).
 - **Despawn:** ground drops **never** despawn (grab-or-stays). Ephemeral: wiped on

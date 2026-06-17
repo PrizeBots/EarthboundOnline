@@ -22,6 +22,7 @@
 const fs = require('fs');
 const path = require('path');
 const status = require('./status'); // EB status-condition engine (catalog + timer/DoT math)
+const { loadShops } = require('./shops'); // item catalog (heal + equip data) so NPCs can USE loot
 
 // --- Map constants (mirror src/types.ts) ---
 const MINITILE = 8;
@@ -80,9 +81,15 @@ const HURT_MS = 300; // how long a struck enemy shows its flinch pose
 // chip hit), collision-clamped so nobody is knocked through a wall. In-sim
 // actors (enemies/townsfolk) are moved directly; players live on the host, so
 // the sim computes the landing spot and hands it back through the hit callback.
-const KB_MIN = 5; // px — even a light hit nudges
+// Knockback is PROPORTIONAL to damage — a chip hit barely nudges, a crusher
+// flings. There's no flat floor (KB_MIN 0): the old 5px floor meant a 1-damage
+// hit still shoved ~6px, so a swarm of weak enemies could push the player all
+// over with chip damage. Now 1 dmg ≈ 2px (imperceptible) and it scales from
+// there. (Per-entity knockback overrides — a "heavy" boss, a "light" gnat — are
+// a future Entity Manager field; this is the global default.)
+const KB_MIN = 0; // px — no minimum; a 0-damage (fully-blocked) hit doesn't shove
 const KB_MAX = 44; // px — cap so a big/crit hit can't fling across the room
-const KB_PER_DMG = 1.6; // px of knockback per point of damage dealt
+const KB_PER_DMG = 2; // px of knockback per point of damage dealt
 const KB_STEP = 4; // px — collision sampling step while sliding the knockback (< MINITILE)
 // Status conditions (Paralysis/Numb, Diamond, Sleep, Poison, …) are the EB-derived
 // hit-reaction layer. The catalog + all the timer/immunity/DoT math live in
@@ -95,9 +102,11 @@ const KB_STEP = 4; // px — collision sampling step while sliding the knockback
 const PLAYER_PARALYSIS_CHANCE = 12; // % a player's landed hit paralyzes its target (per-weapon: TODO)
 const ENEMY_PARALYZE_CHANCE = 8; // % an enemy's landed hit paralyzes the player it struck (per-entity: TODO)
 
-// Knockback distance for a hit that dealt `dmg` damage (clamped to [MIN,MAX]).
+// Knockback distance for a hit that dealt `dmg` damage: linear in damage
+// (KB_PER_DMG px each), clamped to [KB_MIN, KB_MAX]. e.g. 1→2px, 7→14px,
+// 14 (crit)→28px, capped at 44.
 function knockDist(dmg) {
-  return Math.max(KB_MIN, Math.min(KB_MAX, KB_MIN + dmg * KB_PER_DMG));
+  return Math.max(KB_MIN, Math.min(KB_MAX, dmg * KB_PER_DMG));
 }
 
 // --- Enemy aggression (Heavy) ---
@@ -268,6 +277,18 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // without start(), so every use is guarded).
   let broadcastCb = null;
   const readJSON = (rel) => JSON.parse(fs.readFileSync(path.join(assetsDir, rel), 'utf8'));
+
+  // Item catalog keyed by numeric-string id ({name, heal, equip:{slot,offense,
+  // defense,…}|null}) — the SAME data gameHost validates player use/equip against.
+  // Read-only here; lets townsfolk actually USE the loot they pick up (heal when
+  // hurt, equip weapons/armor). Enemies never use items (see tickNpc caller).
+  let GOODS = {};
+  try {
+    GOODS = loadShops(assetsDir).goods || {};
+  } catch {
+    GOODS = {}; // no shops.json (tests without a catalog) — NPCs just hoard + drop
+  }
+  const goodFor = (item) => GOODS[String(item)] || null;
 
   const sectors = readJSON('map/sectors.json');
   const tiles = readJSON('map/tiles.json');
@@ -708,6 +729,97 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     return d;
   }
 
+  // --- Actor loot carrying ---------------------------------------------------
+  // Enemies and townsfolk grab item drops they walk over (first-touch, same as
+  // players) and hold up to ACTOR_CARRY_CAP. On death they eject their whole
+  // haul back onto the ground, so a hoarder you kill gives the loot back. Carry
+  // is purely positional — actors don't path toward loot, they just pick up
+  // what lands near them. Vehicles/cars never carry (special behaviour).
+  const ACTOR_CARRY_CAP = 2; // max ground items an enemy/townsperson holds at once
+  function canCarry(n) {
+    return !n.dead && (n.isEnemy || (n.kind === 'person' && !n.isVehicle));
+  }
+
+  // Offer each unclaimed item drop to the first eligible actor within reach.
+  // Runs AFTER the player pickup pass each tick, so players win contested drops.
+  function pickupByActors(now) {
+    if (!groundDrops.length) return;
+    for (let i = groundDrops.length - 1; i >= 0; i--) {
+      const d = groundDrops[i];
+      if (d.kind !== 'item') continue; // actors grab items, not money
+      if (d.pickableAt && now < d.pickableAt) continue; // still mid-flight
+      const a = actors.find(
+        (n) =>
+          canCarry(n) &&
+          n.carried.length < ACTOR_CARRY_CAP &&
+          Math.abs(n.x - d.x) <= DROP_PICKUP_RADIUS &&
+          Math.abs(n.y - d.y) <= DROP_PICKUP_RADIUS
+      );
+      if (a) {
+        a.carried.push({ item: d.item, name: d.name || '' });
+        groundDrops.splice(i, 1);
+        if (broadcastCb) broadcastCb({ type: 'drop_remove', id: d.id });
+      }
+    }
+  }
+
+  // Eject everything an actor was holding — both its loose carry AND anything a
+  // townsperson equipped off the ground — onto the ground at its death spot
+  // (independent of its own drop table), then reset so a respawn comes back
+  // clean. Applies to ANY death — killed by a player, an NPC, or poison.
+  function ejectCarried(actor) {
+    const haul = [...(actor.carried || []), ...(actor.equipped || [])];
+    for (const c of haul) {
+      const land = ejectLanding(actor.x, actor.y);
+      spawnDrop(
+        'item',
+        land.x,
+        land.y,
+        { item: c.item, name: c.name || '' },
+        { x: actor.x, y: actor.y }
+      );
+    }
+    actor.carried = [];
+    actor.equipped = [];
+    actor.weaponBonus = 0;
+    actor.armorBonus = 0;
+    actor.itemId = null;
+  }
+
+  // A townsperson USES the loot it's carrying (enemies never call this — see the
+  // tickNpc caller). One action per call: heal first if hurt, otherwise equip a
+  // weapon (more swing damage + held sprite) or armor (damage soak). Healing is
+  // consumed; gear moves carried -> equipped (still drops on death). No-op when
+  // there's no catalog (GOODS empty) — the actor just keeps hoarding.
+  function npcUseCarried(n) {
+    if (!n.carried.length) return;
+    // 1) Heal when actually hurt and holding a heal item.
+    if (n.hp < n.maxHp) {
+      const i = n.carried.findIndex((c) => (goodFor(c.item)?.heal | 0) > 0);
+      if (i >= 0) {
+        n.hp = Math.min(n.maxHp, n.hp + goodFor(n.carried[i].item).heal);
+        n.hpDirty = true;
+        n.carried.splice(i, 1); // consumed
+        return; // one action per call
+      }
+    }
+    // 2) Otherwise equip a weapon or armor we can put to use.
+    const ei = n.carried.findIndex((c) => goodFor(c.item)?.equip);
+    if (ei < 0) return;
+    const c = n.carried[ei];
+    const eq = goodFor(c.item).equip;
+    if (eq.slot === 'weapon') {
+      if ((eq.offense | 0) <= n.weaponBonus) return; // only ever swap UP to a better weapon
+      n.weaponBonus = eq.offense | 0;
+      n.itemId = String(c.item); // held weapon sprite (server-side; wire TODO)
+      n.dirty = true;
+    } else {
+      n.armorBonus += eq.defense | 0; // body/arms/other stack as flat damage soak
+    }
+    n.equipped.push(c);
+    n.carried.splice(ei, 1);
+  }
+
   function readOverrides() {
     try {
       return JSON.parse(fs.readFileSync(OVERRIDES_PATH, 'utf8'));
@@ -784,6 +896,15 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         // Active status conditions (see server/status.js): { [type]: {until,…} }.
         // Paralysis/numb, poison, etc. Empty = clean.
         statuses: {},
+        // Ground item drops this actor has picked up (max ACTOR_CARRY_CAP).
+        // Ejected back onto the ground on death; emptied on respawn.
+        carried: [],
+        // Loot a townsperson has EQUIPPED off the ground (weapon/armor {item,name}).
+        // Stays equipped until death, then drops with `carried`. Enemies never equip.
+        equipped: [],
+        weaponBonus: 0, // extra swing damage from an equipped weapon
+        armorBonus: 0, // incoming damage soaked by equipped armor (min 1 still lands)
+        itemId: null, // held weapon sprite id (set on equip; cleared on death)
       },
       fields
     );
@@ -1312,6 +1433,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       n.poseUntil = now + NPC_ATTACK_POSE_MS;
       n.frame = 0;
       n.dirty = true;
+      // A townsperson that equipped a looted weapon hits harder for it.
+      const dmg = NPC_DAMAGE + (n.weaponBonus | 0);
       if (foe.isPlayer) {
         // Swing at a PK player: HP lives on the host, so apply it there. Flat
         // NPC_DAMAGE (no crit/dodge) — townsfolk are a deliberate PK deterrent.
@@ -1319,16 +1442,11 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           `[HITDBG] TOWNSPERSON hit player ${e.id}: npc id=${n.id} sprite=${n.sprite} at (${Math.round(n.x)},${Math.round(n.y)}) -> player at (${Math.round(e.x)},${Math.round(e.y)}) dist=${Math.round(dist)} (player must be PK)`
         );
         if (onPlayerHitCb)
-          onPlayerHitCb(
-            e.id,
-            NPC_DAMAGE,
-            null,
-            knockbackPlayerSpot(e.x, e.y, n.x, n.y, NPC_DAMAGE)
-          );
+          onPlayerHitCb(e.id, dmg, null, knockbackPlayerSpot(e.x, e.y, n.x, n.y, dmg));
       } else {
         // Townsfolk knock enemies back but don't paralyze them (a deliberate
         // deterrent, not a lockdown) — no status inflict.
-        applyDamage(e, NPC_DAMAGE, now, null, { x: n.x, y: n.y, inflict: [] });
+        applyDamage(e, dmg, now, null, { x: n.x, y: n.y, inflict: [] });
         e.aggressor = n; // the enemy remembers (and may turn on) whoever hit it
         e.aggroUntil = now + ENEMY_AGGRO_MEMORY_MS;
       }
@@ -1381,6 +1499,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     // plus PK players (canHurt-gated, so a peaceful player is never attacked).
     // Props/0-HP people can't fight.
     if (n.hp > 0) {
+      // Put picked-up loot to use: heal if hurt, else equip a weapon/armor. Done
+      // before combat so a fresh weapon's damage applies on this same swing.
+      npcUseCarried(n);
       const foe = nearestFoeTo(n, NPC_DETECT_RANGE, ppos);
       if (foe) {
         tickNpcCombat(n, foe, ppos, now);
@@ -2250,6 +2371,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   function applyDamage(target, dmg, now, killerPlayerId, atk) {
     if (!target || target.dead || target.hp <= 0) return;
     status.breakOnHit(target, now); // a hit wakes a sleeping actor
+    // Equipped armor (townsfolk who grabbed gear) soaks flat damage; a hit always
+    // lands for at least 1 so armor can't make an actor unkillable.
+    if (target.armorBonus) dmg = Math.max(1, dmg - target.armorBonus);
     target.hp -= dmg;
     target.hpDirty = true;
     target.pose = 'hurt';
@@ -2294,6 +2418,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       } else {
         target.respawnAt = now + NPC_RESPAWN_MS;
       }
+      // Whatever the actor was hauling drops back onto the ground — for ANY
+      // death (player kill, NPC kill, or poison), enemy or townsperson alike.
+      ejectCarried(target);
     } else if (atk) {
       // Survived the hit — react to it: knocked back away from the attacker, plus
       // any status procs the hit carries (each element-scaled by the target's ROM
@@ -2576,6 +2703,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             }
           }
         }
+        // Then enemies/townsfolk grab what players left behind (carry-capped).
+        pickupByActors(now);
       }, 1000 / TICK_HZ);
 
       sendInterval = setInterval(() => {
@@ -2658,6 +2787,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         maxHp: n.maxHp,
         dead: !!n.dead,
         statuses: { ...n.statuses }, // active status set (for inflict-model tests/debug)
+        carried: n.carried.map((c) => ({ ...c })), // items this actor is hauling
       }));
     },
 
@@ -2670,6 +2800,26 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     spawnMoneyDrop(x, y, amount) {
       if ((amount | 0) <= 0) return null;
       return spawnDrop('money', x, y, { amount: amount | 0 });
+    },
+
+    /** Spawn an item ground drop (no eject → immediately claimable). For tests. */
+    spawnItemDrop(x, y, item, name) {
+      if (!item) return null;
+      return spawnDrop('item', x, y, { item, name: name || '' });
+    },
+
+    /** Run one actor-pickup pass (enemies/townsfolk grab nearby drops). For tests. */
+    pickupByActors,
+
+    /**
+     * Test/debug hooks for the NPC item-use mechanic. Return LIVE townsperson
+     * actors (so a test can seed `carried` and read the result), plus drivers to
+     * run one use pass or apply raw damage without standing up the full tick.
+     */
+    _test: {
+      townsfolk: () => actors.filter((n) => n.kind === 'person' && !n.isVehicle),
+      useCarried: (n) => npcUseCarried(n),
+      damage: (n, dmg, now) => applyDamage(n, dmg, now == null ? Date.now() : now, null),
     },
 
     /** Resolve a player's melee swing (server-authoritative). */
@@ -2697,6 +2847,32 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       // element-scaled by the enemy's ROM resist inside applyDamage's atk path.
       applyDamage(best, dmg || 0, Date.now(), killerPlayerId, { x, y, inflict: inflict || [] });
       return { x: Math.round(best.x), y: Math.round(best.y) };
+    },
+
+    /**
+     * Multi-target offense PSI (ROM target "row"/"all", e.g. PSI Fire, Thunder,
+     * Flash, Starstorm, Rockin): the bolt PENETRATES and hits EVERY live enemy
+     * within `range` px of (x,y) that has line of sight — not just the nearest.
+     * Each takes the full damage + the PSI's status inflict, element-scaled by
+     * its own ROM resist. Returns the NEAREST struck enemy's {x,y} for the
+     * projectile animation target, or null if nothing was hit.
+     */
+    psiStrikeAll(x, y, range, dmg, killerPlayerId, inflict) {
+      const now = Date.now();
+      let near = null;
+      let nearD = Infinity;
+      for (const n of enemies) {
+        if (n.dead) continue;
+        const d = Math.hypot(n.x - x, n.y - y);
+        if (d <= range && !wallBetween(x, y, n.x, n.y)) {
+          applyDamage(n, dmg || 0, now, killerPlayerId, { x, y, inflict: inflict || [] });
+          if (d < nearD) {
+            nearD = d;
+            near = n;
+          }
+        }
+      }
+      return near ? { x: Math.round(near.x), y: Math.round(near.y) } : null;
     },
 
     /** World pixel bounds {w, h} — the host clamps player positions to these. */

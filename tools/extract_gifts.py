@@ -1,35 +1,33 @@
 """
-Build the gift/present catalog for the engine.
+Build the item-container catalog for the engine (presents, trash cans, jars,
+crates… — everything you "open"/"check" for an item).
 
-EarthBound gift boxes ("presents") are TPT entries that use overworld sprite
-group 195 (the closed box; 196 is the opened-box frame) with Type "item". Two
-sprite-195 entries are people (Type "person") and are NOT gifts — they're
-excluded here.
+In EarthBound every item-container is a "Type: item" TPT entry. They share ONE
+mechanism and differ only by overworld sprite group (the container's look):
+    195 present box (opens to 196), 214 trash can, 233 gift box, 262 crate,
+    322 jar, 33 small container, …
+(Sprite-195 entries that are Type "person" are people, not containers — skipped.)
 
-Each present's data lives entirely in its npc_config_table.yml entry:
-    - Event Flag   -> the ROM's per-present "已开" flag (unique per box, ~800-976).
-                      We use it as the gift's stable ROM identity.
-    - Text Pointer 2 -> the CONTENTS: a "$XX" hex value that is the item id
-                      (0-253). All real presents share Text Pointer 1
-                      (data_32.l_0xc7d84f, the generic opener), so the item is
-                      NOT in the script — it's this field.
-    - A few presents carry a 2-byte Text Pointer 2 ($10a/$105/$4e8 ...) that is
-                      out of item range: those are SPECIAL presents that run a
-                      custom script (money/story item/trap). We mark them
-                      `special: true` with item=null rather than guess — author
-                      their contents in the Gift Manager editor tool.
+Each container's data lives entirely in its npc_config_table.yml entry:
+    - Event Flag   -> the ROM's per-container "opened" flag (its stable identity).
+    - Text Pointer 2 -> the CONTENTS: a "$XX" hex value = item id (0-253). All
+                      containers share a generic opener (data_32.l_0xc7d84f …),
+                      so the item is NOT in the script — it's this field.
+    - A few carry a 2-byte Text Pointer 2 ($10a/$4e8 …) out of item range: those
+                      are SPECIAL (custom script — money/story/trap). Marked
+                      `special: true`, item=null — author them in Gift Manager.
 
-Placements (world x/y + stable key `k`) come straight from the already-extracted
-public/assets/map/npcs.json so a gift's `k` matches its rendered prop exactly
-(same key scheme tools/extract_npcs.py mints). Engine + Gift Manager merge
-overrides/gifts.json on top, same overrides-layer pattern as enemies.json.
+Placements (world x/y + stable key `k`, + the container `sprite`) come straight
+from public/assets/map/npcs.json so each `k` matches its rendered prop exactly.
+Engine + Gift Manager merge overrides/gifts.json on top (same overrides pattern).
 
 Output: public/assets/map/gifts.json
-    [{k, x, y, romFlag, item, itemName, special?}, ...]
+    [{k, x, y, sprite, romFlag, item, itemName, special?}, ...]
 
 Run: C:/Users/zleer/AppData/Local/Programs/Python/Python310/python.exe tools/extract_gifts.py
 """
 import json
+from collections import Counter
 from pathlib import Path
 
 import yaml
@@ -40,7 +38,6 @@ MAP = ROOT / "public" / "assets" / "map"
 NPCS = MAP / "npcs.json"
 OUT = MAP / "gifts.json"
 
-GIFT_SPRITE = 195          # closed present box (196 = opened frame)
 MAX_ITEM_ID = 253          # item_configuration_table.yml is 0..253
 
 
@@ -66,12 +63,12 @@ def main():
     gifts = []
     resolved = special = skipped = 0
     for n in npcs:
-        if n.get("sprite") != GIFT_SPRITE:
-            continue
         npc_id = int(n["k"].split(":")[1])
         cfg = config.get(npc_id)
+        # Every item-container (present, trash can, jar, crate…) is a "Type: item"
+        # TPT entry; they differ only by sprite group. Non-item props are scenery.
         if not isinstance(cfg, dict) or cfg.get("Type") != "item":
-            skipped += 1  # the sprite-195 "person" decoys
+            skipped += 1
             continue
 
         item = item_id_from_tp2(cfg.get("Text Pointer 2"))
@@ -80,6 +77,7 @@ def main():
             "k": n["k"],
             "x": n["x"],
             "y": n["y"],
+            "sprite": n["sprite"],  # container type (195 present, 214 trash can, …)
             "romFlag": cfg.get("Event Flag"),
         }
         if name is not None and 0 <= item <= MAX_ITEM_ID:
@@ -99,10 +97,12 @@ def main():
     with open(OUT, "w", encoding="utf-8") as f:
         json.dump(gifts, f, ensure_ascii=False)
 
-    print(f"Wrote {len(gifts)} gifts to {OUT}")
+    by_sprite = Counter(g["sprite"] for g in gifts)
+    print(f"Wrote {len(gifts)} containers to {OUT}")
     print(f"  contents resolved: {resolved}")
     print(f"  special (author manually): {special}")
-    print(f"  sprite-195 non-gift entries skipped: {skipped}")
+    print(f"  non-item props skipped: {skipped}")
+    print(f"  by container sprite: {dict(by_sprite)}")
 
 
 if __name__ == "__main__":

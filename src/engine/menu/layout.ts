@@ -29,6 +29,99 @@ export interface Cell {
   h: number;
 }
 
+// --- Scrollable list windows -------------------------------------------------
+// A vertical list (Goods / PSI / Shop / Equip-select) must NEVER run off the
+// bottom of the 224px screen. `scrollList` clamps the window to the screen and,
+// when the content is taller, shows only the rows that fit + scrolls so the
+// cursor stays visible, reserving a gutter for a scrollbar. Each list's layout +
+// hit-test + renderer all go through it so they never drift.
+const SCROLLBAR_W = 3;
+const SCREEN_MARGIN = 8; // keep this much clear at the screen bottom
+
+/** A visible row, tagged with its ITEM index (so click/render map back). */
+export interface ListRow extends Cell {
+  index: number;
+}
+export interface ListLayout {
+  winX: number;
+  winY: number;
+  winW: number;
+  winH: number;
+  /** ONLY the rows currently visible in the (possibly scrolled) window. */
+  rows: ListRow[];
+  /** Scrollbar geometry when the list overflows, else null. */
+  scroll: { x: number; y: number; w: number; h: number; thumbY: number; thumbH: number } | null;
+  /** Total item count, how many fit at once, and the first visible index — used
+   *  to map a scrollbar drag back to a cursor row. */
+  count: number;
+  visible: number;
+  first: number;
+}
+
+/**
+ * Build a clamped, scroll-if-needed list window. `(winX, winY, winW)` is the
+ * desired box (winW fixed by the caller), `count` the item total, `cursor` the
+ * selected index (kept visible). Height is clamped to the screen; when the
+ * content overflows, only the rows that fit are returned (each carrying its real
+ * item index) and a scrollbar gutter is reserved on the right.
+ */
+export function scrollList(
+  winX: number,
+  winY: number,
+  winW: number,
+  count: number,
+  cursor: number
+): ListLayout {
+  const n = Math.max(1, count);
+  const fullWinH = n * ITEM_H + PADDING * 2 + BORDER * 2;
+  const maxWinH = SCREEN_HEIGHT - winY - SCREEN_MARGIN;
+  const fits = fullWinH <= maxWinH;
+  const winH = fits ? fullWinH : maxWinH;
+  const usableH = winH - BORDER * 2 - PADDING * 2;
+  const visible = fits ? n : Math.max(1, Math.floor(usableH / ITEM_H));
+  // Scroll offset: keep the cursor centred-ish, clamped to the ends. Deterministic
+  // from the cursor, so render + hit-test compute the same window.
+  const first = fits
+    ? 0
+    : Math.max(0, Math.min(n - visible, (cursor || 0) - Math.floor(visible / 2)));
+  const sbGutter = fits ? 0 : SCROLLBAR_W + 2;
+  const rowW = winW - PADDING * 2 - BORDER * 2 - sbGutter;
+  const rows: ListRow[] = [];
+  for (let i = 0; i < visible && first + i < count; i++) {
+    rows.push({
+      x: winX + BORDER + PADDING,
+      y: winY + BORDER + PADDING + i * ITEM_H,
+      w: rowW,
+      h: ITEM_H,
+      index: first + i,
+    });
+  }
+  let scroll = null;
+  if (!fits) {
+    const trackY = winY + BORDER;
+    const trackH = winH - BORDER * 2;
+    const thumbH = Math.max(8, (visible / n) * trackH);
+    const thumbY = trackY + (trackH - thumbH) * (first / Math.max(1, n - visible));
+    scroll = {
+      x: winX + winW - BORDER - SCROLLBAR_W,
+      y: trackY,
+      w: SCROLLBAR_W,
+      h: trackH,
+      thumbY,
+      thumbH,
+    };
+  }
+  return { winX, winY, winW, winH, rows, scroll, count: n, visible, first };
+}
+
+/** Row index under a point for a scroll-list layout, or -1. */
+export function listRowAt(layout: ListLayout, px: number, py: number): number {
+  for (const r of layout.rows) {
+    if (px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h) return r.index;
+  }
+  return -1;
+}
+
 // EarthBound's cursor is a solid right-pointing triangle, not a text glyph
 // (the EB font has curly quotes where ASCII '<'/'>' would be). Drawn as
 // pixel columns so it stays crisp: heights 9,7,5,3,1.
@@ -147,43 +240,45 @@ export function cellAt(px: number, py: number): number {
   return -1;
 }
 
-// The Goods list: a tall panel over the right two-thirds of the screen, bounded
-// by the top/bottom margins (the command grid stays visible on the left).
+// The Goods panel: a big TWO-COLUMN window pinned to the top-left and spanning
+// the full width, so it OVERLAPS (draws on top of) the command grid and the
+// money "$N" window behind it (renderMenuBody draws those first). The 14-slot
+// bag fits in 2 columns without scrolling, so every item shows at once. Items
+// fill row-major: 0,1 on row 0; 2,3 on row 1; … (cursor nav is 2D in MenuManager).
 const GOODS_MARGIN = 8;
-export function goodsLayout(): {
-  winX: number;
-  winY: number;
-  winW: number;
-  winH: number;
-  rows: Cell[];
-} {
-  const items = getGoods();
-  const winW = Math.floor((SCREEN_WIDTH * 2) / 3);
-  const winX = SCREEN_WIDTH - winW - GOODS_MARGIN;
-  const winY = GOODS_MARGIN;
-  const winH = SCREEN_HEIGHT - GOODS_MARGIN * 2;
-  const rowW = winW - (BORDER + PADDING) * 2;
-
-  const rows: Cell[] = [];
-  for (let i = 0; i < items.length; i++) {
+export const GOODS_COLS = 2;
+export function goodsLayout(): ListLayout {
+  const n = Math.max(1, getGoods().length);
+  const winX = GOODS_MARGIN;
+  const winY = GOODS_MARGIN; // top edge = over the command + money windows
+  const winW = SCREEN_WIDTH - GOODS_MARGIN * 2; // full width → covers both corners
+  const rowsNeeded = Math.ceil(n / GOODS_COLS);
+  const maxRows = Math.max(
+    1,
+    Math.floor((SCREEN_HEIGHT - winY - GOODS_MARGIN - (BORDER + PADDING) * 2) / ITEM_H)
+  );
+  const visibleRows = Math.min(rowsNeeded, maxRows);
+  const winH = visibleRows * ITEM_H + (BORDER + PADDING) * 2;
+  const innerW = winW - (BORDER + PADDING) * 2;
+  const colW = Math.floor((innerW - COL_GAP) / GOODS_COLS);
+  const rows: ListRow[] = [];
+  for (let i = 0; i < n && Math.floor(i / GOODS_COLS) < visibleRows; i++) {
+    const col = i % GOODS_COLS;
+    const row = Math.floor(i / GOODS_COLS);
     rows.push({
-      x: winX + BORDER + PADDING,
-      y: winY + BORDER + PADDING + i * ITEM_H,
-      w: rowW,
+      x: winX + BORDER + PADDING + col * (colW + COL_GAP),
+      y: winY + BORDER + PADDING + row * ITEM_H,
+      w: colW,
       h: ITEM_H,
+      index: i,
     });
   }
-  return { winX, winY, winW, winH, rows };
+  return { winX, winY, winW, winH, rows, scroll: null, count: n, visible: rows.length, first: 0 };
 }
 
-/** Index of the Goods row under a game-space point, or -1. */
+/** Item index of the Goods cell under a point, or -1. */
 export function goodsRowAt(px: number, py: number): number {
-  const { rows } = goodsLayout();
-  for (let i = 0; i < rows.length; i++) {
-    const c = rows[i];
-    if (px >= c.x && px < c.x + c.w && py >= c.y && py < c.y + c.h) return i;
-  }
-  return -1;
+  return listRowAt(goodsLayout(), px, py);
 }
 
 // Equip screen geometry: the slot list sits in the center third of the screen;
@@ -226,79 +321,36 @@ export function equipRowAt(px: number, py: number): number {
   return -1;
 }
 
-/** The item sub-modal (right third) listing gear for the chosen slot. */
-export function equipSelectLayout(itemCount: number): {
-  winX: number;
-  winY: number;
-  winW: number;
-  winH: number;
-  rows: Cell[];
-} {
+/** The item sub-modal (right third) listing gear for the chosen slot — scrolls
+ *  if the player owns more gear than fits. */
+export function equipSelectLayout(itemCount: number, cursor = 0): ListLayout {
   const list = equipListLayout();
   const winX = list.winX + list.winW + 4; // just right of the slot list
   const winW = SCREEN_WIDTH - winX - 6; // out to the right margin
-  const winY = EQUIP_TOP;
-  const n = Math.max(1, itemCount);
-  const maxH = SCREEN_HEIGHT - winY - 8;
-  const winH = Math.min(n * ITEM_H + PADDING * 2 + BORDER * 2, maxH);
-  const rowW = winW - (BORDER + PADDING) * 2;
-  const rows: Cell[] = [];
-  for (let i = 0; i < itemCount; i++) {
-    rows.push({
-      x: winX + BORDER + PADDING,
-      y: winY + BORDER + PADDING + i * ITEM_H,
-      w: rowW,
-      h: ITEM_H,
-    });
-  }
-  return { winX, winY, winW, winH, rows };
+  return scrollList(winX, EQUIP_TOP, winW, itemCount, cursor);
 }
 
-export function equipSelectRowAt(px: number, py: number, itemCount: number): number {
-  const { rows } = equipSelectLayout(itemCount);
-  for (let i = 0; i < rows.length; i++) {
-    const c = rows[i];
-    if (px >= c.x && px < c.x + c.w && py >= c.y && py < c.y + c.h) return i;
-  }
-  return -1;
+export function equipSelectRowAt(px: number, py: number, itemCount: number, cursor = 0): number {
+  return listRowAt(equipSelectLayout(itemCount, cursor), px, py);
 }
 
-// The PSI ability list — same vertical-window layout as Goods, tucked under the
-// command grid. Static list, so no inventory lookup.
-export function psiLayout(): {
-  winX: number;
-  winY: number;
-  winW: number;
-  winH: number;
-  rows: Cell[];
-} {
+// The PSI ability list — sits to the RIGHT of the command grid at the top edge,
+// and scrolls (every PSI is dev-available, so the list is long).
+export function psiLayout(cursor = 0): ListLayout {
   const PSI_MIN_W = 96;
   const maxLabelW = Math.max(...PSI_ABILITIES.map((a) => measureText(a.name, FONT_ID)));
   const innerW = Math.max(PSI_MIN_W, CURSOR_W + maxLabelW);
-  const innerH = PSI_ABILITIES.length * ITEM_H + PADDING * 2;
   const cmd = commandLayout();
-  // The list grew (every PSI is dev-available), so it sits to the RIGHT of the
-  // command window at the top edge — full screen height — instead of tucked
-  // under it (which overflowed the bottom). Mirrors the shop/equip-select lists.
   const winX = cmd.winX + cmd.winW + 4;
   const winY = cmd.winY;
-  const rows: Cell[] = PSI_ABILITIES.map((_, i) => ({
-    x: winX + BORDER + PADDING,
-    y: winY + BORDER + PADDING + i * ITEM_H,
-    w: innerW,
-    h: ITEM_H,
-  }));
-  return { winX, winY, winW: innerW + PADDING * 2 + BORDER * 2, winH: innerH + BORDER * 2, rows };
+  // +scrollbar gutter so labels keep their room when the list scrolls.
+  const winW = innerW + PADDING * 2 + BORDER * 2 + SCROLLBAR_W + 2;
+  return scrollList(winX, winY, winW, PSI_ABILITIES.length, cursor);
 }
 
-/** Index of the PSI row under a game-space point, or -1. */
-export function psiRowAt(px: number, py: number): number {
-  const { rows } = psiLayout();
-  for (let i = 0; i < rows.length; i++) {
-    const c = rows[i];
-    if (px >= c.x && px < c.x + c.w && py >= c.y && py < c.y + c.h) return i;
-  }
-  return -1;
+/** Item index of the PSI row under a point (scroll-aware), or -1. */
+export function psiRowAt(px: number, py: number, cursor = 0): number {
+  return listRowAt(psiLayout(cursor), px, py);
 }
 
 // Shop rows render "Name......$Cost"; the list is wide enough for the longest
@@ -309,49 +361,39 @@ export interface ShopRow extends Cell {
   label: string;
 }
 const SHOP_MIN_W = 120;
-export function shopListLayout(
+/** The Buy/Sell list rows (id + display label) for the items in `mode`. The
+ *  renderer reads this by row index; the layout window comes from shopListLayout. */
+export function shopListItems(
   mode: 'buy' | 'sell',
   store: number
-): {
-  winX: number;
-  winY: number;
-  winW: number;
-  winH: number;
-  rows: ShopRow[];
-} {
+): { id: string; label: string }[] {
   const src =
     mode === 'buy'
       ? getStoreItems(store).map((i) => ({ id: i.id, name: i.name, price: i.cost }))
       : getGoods().map((g) => ({ id: g.id, name: g.name, price: sellPrice(g.id) }));
-  const labels = src.map((r) => `${r.name}  $${r.price}`);
-  const maxLabelW = labels.length ? Math.max(...labels.map((l) => measureText(l, FONT_ID))) : 0;
+  return src.map((r) => ({ id: r.id, label: `${r.name}  $${r.price}` }));
+}
+
+export function shopListLayout(mode: 'buy' | 'sell', store: number, cursor = 0): ListLayout {
+  const items = shopListItems(mode, store);
+  const maxLabelW = items.length ? Math.max(...items.map((r) => measureText(r.label, FONT_ID))) : 0;
   const innerW = Math.max(SHOP_MIN_W, CURSOR_W + maxLabelW);
-  const count = Math.max(1, src.length);
-  const innerH = count * ITEM_H + PADDING * 2;
-  // Sit to the RIGHT of the Buy/Sell chooser — the hit-test (shopRowAt) and the
-  // renderer BOTH use this, so clicks land where the rows are drawn.
+  // Sit to the RIGHT of the Buy/Sell chooser; scroll if the store is large.
   const chooserLabelW = Math.max(...SHOP_ROOT.map((l) => measureText(l, FONT_ID)));
   const chooserW = CURSOR_W + chooserLabelW + PADDING * 2 + BORDER * 2;
   const winX = 8 + chooserW + 4;
-  const winY = 8;
-  const rows: ShopRow[] = src.map((r, i) => ({
-    x: winX + BORDER + PADDING,
-    y: winY + BORDER + PADDING + i * ITEM_H,
-    w: innerW,
-    h: ITEM_H,
-    id: r.id,
-    label: labels[i],
-  }));
-  return { winX, winY, winW: innerW + PADDING * 2 + BORDER * 2, winH: innerH + BORDER * 2, rows };
+  const winW = innerW + PADDING * 2 + BORDER * 2 + SCROLLBAR_W + 2;
+  return scrollList(winX, 8, winW, items.length, cursor);
 }
 
-export function shopRowAt(mode: 'buy' | 'sell', store: number, px: number, py: number): number {
-  const { rows } = shopListLayout(mode, store);
-  for (let i = 0; i < rows.length; i++) {
-    const c = rows[i];
-    if (px >= c.x && px < c.x + c.w && py >= c.y && py < c.y + c.h) return i;
-  }
-  return -1;
+export function shopRowAt(
+  mode: 'buy' | 'sell',
+  store: number,
+  px: number,
+  py: number,
+  cursor = 0
+): number {
+  return listRowAt(shopListLayout(mode, store, cursor), px, py);
 }
 
 /** Index of the Buy/Sell chooser row (top-left window) under a point, or -1. */
@@ -366,8 +408,11 @@ export function shopRootRowAt(px: number, py: number): number {
   return -1;
 }
 
-// --- Quick-select hotbar geometry (2 slots, bottom-center) -------------------
-export const HOTBAR_SLOTS = 2;
+// --- Quick-select hotbar geometry (bottom-center) ----------------------------
+// 6 slots, keys 1-6. Reachable while the left hand is on WASD; 6*16 + 5*3 = 111px
+// wide, centered on the 256px screen. KEEP IN SYNC with server HOTBAR_SLOTS
+// (gameHost.js) so the saved/validated hotbar array is the same length.
+export const HOTBAR_SLOTS = 6;
 const HOTBAR_BOX = 16;
 const HOTBAR_GAP = 3;
 

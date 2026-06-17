@@ -180,20 +180,51 @@ check('unknown message type does not throw', () => {
 const BAT = '17'; // weapon, dev-granted on join
 const COOKIE = '88'; // consumable, dev-granted on join
 
-check('equip owned weapon → owner gets authoritative equipped set', () => {
+check('equip owned weapon → equipped set + weapon LEAVES Goods', () => {
   alice.clear();
   bob.clear();
-  assert(host.players.get(aliceId).inventory.includes(BAT), 'precondition: owns bat');
+  const p = host.players.get(aliceId);
+  assert(p.inventory.includes(BAT), 'precondition: owns bat (in Goods)');
   alice.recv({ type: 'equip', slot: 'weapon', itemId: BAT });
   const eq = alice.last('equipped');
-  assert(eq, 'no equipped msg to owner');
-  assert.strictEqual(eq.slots.weapon, BAT);
+  assert(eq && eq.slots.weapon === BAT, 'equipped weapon should be the bat');
+  assert(!p.inventory.includes(BAT), 'worn gear should leave Goods');
+  const inv = alice.last('inventory');
+  assert(inv && !inv.items.some((i) => i.id === BAT), 'Goods delta should omit the worn bat');
 });
 
 check('equip → other players get the held-item broadcast', () => {
   const e = bob.last('equip');
   assert(e, 'Bob got no equip broadcast');
   assert.strictEqual(e.itemId, BAT);
+});
+
+check('unequip → worn piece returns to Goods', () => {
+  const p = host.players.get(aliceId);
+  assert.strictEqual(p.equipped.weapon, BAT, 'precondition: bat is worn');
+  alice.clear();
+  alice.recv({ type: 'equip', slot: 'weapon', itemId: null });
+  assert.strictEqual(p.equipped.weapon, null, 'slot should be empty after unequip');
+  assert(p.inventory.includes(BAT), 'bat should be back in Goods');
+  const inv = alice.last('inventory');
+  assert(inv && inv.items.some((i) => i.id === BAT), 'Goods delta should include the bat');
+});
+
+check('unequip refused when Goods is full → notice, stays equipped', () => {
+  const p = host.players.get(aliceId);
+  const savedInv = [...p.inventory];
+  const savedEq = { ...p.equipped };
+  // Wear the bat, then stuff Goods to MAX_SLOTS (14) so it has nowhere to land.
+  p.inventory = p.inventory.filter((id) => id !== BAT);
+  p.equipped.weapon = BAT;
+  while (p.inventory.length < 14) p.inventory.push(COOKIE);
+  alice.clear();
+  alice.recv({ type: 'equip', slot: 'weapon', itemId: null });
+  assert.strictEqual(p.equipped.weapon, BAT, 'bat must stay equipped when the bag is full');
+  const n = alice.last('notice');
+  assert(n && /full/i.test(n.text), 'expected a bag-full notice');
+  p.inventory = savedInv; // restore for the downstream consumable tests
+  p.equipped = savedEq;
 });
 
 check('use_item consumable → slot consumed (inventory no longer has it)', () => {

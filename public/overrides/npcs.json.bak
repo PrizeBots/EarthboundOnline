@@ -130,6 +130,21 @@
       "y": 1152,
       "sprite": 58,
       "dir": 0,
+      "kind": "person",
+      "t": 900007
+    },
+    {
+      "x": 1208,
+      "y": 1320,
+      "sprite": 181,
+      "dir": 0,
+      "kind": "person"
+    },
+    {
+      "x": 1576,
+      "y": 1192,
+      "sprite": 63,
+      "dir": 0,
       "kind": "person"
     }
   ]
