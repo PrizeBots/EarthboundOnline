@@ -1,6 +1,19 @@
 const jsonCache = new Map<string, unknown>();
 const imageCache = new Map<string, HTMLImageElement>();
 
+// --- Image load progress (for loading bars) ---------------------------------
+// Cumulative count of image fetches STARTED (cache misses) vs FINISHED (load or
+// error). Images (tileset atlases, sprite sheets) dominate load time, so this is
+// a good "how much longer" proxy. A consumer snapshots the counts at the start of
+// a wait (boot / door transition) and shows (finished-base)/(started-base).
+let imgStarted = 0;
+let imgFinished = 0;
+
+/** Cumulative image-load counters since startup (for progress bars). */
+export function imageLoadProgress(): { started: number; finished: number } {
+  return { started: imgStarted, finished: imgFinished };
+}
+
 export async function loadJSON<T>(path: string): Promise<T> {
   if (jsonCache.has(path)) return jsonCache.get(path) as T;
   const resp = await fetch(path);
@@ -38,13 +51,18 @@ export function primeImageCache(path: string, img: HTMLImageElement): void {
 
 export async function loadImage(path: string): Promise<HTMLImageElement> {
   if (imageCache.has(path)) return imageCache.get(path)!;
+  imgStarted++; // a real network fetch (cache miss) — count it for progress bars
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
+      imgFinished++;
       imageCache.set(path, img);
       resolve(img);
     };
-    img.onerror = reject;
+    img.onerror = (e) => {
+      imgFinished++; // a failed load still ends the wait — don't stall the bar
+      reject(e);
+    };
     img.src = path;
   });
 }

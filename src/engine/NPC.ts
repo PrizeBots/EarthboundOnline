@@ -44,6 +44,10 @@ export class NPC extends Entity {
   readonly textId: number | null;
   /** Server-driven animation pose (walk/attack/hurt), same as players. */
   pose: Pose = 'walk';
+  /** Held weapon sprite id (server-synced via npc_equip) — a townsperson that
+   *  equipped a looted weapon. null = empty-handed. Rendered like a player's
+   *  heldItemId via the shared drawEntityPart path. */
+  itemId: string | null = null;
   /** Active status-condition ids (server-synced) — drives the HP-bar pips. */
   statuses: string[] = [];
   /** Store id if this NPC is a shop clerk (set by NPCManager), else null. */

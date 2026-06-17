@@ -290,9 +290,38 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   }
   const goodFor = (item) => GOODS[String(item)] || null;
 
-  const sectors = readJSON('map/sectors.json');
-  const tiles = readJSON('map/tiles.json');
-  const tilesetMapping = readJSON('map/tileset_mapping.json');
+  // Core world data (ROM-derived). In production these live on a mounted disk,
+  // never in git (ROM-distribution policy; see ARCHITECTURE.md "Production data").
+  // If they're absent — a code-only deploy before the data disk is attached —
+  // DON'T crash the whole server: run as a RELAY-ONLY sim so multiplayer
+  // (join/move/chat) still works, just with no NPC/enemy/collision simulation.
+  let sectors, tiles, tilesetMapping;
+  try {
+    sectors = readJSON('map/sectors.json');
+    tiles = readJSON('map/tiles.json');
+    tilesetMapping = readJSON('map/tileset_mapping.json');
+  } catch (e) {
+    console.warn(
+      `[npcSim] world data missing (${e.code || e.message}) — running RELAY-ONLY ` +
+        '(no NPCs/enemies/collision). Attach the assets disk to enable the world.'
+    );
+    return {
+      start() {},
+      stop() {},
+      bounds: () => ({ w: MAP_W_TILES * TILE, h: MAP_W_TILES * TILE }),
+      snapshot: () => [],
+      hpSnapshot: () => [],
+      equipSnapshot: () => [],
+      dropsSnapshot: () => [],
+      handleAttack: () => {},
+      psiStrike: () => null,
+      psiStrikeAll: () => null,
+      spawnMoneyDrop: () => {},
+      noteRespawn: () => {},
+      noteEditorExit: () => {},
+      wallBetween: () => false,
+    };
+  }
   // Map height is data-driven (the map grows with the stamped interiors band;
   // see ARCHITECTURE.md). Width is fixed at 256, so the row count is the height.
   const mapHTiles = Math.round(tiles.length / MAP_W_TILES);
@@ -783,7 +812,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     actor.equipped = [];
     actor.weaponBonus = 0;
     actor.armorBonus = 0;
-    actor.itemId = null;
+    if (actor.itemId !== null) {
+      actor.itemId = null;
+      actor.equipDirty = true; // broadcast the cleared held item (so a respawn shows unarmed)
+    }
   }
 
   // A townsperson USES the loot it's carrying (enemies never call this — see the
@@ -811,8 +843,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     if (eq.slot === 'weapon') {
       if ((eq.offense | 0) <= n.weaponBonus) return; // only ever swap UP to a better weapon
       n.weaponBonus = eq.offense | 0;
-      n.itemId = String(c.item); // held weapon sprite (server-side; wire TODO)
-      n.dirty = true;
+      n.itemId = String(c.item); // held weapon sprite
+      n.equipDirty = true; // broadcast the held-item change (npc_equip)
     } else {
       n.armorBonus += eq.defense | 0; // body/arms/other stack as flat damage soak
     }
@@ -905,6 +937,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         weaponBonus: 0, // extra swing damage from an equipped weapon
         armorBonus: 0, // incoming damage soaked by equipped armor (min 1 still lands)
         itemId: null, // held weapon sprite id (set on equip; cleared on death)
+        equipDirty: false, // itemId changed → re-broadcast via npc_equip (mirror hpDirty)
       },
       fields
     );
@@ -2711,6 +2744,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         const moved = [];
         const hps = [];
         const stat = []; // [id, [statusId,...]] rows for actors whose set changed
+        const equips = []; // [id, itemId|null] rows for actors whose held item changed
         const nowSend = Date.now();
         for (const n of actors) {
           if (n.dirty && !n.dead) {
@@ -2732,10 +2766,17 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             n.statusDirty = false;
             stat.push([n.id, status.activeStatuses(n, nowSend)]);
           }
+          // Held-item change (a townsperson equipped/dropped a looted weapon).
+          // Sent even for a dead actor so a respawn renders unarmed (itemId null).
+          if (n.equipDirty) {
+            n.equipDirty = false;
+            equips.push([n.id, n.itemId ?? null]);
+          }
         }
         if (moved.length > 0) broadcast({ type: 'npc_update', npcs: moved });
         if (hps.length > 0) broadcast({ type: 'npc_hp', hps });
         if (stat.length > 0) broadcast({ type: 'npc_status', statuses: stat });
+        if (equips.length > 0) broadcast({ type: 'npc_equip', equips });
       }, 1000 / BROADCAST_HZ);
     },
 
@@ -2770,6 +2811,14 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       for (const n of actors) {
         if (n.kind === 'person' && n.hp < n.maxHp) out.push([n.id, n.hp, n.maxHp]);
       }
+      return out;
+    },
+
+    /** Held-item rows for new clients: every LIVE actor currently holding a
+     *  weapon ([id, itemId]). Mirrors hpSnapshot — only the non-default state. */
+    equipSnapshot() {
+      const out = [];
+      for (const n of actors) if (!n.dead && n.itemId) out.push([n.id, n.itemId]);
       return out;
     },
 

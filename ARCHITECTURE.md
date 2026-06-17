@@ -61,6 +61,22 @@ the pipeline; map, NPC visibility, and dialogue stay consistent.
 `Game.ts` owns the loop and phases (`loading → charselect → playing`)
 and wires everything; per-frame order in `update()` matters: chat typing freezes
 the world, then menu, then dialogue, then talk/door triggers, then movement.
+
+**Loading is visible-first, stream-the-rest.** Both at spawn and through a door,
+the game BLOCKS on only the tileset atlases + collision for the sectors VISIBLE
+around the destination (`loadVisibleSectors` → a small range from
+`visibleSectorRange`), not the full 9×13 `loadNearbySectors` neighborhood (most
+of which the room crop hides). The wider neighborhood then streams in
+fire-and-forget via the per-frame `loadNearbySectors` (and the editor's
+`loadSectorsInView`). A **door prefetch** kicks `loadVisibleSectors(dest)` at
+fade-OUT start (`startTransition`), so the ~283ms fade hides the load and we fade
+straight back in instead of stalling on black; `updateTransition` just awaits
+that promise. Any genuine wait shows a **progress bar** (`drawLoadingBar`, driven
+by `AssetLoader.imageLoadProgress()` counters) — on the boot `loading` screen and,
+only if a slow load outruns the fade, on the door-transition black. Atlases/
+sprites/collision are immutable, so production should serve them with long-lived
+`Cache-Control`; the ROM-extraction path (IndexedDB prime, see CLAUDE.md) makes
+repeat sessions skip HTTP entirely.
 Dev hook: `window.__eb.game.debugTeleport(x, y)` jumps anywhere with proper
 sector load + room crop — use it from the console or verification scripts.
 
@@ -194,9 +210,13 @@ sector load + room crop — use it from the console or verification scripts.
   vanished when "used" from Goods.
 - **Item Manager + Sprite Editor item mode** — the held-gear authoring
   pipeline. The Item Manager (editor tool) lists the WHOLE item catalog with
-  the shared sprite-preview dropdown + search, shows name/cost/type plus the
-  decoded EQUIP data — slot (weapon/body/arms/other), offense/defense, and who
-  may equip it — and whether each item has art yet, and hands off (`openSpriteEditor({
+  the shared sprite-preview dropdown + search, and makes **every item property
+  editable** (all writing to `overrides/equip_stats.json`): **name**, **kind**
+  (the `slot` override — pick Consumable/Weapon/Body/Arms/Other to retype any
+  item; 'none'=consumable), **users** (which heroes may equip/use), cost, and —
+  for whatever kind it now is — the combat stats (weapon offense/atk-speed/inflict
+  or armor defense, plus crit/dodge) or consumable heal. The kind selector regates
+  the stat rows live. It also shows whether each item has art yet, and hands off (`openSpriteEditor({
 focusItem })`) to the Sprite Editor's Item mode. The Sprite Editor's item list
   is split into **Weapons / Items / Custom** tabs: Weapons/Items come from the
   catalog (a weapon is gear whose equip slot is `weapon`); **Custom** holds the
@@ -403,6 +423,38 @@ old "keep both servers in sync" hazard is gone by construction (the two copies
 had already drifted: the standalone server was missing progression + PSI before
 this was unified). A socket only needs to look like a `ws` WebSocket
 (`.send`/`.readyState`/`.on`), which both transports satisfy.
+
+### Production data (the assets disk)
+
+The server's authoritative sim (`npcSim`) needs ROM-derived world data —
+`sectors.json`, `tiles.json`, `tileset_mapping.json`, per-tileset
+`collisions.json`, `npcs.json`, `enemies.json`, `enemy_spawns.json`,
+`doors.json`, `car_traffic.json`, `colboxes.json`, `gifts.json` — and the client
+(until in-browser ROM extraction lands) fetches all of `/assets/*` over HTTP. But
+that data is **never committed** (ROM-distribution policy, CLAUDE.md). So in
+production it lives on a **Render persistent disk** mounted over the in-repo
+`public/assets` path (`render.yaml`):
+
+- Mounting at `<root>/public/assets` keeps the server's overrides resolution
+  intact (`assetsDir/../overrides` → the _committed_ `public/overrides`).
+- `server/index.js` reads the sim data from there AND serves it to the client at
+  `/assets` (`express.static(assetsDir)`).
+- **Resilience:** a fresh disk is empty. `npcSim` (and shops/gifts) degrade
+  instead of crashing — a missing core file makes `createNpcSim` return a
+  RELAY-ONLY stub (no NPCs/enemies/collision; multiplayer join/move/chat still
+  works). So the service boots green before the disk is populated.
+
+**Populate the disk once** (it starts empty) via Render SSH from your machine —
+your local `public/assets` is the source of truth:
+
+```
+rsync -avz --delete --exclude rom_sources/ \
+  ./public/assets/ <srv-id>@ssh.<region>.render.com:/opt/render/project/src/public/assets/
+```
+
+(`rom_sources/` is the dev-only Source Assets browser — skip it in prod.) Re-run
+after re-extracting from the ROM. The disk persists across deploys, so this is a
+one-time step until the data changes.
 `server/gameHost.test.js` (`npm test`) drives the class with fake sockets and
 asserts both the broadcast contract (join/move/chat/leave) and the
 server-authoritative economy rules (equip/use_item/buy/sell, incl. refusing to
@@ -516,9 +568,14 @@ and rolled immunity-gated (`tryStatus` / `_applyHitStatuses`). `normalizeInflict
 sanitizes all authored specs; unauthored weapon/bare hands → baseline paralysis.
 Action-blocking statuses freeze actor AI and lock the local player's input.
 `overrides/equip_stats.json` is the **per-item mod layer** edited in the **Item
-Manager** (offense/defense/crit/dodge/attackSpeed/cost/heal + the inflict list);
-`shops.js` layers every field over the ROM item table (ROM data untouched). It's
-read once at host start, so authored combat values apply on the next server start.
+Manager** — name, kind (`slot`, incl. `'none'`=consumable), users,
+offense/defense/crit/dodge/attackSpeed/cost/heal + the inflict list. It is
+layered over the ROM item table on BOTH sides (ROM data untouched): `server/shops.js`
+applies every field (combat + the catalog-facing name/cost/kind/users) and `src/engine/Shop.ts`
+applies the catalog-facing fields client-side, so client and server agree on what
+each item is and what slot it fits. The server reads it once at host start (combat
+values apply on the next server start); the client reads it in `loadShops`, so
+name/cost/kind apply on the next client reload.
 
 **NPC self-defense.** Every `person` carries HP (`NPC_HP`, matching the client's
 Entity default so full-HP folk need no sync) and defends itself on

@@ -41,6 +41,8 @@ type NetworkCallback = {
   onNpcHp: (hps: NpcHp[]) => void;
   /** An actor's active status set changed: [npcId, [statusId,…]] rows. */
   onNpcStatus?: (rows: [number, string[]][]) => void;
+  /** An actor's held weapon changed: [npcId, itemId|null] rows (welcome + deltas). */
+  onNpcEquip?: (rows: [number, string | null][]) => void;
   /**
    * A player's HP changed (enemy hit / respawn refill / item use). dmg>0 = took
    * a hit; heal>0 = restored HP (e.g. ate a Cookie).
@@ -253,6 +255,7 @@ function openSocket() {
         callbacks?.onWelcome(msg.playerId, msg.players);
         if (msg.npcs) callbacks?.onNpcUpdate(msg.npcs);
         if (msg.npcHps) callbacks?.onNpcHp(msg.npcHps);
+        if (msg.npcEquips) callbacks?.onNpcEquip?.(msg.npcEquips);
         if (msg.inventory) callbacks?.onInventory(msg.inventory);
         if (typeof msg.money === 'number') callbacks?.onMoney(msg.money);
         if (typeof msg.bank === 'number') callbacks?.onBank?.(msg.bank);
@@ -289,6 +292,9 @@ function openSocket() {
         break;
       case 'npc_status':
         if (msg.statuses) callbacks?.onNpcStatus?.(msg.statuses);
+        break;
+      case 'npc_equip':
+        if (msg.equips) callbacks?.onNpcEquip?.(msg.equips);
         break;
       case 'npc_hp':
         callbacks?.onNpcHp(msg.hps);

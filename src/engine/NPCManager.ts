@@ -476,6 +476,14 @@ export function applyNpcStatus(rows: [number, string[]][]): void {
   }
 }
 
+/** Apply server held-item deltas: [id, itemId|null] → npc.itemId (weapon sprite). */
+export function applyNpcEquip(rows: [number, string | null][]): void {
+  for (const [id, itemId] of rows) {
+    const npc = npcsById[id];
+    if (npc) npc.itemId = itemId;
+  }
+}
+
 /** Dialogue pages for an NPC, or null if it has nothing to say. */
 export function getNpcDialogue(npc: NPC): string[] | null {
   if (npc.textId == null) return null;

@@ -145,6 +145,14 @@
       "y": 1192,
       "sprite": 63,
       "dir": 0,
+      "kind": "person",
+      "t": 900008
+    },
+    {
+      "x": 1248,
+      "y": 1304,
+      "sprite": 1,
+      "dir": 0,
       "kind": "person"
     }
   ]

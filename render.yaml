@@ -7,3 +7,13 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+    # ROM-derived game data (sprites/atlases/map/collision/…) is NEVER committed
+    # to git (ROM-distribution policy, CLAUDE.md). It lives on this persistent
+    # disk, mounted over the in-repo public/assets path so the server reads it and
+    # Express serves it to the client (server/index.js). Populate it ONCE via SSH
+    # (see ARCHITECTURE.md "Production data"); until then the server runs
+    # relay-only (multiplayer works, no NPC/enemy/collision sim).
+    disk:
+      name: game-assets
+      mountPath: /opt/render/project/src/public/assets
+      sizeGB: 1

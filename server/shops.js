@@ -54,18 +54,27 @@ function loadShops(assetsDir) {
   // else the ROM/base default. Keeps `0` as a real override (not falsy-skipped).
   const num = (v, def) => (typeof v === 'number' && Number.isFinite(v) ? v : def);
 
+  const EQUIP_SLOTS = ['weapon', 'body', 'arms', 'other'];
+
   const goods = {};
   for (const [id, it] of Object.entries(items)) {
     // Our per-item authoring overrides (overrides/equip_stats.json), edited in the
     // Item Manager. Every field is OPTIONAL and layers over the ROM item table:
     // gear gets offense/defense/crit/dodge/attackSpeed/inflict; ALL items can
-    // override cost + heal. ROM data is never mutated — this is the mod layer.
+    // override name, cost, heal, users, and even their KIND (slot: turn a
+    // consumable into gear or 'none' to make gear consumable). ROM data is never
+    // mutated — this is the mod layer (client/Shop.ts layers the SAME file).
     const ov = equipStats[id] || {};
+    // Effective equip slot: an explicit override wins (including 'none' to drop
+    // the equip block), else the ROM kind. Anything not a real slot = consumable.
+    let slot = ov.slot != null ? ov.slot : it.equip ? it.equip.slot : null;
+    if (!EQUIP_SLOTS.includes(slot)) slot = null;
     // Equip data (slot + offense/defense) for gear; null for consumables. Lets
     // the server apply weapon offense to attack damage and refuse to "use"
     // (consume) equippable gear. See tools/extract_shops.py.
-    let equip = it.equip || null;
-    if (equip) {
+    let equip = null;
+    if (slot) {
+      const base = it.equip || {};
       // attackSpeed defaults to 1 (baseline) when unauthored; a non-positive
       // value would divide-by-zero the cooldown, so clamp to a small positive.
       const aspd = typeof ov.attackSpeed === 'number' && ov.attackSpeed > 0 ? ov.attackSpeed : 1;
@@ -74,9 +83,9 @@ function loadShops(assetsDir) {
       // weapon falls back to the baseline paralysis proc in npcSim).
       const inflict = Array.isArray(ov.inflict) ? ov.inflict : null;
       equip = {
-        ...equip,
-        offense: num(ov.offense, equip.offense),
-        defense: num(ov.defense, equip.defense),
+        slot,
+        offense: num(ov.offense, base.offense | 0),
+        defense: num(ov.defense, base.defense | 0),
         crit: ov.crit | 0,
         dodge: ov.dodge | 0,
         attackSpeed: aspd,
@@ -84,9 +93,10 @@ function loadShops(assetsDir) {
       };
     }
     goods[id] = {
-      name: it.name,
+      name: typeof ov.name === 'string' && ov.name.trim() ? ov.name : it.name,
       cost: num(ov.cost, it.cost | 0),
       heal: num(ov.heal, HEAL_BY_ID[id] || 0),
+      users: Array.isArray(ov.users) ? ov.users : it.users || [],
       equip,
     };
   }

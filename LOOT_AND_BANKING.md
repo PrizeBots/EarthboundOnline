@@ -21,8 +21,12 @@ No client ever sets a balance or an inventory — anti-cheat by construction.
   (`armorBonus` → flat incoming-damage soak, min 1 still lands). Equipped gear moves
   `carried → equipped` and drops on death. Enemies never call this (item-use lives in
   the townsfolk-only tick) — they just carry + drop. Item stats come from the shared
-  `shops.js` GOODS catalog, now loaded read-only into npcSim. _Held-weapon visual on
-  NPCs is server-side only so far — the npc move-wire carries no `itemId` yet (TODO)._
+  `shops.js` GOODS catalog, now loaded read-only into npcSim.
+- **Held-weapon visual:** wired the same way as players. Server broadcasts `npc_equip`
+  (`[id, itemId|null]` rows, batched in the send loop like `npc_hp`) on equip/drop, plus
+  an `equipSnapshot()` in the welcome for late joiners. Client `NPC.itemId` +
+  `applyNpcEquip`; the Renderer reuses the shared `drawEntityPart` (formerly
+  `drawPlayerPart`) — the SAME held-item depth logic players use, no duplicate draw path.
 - **Drop tables:** each enemy has `drops: [{item, rate}]`; every entry is rolled
   independently on death (`rate` = probability, from ROM "Item Rarity", e.g. 1/128).
 - **Despawn:** ground drops **never** despawn (grab-or-stays). Ephemeral: wiped on

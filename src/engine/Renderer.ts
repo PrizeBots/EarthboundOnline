@@ -407,11 +407,12 @@ export class Renderer {
       });
     };
 
-    // Draws a player (local or remote) plus their held-item overlay. The item
-    // sits at hand height (the sprite's lower half), so when priority flags
-    // split the sprite it rides along with the 'lower'/'full' part. Facing
-    // away puts the item in the far hand — drawn under the body.
-    const drawPlayerPart = (
+    // Draws any entity (local/remote player OR an NPC) plus its held-item
+    // overlay. The item sits at hand height (the sprite's lower half), so when
+    // priority flags split the sprite it rides along with the 'lower'/'full'
+    // part. Facing away puts the item in the far hand — drawn under the body.
+    // Pass itemId null for an empty-handed sprite (most NPCs / unarmed players).
+    const drawEntityPart = (
       groupId: number,
       direction: number,
       frame: number,
@@ -438,7 +439,7 @@ export class Renderer {
       player.x,
       player.y,
       (part) =>
-        drawPlayerPart(
+        drawEntityPart(
           player.spriteGroupId,
           player.direction,
           player.frame,
@@ -486,7 +487,7 @@ export class Renderer {
         rp.x,
         rp.y,
         (part) =>
-          drawPlayerPart(
+          drawEntityPart(
             rp.spriteGroupId,
             rp.direction,
             rp.frame,
@@ -540,15 +541,15 @@ export class Renderer {
         npc.x,
         npc.y,
         (part) =>
-          drawSprite(
-            this.ctx,
+          drawEntityPart(
             npc.spriteGroupId,
             npc.direction,
             npc.frame,
+            npc.pose,
+            npc.itemId,
             nScreenX,
             nScreenY,
             part,
-            npc.pose,
             npc.flashUntil > now
           ),
         drawBar

@@ -1098,6 +1098,7 @@ class GameHost {
             players: otherPlayers,
             npcs: this.npcSim.snapshot(),
             npcHps: this.npcSim.hpSnapshot(),
+            npcEquips: this.npcSim.equipSnapshot(), // townsfolk holding looted weapons
             drops: this.npcSim.dropsSnapshot(), // ground loot already lying around
             inventory: this.inventoryView(entry.inventory), // own Goods
             money: entry.money, // own on-hand cash

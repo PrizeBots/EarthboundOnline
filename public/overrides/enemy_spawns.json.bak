@@ -6,7 +6,9 @@
     282,
     226,
     330,
-    291
+    291,
+    331,
+    317
   ],
   "entities": {
     "74": {
@@ -52,15 +54,19 @@
       "speed": 0.7
     },
     "284": {
-      "name": "Skate Punk",
-      "hp": 31,
-      "xp": 12,
-      "level": 3,
-      "damage": 7,
-      "defense": 8,
-      "money": 17,
+      "hp": 120,
+      "xp": 55,
+      "level": 12,
+      "damage": 12,
       "attackCooldownMs": 700,
-      "speed": 0.7
+      "speed": 0.7,
+      "detectRange": 220,
+      "attackRange": 24,
+      "crit": 4,
+      "dodge": 4,
+      "name": "Skate Punk",
+      "defense": 8,
+      "money": 17
     },
     "291": {
       "hp": 60,
@@ -77,6 +83,18 @@
       "defense": 10,
       "money": 15,
       "combat": "skirmisher"
+    },
+    "317": {
+      "hp": 7,
+      "xp": 1,
+      "level": 2,
+      "damage": 7,
+      "attackCooldownMs": 500,
+      "speed": 0.5,
+      "detectRange": 220,
+      "attackRange": 24,
+      "crit": 1,
+      "dodge": 1
     },
     "330": {
       "name": "Runaway Dog",
@@ -268,7 +286,7 @@
       "poolSize": 32,
       "maxActive": 20,
       "spawnIntervalMs": 25000,
-      "respawnDelayMs": 1000,
+      "respawnDelayMs": 25000,
       "enabled": true
     },
     {
@@ -377,6 +395,30 @@
       "maxActive": 3,
       "spawnIntervalMs": 44000,
       "respawnDelayMs": 44000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-26",
+      "sprite": 331,
+      "x": 2713,
+      "y": 1814,
+      "wanderRadius": 200,
+      "poolSize": 4,
+      "maxActive": 1,
+      "spawnIntervalMs": 12000,
+      "respawnDelayMs": 12000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-27",
+      "sprite": 317,
+      "x": 2623,
+      "y": 1790,
+      "wanderRadius": 100,
+      "poolSize": 13,
+      "maxActive": 8,
+      "spawnIntervalMs": 10000,
+      "respawnDelayMs": 10000,
       "enabled": true
     }
   ]

@@ -2,17 +2,16 @@ import { EditorTool, EditorShellApi } from '../types';
 import {
   loadShops,
   allItems,
-  itemType,
   itemCost,
   sellPrice,
-  itemEquip,
+  itemBaseEquip,
   itemUsers,
+  ItemSlot,
 } from '../../engine/Shop';
 import {
   drawItemThumb,
   getItemName,
   hasItemSprite,
-  isEquippable,
   loadItemSprites,
   loadCustomItems,
 } from '../../engine/Items';
@@ -60,8 +59,13 @@ interface InflictEntry {
   chance: number;
 }
 /** Per-item authoring overrides (overrides/equip_stats.json). Every field is
- *  optional and layers over the ROM item table server-side (see shops.js). */
+ *  optional and layers over the ROM item table on BOTH the server (shops.js) and
+ *  the client catalog (Shop.ts), so editing one file reconfigures the item
+ *  everywhere. `slot` changes the item's KIND ('none' = consumable). */
 interface ItemOverride {
+  name?: string;
+  slot?: ItemSlot;
+  users?: string[];
   offense?: number;
   defense?: number;
   crit?: number;
@@ -71,6 +75,25 @@ interface ItemOverride {
   heal?: number;
   inflict?: InflictEntry[];
 }
+
+/** Playable EarthBound heroes an item's `users` can restrict equip/use to. */
+const HERO_USERS: { value: string; label: string }[] = [
+  { value: 'ness', label: 'Ness' },
+  { value: 'paula', label: 'Paula' },
+  { value: 'jeff', label: 'Jeff' },
+  { value: 'poo', label: 'Poo' },
+];
+
+/** Selectable item kinds in the slot dropdown (maps to the `slot` override; ''
+ *  clears the override = use the ROM kind). */
+const SLOT_OPTIONS: { value: '' | ItemSlot; label: string }[] = [
+  { value: '', label: 'ROM default' },
+  { value: 'none', label: 'Consumable / key (no equip)' },
+  { value: 'weapon', label: 'Weapon' },
+  { value: 'body', label: 'Body armor' },
+  { value: 'arms', label: 'Arms / accessory' },
+  { value: 'other', label: 'Other / headgear' },
+];
 
 // Item Manager — the master catalog of every game item/weapon (shops.json),
 // organized like the Entity Manager: a file-explorer "desktop" where items live
@@ -124,7 +147,7 @@ class ItemManagerTool implements EditorTool {
     await saveOverride('equip_stats.json', out);
     this.shell?.clearDirty('item-stats');
     this.shell?.toast(
-      'Saved item stats → equip_stats.json (combat values apply on server restart)'
+      'Saved item properties → equip_stats.json (name/cost/kind reload in-client; combat values apply on server restart)'
     );
   }
 
@@ -150,6 +173,45 @@ class ItemManagerTool implements EditorTool {
     else delete ov.inflict; // no rows → weapon falls back to baseline paralysis
     if (!Object.keys(ov).length) delete this.overrides[id];
     this.shell?.markDirty('item-stats');
+  }
+
+  /** Override the display name (empty string clears it → revert to ROM name). */
+  private setName(id: string, name: string): void {
+    const ov = this.ovOf(id);
+    const trimmed = name.trim();
+    if (trimmed) ov.name = trimmed;
+    else delete ov.name;
+    if (!Object.keys(ov).length) delete this.overrides[id];
+    this.shell?.markDirty('item-stats');
+  }
+
+  /** Override the item KIND. '' clears it (revert to ROM kind); 'none' makes it a
+   *  consumable; a slot makes it that gear. Re-renders so the right combat
+   *  editors appear/disappear for the new kind. */
+  private setSlot(id: string, slot: '' | ItemSlot): void {
+    const ov = this.ovOf(id);
+    if (slot) ov.slot = slot;
+    else delete ov.slot;
+    if (!Object.keys(ov).length) delete this.overrides[id];
+    this.shell?.markDirty('item-stats');
+    this.refreshStats(); // kind changed → different stat rows apply
+  }
+
+  /** Override who may equip/use the item. Empty list clears the override. */
+  private setUsers(id: string, users: string[]): void {
+    const ov = this.ovOf(id);
+    if (users.length) ov.users = users;
+    else delete ov.users;
+    if (!Object.keys(ov).length) delete this.overrides[id];
+    this.shell?.markDirty('item-stats');
+  }
+
+  /** The item's PENDING effective equip slot (this session's edits win over the
+   *  saved file), or null if it's a consumable. Used to gate the combat editors. */
+  private effSlot(id: string): ItemSlot {
+    const ov = this.overrides[id]?.slot;
+    if (ov !== undefined) return ov; // explicit override (incl. 'none')
+    return itemBaseEquip(id)?.slot ?? 'none'; // else the ROM kind
   }
 
   private async loadAndBuild(): Promise<void> {
@@ -249,24 +311,17 @@ class ItemManagerTool implements EditorTool {
   private refreshDetails(): void {
     if (!this.detailsEl) return;
     const id = this.itemId;
-    const type = itemType(id);
-    const gear = isEquippable(type);
-    const eq = itemEquip(id);
-    const users = itemUsers(id);
+    const gear = this.effSlot(id) !== 'none';
     const sprite = hasItemSprite(id);
     const cat = folderOfItem(id);
-    // Read-only structural meta (name/id/category/type/slot/users/sprite). The
-    // editable numbers live in the stats section below; show them there.
+    // Read-only structural meta only (id/category/sprite). Everything else
+    // (name/kind/users/stats) is now EDITABLE in the properties section below.
     this.detailsEl.innerHTML = '';
     const rows: [string, string][] = [
-      ['name', getItemName(id) ?? '(unnamed)'],
       ['id', id || '—'],
       ['category', cat ? folderName(cat) : 'Desktop (unsorted)'],
-      ['type', `${type}${gear ? ' (equippable gear)' : ' (consumable / key)'}`],
+      ['held sprite', sprite ? 'set ✓' : gear ? 'NEEDS ART' : 'none'],
     ];
-    if (eq) rows.push(['equip slot', eq.slot]);
-    rows.push(['can equip/use', users.length ? users.join(', ') : 'anyone']);
-    rows.push(['held sprite', sprite ? 'set ✓' : gear ? 'NEEDS ART' : 'none']);
     for (const [k, v] of rows) {
       const r = document.createElement('div');
       r.textContent = `${k}: ${v}`;
@@ -284,12 +339,42 @@ class ItemManagerTool implements EditorTool {
     const id = this.itemId;
     this.statsEl.innerHTML = '';
     if (!id) return;
-    const eq = itemEquip(id);
     const ov = this.overrides[id] ?? {};
+    const slot = this.effSlot(id); // pending kind ('none' = consumable)
+    const base = itemBaseEquip(id);
 
+    // --- PROPERTIES: name / kind / users (all editable) ----------------------
+    const propsTitle = document.createElement('div');
+    propsTitle.textContent = 'PROPERTIES';
+    propsTitle.style.cssText = 'color:#d8a23a;font-size:11px;letter-spacing:0.5px;';
+    this.statsEl.appendChild(propsTitle);
+
+    // Name (override; placeholder = ROM name).
+    this.mkTextRow('name', ov.name, getItemName(id) ?? '', (v) => {
+      this.setName(id, v);
+      // Reflect the rename in the desktop labels without a reload.
+      this.desktop?.render();
+    });
+
+    // Kind / equip slot. Changing it re-renders so the right combat rows show.
+    this.mkSelectRow(
+      'kind',
+      (ov.slot ?? '') as string,
+      SLOT_OPTIONS.map((o) => ({
+        value: o.value,
+        label: o.value === '' ? `ROM default (${base ? base.slot : 'consumable'})` : o.label,
+      })),
+      (v) => this.setSlot(id, v as '' | ItemSlot)
+    );
+
+    // Users — who may equip/use this item (empty = anyone).
+    this.mkUsersRow(id, itemUsers(id));
+
+    // --- STAT OVERRIDES ------------------------------------------------------
     const title = document.createElement('div');
     title.textContent = 'STAT OVERRIDES';
-    title.style.cssText = 'color:#d8a23a;font-size:11px;letter-spacing:0.5px;';
+    title.style.cssText =
+      'color:#d8a23a;font-size:11px;letter-spacing:0.5px;border-top:1px solid #2a3540;padding-top:6px;';
     this.statsEl.appendChild(title);
 
     // Cost (every item) + sell readout (half of effective cost).
@@ -301,29 +386,29 @@ class ItemManagerTool implements EditorTool {
     sell.style.cssText = 'color:#667;font-size:10px;margin-left:62px;';
     this.statsEl.appendChild(sell);
 
-    if (eq) {
-      if (eq.slot === 'weapon') {
-        this.mkNumRow('offense', ov.offense, eq.offense ?? 0, 0, undefined, false, (v) =>
+    if (slot !== 'none') {
+      if (slot === 'weapon') {
+        this.mkNumRow('damage', ov.offense, base?.offense ?? 0, 0, undefined, false, (v) =>
           this.setOv(id, 'offense', v)
         );
         this.mkNumRow('atk speed', ov.attackSpeed, 1, 0.1, undefined, true, (v) =>
           this.setOv(id, 'attackSpeed', v)
         );
       } else {
-        this.mkNumRow('defense', ov.defense, eq.defense ?? 0, 0, undefined, false, (v) =>
+        this.mkNumRow('defense', ov.defense, base?.defense ?? 0, 0, undefined, false, (v) =>
           this.setOv(id, 'defense', v)
         );
       }
       // crit/dodge apply to any gear (percent points, 0..100).
       this.mkNumRow('crit %', ov.crit, 0, 0, 100, false, (v) => this.setOv(id, 'crit', v));
       this.mkNumRow('dodge %', ov.dodge, 0, 0, 100, false, (v) => this.setOv(id, 'dodge', v));
-      if (eq.slot === 'weapon') this.buildInflictEditor(id, ov);
+      if (slot === 'weapon') this.buildInflictEditor(id, ov);
     } else {
       // Consumables: heal amount (HP restored on use). Base heal is server-side
       // (a few known items), so the placeholder can't show it — leave blank.
       this.mkNumRow('heal HP', ov.heal, 0, 0, undefined, false, (v) => this.setOv(id, 'heal', v));
       const note = document.createElement('div');
-      note.textContent = 'Combat stats (offense/crit/inflict…) apply to equippable gear only.';
+      note.textContent = 'Set "kind" to a gear slot above to author offense/defense/crit/inflict.';
       note.style.cssText = 'color:#667;font-size:10px;line-height:1.4;';
       this.statsEl.appendChild(note);
     }
@@ -376,6 +461,102 @@ class ItemManagerTool implements EditorTool {
     rev.style.cssText = `color:${cur === undefined ? '#667' : '#d8a23a'};font-size:10px;`;
     row.appendChild(rev);
     this.statsEl!.appendChild(row);
+  }
+
+  /** A labelled text input. `cur` = override (undefined = none), shown as the
+   *  value; `base` is the placeholder (ROM default). Empty input clears it. */
+  private mkTextRow(
+    label: string,
+    cur: string | undefined,
+    base: string,
+    onSet: (v: string) => void
+  ): void {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;';
+    const l = document.createElement('span');
+    l.textContent = label;
+    l.style.cssText = 'width:56px;color:#9fb8cc;';
+    row.appendChild(l);
+    const i = document.createElement('input');
+    i.type = 'text';
+    i.value = cur ?? '';
+    i.placeholder = base;
+    i.maxLength = 40;
+    i.style.cssText =
+      'flex:1;min-width:0;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
+    i.onchange = () => onSet(i.value);
+    row.appendChild(i);
+    this.statsEl!.appendChild(row);
+  }
+
+  /** A labelled dropdown. `cur` is the selected option value; '' selects the
+   *  first ("ROM default") entry. */
+  private mkSelectRow(
+    label: string,
+    cur: string,
+    options: { value: string; label: string }[],
+    onSet: (v: string) => void
+  ): void {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;';
+    const l = document.createElement('span');
+    l.textContent = label;
+    l.style.cssText = 'width:56px;color:#9fb8cc;';
+    row.appendChild(l);
+    const sel = document.createElement('select');
+    sel.style.cssText =
+      'flex:1;min-width:0;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
+    for (const o of options) {
+      const opt = document.createElement('option');
+      opt.value = o.value;
+      opt.textContent = o.label;
+      if (o.value === cur) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    sel.onchange = () => onSet(sel.value);
+    row.appendChild(sel);
+    this.statsEl!.appendChild(row);
+  }
+
+  /** Hero checkboxes for the `users` restriction (none checked = anyone). Toggling
+   *  rewrites the whole list. Note: equip is currently validated by slot only on
+   *  the server (players have no hero identity yet), so this is authored metadata
+   *  the catalog carries until a character-class mechanic enforces it. */
+  private mkUsersRow(id: string, current: string[]): void {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'display:flex;flex-direction:column;gap:3px;';
+    const head = document.createElement('div');
+    head.textContent = 'can equip/use';
+    head.style.cssText = 'color:#9fb8cc;';
+    wrap.appendChild(head);
+    const boxes = document.createElement('div');
+    boxes.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin-left:8px;';
+    const set = new Set(current);
+    for (const h of HERO_USERS) {
+      const lab = document.createElement('label');
+      lab.style.cssText = 'display:flex;align-items:center;gap:3px;color:#cde;cursor:pointer;';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = set.has(h.value);
+      cb.onchange = () => {
+        if (cb.checked) set.add(h.value);
+        else set.delete(h.value);
+        // Preserve hero order for a stable, diff-friendly file.
+        this.setUsers(
+          id,
+          HERO_USERS.filter((x) => set.has(x.value)).map((x) => x.value)
+        );
+      };
+      lab.appendChild(cb);
+      lab.appendChild(document.createTextNode(h.label));
+      boxes.appendChild(lab);
+    }
+    wrap.appendChild(boxes);
+    const note = document.createElement('div');
+    note.textContent = current.length ? '' : 'none checked = anyone';
+    note.style.cssText = 'color:#667;font-size:10px;margin-left:8px;';
+    wrap.appendChild(note);
+    this.statsEl!.appendChild(wrap);
   }
 
   /** The status-inflict list editor for a weapon: rows of {status, chance%} plus

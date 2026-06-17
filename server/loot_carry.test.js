@@ -141,5 +141,25 @@ check('a dying townsperson drops both carried AND equipped gear', () => {
   assert.strictEqual(n.itemId, null, 'held sprite cleared');
 });
 
+check('equipSnapshot exposes a townsperson held weapon to late joiners', () => {
+  const n = sim._test.townsfolk().find((t) => !t.dead && t.hp > 0);
+  if (!n) return;
+  n.carried = [{ item: WEAPON, name: 'Cracked bat' }];
+  n.equipped = [];
+  n.weaponBonus = 0;
+  n.itemId = null;
+  n.hp = n.maxHp;
+  sim._test.useCarried(n); // equips the weapon → sets itemId
+  const row = sim.equipSnapshot().find((r) => r[0] === n.id);
+  assert(row, 'snapshot includes the armed townsperson');
+  assert.strictEqual(String(row[1]), String(WEAPON), 'snapshot carries the held weapon id');
+  // Dead actors are not advertised as armed.
+  sim._test.damage(n, n.maxHp + 50);
+  assert(
+    !sim.equipSnapshot().some((r) => r[0] === n.id),
+    'a dead actor is dropped from the snapshot'
+  );
+});
+
 console.log(`\nloot_carry: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

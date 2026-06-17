@@ -1,7 +1,7 @@
 import { Camera, RoomBounds } from './Camera';
 import { Player } from './Player';
 import { Renderer, setDebugBoxes, debugBoxesOn } from './Renderer';
-import { loadJSON, loadImage } from './AssetLoader';
+import { loadJSON, loadImage, imageLoadProgress } from './AssetLoader';
 import {
   initInput,
   isActionPressed,
@@ -24,6 +24,7 @@ import {
   applyNpcUpdates,
   applyNpcHp,
   applyNpcStatus,
+  applyNpcEquip,
   noteLocalAttack,
   getNpcDialogue,
   interpolateNpcs,
@@ -225,6 +226,12 @@ export class Game {
   private pendingDoor: DoorData | null = null;
   private waitingForSectors = false;
   private doorSuppressed = false;
+  // Door prefetch: the destination's visible sectors, loaded at fade START so the
+  // fade hides the load instead of stalling on a black screen after it.
+  private destLoad: Promise<void> | null = null;
+  // Image-load counter snapshot taken at the start of a wait (boot / transition);
+  // the loading bar shows progress since this baseline. See loadRatio.
+  private loadBaseline = { started: 0, finished: 0 };
   // Active escalator/stairway ride: the player glides this diagonal along the
   // walkable ramp; on reaching the end we warp through `exit` to the next floor
   // (null = no floor door found, just stop and re-crop in place).
@@ -358,6 +365,7 @@ export class Game {
 
   private async startGame(opts: StartOpts = {}) {
     this.phase = 'loading';
+    this.loadBaseline = imageLoadProgress(); // boot loading-bar baseline
     const appearance = opts.appearance ?? null;
 
     let spriteGroupId: number;
@@ -407,13 +415,17 @@ export class Game {
       this.player.direction = opts.spawn.dir as Direction;
     }
 
-    if (!appearance) {
-      console.log('Loading player sprite...');
-      await loadSpriteGroup(spriteGroupId);
-    }
-
-    console.log('Loading tilesets around spawn...');
-    await this.loadNearbySectors();
+    // Get into the world ASAP: block on ONLY the player sprite + the sectors
+    // VISIBLE at the spawn point (camera centered on the player) — not the 9x13
+    // neighborhood, most of which the room crop hides anyway. The rest streams
+    // in afterward via the per-frame loader (update → loadNearbySectors). Both
+    // loads run in parallel.
+    console.log('Loading player sprite + spawn view...');
+    this.camera.follow(this.player.x, this.player.y); // so "visible" is accurate
+    await Promise.all([
+      appearance ? Promise.resolve() : loadSpriteGroup(spriteGroupId),
+      this.loadVisibleSectors(this.player.x, this.player.y),
+    ]);
 
     // In case the spawn point is inside an interior, crop to that room.
     this.updateRoomBounds(this.player.x, this.player.y);
@@ -542,6 +554,9 @@ export class Game {
         },
         onNpcStatus: (rows) => {
           applyNpcStatus(rows);
+        },
+        onNpcEquip: (rows) => {
+          applyNpcEquip(rows);
         },
         onPlayerHp: (id, hp, maxHp, dmg, heal) => {
           if (id === this.localPlayerId) {
@@ -840,6 +855,60 @@ export class Game {
     await this.loadSectorRange(sectorX - 4, sectorY - 6, sectorX + 4, sectorY + 6);
   }
 
+  /** Sector range that covers the screen if the camera were centered on (x,y),
+   *  plus a 1-sector ring. This is the MINIMUM needed to render that spot — far
+   *  smaller than loadNearbySectors' 9x13 neighborhood. Used to get into the
+   *  world (and through a door) fast: block on just this, stream the rest. */
+  private visibleSectorRange(x: number, y: number) {
+    const left = x - this.camera.viewW / 2;
+    const top = y - this.camera.viewH / 2;
+    const startCol = Math.floor(left / TILE_SIZE);
+    const startRow = Math.floor(top / TILE_SIZE);
+    const endCol = Math.ceil((left + this.camera.viewW) / TILE_SIZE);
+    const endRow = Math.ceil((top + this.camera.viewH) / TILE_SIZE);
+    return {
+      sx0: Math.floor(startCol / SECTOR_TILES_X) - 1,
+      sy0: Math.floor(startRow / SECTOR_TILES_Y) - 1,
+      sx1: Math.floor(endCol / SECTOR_TILES_X) + 1,
+      sy1: Math.floor(endRow / SECTOR_TILES_Y) + 1,
+    };
+  }
+
+  /** Block-load ONLY the sectors visible around a world point (atlas+collision).
+   *  The wider neighborhood streams in afterward via the per-frame loader. */
+  private async loadVisibleSectors(x: number, y: number) {
+    const r = this.visibleSectorRange(x, y);
+    await this.loadSectorRange(r.sx0, r.sy0, r.sx1, r.sy1);
+  }
+
+  /** Fraction [0..1] of the current load done, since loadBaseline. Images (the
+   *  heavy atlases/sprites) drive it; 0 until the first one starts. */
+  private loadRatio(): number {
+    const p = imageLoadProgress();
+    const total = p.started - this.loadBaseline.started;
+    if (total <= 0) return 0;
+    return Math.min(1, (p.finished - this.loadBaseline.finished) / total);
+  }
+
+  /** Draw the EB-style "Loading…" + a centered progress bar at `ratio` fill. */
+  private drawLoadingBar(ratio: number): void {
+    const ctx = this.ctx;
+    ctx.fillStyle = '#fff';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('Loading...', SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 - 4);
+    ctx.textAlign = 'left';
+    const w = 120;
+    const h = 6;
+    const x = Math.floor((SCREEN_WIDTH - w) / 2);
+    const y = Math.floor(SCREEN_HEIGHT / 2 + 4);
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    ctx.fillStyle = '#7ec8ff';
+    ctx.fillRect(x + 1, y + 1, Math.max(0, Math.min(1, ratio)) * (w - 2), h - 2);
+  }
+
   /**
    * Editor free-fly: gameplay streams atlases around the (now frozen) player,
    * so the free camera would pan over un-loaded sectors that render black with
@@ -991,6 +1060,12 @@ export class Game {
     this.transitioning = true;
     this.transitionAlpha = 0;
     this.pendingDoor = door;
+    // Prefetch the destination's visible sectors NOW, during the fade-out — so by
+    // the time the screen is black the tiles are usually already in, and we fade
+    // straight back in instead of stalling on black. The loading bar (if the load
+    // outruns the fade) tracks progress from this baseline.
+    this.loadBaseline = imageLoadProgress();
+    this.destLoad = this.loadVisibleSectors(door.destX, door.destY);
     // Door SFX (door open / stairs / rope …) — authored per door in the
     // Placement Editor; fires once as the player uses it. Silent until the
     // audio is extracted into /assets/sfx/ (playSfx no-ops on a missing file).
@@ -1015,12 +1090,16 @@ export class Game {
         this.pendingDoor = null;
         this.waitingForSectors = true;
 
-        // Move player to destination area so loadNearbySectors loads the right tiles
+        // Move player to destination area so the right tiles are in view
         this.player.x = door.destX;
         this.player.y = door.destY;
 
-        // Load sectors FIRST, then nudge and detect room
-        this.loadNearbySectors().then(() => {
+        // Wait on the prefetch started at fade-out — usually already resolved, so
+        // this continues immediately (no black stall). The wider neighborhood
+        // streams in after arrival via the per-frame loader.
+        const load = this.destLoad ?? this.loadVisibleSectors(door.destX, door.destY);
+        load.then(() => {
+          this.destLoad = null;
           const dirMap = [Direction.S, Direction.N, Direction.E, Direction.W];
           const dir = dirMap[door.destDir] ?? Direction.S;
 
@@ -1478,11 +1557,7 @@ export class Game {
       this.renderer.prepareUI();
       this.ctx.fillStyle = '#000';
       this.ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
-      this.ctx.fillStyle = '#fff';
-      this.ctx.font = '10px monospace';
-      this.ctx.textAlign = 'center';
-      this.ctx.fillText('Loading...', SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2);
-      this.ctx.textAlign = 'left';
+      this.drawLoadingBar(this.loadRatio());
       return;
     }
 
@@ -1536,6 +1611,13 @@ export class Game {
     if (this.transitionAlpha > 0) {
       this.ctx.fillStyle = `rgba(0, 0, 0, ${this.transitionAlpha})`;
       this.ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+      // If the destination prefetch outran the fade (slow connection), show a
+      // progress bar on the black instead of an indefinite wait. Usually the
+      // prefetch is already done by now, so this never appears.
+      if (this.waitingForSectors && this.transitionAlpha >= 1) {
+        const r = this.loadRatio();
+        if (r < 1) this.drawLoadingBar(r);
+      }
     }
 
     // Quick-select hotbar HUD — bottom of the UI depth stack: drawn only when

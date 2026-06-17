@@ -26,12 +26,21 @@ const wss = new WebSocketServer({ server });
 const store = createStore();
 app.use(createAuthApi(store));
 
-// Serve the built client. (Assets stay out of the deploy per the ROM policy —
-// see CLAUDE.md; this only ships code.)
+// Serve the built client (code only; the bundle never carries ROM data).
 app.use(express.static(path.join(__dirname, '..', 'dist')));
 
+// ROM-derived game data (sprites/atlases/map/…). It is NEVER committed (ROM
+// policy, CLAUDE.md); in production it lives on a mounted disk at this same
+// in-repo path (see render.yaml + ARCHITECTURE.md "Production data"). Keeping the
+// path at <root>/public/assets preserves the server's overrides resolution
+// (assetsDir/../overrides → the committed public/overrides). Serve it to the
+// client at /assets; if the disk isn't attached yet the dir is just empty (the
+// server already degrades to relay-only — see npcSim).
+const assetsDir = path.join(__dirname, '..', 'public', 'assets');
+app.use('/assets', express.static(assetsDir));
+
 // Same store the API uses, so the game host loads/saves the same character rows.
-const host = new GameHost(path.join(__dirname, '..', 'public', 'assets'), store);
+const host = new GameHost(assetsDir, store);
 host.start();
 
 wss.on('connection', (ws) => host.handleConnection(ws));
