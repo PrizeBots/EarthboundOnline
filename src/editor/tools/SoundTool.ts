@@ -484,10 +484,16 @@ class SoundTool implements EditorTool {
     this.panel.addEventListener('keydown', (e) => e.stopPropagation());
     this.panel.addEventListener('keyup', (e) => e.stopPropagation());
 
+    // Header: title + a Stop-all button that kills any music/sfx preview from
+    // either tab (the tool is the only place editor music is audible).
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;align-items:center;gap:8px;';
     const title = document.createElement('div');
     title.textContent = 'SOUND MANAGER';
-    title.style.cssText = 'color:#5ad0e8;font-weight:bold;letter-spacing:1px;';
-    this.panel.appendChild(title);
+    title.style.cssText = 'color:#5ad0e8;font-weight:bold;letter-spacing:1px;flex:1;';
+    header.appendChild(title);
+    this.mkBtn('■ Stop all', () => stopAllSounds(), header, true);
+    this.panel.appendChild(header);
 
     // Music | SFX tab switch.
     const tabs = document.createElement('div');
@@ -564,11 +570,6 @@ class SoundTool implements EditorTool {
 
   /** Build the static SFX-tab chrome (library tester + stop-all + event list). */
   private buildSfxBody(host: HTMLDivElement): void {
-    const stopRow = document.createElement('div');
-    stopRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
-    this.mkBtn('■ Stop all sounds', () => stopAllSounds(), stopRow, true);
-    host.appendChild(stopRow);
-
     // Sound library: a searchable dropdown of ALL sfx so you can audition any of
     // them directly, independent of which game event they're bound to.
     const libRow = this.mkRow(host, 'library');

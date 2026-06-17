@@ -32,6 +32,7 @@ import {
   sendEquip,
   sendAtmWithdraw,
   sendAtmDeposit,
+  sendDadCall,
 } from './Network';
 import { playEventSfx } from './SfxEvents';
 import { getStoreItems, itemEquip, itemOffense, itemDefense } from './Shop';
@@ -122,6 +123,28 @@ const SAVE_PROMPT =
   "It's Dad. You sound like you're doing great, kiddo! Want me to save your progress?";
 const SAVE_DONE = "OK, I saved your progress. Don't push yourself too hard, now!";
 const SAVE_CHOICES = ['Yes', 'No'];
+
+// The save-prompt TEXT is dynamic: while the call connects it shows the ringing
+// line; once the server's dad_report arrives, applyDadReport swaps in Dad's
+// "I put $X in your account…" summary. Mutable so the same Yes/No window can
+// re-render with the new text in place (layout + hit-test read this too).
+const DAD_RINGING = "It's Dad. Let me check your account...";
+let savePrompt = SAVE_PROMPT;
+
+/**
+ * Build Dad's report line from the server tallies and show it over the Yes/No
+ * save prompt. `earned` = money he banked from your kills, `spent` = cash you
+ * spent at shops, `bank` = current account total — all since your last call.
+ * Wired from Game.ts onDadReport. No-op unless we're on the save screen (the
+ * report is only requested when calling Dad).
+ */
+export function applyDadReport(earned: number, spent: number, bank: number): void {
+  if (menuState !== 'save') return; // call was cancelled before the reply landed
+  let line = `It's Dad. Since we last chatted, I put $${earned} in your account`;
+  if (spent > 0) line += `, minus the $${spent} you spent`;
+  line += `. You have $${bank} in your account. Want me to save your progress?`;
+  savePrompt = line;
+}
 
 /** STUB — wiring only. The phone-save call site; persistence not built yet. */
 function saveGame(): void {
@@ -651,6 +674,8 @@ export function updateMenu(): void {
       if (pick >= 0 && PHONE_CONTACTS[pick]) {
         if (PHONE_CONTACTS[pick].action === 'save') {
           saveCursor = 0;
+          savePrompt = DAD_RINGING; // until the dad_report reply lands
+          sendDadCall(); // server replies → applyDadReport fills in the numbers
           menuState = 'save'; // Dad → save prompt
         } else {
           message = MOM_MESSAGE; // Mom → homesickness flavor
@@ -957,7 +982,7 @@ function choiceAt(prompt: string, px: number, py: number): number {
   }
   return -1;
 }
-const saveChoiceAt = (px: number, py: number) => choiceAt(SAVE_PROMPT, px, py);
+const saveChoiceAt = (px: number, py: number) => choiceAt(savePrompt, px, py);
 const confirmChoiceAt = (px: number, py: number) => choiceAt(confirmPrompt, px, py);
 
 // Draw a Yes/No prompt (question window + chooser) with `cursor` highlighted.
@@ -984,7 +1009,7 @@ function renderPrompt(ctx: CanvasRenderingContext2D, promptText: string, cursor:
 }
 
 function renderSave(ctx: CanvasRenderingContext2D): void {
-  renderPrompt(ctx, SAVE_PROMPT, saveCursor);
+  renderPrompt(ctx, savePrompt, saveCursor);
 }
 
 function onSelect(action: string): void {

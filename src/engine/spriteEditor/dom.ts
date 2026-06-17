@@ -22,7 +22,7 @@ import {
   Tool,
   EditMode,
 } from './constants';
-import { S, ItemTab } from './state';
+import { S } from './state';
 import {
   setTool,
   setColor,
@@ -55,6 +55,7 @@ import {
   createCustomItem,
   resetItemToHand,
   setItemEditFrame,
+  itemTabIds,
 } from './itemEditor';
 import { onTestDown, onTestMove } from './testWalker';
 import { setEditMode } from './index';
@@ -173,24 +174,22 @@ function buildToolPanel(): HTMLDivElement {
   }
   div.appendChild(modeRow);
 
-  // Item UI (item mode only): Weapons / Items / Custom tabs, the item dropdown
+  // Item UI (item mode only): one tab per item CATEGORY (the same Food/Weapons/…
+  // folders the Item Manager organizes — see ItemFolders), the item dropdown
   // (rebuilt per tab), and a New-item button. Hidden until Item mode.
   S.itemRow = document.createElement('div');
   S.itemRow.style.cssText = 'display:none;flex-direction:column;gap:5px;';
 
   const itemTabs = document.createElement('div');
-  itemTabs.style.cssText = 'display:flex;gap:4px;';
-  for (const [t, label] of [
-    ['weapons', 'Weapons'],
-    ['items', 'Items'],
-    ['custom', 'Custom'],
-  ] as [ItemTab, string][]) {
+  // Many categories — wrap into rows of compact chips so they all stay visible.
+  itemTabs.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;';
+  for (const { id: t, name } of itemTabIds()) {
     const b = document.createElement('button');
-    b.textContent = label;
+    b.textContent = name;
     b.dataset.itab = t;
     b.style.cssText =
-      'flex:1;font:11px monospace;padding:4px 0;background:#2a2a3a;color:#ddd;' +
-      'border:1px solid #444;border-radius:3px;cursor:pointer;';
+      'flex:1 0 auto;font:11px monospace;padding:4px 7px;background:#2a2a3a;color:#ddd;' +
+      'border:1px solid #444;border-radius:3px;cursor:pointer;white-space:nowrap;';
     b.onclick = () => selectItemTab(t);
     itemTabs.appendChild(b);
   }

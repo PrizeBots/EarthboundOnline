@@ -23,9 +23,10 @@ import {
 } from './constants';
 import { HELD_ITEM_IDS } from '../Items';
 
-// The item picker is split into tabs. Weapons/Items come from the shops catalog;
-// Custom holds the legacy seed items plus admin-minted custom items.
-export type ItemTab = 'weapons' | 'items' | 'custom';
+// The item picker is split into category tabs — the SAME category folders the
+// Item Manager organizes (overrides/item_folders.json, see ItemFolders.ts). An
+// ItemTab is just a category/folder id (e.g. 'weapons', 'food', 'custom').
+export type ItemTab = string;
 
 interface MoveState {
   pixels: HTMLCanvasElement; // the lifted region's art
@@ -138,7 +139,7 @@ export const S = {
   itemPicker: null as SpritePicker | null,
   itemRow: null as HTMLDivElement | null, // the whole item UI (tabs + picker + new)
   itemPickerHost: null as HTMLDivElement | null, // the picker is rebuilt in here per tab
-  itemTab: 'weapons' as ItemTab,
+  itemTab: '' as ItemTab,
   charNote: null as HTMLDivElement | null,
   nameInput: null as HTMLInputElement | null,
   rafId: 0,

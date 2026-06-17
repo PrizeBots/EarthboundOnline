@@ -571,20 +571,64 @@ export function liveNpcForKey(key: string): NPC | null {
   return npcByKey.get(key) ?? null;
 }
 
+/** Kick off the lazy sprite-sheet load for an NPC the first time it's needed. */
+function ensureSheet(npc: NPC): void {
+  if (!requestedSheets.has(npc.spriteGroupId)) {
+    requestedSheets.add(npc.spriteGroupId);
+    loadSpriteGroup(npc.spriteGroupId).catch(() => {
+      // Missing sheet — NPC just stays invisible.
+    });
+  }
+}
+
+/**
+ * Every live NPC whose position falls in a world rect (plus a margin so sprites
+ * straddling the edge still draw). The editor uses this to render whatever the
+ * FREE CAMERA shows — gameplay's getNearbyNPCs is anchored on the (frozen)
+ * avatar, so panned/zoomed-out views would otherwise show an empty world.
+ */
+export function getNpcsInRect(minX: number, minY: number, maxX: number, maxY: number): NPC[] {
+  const m = AREA_PX; // margin: a sprite's home area can sit just outside the view
+  const x0 = minX - m;
+  const y0 = minY - m;
+  const x1 = maxX + m;
+  const y1 = maxY + m;
+  const inRect = (npc: NPC) => npc.x >= x0 && npc.x <= x1 && npc.y >= y0 && npc.y <= y1;
+  const result: NPC[] = [];
+
+  const cx0 = Math.max(0, Math.floor(x0 / AREA_PX));
+  const cx1 = Math.min(AREA_COLS - 1, Math.floor(x1 / AREA_PX));
+  const cy0 = Math.max(0, Math.floor(y0 / AREA_PX));
+  const cy1 = Math.floor(y1 / AREA_PX);
+  for (let cy = cy0; cy <= cy1; cy++) {
+    for (let cx = cx0; cx <= cx1; cx++) {
+      const bucket = npcsByArea.get(cy * AREA_COLS + cx);
+      if (!bucket) continue;
+      for (const npc of bucket) {
+        if (npc.dead) continue;
+        ensureSheet(npc);
+        result.push(npc);
+      }
+    }
+  }
+  for (const npc of roamers) {
+    if (npc.dead || !inRect(npc)) continue;
+    ensureSheet(npc);
+    result.push(npc);
+  }
+  for (const npc of cars) {
+    if (!inRect(npc)) continue;
+    ensureSheet(npc);
+    result.push(npc);
+  }
+  return result;
+}
+
 /** NPCs in the player's neighborhood; kicks off sprite loads as needed. */
 export function getNearbyNPCs(px: number, py: number): NPC[] {
   const ax = Math.floor(px / AREA_PX);
   const ay = Math.floor(py / AREA_PX);
   const result: NPC[] = [];
-
-  const ensureSheet = (npc: NPC) => {
-    if (!requestedSheets.has(npc.spriteGroupId)) {
-      requestedSheets.add(npc.spriteGroupId);
-      loadSpriteGroup(npc.spriteGroupId).catch(() => {
-        // Missing sheet — NPC just stays invisible.
-      });
-    }
-  };
 
   for (let dy = -NEAR_RANGE; dy <= NEAR_RANGE; dy++) {
     for (let dx = -NEAR_RANGE; dx <= NEAR_RANGE; dx++) {

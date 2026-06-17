@@ -969,6 +969,15 @@
       "destDir": 0,
       "style": 1,
       "sfx": "door-open"
+    },
+    {
+      "worldX": 1176,
+      "worldY": 928,
+      "destX": 1176,
+      "destY": 960,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open"
     }
   ]
 }

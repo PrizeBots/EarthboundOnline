@@ -210,27 +210,78 @@ export interface FramesDoc {
 export const BAND_Y = 0;
 export const BAND_H = SHEET_H;
 
-// --- Labeled comparison export geometry (artist handoff) -----------------------
-export const EXPORT_ORIG_ROWS = ATTACK_ROW_START; // walk + climb (rows 0-4)
-export const EXPORT_CUST_ROWS = SHEET_ROWS - ATTACK_ROW_START; // attack + hurt (rows 5-12)
-export const EXPORT_ORIG_H = EXPORT_ORIG_ROWS * FRAME_H;
-export const EXPORT_CUST_H = EXPORT_CUST_ROWS * FRAME_H;
-export const EXPORT_CUST_SRC_Y = ATTACK_ROW_START * FRAME_H; // attack/hurt start in the sheet
-export const EXPORT_HDR_W = 16; // left margin: row numbers
-export const EXPORT_HDR_H = 14; // header strip: column letters
-export const EXPORT_ORIG_Y = EXPORT_HDR_H; // original sprites start
-export const EXPORT_MID_Y = EXPORT_HDR_H + EXPORT_ORIG_H; // custom band's header strip
-export const EXPORT_CUST_Y = EXPORT_MID_Y + EXPORT_HDR_H; // custom sprites start
-export const EXPORT_W = EXPORT_HDR_W + SHEET_W;
-export const EXPORT_H = EXPORT_HDR_H * 2 + EXPORT_ORIG_H + EXPORT_CUST_H;
+// --- 12-wide artist sheet layout (export / import / preview) --------------------
+// The native sheet is 4 frames wide x 15 rows. Everywhere a WHOLE sheet is shown
+// or transferred — the bottom preview, the PNG export, and import — we re-flow it
+// 12 frames wide: the walk, attack, and hurt pose blocks sit SIDE BY SIDE
+// (cols 0-3 | 4-7 | 8-11), one direction-pair per row (N/E, S/W, NE/SE, SW/NW),
+// with climb + the single peace/lay poses on a 5th row. A band is a pixel-rect
+// copy native->wide; import runs the same bands in reverse, so the two are exact
+// inverses. The preview, export, and import are ALL driven by WIDE_BANDS, so the
+// three never drift. (The native 4x15 sheet stays the engine's real format — only
+// this artist-facing view is 12-wide.)
+export const WIDE_COLS = 12;
+export const WIDE_ROWS = 5;
+export const WIDE_W = WIDE_COLS * FRAME_W; // 192
+export const WIDE_H = WIDE_ROWS * FRAME_H; // 120
 
-/** Y of a sheet row inside the export canvas (walk/climb → top band, attack/hurt
- *  → bottom band, both offset past their header strip). */
-export function exportRowY(row: number): number {
-  return row < ATTACK_ROW_START
-    ? EXPORT_ORIG_Y + row * FRAME_H
-    : EXPORT_CUST_Y + (row - ATTACK_ROW_START) * FRAME_H;
+export interface SheetBand {
+  sx: number; // native sheet source rect (sx is always 0 — full sheet width)
+  sy: number;
+  w: number;
+  h: number;
+  dx: number; // top-left of this band in the 12-wide layout
+  dy: number;
 }
+export const WIDE_BANDS: SheetBand[] = [
+  { sx: 0, sy: 0, w: SHEET_W, h: 4 * FRAME_H, dx: 0, dy: 0 }, // walk  -> cols 0-3
+  { sx: 0, sy: ATTACK_ROW_START * FRAME_H, w: SHEET_W, h: 4 * FRAME_H, dx: 4 * FRAME_W, dy: 0 }, // attack -> cols 4-7
+  { sx: 0, sy: HURT_ROW_START * FRAME_H, w: SHEET_W, h: 4 * FRAME_H, dx: 8 * FRAME_W, dy: 0 }, // hurt  -> cols 8-11
+  { sx: 0, sy: CLIMB_ROW * FRAME_H, w: SHEET_W, h: FRAME_H, dx: 0, dy: 4 * FRAME_H }, // climb -> row 4, cols 0-3
+  { sx: 0, sy: PEACE_ROW * FRAME_H, w: FRAME_W, h: FRAME_H, dx: 4 * FRAME_W, dy: 4 * FRAME_H }, // peace -> row 4, col 4
+  { sx: 0, sy: LAYING_ROW * FRAME_H, w: 24, h: 16, dx: 5 * FRAME_W, dy: 4 * FRAME_H }, // lay   -> row 4, col 5
+];
+
+// Pose-block headers drawn over each 4-col group on export.
+export const WIDE_BLOCK_LABELS: { label: string; col: number; span: number }[] = [
+  { label: 'WALK', col: 0, span: 4 },
+  { label: 'ATTACK', col: 4, span: 4 },
+  { label: 'HURT', col: 8, span: 4 },
+];
+// Left-margin label per wide row (the direction pair; row 4 holds the extras).
+export const WIDE_ROW_LABELS = ['N/E', 'S/W', 'NE/SE', 'SW/NW', 'misc'];
+
+/** Wide-layout pixel position of a native (col,row) cell, or null if that cell is
+ *  not carried into the 12-wide layout (used to remap missing-frame guide boxes). */
+export function wideCellPos(row: number, col: number): { x: number; y: number } | null {
+  const nx = col * FRAME_W;
+  const ny = row * FRAME_H;
+  for (const b of WIDE_BANDS) {
+    if (nx >= b.sx && nx < b.sx + b.w && ny >= b.sy && ny < b.sy + b.h) {
+      return { x: b.dx + (nx - b.sx), y: b.dy + (ny - b.sy) };
+    }
+  }
+  return null;
+}
+
+/** Re-flow the native 4-wide sheet into a fresh 12-wide canvas (WIDE_W x WIDE_H). */
+export function buildWideSheet(src: CanvasImageSource): HTMLCanvasElement {
+  const out = document.createElement('canvas');
+  out.width = WIDE_W;
+  out.height = WIDE_H;
+  const ctx = out.getContext('2d')!;
+  ctx.imageSmoothingEnabled = false;
+  for (const b of WIDE_BANDS) ctx.drawImage(src, b.sx, b.sy, b.w, b.h, b.dx, b.dy, b.w, b.h);
+  return out;
+}
+
+// --- Labeled export geometry: margins around the 12-wide body ------------------
+export const EXPORT_HDR_W = 30; // left margin: row labels (fits "SW/NW")
+export const EXPORT_HDR_H = 14; // top margin: pose-block headers
+export const EXPORT_BODY_X = EXPORT_HDR_W; // x of the wide body inside the export canvas
+export const EXPORT_BODY_Y = EXPORT_HDR_H; // y of the wide body
+export const EXPORT_W = EXPORT_HDR_W + WIDE_W;
+export const EXPORT_H = EXPORT_HDR_H + WIDE_H;
 
 // --- SHEET panel geometry ------------------------------------------------------
 export const SHEET_PANEL_SCALE = STRIP_SCALE; // same zoom as the FRAMES panel

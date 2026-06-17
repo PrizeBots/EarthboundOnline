@@ -7,6 +7,8 @@
  */
 import { ensureEbFont, ebText, ebButton, injectEbChrome } from './EbText';
 import { createStatRadar, Alloc, StatKey, STAT_KEYS } from './charcreate/StatRadar';
+import { getStatus, PlayerStats } from './StatusModal';
+import { deriveCombatStats, DerivedStats } from './charcreate/deriveCombatStats';
 
 let root: HTMLDivElement | null = null;
 let openNow = false;
@@ -53,15 +55,64 @@ export async function openLevelUp(
     );
   };
 
-  const radar = createStatRadar((_a, l) => setLeft(l), {
-    initial,
-    floor: initial, // can't un-spend what you already earned
-    budget: points,
-    displayMax: Math.max(10, maxVal + points),
-    statMax: 99,
-  });
+  // Live attribute preview (below the pentagon): the SAME derived stats the
+  // Status screen shows — Offense/Defense/Speed/Guts/etc — recomputed as the
+  // player drags dots, so they see what a build does BEFORE confirming. The
+  // server's per-level growth cancels out: we show the current displayed value
+  // plus the derivation delta, so it always matches the Status screen.
+  const currentStats: PlayerStats = { ...getStatus() };
+  const baseDerived = deriveCombatStats(initial);
+  const ATTRS: { label: string; dkey: keyof DerivedStats; sfield: keyof PlayerStats }[] = [
+    { label: 'HP', dkey: 'maxHp', sfield: 'hpMax' },
+    { label: 'PP', dkey: 'ppMax', sfield: 'ppMax' },
+    { label: 'Offense', dkey: 'offense', sfield: 'offense' },
+    { label: 'Defense', dkey: 'defense', sfield: 'defense' },
+    { label: 'Speed', dkey: 'speed', sfield: 'speed' },
+    { label: 'Guts', dkey: 'guts', sfield: 'guts' },
+    { label: 'Vitality', dkey: 'vitality', sfield: 'vitality' },
+    { label: 'IQ', dkey: 'iq', sfield: 'iq' },
+    { label: 'Luck', dkey: 'luck', sfield: 'luck' },
+  ];
+  const attrsBox = document.createElement('div');
+  attrsBox.className = 'eb-lu-attrs';
+  const renderAttrs = (alloc: Alloc) => {
+    attrsBox.innerHTML = '';
+    const d = deriveCombatStats(alloc);
+    for (const a of ATTRS) {
+      const cur = (currentStats[a.sfield] as number) ?? 0;
+      const val = cur + (d[a.dkey] - baseDerived[a.dkey]);
+      const delta = val - cur;
+      const row = document.createElement('div');
+      row.className = 'eb-lu-attr';
+      row.appendChild(ebText(a.label, 2, '#9fb0d0'));
+      const right = document.createElement('div');
+      right.className = 'eb-lu-attrval';
+      right.appendChild(ebText(String(val), 2, delta > 0 ? '#6fdc8c' : '#ffffff'));
+      if (delta > 0) right.appendChild(ebText(`+${delta}`, 1, '#ffd23f'));
+      row.appendChild(right);
+      attrsBox.appendChild(row);
+    }
+  };
+
+  const radar = createStatRadar(
+    (a, l) => {
+      setLeft(l);
+      renderAttrs(a);
+    },
+    {
+      initial,
+      floor: initial, // can't un-spend what you already earned
+      budget: points,
+      displayMax: Math.max(10, maxVal + points),
+      statMax: 99,
+    }
+  );
   panel.appendChild(radar.el);
   setLeft(points);
+
+  panel.appendChild(center(ebText('IF YOU CONFIRM', 1, '#9fb0d0')));
+  panel.appendChild(attrsBox);
+  renderAttrs(initial); // seed the rows at the current build (no deltas yet)
 
   const confirm = ebButton('Confirm', () => {
     const cur = radar.getAlloc();
@@ -113,11 +164,20 @@ function injectStyles(): void {
     background: rgba(0,0,0,0.55); font-family: 'Courier New', monospace;
   }
   .eb-lu-panel {
-    width: 340px; max-width: calc(100vw - 24px);
-    display: flex; flex-direction: column; gap: 10px; padding: 18px;
+    width: 460px; max-width: calc(100vw - 24px);
+    display: flex; flex-direction: column; gap: 10px; padding: 20px;
   }
   .eb-lu-center, .eb-lu-left { display: flex; justify-content: center; }
   .eb-lu-center canvas, .eb-lu-left canvas { image-rendering: pixelated; }
+  /* Derived-attribute preview: two columns of label : value rows, mirroring the
+     Status screen. Boosted values render green with a gold "+N". */
+  .eb-lu-attrs {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 6px 22px;
+    border-top: 1px solid #2a2a3e; margin-top: 2px; padding: 10px 4px 2px;
+  }
+  .eb-lu-attr { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .eb-lu-attr canvas { image-rendering: pixelated; }
+  .eb-lu-attrval { display: flex; align-items: baseline; gap: 6px; }
   `;
   const style = document.createElement('style');
   style.id = 'eb-lu-styles';

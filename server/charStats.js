@@ -48,19 +48,19 @@ function sanitizeAlloc(alloc) {
 
 /**
  * Map the 5 creation stats -> level-1 EarthBound combat stats. Muscle = damage
- * + bulk, Spirit = armor + stamina, Speed = dodge, Mental = PSI fuel,
- * Knowledge = IQ + luck/crit. Numbers are deliberately gentle; they're the
+ * + guts, Spirit = HP + armor + stamina + some guts, Speed = dodge, Mental = PSI
+ * fuel, Knowledge = IQ + luck/crit. Numbers are deliberately gentle; they're the
  * level-1 baseline that the per-level GROWTH curve builds on.
  */
 function deriveCombatStats(alloc) {
   const { muscle, mental, spirit, speed, knowledge } = alloc;
   return {
-    maxHp: 30 + muscle * 3 + spirit * 4,
+    maxHp: 30 + muscle + spirit * 5, // Spirit primary; Muscle only a little
     ppMax: 2 + mental * 2,
     offense: (3 + muscle * 1.5) | 0,
     defense: (1 + spirit * 1.2) | 0,
     speed: (3 + speed * 1.2) | 0,
-    guts: 2 + muscle,
+    guts: (2 + muscle + spirit * 0.5) | 0, // Muscle primary, Spirit half-weight
     vitality: 2 + spirit,
     iq: (3 + knowledge * 1.2) | 0,
     luck: 3 + knowledge,

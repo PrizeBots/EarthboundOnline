@@ -27,6 +27,7 @@ import { registerSaveHandler } from '../EditorHub';
 import { EditorShellApi, EditorTool, WorldPoint } from '../types';
 import { dialogueTool } from './DialogueTool';
 import { trafficEditorTool } from './TrafficEditorTool';
+import { entityManagerTool } from './EntityManagerTool';
 import spawnBase from '../../spawn.json';
 
 // Placement Editor (EDITOR_TOOLS.md §2) — three tabs:
@@ -1250,6 +1251,21 @@ class PlacementTool implements EditorTool {
       },
       actions
     );
+    // Cross-tool handoff to the Entity Manager (same as the Enemy Spawner's
+    // "Edit entity →") — tune this enemy's combat stats by sprite group. Only
+    // meaningful for enemies, so refreshPanel hides it for people/props.
+    const editEntityBtn = this.mkBtn(
+      'Edit entity →',
+      () => {
+        const e = this.selNpc;
+        if (!e) return;
+        entityManagerTool.requestEntity(e.sprite);
+        this.shell?.openTool('entity-manager');
+      },
+      actions,
+      true
+    );
+    editEntityBtn.dataset.role = 'edit-entity';
     this.mkBtn('Delete (Del)', () => this.deleteSelected(), actions);
     // No Save button — NPC edits auto-save via the shell (registered 'npcs'
     // handler); applied live, persons start moving in ~2s.
@@ -1484,6 +1500,9 @@ class PlacementTool implements EditorTool {
       if (nameEl) {
         nameEl.textContent = e ? (getSpriteName(e.sprite) ?? '(unnamed sprite)') : '';
       }
+      // The "Edit entity →" handoff only applies to enemies (combat stats).
+      const editBtn = this.panel.querySelector<HTMLButtonElement>('[data-role=edit-entity]');
+      if (editBtn) editBtn.style.display = e?.kind === 'enemy' ? '' : 'none';
       if (e && this.thumb) {
         const tctx = this.thumb.getContext('2d')!;
         tctx.imageSmoothingEnabled = false;

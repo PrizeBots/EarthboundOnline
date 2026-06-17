@@ -240,12 +240,26 @@ function injectStyles(): void {
   .eb-cc-slider input[type=range] { flex: 1; accent-color: #f8e85a; }
   .eb-cc-swatch { width: 18px; height: 18px; border-radius: 3px; border: 2px solid #fff; flex: none; }
   .eb-radar { display: block; max-width: 100%; height: auto; align-self: center; overflow: visible; }
-  .eb-radar-ring { fill: none; stroke: #2a2a3e; stroke-width: 1; }
-  .eb-radar-spoke { stroke: #2a2a3e; stroke-width: 1; }
-  .eb-radar-web { fill: rgba(248,232,90,0.22); stroke: #f8e85a; stroke-width: 2; }
-  .eb-radar-dot { fill: #f8e85a; stroke: #fff; stroke-width: 1.5; }
-  .eb-radar-label { fill: #9fb0d0; font: bold 9px 'Courier New', monospace; }
-  .eb-radar-val { fill: #fff; font: bold 10px 'Courier New', monospace; }
+  .eb-radar-ring { fill: none; stroke: #2a2a3e; stroke-width: 1.2; }
+  .eb-radar-spoke { stroke: #2a2a3e; stroke-width: 1.2; }
+  .eb-radar-web { fill: rgba(248,232,90,0.22); stroke: #f8e85a; stroke-width: 2.5; }
+  .eb-radar-dot { fill: #f8e85a; stroke: #fff; stroke-width: 2; }
+  .eb-radar-dot-spent {
+    fill: #ffd23f; transform-box: fill-box; transform-origin: center;
+    animation: eb-radar-dot-pulse 0.85s ease-in-out infinite;
+  }
+  @keyframes eb-radar-dot-pulse {
+    0%, 100% { transform: scale(1);   filter: drop-shadow(0 0 1px #ffae3a); }
+    50%      { transform: scale(1.55); filter: drop-shadow(0 0 4px #ffae3a); }
+  }
+  .eb-radar-label {
+    fill: #e6edff; font: bold 15px 'Courier New', monospace; letter-spacing: 0.5px;
+    paint-order: stroke; stroke: #0a0a12; stroke-width: 3.5px; stroke-linejoin: round;
+  }
+  .eb-radar-val {
+    fill: #fff; font: bold 14px 'Courier New', monospace;
+    paint-order: stroke; stroke: #0a0a12; stroke-width: 3.5px; stroke-linejoin: round;
+  }
   .eb-cc-points { display: flex; justify-content: center; }
   `;
   const style = document.createElement('style');

@@ -20,6 +20,7 @@ import { setActiveRoomFromPoint } from './Rooms';
 import {
   loadNPCs,
   getNearbyNPCs,
+  getNpcsInRect,
   applyNpcUpdates,
   applyNpcHp,
   getNpcDialogue,
@@ -99,6 +100,7 @@ import {
   openShop,
   openPhoneMenu,
   openAtmMenu,
+  applyDadReport,
 } from './MenuManager';
 import {
   initDialogue,
@@ -475,11 +477,14 @@ export class Game {
           const rp = this.remotePlayers.get(id);
           if (rp) rp.itemId = itemId;
         },
-        onEquipped: (slots) => {
+        onEquipped: (slots, attackSpeed) => {
           // Authoritative equipped set for the local player — re-sync the mirror
           // and the held-weapon sprite.
           setEquippedFromServer(slots);
           this.player.heldItemId = slots.weapon ?? null;
+          // Weapon swing-rate multiplier (server-authoritative) scales the local
+          // swing-pose duration so a fast weapon animates as fast as it resolves.
+          this.player.attackSpeed = attackSpeed && attackSpeed > 0 ? attackSpeed : 1;
           syncWeaponHotbar(slots.weapon ?? null); // show the saved weapon on the hotbar
         },
         onNpcUpdate: (rows) => {
@@ -519,6 +524,9 @@ export class Game {
         onBank: (amount) => {
           setBank(amount); // mirror the server's bank/ATM balance
         },
+        onDadReport: (earned, spent, bank) => {
+          applyDadReport(earned, spent, bank); // fill in Dad's save-prompt summary
+        },
         // --- Ground loot drops (server-authoritative; pickup is first-touch) ---
         onDrops: (list) => {
           setDrops(list); // full set on join / re-join
@@ -537,6 +545,26 @@ export class Game {
         },
         onNotice: (text) => {
           if (text) spawnNoticeText(this.player.x, this.player.y, text);
+        },
+        onPlayerPush: (id, x, y) => {
+          // Knockback: slide to the server's collision-clamped spot over a few
+          // frames (Player.knockTo) instead of teleporting — the per-frame
+          // camera.follow then glides instead of jolting. Keep facing and pose
+          // (it's a shove, not a respawn). Don't snap the camera to the final
+          // spot here; the main loop follows the gliding position each frame.
+          if (id === this.localPlayerId) {
+            this.player.knockTo(x, y);
+            if (!this.editor?.isActive()) {
+              this.updateRoomBounds(x, y);
+            }
+          } else {
+            const rp = this.remotePlayers.get(id);
+            if (rp) {
+              rp.x = x;
+              rp.y = y;
+            }
+            dropRemoteBuffer(id); // snap the shove, don't glide to it
+          }
         },
         onPlayerRespawn: (id, x, y, dir) => {
           if (id === this.localPlayerId) {
@@ -995,6 +1023,25 @@ export class Game {
     // doors, and music hold still.
     if (this.editor?.isActive()) {
       this.editor.update();
+      // Anchor the server's NPC sim on what the free camera is observing so the
+      // world keeps ticking under it. The sim only animates NPCs within
+      // ACTIVE_RADIUS of a player position (npcSim.js); without this the anchor
+      // stays frozen at our editor-entry spot and NPCs we pan to sit still.
+      // Reported as the avatar's `move` — the server exempts editor avatars from
+      // the jump clamp so this can leap across the map as we pan. Throttled like
+      // gameplay's send.
+      this.sendTimer++;
+      if (this.sendTimer >= 3) {
+        this.sendTimer = 0;
+        const cam = this.camera;
+        sendPosition(
+          cam.x + cam.viewW / 2,
+          cam.y + cam.viewH / 2,
+          this.player.direction,
+          this.player.frame,
+          this.player.pose
+        );
+      }
       return;
     }
 
@@ -1263,12 +1310,13 @@ export class Game {
       return;
     }
 
-    this.renderer.render(
-      this.camera,
-      this.player,
-      this.remotePlayers,
-      getNearbyNPCs(this.player.x, this.player.y)
-    );
+    // Editor: render every NPC the free camera shows (its view is decoupled from
+    // the frozen avatar). Gameplay stays anchored on the player's AOI window.
+    const cam = this.camera;
+    const npcsToDraw = this.editor?.isActive()
+      ? getNpcsInRect(cam.x, cam.y, cam.x + cam.viewW, cam.y + cam.viewH)
+      : getNearbyNPCs(this.player.x, this.player.y);
+    this.renderer.render(this.camera, this.player, this.remotePlayers, npcsToDraw);
 
     // Chat bubbles (world) + typing box (screen), above the world but below
     // the transition fade and menu. Bubbles anchor to world positions, so

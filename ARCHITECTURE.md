@@ -440,7 +440,11 @@ sync). The catalog feeds **stats only** — it does NOT auto-classify its 77
 sprites as hostile (that stays the explicit kind / legacy list), so adding ROM
 enemies never silently turns existing NPCs aggressive. Static (placed) enemies
 now read full per-entity stats, same as the spawner pool — a placed and a
-spawned enemy of the same sprite are identical.
+spawned enemy of the same sprite are identical. They also **behave**
+identically: a placed enemy is built with `roam: true` (the tick-dispatch flag
+that routes to `tickEnemy`), so it wanders, chases, and swings at players AND
+townsfolk just like a spawned one — it is not the passive `tickNpc` self-defense
+AI that people use.
 
 **Loot.** On a player kill, `npcSim.rollLoot(sprite)` awards the enemy's money
 and rolls its item drop against the ROM rate (`drop.rate`, e.g. 1/128).
@@ -502,9 +506,10 @@ sim as a **one-tick position jump** (`> WARP_DELTA`). The tick loop diffs each
 player's position against `prevPlayerPos` to spot those jumps; an enemy whose
 chased `targetId` jumped while it's within `WARP_FOLLOW_RANGE` of the doorway
 **follows through** — it's dropped beside where the player landed (`findFreeNear`)
-and the door is pushed onto its `warpStack`. While chasing, the home leash is
-widened (`PURSUIT_LEASH_MULT × wanderRadius`) and dropped entirely once inside a
-building (home is across the map). A respawn-teleport also jumps the (full-HP)
+and the door is pushed onto its `warpStack`. A locked chase has **no home leash**
+— the enemy pursues relentlessly wherever the target goes; it gives up only when
+the target passes `GIVE_UP_RANGE` (hysteresis: acquire at `detectRange`, drop at
+the larger give-up distance) or it dies, then it paths home. A respawn-teleport also jumps the (full-HP)
 player to spawn, indistinguishable from a door warp, so the host calls
 `npcSim.noteRespawn(id)` to exempt that one jump. On losing the target the enemy
 switches to `return`: it retraces its `warpStack` (warping back out at each

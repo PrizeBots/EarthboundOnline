@@ -42,6 +42,7 @@ import {
 import {
   loadSavedItems,
   idsForTab,
+  itemTabIds,
   tabForItem,
   buildItemBuffer,
   loadItemIntoBuffer,
@@ -70,18 +71,15 @@ export async function openSpriteEditor(callbacks: SpriteEditorCallbacks = {}): P
   await loadOverridesDoc();
   await loadSavedItems(); // restore saved item edits before seeding the buffer
   if (callbacks.focusItem) S.itemEditId = callbacks.focusItem; // Item Manager handoff
-  // Make sure itemEditId is a real, selectable item across the three tabs (the
-  // module default is a legacy seed id). If it isn't, fall back to the first
-  // weapon/item/custom available. Then open on the tab that holds it.
-  const allTabIds = new Set([
-    ...idsForTab('weapons'),
-    ...idsForTab('items'),
-    ...idsForTab('custom'),
-  ]);
+  // Make sure itemEditId is a real, selectable item in some category (the module
+  // default is a legacy seed id). If it isn't, fall back to the first item in the
+  // first category. Then open on the tab/category that holds it.
+  const cats = itemTabIds();
+  const allTabIds = new Set(cats.flatMap((c) => idsForTab(c.id)));
   if (!S.itemEditId || !allTabIds.has(S.itemEditId)) {
-    S.itemEditId = idsForTab('weapons')[0] ?? idsForTab('items')[0] ?? idsForTab('custom')[0] ?? '';
+    S.itemEditId = cats.map((c) => idsForTab(c.id)[0]).find(Boolean) ?? '';
   }
-  S.itemTab = S.itemEditId ? tabForItem(S.itemEditId) : 'weapons';
+  S.itemTab = S.itemEditId ? tabForItem(S.itemEditId) : (cats[0]?.id ?? 'custom');
   buildItemBuffer();
 
   buildDom();

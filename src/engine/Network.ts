@@ -32,8 +32,9 @@ type NetworkCallback = {
   onChat: (id: string, text: string) => void;
   /** A player equipped (or unequipped) a held item (the weapon, for the sprite). */
   onEquip: (id: string, itemId: string | null) => void;
-  /** The LOCAL player's full equipped set (server-authoritative, per slot). */
-  onEquipped: (slots: Record<string, string | null>) => void;
+  /** The LOCAL player's full equipped set (server-authoritative, per slot).
+   *  attackSpeed is the equipped weapon's swing-rate multiplier (1 = baseline). */
+  onEquipped: (slots: Record<string, string | null>, attackSpeed?: number) => void;
   /** Authoritative NPC positions (welcome snapshot + periodic deltas). */
   onNpcUpdate: (npcs: NpcUpdate[]) => void;
   /** Authoritative enemy HP (welcome snapshot + on-damage deltas). */
@@ -63,8 +64,20 @@ type NetworkCallback = {
   onMoney: (amount: number) => void;
   /** The local player's bank/ATM balance (welcome snapshot + deltas). */
   onBank?: (amount: number) => void;
+  /**
+   * Dad's phone report: money banked from kills (`earned`) and cash spent at
+   * shops (`spent`) since the last call, plus the current `bank` total. Drives
+   * the "I put $X in your account…" save prompt. Reply to a `dad_call`.
+   */
+  onDadReport?: (earned: number, spent: number, bank: number) => void;
   /** A player respawned — snap them to (x, y). */
   onPlayerRespawn: (id: string, x: number, y: number, dir: Direction) => void;
+  /**
+   * A player was knocked back by a hit — snap them to (x, y). Server already
+   * collision-clamped the spot; the local player applies it authoritatively and
+   * reports from there, remote players just snap their interpolated copy.
+   */
+  onPlayerPush?: (id: string, x: number, y: number) => void;
   /** Server-authoritative progression: EXP gained / level-up / stat growth. */
   onPlayerStats: (id: string, stats: PlayerStatsPayload, leveled: boolean, gained: number) => void;
   /**
@@ -210,7 +223,7 @@ function openSocket() {
         // Signed-in characters restore saved stats + gear right away (reusing the
         // live progression/equip handlers). Anonymous joins omit these.
         if (msg.stats) callbacks?.onPlayerStats(msg.playerId, msg.stats, false, 0);
-        if (msg.equipped) callbacks?.onEquipped(msg.equipped);
+        if (msg.equipped) callbacks?.onEquipped(msg.equipped, msg.attackSpeed);
         // Restore saved player flags (empty for anonymous joins).
         callbacks?.onFlags?.(Array.isArray(msg.flags) ? msg.flags : []);
         // Restore PK state + remaining lock (a player who logged out PK stays PK).
@@ -253,13 +266,16 @@ function openSocket() {
         callbacks?.onEquip(msg.id, msg.itemId ?? null);
         break;
       case 'equipped':
-        callbacks?.onEquipped(msg.slots ?? {});
+        callbacks?.onEquipped(msg.slots ?? {}, msg.attackSpeed);
         break;
       case 'player_hp':
         callbacks?.onPlayerHp(msg.id, msg.hp, msg.maxHp, msg.dmg ?? 0, msg.heal ?? 0);
         break;
       case 'combat':
         callbacks?.onCombat(msg.evt, msg.x, msg.y, msg.byPlayer ?? null, msg.targetPlayer ?? null);
+        break;
+      case 'player_push':
+        callbacks?.onPlayerPush?.(msg.id, msg.x, msg.y);
         break;
       case 'player_respawn':
         callbacks?.onPlayerRespawn(msg.id, msg.x, msg.y, (msg.dir ?? 0) as Direction);
@@ -284,6 +300,13 @@ function openSocket() {
         break;
       case 'bank':
         callbacks?.onBank?.(typeof msg.bank === 'number' ? msg.bank : 0);
+        break;
+      case 'dad_report':
+        callbacks?.onDadReport?.(
+          typeof msg.earned === 'number' ? msg.earned : 0,
+          typeof msg.spent === 'number' ? msg.spent : 0,
+          typeof msg.bank === 'number' ? msg.bank : 0
+        );
         break;
     }
   };
@@ -338,6 +361,13 @@ export function sendAtmWithdraw(amount: number) {
 export function sendAtmDeposit(amount: number) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'atm_deposit', amount: Math.floor(amount) }));
+  }
+}
+
+/** Phone: call Dad. The server replies with a `dad_report` (earned/spent/bank). */
+export function sendDadCall() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'dad_call' }));
   }
 }
 

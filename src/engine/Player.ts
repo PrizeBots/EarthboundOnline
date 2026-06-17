@@ -26,14 +26,29 @@ const ATTACK_SWING = 11; // f1 ends here, f2 (follow-through) runs to ATTACK_TOT
 const ATTACK_TOTAL = 16;
 const HURT_TOTAL = 20;
 
+// Knockback slide: a hit shoves the player to a server-clamped landing spot. We
+// ease toward it over a few frames instead of teleporting, so the camera (which
+// snaps to the player every frame) glides rather than jolting. ~8 frames of
+// ease-out covers the distance in ~130ms — reads as a shove, not a warp.
+const KB_SLIDE_FRAMES = 8;
+const KB_SLIDE_EASE = 0.4; // fraction of the remaining gap closed per frame
+
 export class Player extends Entity {
   pose: Pose = 'walk';
   heldItemId: string | null = null;
+  /** Equipped-weapon swing-rate multiplier (server-authoritative; 1 = baseline).
+   *  Scales the attack-pose duration so a fast weapon both animates and (via the
+   *  server cooldown) resolves quicker. Set from the 'equipped' message. */
+  attackSpeed = 1;
   /** PK (player-kill) flag — server-authoritative; red nameplate when on. */
   pk = false;
   /** Epoch-ms the PK enable-lock expires (can't disable PK before this). */
   pkUntil = 0;
   private poseTimer = 0;
+  // Active knockback slide toward (kbX, kbY); kbFrames counts down to 0.
+  private kbX = 0;
+  private kbY = 0;
+  private kbFrames = 0;
 
   constructor() {
     // Spawn position/facing come from src/spawn.json (Onett default), so the
@@ -46,7 +61,10 @@ export class Player extends Entity {
 
   /** Begin a swing. Returns true if one actually started (for the net send). */
   attack(): boolean {
-    if (this.pose !== 'walk') return false; // no canceling a swing or flinch
+    if (this.pose === 'attack') return false; // can't cancel your own swing mid-animation
+    // A HURT flinch does NOT block attacking — same decision already made for
+    // movement (see header note). Otherwise a mob re-stamping hurt() every few
+    // frames perma-locks you out of swinging (stunlock).
     this.pose = 'attack';
     this.poseTimer = 0;
     this.frame = 0;
@@ -59,15 +77,46 @@ export class Player extends Entity {
     this.frame = 0;
   }
 
+  /** Start a smooth knockback slide to a server-clamped landing spot (the host
+   *  already collision-checked it). Replaces the old instant teleport so the
+   *  camera glides. A fresh hit just re-targets the slide — it can't freeze. */
+  knockTo(x: number, y: number): void {
+    this.kbX = x;
+    this.kbY = y;
+    this.kbFrames = KB_SLIDE_FRAMES;
+  }
+
   cycleHeldItem(): void {
     this.heldItemId = nextHeldItem(this.heldItemId);
   }
 
   update() {
+    // Knockback slide: ease toward the landing spot. Runs first and regardless of
+    // pose (you can be shoved mid-swing), so position is always smoothed; the
+    // camera follows the gliding position each frame instead of jumping.
+    const sliding = this.kbFrames > 0;
+    if (sliding) {
+      this.kbFrames--;
+      if (this.kbFrames <= 0) {
+        this.x = this.kbX; // land exactly on the authoritative spot
+        this.y = this.kbY;
+      } else {
+        this.x += (this.kbX - this.x) * KB_SLIDE_EASE;
+        this.y += (this.kbY - this.y) * KB_SLIDE_EASE;
+      }
+    }
+
     if (this.pose === 'attack') {
       this.poseTimer++;
-      this.frame = this.poseTimer < ATTACK_WINDUP ? 0 : this.poseTimer < ATTACK_SWING ? 1 : 2;
-      if (this.poseTimer >= ATTACK_TOTAL) {
+      // Scale the swing thresholds by attackSpeed: a faster weapon (>1) finishes
+      // its 3-frame swing in fewer frames, so the pose-gate in attack() clears
+      // sooner and the player can swing again at the weapon's true cadence.
+      const spd = this.attackSpeed > 0 ? this.attackSpeed : 1;
+      const windup = ATTACK_WINDUP / spd;
+      const swing = ATTACK_SWING / spd;
+      const total = ATTACK_TOTAL / spd;
+      this.frame = this.poseTimer < windup ? 0 : this.poseTimer < swing ? 1 : 2;
+      if (this.poseTimer >= total) {
         this.pose = 'walk';
         this.resetAnimation();
       }
@@ -85,6 +134,12 @@ export class Player extends Entity {
         this.resetAnimation();
       }
       // fall through to normal movement
+    }
+
+    // The shove owns position while it plays — don't let input fight the slide.
+    if (sliding) {
+      this.moving = false;
+      return;
     }
 
     const { dx, dy } = getDirection();

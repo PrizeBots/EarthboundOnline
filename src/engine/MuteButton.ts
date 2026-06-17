@@ -1,4 +1,4 @@
-import { setMusicMuted, toggleMusicMuted, isMusicMuted } from './MusicManager';
+import { setAllMuted, toggleAllMuted, isMusicMuted } from './MusicManager';
 
 // Browser-meta UI (not a SNES concept): a DOM overlay button in the top-right
 // corner. Lives above the canvas so it's clickable in every game phase and
@@ -28,8 +28,14 @@ const WAVES: [number, number, number, number][] = [
 ];
 // X mark shown when muted (drawn in red).
 const MUTE_X: [number, number, number, number][] = [
-  [9, 5, 1, 1], [10, 6, 1, 1], [11, 7, 1, 1], [12, 8, 1, 1],
-  [12, 5, 1, 1], [11, 6, 1, 1], [9, 8, 1, 1], [10, 7, 1, 1],
+  [9, 5, 1, 1],
+  [10, 6, 1, 1],
+  [11, 7, 1, 1],
+  [12, 8, 1, 1],
+  [12, 5, 1, 1],
+  [11, 6, 1, 1],
+  [9, 8, 1, 1],
+  [10, 7, 1, 1],
 ];
 
 function drawIcon(ctx: CanvasRenderingContext2D, muted: boolean): void {
@@ -46,8 +52,8 @@ function drawIcon(ctx: CanvasRenderingContext2D, muted: boolean): void {
 
 /** Inject the mute toggle and restore the saved preference. Call once at boot. */
 export function initMuteButton(): void {
-  // Restore saved state before anything plays.
-  setMusicMuted(localStorage.getItem(STORAGE_KEY) === '1');
+  // Restore saved state before anything plays (mutes music AND sfx together).
+  setAllMuted(localStorage.getItem(STORAGE_KEY) === '1');
 
   const btn = document.createElement('button');
   btn.id = 'eb-mute';
@@ -82,13 +88,13 @@ export function initMuteButton(): void {
   function render(): void {
     const m = isMusicMuted();
     drawIcon(ctx, m);
-    btn.title = m ? 'Unmute music' : 'Mute music';
+    btn.title = m ? 'Unmute sound' : 'Mute sound';
     btn.setAttribute('aria-label', btn.title);
     btn.setAttribute('aria-pressed', String(m));
   }
 
   btn.addEventListener('click', () => {
-    const m = toggleMusicMuted();
+    const m = toggleAllMuted();
     localStorage.setItem(STORAGE_KEY, m ? '1' : '0');
     render();
   });

@@ -17,7 +17,7 @@ const STAT_LABELS: Record<StatKey, string> = {
   mental: 'MENTAL',
   spirit: 'SPIRIT',
   speed: 'SPEED',
-  knowledge: 'KNOW',
+  knowledge: 'KNOWLEDGE',
 };
 export const STAT_MIN = 1;
 export const STAT_MAX = 10;
@@ -26,9 +26,10 @@ export const ALLOC_POINTS = 10;
 export type Alloc = Record<StatKey, number>;
 
 const SVG = 'http://www.w3.org/2000/svg';
-const SIZE = 230; // viewBox px
+const SIZE = 300; // viewBox px
 const C = SIZE / 2;
-const R = 86; // axis length (value STAT_MAX sits here)
+const R = 108; // axis length (value displayMax sits here)
+const LABEL_GAP = 22; // distance from axis tip to the stat name
 
 export interface StatRadar {
   el: SVGSVGElement;
@@ -111,8 +112,8 @@ export function createStatRadar(
     svg.appendChild(spoke);
 
     const label = document.createElementNS(SVG, 'text');
-    const lx = C + axis[i].dx * (R + 16);
-    const ly = C + axis[i].dy * (R + 16);
+    const lx = C + axis[i].dx * (R + LABEL_GAP);
+    const ly = C + axis[i].dy * (R + LABEL_GAP);
     label.setAttribute('x', String(lx));
     label.setAttribute('y', String(ly));
     label.setAttribute('class', 'eb-radar-label');
@@ -126,7 +127,7 @@ export function createStatRadar(
 
     const val = document.createElementNS(SVG, 'text');
     val.setAttribute('x', String(lx));
-    val.setAttribute('y', String(ly + 11));
+    val.setAttribute('y', String(ly + 17));
     val.setAttribute('class', 'eb-radar-val');
     val.setAttribute('text-anchor', label.getAttribute('text-anchor')!);
     val.setAttribute('dominant-baseline', 'middle');
@@ -142,7 +143,7 @@ export function createStatRadar(
   const dots: SVGCircleElement[] = [];
   for (let i = 0; i < STAT_KEYS.length; i++) {
     const dot = document.createElementNS(SVG, 'circle');
-    dot.setAttribute('r', '6');
+    dot.setAttribute('r', '8');
     dot.setAttribute('class', 'eb-radar-dot');
     dot.style.cursor = 'grab';
     bindDrag(dot, i);
@@ -172,6 +173,9 @@ export function createStatRadar(
       dots[i].setAttribute('cx', String(p.x));
       dots[i].setAttribute('cy', String(p.y));
       valTexts[i].textContent = String(values[k]);
+      // Pulse any dot the player has pushed ABOVE its floor (i.e. unconfirmed
+      // spend) — a cue that those points are removable/reallocatable.
+      dots[i].classList.toggle('eb-radar-dot-spent', values[k] > floor[k]);
     });
     if (notify) onChange({ ...values }, pool());
   }
@@ -227,12 +231,30 @@ function injectRadarStyles(): void {
   stylesInjected = true;
   const css = `
   .eb-radar { display: block; max-width: 100%; height: auto; align-self: center; overflow: visible; }
-  .eb-radar-ring { fill: none; stroke: #2a2a3e; stroke-width: 1; }
-  .eb-radar-spoke { stroke: #2a2a3e; stroke-width: 1; }
-  .eb-radar-web { fill: rgba(248,232,90,0.22); stroke: #f8e85a; stroke-width: 2; }
-  .eb-radar-dot { fill: #f8e85a; stroke: #fff; stroke-width: 1.5; }
-  .eb-radar-label { fill: #9fb0d0; font: bold 9px 'Courier New', monospace; }
-  .eb-radar-val { fill: #fff; font: bold 10px 'Courier New', monospace; }
+  .eb-radar-ring { fill: none; stroke: #2a2a3e; stroke-width: 1.2; }
+  .eb-radar-spoke { stroke: #2a2a3e; stroke-width: 1.2; }
+  .eb-radar-web { fill: rgba(248,232,90,0.22); stroke: #f8e85a; stroke-width: 2.5; }
+  .eb-radar-dot { fill: #f8e85a; stroke: #fff; stroke-width: 2; }
+  /* Unconfirmed spend: pulse the dot (grow + warm glow) so the player sees which
+     points they just added and can drag back to reallocate before confirming. */
+  .eb-radar-dot-spent {
+    fill: #ffd23f; transform-box: fill-box; transform-origin: center;
+    animation: eb-radar-dot-pulse 0.85s ease-in-out infinite;
+  }
+  @keyframes eb-radar-dot-pulse {
+    0%, 100% { transform: scale(1);   filter: drop-shadow(0 0 1px #ffae3a); }
+    50%      { transform: scale(1.55); filter: drop-shadow(0 0 4px #ffae3a); }
+  }
+  /* Bigger, brighter labels with a hard dark halo (paint-order: stroke) so they
+     stay legible over the web/rings — EarthBound's chunky-outlined readout look. */
+  .eb-radar-label {
+    fill: #e6edff; font: bold 15px 'Courier New', monospace; letter-spacing: 0.5px;
+    paint-order: stroke; stroke: #0a0a12; stroke-width: 3.5px; stroke-linejoin: round;
+  }
+  .eb-radar-val {
+    fill: #fff; font: bold 14px 'Courier New', monospace;
+    paint-order: stroke; stroke: #0a0a12; stroke-width: 3.5px; stroke-linejoin: round;
+  }
   `;
   const style = document.createElement('style');
   style.id = 'eb-radar-styles';

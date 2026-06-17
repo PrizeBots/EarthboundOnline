@@ -1,4 +1,4 @@
 {
-  "17": { "crit": 8, "dodge": 0 },
+  "17": { "crit": 8, "dodge": 0, "attackSpeed": 1.15 },
   "64": { "crit": 0, "dodge": 6 }
 }

@@ -19,11 +19,19 @@ import {
   canvasToItemPixels,
   itemSpriteIds,
   loadCustomItems,
-  customItemIds,
   addCustomItem,
   customItemsDoc,
 } from '../Items';
-import { allItems, itemEquip } from '../Shop';
+import { allItems, loadShops } from '../Shop';
+import {
+  itemRootCategories,
+  itemsInFolder,
+  folderOfItem,
+  assignItemsTo,
+  saveItemFolders,
+  loadItemFolders,
+  itemFoldersLoaded,
+} from '../ItemFolders';
 import { createSpritePicker } from '../SpritePicker';
 import {
   ItemDocEntry,
@@ -44,25 +52,20 @@ export function itemListIds(): string[] {
   return ids.length ? ids : [...HELD_ITEM_IDS];
 }
 
-// Weapons/Items come from the shops catalog (a weapon is gear whose equip slot
-// is 'weapon'); Custom holds the legacy seed items (bat/pan/yoyo) plus anything
-// the admin makes with "+ New custom item".
+// Tabs ARE the Item Manager's category folders (ItemFolders). idsForTab returns
+// the items filed in that category; the tab id is the folder id.
 export function idsForTab(tab: ItemTab): string[] {
-  if (tab === 'custom') {
-    const seen = new Set<string>();
-    return [...HELD_ITEM_IDS, ...customItemIds()].filter((id) =>
-      seen.has(id) ? false : seen.add(id)
-    );
-  }
-  const isWeapon = (id: string) => itemEquip(id)?.slot === 'weapon';
-  return allItems()
-    .filter((i) => (tab === 'weapons' ? isWeapon(i.id) : !isWeapon(i.id)))
-    .map((i) => i.id);
+  return itemsInFolder(tab);
 }
-/** The tab a given item id belongs to (custom seeds + minted items win). */
+
+/** Every category id, in desktop order (the Sprite Editor's tab list). */
+export function itemTabIds(): { id: string; name: string }[] {
+  return itemRootCategories().map((f) => ({ id: f.id, name: f.name }));
+}
+
+/** The category an item belongs to (its folder), falling back to the first tab. */
 export function tabForItem(id: string): ItemTab {
-  if (HELD_ITEM_IDS.includes(id) || customItemIds().includes(id)) return 'custom';
-  return itemEquip(id)?.slot === 'weapon' ? 'weapons' : 'items';
+  return folderOfItem(id) ?? itemRootCategories()[0]?.id ?? 'custom';
 }
 
 // ---------------------------------------------------------------------------
@@ -114,10 +117,16 @@ function seedFrameBuffers(id: string): void {
 }
 
 /** Load the shared per-item art (overrides/item_sprites.json) so the editor and
- * the live game both start from the same authored gear. */
+ * the live game both start from the same authored gear, plus the category
+ * folders that drive the item-mode tabs (only loaded once; the Item Manager may
+ * have already loaded them). */
 export async function loadSavedItems(): Promise<void> {
   await loadItemSprites();
   await loadCustomItems();
+  if (!itemFoldersLoaded()) {
+    await loadShops(); // category sort needs the catalog (names/equip slots)
+    await loadItemFolders();
+  }
 }
 
 /** Load an item's current art into all 3 frame buffers. */
@@ -241,6 +250,9 @@ export function createCustomItem(): void {
   if (name === null) return; // cancelled
   const id = addCustomItem(name.trim() || 'Custom item');
   persistCustomItems(); // register it now so the id isn't orphaned
+  // File it under the Custom category so it shows in the desktop + this tab.
+  assignItemsTo([id], 'custom');
+  void saveItemFolders().catch(() => {});
   S.itemTab = 'custom';
   loadItemIntoBuffer(id); // blank buffer (no art yet) + sets itemEditId
   rebuildItemPicker();

@@ -33,10 +33,13 @@ function loadShops(assetsDir) {
   const items = data.items || {};
   const stores = data.stores || {};
 
-  // Crit/dodge per equippable item live in OUR own override file (shops.json is
-  // ROM-derived and can't grow), keyed by item id: { "17": { crit: 5, dodge: 0 } }
-  // (percent points). Merged onto each good's equip block below. Absent file =
-  // all gear is crit/dodge-neutral. See gameHost recomputeEquipStats.
+  // Crit/dodge/attack-speed per equippable item live in OUR own override file
+  // (shops.json is ROM-derived and can't grow), keyed by item id:
+  // { "17": { crit: 5, dodge: 0, attackSpeed: 1.15 } }. crit/dodge are percent
+  // points; attackSpeed is a swing-rate multiplier (1 = baseline, >1 = faster,
+  // <1 = slower — weapons trade firerate vs damage). Merged onto each good's
+  // equip block below. Absent file = all gear is neutral. See gameHost
+  // recomputeEquipStats.
   let equipStats = {};
   try {
     const p = path.resolve(assetsDir, '..', 'overrides', 'equip_stats.json');
@@ -56,7 +59,10 @@ function loadShops(assetsDir) {
     let equip = it.equip || null;
     if (equip) {
       const ov = equipStats[id] || {};
-      equip = { ...equip, crit: ov.crit | 0, dodge: ov.dodge | 0 };
+      // attackSpeed defaults to 1 (baseline) when unauthored; a non-positive
+      // value would divide-by-zero the cooldown, so clamp to a small positive.
+      const aspd = typeof ov.attackSpeed === 'number' && ov.attackSpeed > 0 ? ov.attackSpeed : 1;
+      equip = { ...equip, crit: ov.crit | 0, dodge: ov.dodge | 0, attackSpeed: aspd };
     }
     goods[id] = {
       name: it.name,

@@ -23,6 +23,11 @@ const LAUNCH_VX = 30; // px/s max random horizontal drift (±)
 const FLOAT_RISE = 22; // px/s straight-up drift for XP / level-up text
 const SPAWN_RISE = 18; // px above the feet the number pops from
 const SPAWN_JITTER = 5; // px random x offset so stacked hits don't overlap
+const BURST_RISE = 26; // px/s upward drift for the SMAAAASH! burst
+const BURST_SCALE_FROM = 0.7; // burst starts small...
+const BURST_SCALE_TO = 2.0; // ...and climaxes large right as it fades out
+const BURST_HOLD = 0.55; // fraction of life fully opaque before the climax fade
+const LEVELUP_SCALE = 1.5; // LEVEL UP! renders bigger than other popups
 
 const DAMAGE_COLOR = '#ffffff';
 const HEAL_COLOR = '#5cff5c';
@@ -34,15 +39,22 @@ const SHADOW_COLOR = '#000000';
 
 const MAX_POPUPS = 64; // hard cap; oldest dropped past this
 
+// arc   = ballistic launch + gravity + late fade (damage/heal/miss)
+// float = drift straight up, centered, fade over life (XP / loot / level-up)
+// burst = drift up while scaling up, fades away at its scale climax (SMAAAASH!)
+type PopupStyle = 'arc' | 'float' | 'burst';
+
 interface Popup {
   text: string;
   x0: number; // world origin x (number is centered here)
   y0: number; // world origin y
-  vx: number; // px/s horizontal (0 for float style)
+  vx: number; // px/s horizontal (0 for float/burst style)
   color: string;
   born: number; // performance.now() at spawn
-  float: boolean; // true = rise straight up + fade; false = ballistic arc
+  style: PopupStyle;
   life: number; // ms this popup lives
+  scale: number; // base render scale (burst grows from this)
+  top: boolean; // draw above every other popup (level-up)
 }
 
 const popups: Popup[] = [];
@@ -68,17 +80,25 @@ export function spawnHealNumber(x: number, y: number, amount: number): void {
 
 /** Pop a cyan "+N XP" that floats straight up off the player and fades. */
 export function spawnXpNumber(x: number, y: number, amount: number): void {
-  spawn(`+${Math.round(amount)} XP`, x, y, XP_COLOR, { float: true, life: 1000 });
+  spawn(`+${Math.round(amount)} XP`, x, y, XP_COLOR, { style: 'float', life: 1000 });
 }
 
-/** Pop a gold "LEVEL UP!" that floats up off the player — higher + longer than XP. */
+/** Pop a gold "LEVEL UP!" — centered, bigger, lives the LONGEST, and always
+ *  renders on top of every other popup. */
 export function spawnLevelUp(x: number, y: number): void {
-  spawn('LEVEL UP!', x, y, LEVELUP_COLOR, { float: true, riseExtra: 14, life: 1400 });
+  spawn('LEVEL UP!', x, y, LEVELUP_COLOR, {
+    style: 'float',
+    riseExtra: 18,
+    life: 2200,
+    scale: LEVELUP_SCALE,
+    top: true,
+  });
 }
 
-/** Pop a red "SMAAAASH!" off a crit — floats straight up and fades (no arc). */
+/** Pop a red "SMAAAASH!" off a crit — centered, rises while scaling up, then
+ *  fades away at its climax (no arc). */
 export function spawnCritText(x: number, y: number): void {
-  spawn('SMAAAASH!', x, y, CRIT_COLOR, { float: true, riseExtra: 8, life: 1050 });
+  spawn('SMAAAASH!', x, y, CRIT_COLOR, { style: 'burst', riseExtra: 6, life: 1100 });
 }
 
 /** Pop a dim "MISS" off a whiffed/dodged swing. */
@@ -88,33 +108,38 @@ export function spawnMissText(x: number, y: number): void {
 
 /** Pop a gold loot toast (e.g. "Found Cookie!", "Got $40") off the player. */
 export function spawnLootText(x: number, y: number, label: string): void {
-  spawn(label, x, y, LEVELUP_COLOR, { float: true, riseExtra: 10, life: 1300 });
+  spawn(label, x, y, LEVELUP_COLOR, { style: 'float', riseExtra: 10, life: 1300 });
 }
 
 /** Pop a red notice (e.g. "Your bag is full!") off the player. */
 export function spawnNoticeText(x: number, y: number, label: string): void {
-  spawn(label, x, y, CRIT_COLOR, { float: true, riseExtra: 10, life: 1300 });
+  spawn(label, x, y, CRIT_COLOR, { style: 'float', riseExtra: 10, life: 1300 });
 }
 
 interface SpawnOpts {
   riseExtra?: number; // px to start above the default pop height
-  float?: boolean; // straight rise + fade instead of the ballistic arc
+  style?: PopupStyle; // arc (default) | float | burst
   life?: number; // ms lifetime
+  scale?: number; // base render scale
+  top?: boolean; // draw above all other popups
 }
 
 function spawn(text: string, x: number, y: number, color: string, opts: SpawnOpts = {}): void {
-  const { riseExtra = 0, float = false, life = LIFETIME } = opts;
+  const { riseExtra = 0, style = 'arc', life = LIFETIME, scale = 1, top = false } = opts;
+  const isArc = style === 'arc';
   popups.push({
     text,
-    // Float style centers straight above the entity (no jitter / drift) so the
-    // text reads cleanly; arc style scatters so stacked hits don't overlap.
-    x0: x + (float ? 0 : (Math.random() * 2 - 1) * SPAWN_JITTER),
+    // Float/burst center straight above the entity (no jitter / drift) so the
+    // text reads cleanly; arc scatters so stacked hits don't overlap.
+    x0: x + (isArc ? (Math.random() * 2 - 1) * SPAWN_JITTER : 0),
     y0: y - SPAWN_RISE - riseExtra,
-    vx: float ? 0 : (Math.random() * 2 - 1) * LAUNCH_VX,
+    vx: isArc ? (Math.random() * 2 - 1) * LAUNCH_VX : 0,
     color,
     born: now(),
-    float,
+    style,
     life,
+    scale,
+    top,
   });
   if (popups.length > MAX_POPUPS) popups.shift();
 }
@@ -127,6 +152,11 @@ export function updateEmitters(): void {
   }
 }
 
+/** Quadratic ease-out (fast then settling) for the burst's rise + scale. */
+function easeOut(t: number): number {
+  return 1 - (1 - t) * (1 - t);
+}
+
 /** Draw all live popups in world space. Call inside the camera/zoom transform. */
 export function renderEmitters(
   ctx: CanvasRenderingContext2D,
@@ -135,52 +165,67 @@ export function renderEmitters(
   if (popups.length === 0) return;
   const t = now();
 
-  for (const p of popups) {
-    const age = t - p.born;
-    const ts = age / 1000; // seconds
+  // Two passes so `top` popups (level-up) always render above everything else,
+  // regardless of spawn order.
+  for (const pass of [false, true]) {
+    for (const p of popups) {
+      if (p.top !== pass) continue;
+      const age = t - p.born;
+      const ts = age / 1000; // seconds
+      const prog = Math.min(1, age / p.life); // 0..1 over the lifetime
 
-    let worldX: number;
-    let worldY: number;
-    let alpha: number;
-    if (p.float) {
-      // XP / level-up: drift straight up and fade continuously over the lifetime.
-      worldX = p.x0;
-      worldY = p.y0 - FLOAT_RISE * ts;
-      alpha = Math.max(0, 1 - age / p.life);
-    } else {
-      // Ballistic arc: launch up, gravity pulls back down (y grows downward).
-      const yOff = -LAUNCH_VY * ts + 0.5 * GRAVITY * ts * ts;
-      worldX = p.x0 + p.vx * ts;
-      worldY = p.y0 + yOff;
-      alpha = age > p.life - FADE ? Math.max(0, 1 - (age - (p.life - FADE)) / FADE) : 1;
+      let worldX = p.x0;
+      let worldY: number;
+      let alpha: number;
+      let scale = p.scale;
+      if (p.style === 'burst') {
+        // SMAAAASH!: drift up, scale from small to large, and fade out exactly as
+        // it reaches its climax (held opaque, then a quick fade over the tail).
+        worldY = p.y0 - BURST_RISE * ts;
+        const e = easeOut(prog);
+        scale = p.scale * (BURST_SCALE_FROM + (BURST_SCALE_TO - BURST_SCALE_FROM) * e);
+        alpha = prog < BURST_HOLD ? 1 : Math.max(0, 1 - (prog - BURST_HOLD) / (1 - BURST_HOLD));
+      } else if (p.style === 'float') {
+        // XP / loot / level-up: drift straight up and fade over the lifetime.
+        worldY = p.y0 - FLOAT_RISE * ts;
+        alpha = Math.max(0, 1 - prog);
+      } else {
+        // Ballistic arc: launch up, gravity pulls back down (y grows downward).
+        const yOff = -LAUNCH_VY * ts + 0.5 * GRAVITY * ts * ts;
+        worldX = p.x0 + p.vx * ts;
+        worldY = p.y0 + yOff;
+        alpha = age > p.life - FADE ? Math.max(0, 1 - (age - (p.life - FADE)) / FADE) : 1;
+      }
+      if (alpha <= 0) continue;
+
+      // (worldX, worldY) is the popup CENTER; blitTinted scales around it.
+      const cx = worldX - camera.x;
+      const cy = worldY - camera.y;
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.imageSmoothingEnabled = false;
+      blitTinted(ctx, p.text, cx + scale, cy + scale, SHADOW_COLOR, scale); // drop shadow
+      blitTinted(ctx, p.text, cx, cy, p.color, scale); // colored fill
+      ctx.restore();
     }
-    if (alpha <= 0) continue;
-
-    const w = measureText(p.text, FONT);
-    const sx = Math.round(worldX - camera.x - w / 2);
-    const sy = Math.round(worldY - camera.y);
-
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.imageSmoothingEnabled = false;
-    blitTinted(ctx, p.text, sx + 1, sy + 1, SHADOW_COLOR); // drop shadow
-    blitTinted(ctx, p.text, sx, sy, p.color); // colored fill
-    ctx.restore();
   }
 }
 
 /**
- * Draw `text` at (x, y) recolored to `color`. The font sheet pixels carry their
- * own color, so we render glyphs onto an isolated offscreen canvas, flood it
- * with the tint using source-atop (which only touches existing glyph pixels),
- * then blit the result — keeping the tint off the rest of the world.
+ * Draw `text` centered on (centerX, centerY), recolored to `color` and scaled by
+ * `scale`. The font sheet pixels carry their own color, so we render glyphs onto
+ * an isolated offscreen canvas, flood it with the tint using source-atop (which
+ * only touches existing glyph pixels), then blit the result scaled — keeping the
+ * tint off the rest of the world and the pixels crisp (no smoothing).
  */
 function blitTinted(
   ctx: CanvasRenderingContext2D,
   text: string,
-  x: number,
-  y: number,
-  color: string
+  centerX: number,
+  centerY: number,
+  color: string,
+  scale = 1
 ): void {
   const w = Math.max(1, measureText(text, FONT) + 2);
   const h = getLineHeight(FONT) + 2;
@@ -193,5 +238,7 @@ function blitTinted(
   tctx.fillStyle = color;
   tctx.fillRect(0, 0, w, h);
   tctx.globalCompositeOperation = 'source-over';
-  ctx.drawImage(tintCanvas, x, y);
+  const dw = w * scale;
+  const dh = h * scale;
+  ctx.drawImage(tintCanvas, Math.round(centerX - dw / 2), Math.round(centerY - dh / 2), dw, dh);
 }

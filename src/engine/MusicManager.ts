@@ -404,6 +404,25 @@ export function stopAllSounds(): void {
   stopAllSfx();
 }
 
+/**
+ * Mute/unmute the WHOLE game — music AND sfx in lockstep. This is what the
+ * top-right mute button drives (the editor keeps the two separate so it can
+ * audition sfx while music is force-muted). Muting also cuts any one-shot sfx
+ * already in flight so nothing keeps ringing after the toggle.
+ */
+export function setAllMuted(m: boolean): void {
+  setMusicMuted(m);
+  setSfxMuted(m);
+  if (m) stopAllSfx();
+}
+
+/** Flip the whole-game mute and return the new value (for the mute button). */
+export function toggleAllMuted(): boolean {
+  const next = !isMusicMuted();
+  setAllMuted(next);
+  return next;
+}
+
 // Listener (player) position for positional SFX, refreshed every frame by
 // updateMusic. World-pixel space, same as entity coords.
 let listenerX = 0;

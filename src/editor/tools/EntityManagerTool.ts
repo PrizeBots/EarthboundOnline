@@ -35,6 +35,26 @@ interface EnemyFile {
   spawners?: unknown[];
 }
 
+// --- desktop / folder organization -----------------------------------------------------
+// The gallery is a file-explorer-style "desktop": entities are icons that live
+// in folders. A folder is just a named container with an optional parent (so
+// folders can nest). `assign` maps a sprite id -> the folder it lives in; an
+// absent entry means it sits on the Desktop (root). All of this is OUR authored
+// metadata (no ROM pixels), saved to overrides/entity_folders.json.
+interface EntityFolder {
+  id: string;
+  name: string;
+  parent: string | null; // null = on the Desktop
+}
+interface FoldersFile {
+  version?: number;
+  folders?: EntityFolder[];
+  assign?: Record<string, string>; // spriteId -> folderId
+}
+// What the drag is carrying: the current entity selection, or a single folder
+// being re-parented. Set on dragstart, consumed on drop.
+type DragPayload = { type: 'entities' } | { type: 'folder'; id: string };
+
 // UI field descriptors. `scale` shows/edits a ms value in seconds; `float`
 // keeps fractional precision (speed); the rest are clamped positive integers.
 // Numeric stat fields only (col is edited separately, in the collision section).
@@ -103,6 +123,27 @@ class EntityManagerTool implements EditorTool {
   private browserGrid: HTMLDivElement | null = null;
   private browserCells = new Map<number, HTMLDivElement>();
 
+  // --- desktop / folder state ---
+  private folders: EntityFolder[] = [];
+  private assign: Record<string, string> = {}; // spriteId -> folderId (absent = Desktop)
+  private cwd: string | null = null; // currently open folder (null = Desktop)
+  private selection = new Set<number>(); // multi-selected entity ids (for org)
+  private selFolder: string | null = null; // currently picked folder tile (rename/delete)
+  private search = '';
+  private enemyIds = new Set<number>(); // ROM enemy catalog (auto-categorize)
+  private bossIds = new Set<number>();
+  private folderTiles = new Map<string, HTMLDivElement>();
+  private toolbarEl: HTMLDivElement | null = null;
+  private breadcrumbEl: HTMLDivElement | null = null;
+  private countEl: HTMLDivElement | null = null;
+  private dragPayload: DragPayload | null = null;
+  // Marquee (rubber-band) selection.
+  private marquee: HTMLDivElement | null = null;
+  private marqueeStart = { x: 0, y: 0 };
+  private marqueeBase = new Set<number>(); // selection before the drag (ctrl = additive)
+  private onMarqueeMoveBound = (e: MouseEvent) => this.onMarqueeMove(e);
+  private onMarqueeUpBound = () => this.onMarqueeUp();
+
   // --- collision box state ---
   // Precomputed exact per-direction boxes (sprites/colboxes.json); shown as the
   // default for vehicles. A manual override (entities[sprite].col) wins.
@@ -120,6 +161,7 @@ class EntityManagerTool implements EditorTool {
   activate(shell: EditorShellApi): void {
     this.shell = shell;
     registerSaveHandler('entities', () => this.save());
+    registerSaveHandler('entity-folders', () => this.saveFolders());
     this.buildPanel();
     void this.loadAndRefresh();
   }
@@ -127,6 +169,8 @@ class EntityManagerTool implements EditorTool {
   deactivate(): void {
     window.removeEventListener('mousemove', this.onColMoveBound);
     window.removeEventListener('mouseup', this.onColUpBound);
+    window.removeEventListener('mousemove', this.onMarqueeMoveBound);
+    window.removeEventListener('mouseup', this.onMarqueeUpBound);
     this.colDrag = null;
     this.closeBrowser();
     this.panel?.remove();
@@ -147,9 +191,12 @@ class EntityManagerTool implements EditorTool {
     if (this.pending == null) return;
     this.sprite = this.pending;
     this.pending = null;
+    this.selection = new Set([this.sprite]);
+    this.cwd = this.folderOf(this.sprite); // open into the handed-off entity's folder
     this.picker?.setValue(String(this.sprite));
     this.rebuildForm();
-    this.highlightBrowser();
+    if (this.browser) this.revealSprite(this.sprite);
+    else this.highlightBrowser();
   }
 
   private async loadAndRefresh(): Promise<void> {
@@ -171,6 +218,29 @@ class EntityManagerTool implements EditorTool {
     this.colBoxes = await loadJSON<Record<string, Record<string, EntityCol>>>(
       '/assets/sprites/colboxes.json'
     ).catch(() => ({}));
+
+    // ROM enemy catalog — drives auto-categorization (which sprites are enemies/bosses).
+    const cat = await loadJSON<{ bySprite?: Record<string, { boss?: boolean }> }>(
+      '/assets/map/enemies.json'
+    ).catch(() => null);
+    this.enemyIds.clear();
+    this.bossIds.clear();
+    for (const [k, v] of Object.entries(cat?.bySprite ?? {})) {
+      const idn = Number(k);
+      this.enemyIds.add(idn);
+      if (v?.boss) this.bossIds.add(idn);
+    }
+
+    // Folder layout (our authored desktop). First run: seed the base folders and
+    // auto-sort everything; afterwards we trust the saved file (manual moves win).
+    const ff = await loadOverride<FoldersFile>('entity_folders.json').catch(() => null);
+    if (ff?.folders?.length) {
+      this.folders = ff.folders;
+      this.assign = ff.assign ?? {};
+    } else {
+      this.autoOrganize();
+    }
+
     if (!this.sprite) {
       this.sprite = cfg?.spawners?.length
         ? ((cfg.spawners[0] as { sprite?: number }).sprite ?? listSpriteGroupIds()[0] ?? 1)
@@ -221,17 +291,102 @@ class EntityManagerTool implements EditorTool {
     this.shell?.toast('Saved entity stats — live here; other clients refresh to resync');
   }
 
-  /** Select a sprite group (from the dropdown OR the center gallery); sync both. */
+  /** Select one sprite (from the dropdown, handoff, etc.): become the single
+   *  selection, drive the stat form, and reveal it in the open desktop. */
   private selectSprite(sprite: number): void {
+    this.selection = new Set([sprite]);
+    this.selFolder = null;
+    this.focusEntity(sprite);
+    if (this.browser) this.revealSprite(sprite);
+  }
+
+  /** Make `sprite` the stat-form target (no selection/navigation side effects). */
+  private focusEntity(sprite: number): void {
     this.sprite = sprite;
     void loadSpriteGroup(sprite).catch(() => {});
     this.picker?.setValue(String(sprite));
     this.rebuildForm();
     this.highlightBrowser();
+  }
+
+  /** Open the folder that holds `sprite` and scroll its icon into view. */
+  private revealSprite(sprite: number): void {
+    if (this.search) return; // flat search view already shows everything matching
+    const folder = this.folderOf(sprite);
+    if (this.cwd !== folder) {
+      this.cwd = folder;
+      this.renderGrid();
+    }
     this.browserCells.get(sprite)?.scrollIntoView({ block: 'nearest' });
   }
 
-  // --- center-panel preview gallery ----------------------------------------------------
+  // --- desktop / folder organization ---------------------------------------------------
+
+  /** The folder a sprite lives in, or null (Desktop). Orphans (folder deleted
+   *  out from under the assignment) read as Desktop too. */
+  private folderOf(id: number): string | null {
+    const a = this.assign[String(id)];
+    return a && this.folders.some((f) => f.id === a) ? a : null;
+  }
+
+  private folderName(id: string): string {
+    return this.folders.find((f) => f.id === id)?.name ?? id;
+  }
+
+  private markFoldersDirty(): void {
+    this.shell?.markDirty('entity-folders');
+  }
+
+  /** Ensure the base folders exist and file every still-unsorted entity. Manual
+   *  placements are never disturbed — only Desktop/orphan entities get sorted. */
+  private autoOrganize(): void {
+    const ensure = (id: string, name: string) => {
+      if (!this.folders.some((f) => f.id === id)) this.folders.push({ id, name, parent: null });
+    };
+    ensure('players', 'Players');
+    ensure('bosses', 'Bosses');
+    ensure('enemies', 'Enemies');
+    ensure('npcs', 'NPCs & Townsfolk');
+    ensure('vehicles', 'Vehicles');
+    ensure('objects', 'Objects');
+    ensure('custom', 'Custom');
+    for (const id of listSpriteGroupIds()) {
+      if (this.folderOf(id)) continue; // already placed somewhere real
+      const target = this.categoryFor(id);
+      if (target) this.assign[String(id)] = target;
+    }
+    this.markFoldersDirty();
+  }
+
+  // A few proper-vehicle nouns (word-boundary). Only consulted in the object id
+  // range so people like "Bus Driver"/"Trucker" (low ids) stay in NPCs.
+  private static VEHICLE_RE = /\b(car|bus|taxi|truck|cart|bike|train|cab|wagon|tank|tram)\b/i;
+
+  /** Best-guess base folder for a sprite from the ROM catalog + id ranges/names.
+   *  Heroes 1-4, then ROM enemy catalog, then id ranges (NPCs 5-189, objects
+   *  190+), pulling clear vehicles out of the objects range by name. */
+  private categoryFor(id: number): string | null {
+    if (id >= 100000) return 'custom'; // CUSTOM_GROUP_BASE — authored cast members
+    if (this.bossIds.has(id)) return 'bosses';
+    if (this.enemyIds.has(id)) return 'enemies';
+    if (id >= 1 && id <= 4) return 'players'; // Ness, Paula, Jeff, Poo
+    if (id <= 189) return 'npcs';
+    const name = getSpriteName(id) ?? '';
+    if (EntityManagerTool.VEHICLE_RE.test(name) && !/sign|stop/i.test(name)) return 'vehicles';
+    return 'objects';
+  }
+
+  private async saveFolders(): Promise<void> {
+    await saveOverride('entity_folders.json', {
+      version: 1,
+      folders: this.folders,
+      assign: this.assign,
+    });
+    this.shell?.clearDirty('entity-folders');
+    this.shell?.toast('Saved entity folders');
+  }
+
+  // --- center-panel desktop ------------------------------------------------------------
 
   private toggleBrowser(): void {
     if (this.browser) this.closeBrowser();
@@ -239,13 +394,22 @@ class EntityManagerTool implements EditorTool {
   }
 
   private closeBrowser(): void {
+    window.removeEventListener('mousemove', this.onMarqueeMoveBound);
+    window.removeEventListener('mouseup', this.onMarqueeUpBound);
+    this.marquee?.remove();
+    this.marquee = null;
     this.browser?.remove();
     this.browser = null;
     this.browserGrid = null;
+    this.toolbarEl = null;
+    this.breadcrumbEl = null;
+    this.countEl = null;
+    this.dragPayload = null;
     this.browserCells.clear();
+    this.folderTiles.clear();
   }
 
-  /** Build (or rebuild) the large entity gallery over the editor's center area. */
+  /** Build the desktop shell (chrome + toolbar + grid); contents via renderGrid. */
   private openBrowser(): void {
     if (this.browser) return;
     const el = document.createElement('div');
@@ -255,24 +419,28 @@ class EntityManagerTool implements EditorTool {
       'position:fixed;top:41px;left:258px;right:266px;bottom:10px;z-index:88;display:flex;' +
       'flex-direction:column;background:#0d1014f5;color:#cde;font:12px monospace;' +
       'border:1px solid #b06de8;border-radius:6px;box-shadow:0 8px 28px rgba(0,0,0,.6);overflow:hidden;';
-    // Keep clicks/keys/scroll inside the gallery (don't pan/zoom the world).
+    // Keep clicks/keys/scroll inside the desktop (don't pan/zoom the world).
     el.addEventListener('mousedown', (e) => e.stopPropagation());
     el.addEventListener('keydown', (e) => e.stopPropagation());
     el.addEventListener('keyup', (e) => e.stopPropagation());
     el.addEventListener('wheel', (e) => e.stopPropagation());
 
+    // Title bar: name + global search + close.
     const head = document.createElement('div');
     head.style.cssText =
       'display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #2a2438;';
     const title = document.createElement('div');
-    title.textContent = 'ENTITY PREVIEW';
+    title.textContent = 'ENTITY DESKTOP';
     title.style.cssText = 'color:#b06de8;font-weight:bold;letter-spacing:1px;';
     head.appendChild(title);
     const search = document.createElement('input');
-    search.placeholder = 'search id or name…';
+    search.placeholder = 'search all id or name…';
     search.style.cssText =
       'flex:1;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:3px 6px;';
-    search.oninput = () => this.filterBrowser(search.value.trim().toLowerCase());
+    search.oninput = () => {
+      this.search = search.value.trim().toLowerCase();
+      this.renderGrid();
+    };
     head.appendChild(search);
     const close = document.createElement('button');
     close.textContent = '✕';
@@ -282,16 +450,38 @@ class EntityManagerTool implements EditorTool {
     head.appendChild(close);
     el.appendChild(head);
 
+    // Toolbar: folder actions + breadcrumb + selection count.
+    this.toolbarEl = document.createElement('div');
+    this.toolbarEl.style.cssText =
+      'display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid #2a2438;flex-wrap:wrap;';
+    this.mkBtn('+ New Folder', () => this.newFolder(), this.toolbarEl);
+    this.mkBtn('✎ Rename', () => this.renameFolder(), this.toolbarEl);
+    this.mkBtn('🗑 Delete', () => this.deleteFolder(), this.toolbarEl);
+    this.mkBtn(
+      '⚙ Auto-organize',
+      () => {
+        this.autoOrganize();
+        this.renderGrid();
+        this.shell?.toast('Filed all unsorted entities into the base folders');
+      },
+      this.toolbarEl
+    );
+    this.breadcrumbEl = document.createElement('div');
+    this.breadcrumbEl.style.cssText =
+      'display:flex;align-items:center;gap:3px;flex:1;flex-wrap:wrap;color:#9fb8cc;';
+    this.toolbarEl.appendChild(this.breadcrumbEl);
+    this.countEl = document.createElement('div');
+    this.countEl.style.cssText = 'color:#4ea3ff;white-space:nowrap;';
+    this.toolbarEl.appendChild(this.countEl);
+    el.appendChild(this.toolbarEl);
+
+    // The icon grid (folders + entities for the current location).
     this.browserGrid = document.createElement('div');
-    // Vertical scroll only: overflow-x hidden + box-sizing so the scrollbar's
-    // width can't push the last column off the right edge (the cut-off bug).
-    // Flex-wrap of fixed-size cards (simple + predictable): each card is a fixed
-    // box that wraps to the next row, scrolling vertically. No grid-track maths.
+    // Vertical scroll only; flex-wrap of fixed-size cards (predictable layout).
     this.browserGrid.style.cssText =
       'flex:1 1 auto;min-height:0;height:0;overflow-y:auto;overflow-x:hidden;box-sizing:border-box;' +
       'padding:10px;display:flex;flex-wrap:wrap;gap:10px;align-content:flex-start;';
-    // Scroll the gallery explicitly on wheel (and never let it reach the editor's
-    // zoom handler), so it always scrolls regardless of event routing.
+    // Wheel scrolls the grid explicitly (never reaching the editor's zoom handler).
     this.browserGrid.addEventListener(
       'wheel',
       (e) => {
@@ -301,60 +491,357 @@ class EntityManagerTool implements EditorTool {
       },
       { passive: false }
     );
-    this.browserCells.clear();
-    for (const id of listSpriteGroupIds()) {
-      const cell = document.createElement('div');
-      cell.dataset.sprite = String(id);
-      cell.style.cssText =
-        'display:flex;flex-direction:column;align-items:center;gap:5px;padding:6px;' +
-        'box-sizing:border-box;width:108px;flex:none;' +
-        'border:1px solid #2a2438;border-radius:5px;cursor:pointer;background:#12131c;';
-      cell.onmouseenter = () => {
-        if (id !== this.sprite) cell.style.background = '#1a1b28';
-      };
-      cell.onmouseleave = () => {
-        if (id !== this.sprite) cell.style.background = '#12131c';
-      };
-      const c = document.createElement('canvas');
-      c.width = 96;
-      c.height = 96;
-      // Big fixed square preview (94px display) — the card's main content.
-      c.style.cssText =
-        'width:94px;height:94px;flex:none;image-rendering:pixelated;background:#0c1014;border-radius:4px;';
-      drawSpriteGroupThumb(c, String(id));
-      const lbl = document.createElement('div');
-      lbl.textContent = `${id} ${getSpriteName(id) ?? ''}`.trim();
-      lbl.style.cssText =
-        'font-size:9px;color:#9fb8cc;text-align:center;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-      cell.append(c, lbl);
-      cell.onclick = () => this.selectSprite(id);
-      this.browserGrid.appendChild(cell);
-      this.browserCells.set(id, cell);
-    }
+    // Empty-space mousedown starts a marquee; dropping on empty space files the
+    // dragged selection into the folder we're currently viewing.
+    this.browserGrid.addEventListener('mousedown', (e) => this.onGridMouseDown(e));
+    this.browserGrid.addEventListener('dragover', (e) => e.preventDefault());
+    this.browserGrid.addEventListener('drop', (e) => {
+      e.preventDefault();
+      this.handleDropOn(this.cwd);
+    });
     el.appendChild(this.browserGrid);
 
     document.body.appendChild(el);
     this.browser = el;
-    this.highlightBrowser();
+    this.renderGrid();
     this.browserCells.get(this.sprite)?.scrollIntoView({ block: 'nearest' });
   }
 
-  private filterBrowser(q: string): void {
-    for (const [id, cell] of this.browserCells) {
-      const name = (getSpriteName(id) ?? '').toLowerCase();
-      cell.style.display = !q || name.includes(q) || String(id).includes(q) ? 'flex' : 'none';
+  /** Repaint the grid for the current folder (or flat search results). */
+  private renderGrid(): void {
+    if (!this.browserGrid) return;
+    this.browserGrid.innerHTML = '';
+    this.browserCells.clear();
+    this.folderTiles.clear();
+    if (this.search) {
+      // Flat global search: every matching entity, folders ignored.
+      for (const id of listSpriteGroupIds()) {
+        const name = (getSpriteName(id) ?? '').toLowerCase();
+        if (name.includes(this.search) || String(id).includes(this.search))
+          this.browserGrid.appendChild(this.makeEntityCell(id));
+      }
+    } else {
+      // Folders that live here, then the entities filed here.
+      for (const f of this.folders.filter((f) => f.parent === this.cwd))
+        this.browserGrid.appendChild(this.makeFolderTile(f));
+      for (const id of listSpriteGroupIds())
+        if (this.folderOf(id) === this.cwd) this.browserGrid.appendChild(this.makeEntityCell(id));
     }
+    this.highlightBrowser();
+    this.updateToolbar();
+  }
+
+  /** Build one entity icon (draggable, selectable, click = focus stats). */
+  private makeEntityCell(id: number): HTMLDivElement {
+    const cell = document.createElement('div');
+    cell.dataset.sprite = String(id);
+    cell.draggable = true;
+    cell.style.cssText =
+      'display:flex;flex-direction:column;align-items:center;gap:5px;padding:6px;' +
+      'box-sizing:border-box;width:108px;flex:none;' +
+      'border:1px solid #2a2438;border-radius:5px;cursor:pointer;background:#12131c;';
+    cell.onmouseenter = () => {
+      if (id !== this.sprite && !this.selection.has(id)) cell.style.background = '#1a1b28';
+    };
+    cell.onmouseleave = () => {
+      if (id !== this.sprite && !this.selection.has(id)) cell.style.background = '#12131c';
+    };
+    const c = document.createElement('canvas');
+    c.width = 96;
+    c.height = 96;
+    // Inner art/label ignore pointer events so the whole card is the drag/click target.
+    c.style.cssText =
+      'width:94px;height:94px;flex:none;image-rendering:pixelated;background:#0c1014;border-radius:4px;pointer-events:none;';
+    drawSpriteGroupThumb(c, String(id));
+    const lbl = document.createElement('div');
+    lbl.textContent = `${id} ${getSpriteName(id) ?? ''}`.trim();
+    lbl.style.cssText =
+      'font-size:9px;color:#9fb8cc;text-align:center;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;pointer-events:none;';
+    cell.append(c, lbl);
+    cell.onclick = (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        if (this.selection.has(id)) this.selection.delete(id);
+        else this.selection.add(id);
+      } else {
+        this.selection = new Set([id]);
+      }
+      this.selFolder = null;
+      this.focusEntity(id); // show this one's stats in the right panel
+      this.updateToolbar();
+    };
+    cell.ondragstart = (e) => {
+      // Dragging an unselected icon first makes it the (sole) selection.
+      if (!this.selection.has(id)) {
+        this.selection = new Set([id]);
+        this.focusEntity(id);
+      }
+      this.dragPayload = { type: 'entities' };
+      e.dataTransfer?.setData('text/plain', 'entities');
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+    };
+    this.browserCells.set(id, cell);
+    return cell;
+  }
+
+  /** Build one folder icon (open on dbl-click, drop target, re-parent on drag). */
+  private makeFolderTile(f: EntityFolder): HTMLDivElement {
+    const tile = document.createElement('div');
+    tile.dataset.folder = f.id;
+    tile.draggable = true;
+    const baseBorder = () => (this.selFolder === f.id ? '#e8c14e' : '#3a3324');
+    tile.style.cssText =
+      'display:flex;flex-direction:column;align-items:center;gap:5px;padding:6px;' +
+      'box-sizing:border-box;width:108px;flex:none;border:1px solid ' +
+      baseBorder() +
+      ';border-radius:5px;cursor:pointer;background:' +
+      (this.selFolder === f.id ? '#2a2410' : '#1a1710') +
+      ';';
+    const icon = document.createElement('div');
+    icon.textContent = '📁';
+    icon.style.cssText =
+      'width:94px;height:94px;display:flex;align-items:center;justify-content:center;' +
+      'font-size:52px;line-height:1;flex:none;background:#0c1014;border-radius:4px;pointer-events:none;';
+    const nEnt = listSpriteGroupIds().filter((id) => this.folderOf(id) === f.id).length;
+    const nSub = this.folders.filter((x) => x.parent === f.id).length;
+    const lbl = document.createElement('div');
+    lbl.textContent = `${f.name} (${nEnt + nSub})`;
+    lbl.style.cssText =
+      'font-size:9px;color:#e8c14e;text-align:center;width:100%;overflow:hidden;' +
+      'text-overflow:ellipsis;white-space:nowrap;pointer-events:none;';
+    tile.append(icon, lbl);
+    tile.onclick = () => {
+      this.selFolder = this.selFolder === f.id ? null : f.id;
+      this.renderGrid();
+    };
+    tile.ondblclick = () => this.openFolder(f.id);
+    tile.ondragstart = (e) => {
+      this.dragPayload = { type: 'folder', id: f.id };
+      e.dataTransfer?.setData('text/plain', 'folder');
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+    };
+    tile.ondragover = (e) => {
+      e.preventDefault();
+      tile.style.borderColor = '#6ad08a';
+    };
+    tile.ondragleave = () => {
+      tile.style.borderColor = baseBorder();
+    };
+    tile.ondrop = (e) => {
+      e.preventDefault();
+      e.stopPropagation(); // beat the grid's "move to current folder" drop
+      this.handleDropOn(f.id);
+    };
+    this.folderTiles.set(f.id, tile);
+    return tile;
+  }
+
+  private openFolder(fid: string | null): void {
+    this.cwd = fid;
+    this.selFolder = null;
+    this.selection.clear();
+    this.renderGrid();
+  }
+
+  /** Rebuild the breadcrumb trail + selection counter. */
+  private updateToolbar(): void {
+    if (this.breadcrumbEl) {
+      this.breadcrumbEl.innerHTML = '';
+      const path: EntityFolder[] = [];
+      let cur = this.cwd;
+      while (cur) {
+        const f = this.folders.find((x) => x.id === cur);
+        if (!f) break;
+        path.unshift(f);
+        cur = f.parent;
+      }
+      const crumb = (label: string, fid: string | null) => {
+        const a = document.createElement('span');
+        a.textContent = label;
+        a.style.cssText =
+          'cursor:pointer;padding:1px 5px;border-radius:3px;' +
+          (fid === this.cwd ? 'color:#cde;background:#2a2438;' : 'color:#7a8aa0;');
+        a.onclick = () => this.openFolder(fid);
+        a.ondragover = (e) => {
+          e.preventDefault();
+          a.style.background = '#1d3a2a';
+        };
+        a.ondragleave = () => {
+          a.style.background = fid === this.cwd ? '#2a2438' : 'transparent';
+        };
+        a.ondrop = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.handleDropOn(fid);
+        };
+        this.breadcrumbEl!.appendChild(a);
+      };
+      crumb('🖥 Desktop', null);
+      for (const f of path) {
+        const sep = document.createElement('span');
+        sep.textContent = '›';
+        sep.style.color = '#445';
+        this.breadcrumbEl.appendChild(sep);
+        crumb(f.name, f.id);
+      }
+    }
+    if (this.countEl)
+      this.countEl.textContent = this.selection.size ? `${this.selection.size} selected` : '';
+  }
+
+  // --- folder mutations ----------------------------------------------------------------
+
+  private newFolder(): void {
+    const name = window.prompt('Folder name:', 'New Folder');
+    if (name == null) return;
+    const id = 'f' + Date.now().toString(36);
+    this.folders.push({ id, name: name.trim() || 'New Folder', parent: this.cwd });
+    this.markFoldersDirty();
+    this.renderGrid();
+  }
+
+  private renameFolder(): void {
+    if (!this.selFolder) {
+      this.shell?.toast('Click a folder to select it first', true);
+      return;
+    }
+    const f = this.folders.find((x) => x.id === this.selFolder);
+    if (!f) return;
+    const name = window.prompt('Rename folder:', f.name);
+    if (name == null) return;
+    f.name = name.trim() || f.name;
+    this.markFoldersDirty();
+    this.renderGrid();
+  }
+
+  private deleteFolder(): void {
+    if (!this.selFolder) {
+      this.shell?.toast('Click a folder to select it first', true);
+      return;
+    }
+    const f = this.folders.find((x) => x.id === this.selFolder);
+    if (!f) return;
+    if (!window.confirm(`Delete "${f.name}"? Its contents move up to the parent.`)) return;
+    const parent = f.parent;
+    // Re-home subfolders and entities to the deleted folder's parent.
+    for (const x of this.folders) if (x.parent === f.id) x.parent = parent;
+    for (const k of Object.keys(this.assign)) {
+      if (this.assign[k] !== f.id) continue;
+      if (parent) this.assign[k] = parent;
+      else delete this.assign[k];
+    }
+    this.folders = this.folders.filter((x) => x.id !== f.id);
+    this.selFolder = null;
+    this.markFoldersDirty();
+    this.renderGrid();
+  }
+
+  /** Resolve a drop (entities -> file them here; folder -> re-parent it here). */
+  private handleDropOn(target: string | null): void {
+    const p = this.dragPayload;
+    this.dragPayload = null;
+    if (!p) return;
+    if (p.type === 'entities') this.assignSelectionTo(target);
+    else this.setFolderParent(p.id, target);
+  }
+
+  /** Move every selected entity into `folderId` (null = Desktop). */
+  private assignSelectionTo(folderId: string | null): void {
+    if (!this.selection.size) return;
+    for (const id of this.selection) {
+      if (folderId) this.assign[String(id)] = folderId;
+      else delete this.assign[String(id)];
+    }
+    const n = this.selection.size;
+    this.markFoldersDirty();
+    this.renderGrid();
+    this.shell?.toast(
+      `Moved ${n} ${n === 1 ? 'entity' : 'entities'} → ${folderId ? this.folderName(folderId) : 'Desktop'}`
+    );
+  }
+
+  private setFolderParent(childId: string, parentId: string | null): void {
+    if (childId === parentId) return;
+    if (parentId && this.isAncestor(childId, parentId)) {
+      this.shell?.toast("Can't move a folder into its own subfolder", true);
+      return;
+    }
+    const f = this.folders.find((x) => x.id === childId);
+    if (!f) return;
+    f.parent = parentId;
+    this.markFoldersDirty();
+    this.renderGrid();
+  }
+
+  /** True if `ancestorId` is somewhere up `nodeId`'s parent chain. */
+  private isAncestor(ancestorId: string, nodeId: string): boolean {
+    let p = this.folders.find((f) => f.id === nodeId)?.parent ?? null;
+    while (p) {
+      if (p === ancestorId) return true;
+      p = this.folders.find((f) => f.id === p)?.parent ?? null;
+    }
+    return false;
+  }
+
+  // --- marquee (rubber-band) selection -------------------------------------------------
+
+  private onGridMouseDown(e: MouseEvent): void {
+    if (e.target !== this.browserGrid || e.button !== 0) return; // empty space, left btn
+    e.preventDefault();
+    this.marqueeStart = { x: e.clientX, y: e.clientY };
+    this.marqueeBase = e.ctrlKey || e.metaKey ? new Set(this.selection) : new Set();
+    this.selection = new Set(this.marqueeBase);
+    this.selFolder = null;
+    this.marquee = document.createElement('div');
+    this.marquee.style.cssText =
+      'position:fixed;border:1px solid #4ea3ff;background:#4ea3ff22;z-index:90;pointer-events:none;';
+    document.body.appendChild(this.marquee);
+    window.addEventListener('mousemove', this.onMarqueeMoveBound);
+    window.addEventListener('mouseup', this.onMarqueeUpBound);
+    this.highlightBrowser();
+    this.updateToolbar();
+  }
+
+  private onMarqueeMove(e: MouseEvent): void {
+    if (!this.marquee) return;
+    const x1 = Math.min(this.marqueeStart.x, e.clientX);
+    const y1 = Math.min(this.marqueeStart.y, e.clientY);
+    const x2 = Math.max(this.marqueeStart.x, e.clientX);
+    const y2 = Math.max(this.marqueeStart.y, e.clientY);
+    this.marquee.style.left = `${x1}px`;
+    this.marquee.style.top = `${y1}px`;
+    this.marquee.style.width = `${x2 - x1}px`;
+    this.marquee.style.height = `${y2 - y1}px`;
+    const next = new Set(this.marqueeBase);
+    for (const [id, cell] of this.browserCells) {
+      const r = cell.getBoundingClientRect();
+      const hit = !(r.right < x1 || r.left > x2 || r.bottom < y1 || r.top > y2);
+      if (hit) next.add(id);
+    }
+    this.selection = next;
+    this.highlightBrowser();
+    this.updateToolbar();
+  }
+
+  private onMarqueeUp(): void {
+    window.removeEventListener('mousemove', this.onMarqueeMoveBound);
+    window.removeEventListener('mouseup', this.onMarqueeUpBound);
+    this.marquee?.remove();
+    this.marquee = null;
+    this.highlightBrowser();
+    this.updateToolbar();
   }
 
   private highlightBrowser(): void {
     for (const [id, cell] of this.browserCells) {
-      const on = id === this.sprite;
-      cell.style.borderColor = on ? '#b06de8' : '#2a2438';
-      cell.style.background = on ? '#241a33' : '#12131c';
+      const cur = id === this.sprite;
+      const sel = this.selection.has(id);
+      cell.style.borderColor = cur ? '#b06de8' : sel ? '#4ea3ff' : '#2a2438';
+      cell.style.background = cur ? '#241a33' : sel ? '#16263a' : '#12131c';
+      cell.style.outline = sel && !cur ? '1px solid #4ea3ff' : 'none';
     }
   }
 
-  /** Re-label a gallery tile after a rename (the label is the cell's last child). */
+  /** Re-label an entity icon after a rename (the label is the cell's last child). */
   private refreshBrowserLabel(id: number): void {
     const lbl = this.browserCells.get(id)?.lastElementChild as HTMLElement | null;
     if (lbl) lbl.textContent = `${id} ${getSpriteName(id) ?? ''}`.trim();
@@ -386,8 +873,8 @@ class EntityManagerTool implements EditorTool {
     });
     this.panel.appendChild(this.picker.el);
 
-    // Toggle for the large center-panel preview gallery.
-    this.mkBtn('▦ Browse all entities (center)', () => this.toggleBrowser(), this.panel);
+    // Toggle for the large center-panel entity desktop (folders + drag-organize).
+    this.mkBtn('🖥 Open entity desktop (center)', () => this.toggleBrowser(), this.panel);
 
     // Rename the selected entity — writes the shared sprite-name override (same
     // mechanism as the Sprite/Placement editors). Save-all persists names.json.

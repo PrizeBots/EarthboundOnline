@@ -158,7 +158,7 @@ sim.start(
   () => {}, // broadcast (combat crit/miss events) — ignored here
   () => {}, // onEnemyHit
   () => {}, // onEnemyKill
-  (targetId, dmg, byId) => pvpHits.push({ targetId, dmg, byId })
+  (targetId, dmg, byId, knock) => pvpHits.push({ targetId, dmg, byId, knock })
 );
 
 // Attacker A swings EAST from 14px west of B (spawn street: walkable, open), so
@@ -195,6 +195,19 @@ check('PvP: anyone hurts a PKer (non-PK attacker vs PK target)', () => {
     pvpHits.some((x) => x.targetId === 'B' && x.dmg === 5),
     'should hit the PKer'
   );
+});
+
+check('knockback: a landed hit shoves the victim away from the attacker', () => {
+  // A is due WEST of B and swings east; B must be knocked further east (x up),
+  // never past the cap, and clamped to a real (walkable) spot by the sim.
+  pvpHits.length = 0;
+  pvpRoster = roster(true, false);
+  sim.handleAttack(AX, AY, 3, 'KB', 5, true, 0); // fresh id — 'A' is mid-cooldown
+  const h = pvpHits.find((x) => x.targetId === 'B');
+  assert(h && h.knock, `expected a knockback spot, got ${JSON.stringify(h)}`);
+  assert(h.knock.x > BX, `victim should be pushed east (x ${h.knock.x} > ${BX})`);
+  assert(Math.abs(h.knock.y - BY) <= 1, 'a due-west hit pushes straight east, not sideways');
+  assert(h.knock.x - BX <= 44, 'knockback never exceeds the KB_MAX cap');
 });
 
 check('PvP: a swing never hits the attacker themselves', () => {

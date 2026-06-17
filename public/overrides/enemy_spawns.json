@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "enemySpriteGroups": [284, 283, 282, 226, 330],
+  "enemySpriteGroups": [284, 283, 282, 226, 330, 291],
   "entities": {
     "74": {
       "hp": 50,
@@ -56,17 +56,20 @@
       "speed": 0.7
     },
     "291": {
-      "name": "Ramblin' Evil Mushroom",
       "hp": 60,
       "xp": 95,
       "level": 7,
       "damage": 15,
-      "defense": 10,
-      "money": 15,
       "attackCooldownMs": 700,
       "speed": 0.7,
       "detectRange": 220,
-      "attackRange": 24
+      "attackRange": 24,
+      "crit": 4,
+      "dodge": 4,
+      "name": "Ramblin' Evil Mushroom",
+      "defense": 10,
+      "money": 15,
+      "combat": "skirmisher"
     },
     "330": {
       "name": "Runaway Dog",
@@ -118,18 +121,6 @@
       "enabled": true
     },
     {
-      "name": "onett-central-sharks",
-      "sprite": 284,
-      "x": 2144,
-      "y": 896,
-      "wanderRadius": 500,
-      "poolSize": 7,
-      "maxActive": 4,
-      "spawnIntervalMs": 3500,
-      "respawnDelayMs": 9000,
-      "enabled": true
-    },
-    {
       "name": "onett-east-sharks",
       "sprite": 284,
       "x": 2848,
@@ -156,9 +147,9 @@
     {
       "name": "onett-south-sharks",
       "sprite": 284,
-      "x": 1498,
-      "y": 3158,
-      "wanderRadius": 500,
+      "x": 1474,
+      "y": 2935,
+      "wanderRadius": 200,
       "poolSize": 7,
       "maxActive": 4,
       "spawnIntervalMs": 3500,
@@ -170,7 +161,7 @@
       "sprite": 283,
       "x": 1812,
       "y": 363,
-      "wanderRadius": 500,
+      "wanderRadius": 200,
       "poolSize": 7,
       "maxActive": 4,
       "spawnIntervalMs": 3500,
@@ -216,9 +207,9 @@
     {
       "name": "spawner-12",
       "sprite": 283,
-      "x": 2125,
-      "y": 1046,
-      "wanderRadius": 225,
+      "x": 2092,
+      "y": 1043,
+      "wanderRadius": 200,
       "poolSize": 6,
       "maxActive": 3,
       "spawnIntervalMs": 11000,
@@ -271,6 +262,18 @@
       "maxActive": 20,
       "spawnIntervalMs": 1000,
       "respawnDelayMs": 1000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-17",
+      "sprite": 291,
+      "x": 1810,
+      "y": 2339,
+      "wanderRadius": 600,
+      "poolSize": 6,
+      "maxActive": 3,
+      "spawnIntervalMs": 68000,
+      "respawnDelayMs": 22000,
       "enabled": true
     }
   ]

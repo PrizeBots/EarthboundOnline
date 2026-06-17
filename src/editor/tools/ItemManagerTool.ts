@@ -1,5 +1,4 @@
 import { EditorTool, EditorShellApi } from '../types';
-import { createSpritePicker, SpritePicker } from '../../engine/SpritePicker';
 import {
   loadShops,
   allItems,
@@ -16,75 +15,107 @@ import {
   isEquippable,
   loadItemSprites,
   loadCustomItems,
-  customItemIds,
-  HELD_ITEM_IDS,
 } from '../../engine/Items';
+import {
+  loadItemFolders,
+  itemFoldersWithParent,
+  folderOfItem,
+  itemsInFolder,
+  folderName,
+  childItemCount,
+  addItemFolder,
+  renameItemFolder,
+  deleteItemFolder,
+  assignItemsTo,
+  setItemFolderParent,
+  autoOrganizeItems,
+  allItemIds,
+  saveItemFolders,
+} from '../../engine/ItemFolders';
+import { FolderDesktop, FolderDesktopStore } from '../FolderDesktop';
 import { openSpriteEditor } from '../../engine/spriteEditor';
+import { registerSaveHandler } from '../registry';
 
-// The catalog is split into the same tabs as the Sprite Editor's item picker:
-// Weapons/Items come from the shops catalog (a weapon is gear whose equip slot
-// is 'weapon'); Custom holds the legacy seed items plus admin-minted ones.
-type ItemTab = 'weapons' | 'items' | 'custom';
-function idsForTab(tab: ItemTab): string[] {
-  if (tab === 'custom') {
-    const seen = new Set<string>();
-    return [...HELD_ITEM_IDS, ...customItemIds()].filter((id) =>
-      seen.has(id) ? false : seen.add(id)
-    );
-  }
-  const isWeapon = (id: string) => itemEquip(id)?.slot === 'weapon';
-  return allItems()
-    .filter((i) => (tab === 'weapons' ? isWeapon(i.id) : !isWeapon(i.id)))
-    .map((i) => i.id);
-}
-/** The tab a given item id belongs to (custom seeds + minted items win). */
-function tabForItem(id: string): ItemTab {
-  if (HELD_ITEM_IDS.includes(id) || customItemIds().includes(id)) return 'custom';
-  return itemEquip(id)?.slot === 'weapon' ? 'weapons' : 'items';
-}
-
-// Item Manager — the master list of every game item/weapon (shops.json catalog).
-// Each item carries a held sprite (so players see each other's gear); this tool
-// browses them with the shared sprite-preview dropdown + quick search, shows the
-// catalog metadata, and hands off to the Sprite Editor's item mode to draw/edit
-// the held art (the same per-item art the game renders). The art itself is
-// saved by the Sprite Editor to overrides/item_sprites.json.
+// Item Manager — the master catalog of every game item/weapon (shops.json),
+// organized like the Entity Manager: a file-explorer "desktop" where items live
+// in category folders (Food, Weapons, Drinks…) you sort by drag & drop. Those
+// same folders feed the Sprite Editor's item-mode category tabs, so both tools
+// agree on the taxonomy. The right panel shows the focused item's catalog meta
+// and hands off to the Sprite Editor to draw its held art
+// (overrides/item_sprites.json); the folder layout saves to item_folders.json.
 class ItemManagerTool implements EditorTool {
   id = 'item-manager';
   name = 'Item Manager';
-  description = 'Every item/weapon + its held sprite. Edits hand off to the Sprite Editor.';
+  description =
+    'Every item/weapon, sorted into category folders. Edits hand off to the Sprite Editor.';
   status: 'ready' = 'ready';
 
   private shell: EditorShellApi | null = null;
   private itemId = '';
-  private tab: ItemTab = 'weapons';
   private panel: HTMLDivElement | null = null;
-  private picker: SpritePicker | null = null;
-  private pickerHost: HTMLDivElement | null = null;
-  private tabsEl: HTMLDivElement | null = null;
   private detailsEl: HTMLDivElement | null = null;
+  private desktop: FolderDesktop | null = null;
 
   activate(shell: EditorShellApi): void {
     this.shell = shell;
+    registerSaveHandler('item-folders', () => saveItemFolders());
     void this.loadAndBuild();
   }
 
   deactivate(): void {
+    this.desktop?.close();
+    this.desktop = null;
     this.panel?.remove();
     this.panel = null;
-    this.picker = null;
-    this.pickerHost = null;
-    this.tabsEl = null;
+    this.detailsEl = null;
   }
 
   private async loadAndBuild(): Promise<void> {
     await loadShops(); // catalog (names/costs/types)
     await loadItemSprites(); // authored held art (for previews)
-    await loadCustomItems(); // admin-minted items (for the Custom tab)
-    if (!this.itemId) this.itemId = idsForTab('weapons')[0] ?? allItems()[0]?.id ?? '';
-    this.tab = this.itemId ? tabForItem(this.itemId) : 'weapons';
+    await loadCustomItems(); // admin-minted items
+    await loadItemFolders(); // the category desktop layout (seeds on first run)
+    if (!this.itemId) this.itemId = allItemIds()[0] ?? allItems()[0]?.id ?? '';
     this.buildPanel();
+    this.buildDesktop();
+    this.desktop?.open(); // big center gallery, open by default (like Entity Manager)
     this.refreshDetails();
+  }
+
+  /** Adapter: expose ItemFolders as the generic desktop's store. */
+  private store(): FolderDesktopStore {
+    return {
+      foldersWithParent: (p) => itemFoldersWithParent(p),
+      folderOf: (id) => folderOfItem(id),
+      itemsInFolder: (p) => itemsInFolder(p),
+      folderName: (id) => folderName(id),
+      childCount: (id) => childItemCount(id),
+      addFolder: (name, parent) => addItemFolder(name, parent),
+      renameFolder: (id, name) => renameItemFolder(id, name),
+      deleteFolder: (id) => deleteItemFolder(id),
+      assignTo: (ids, folder) => assignItemsTo(ids, folder),
+      setParent: (child, parent) => setItemFolderParent(child, parent),
+      autoOrganize: () => autoOrganizeItems(),
+      allIds: () => allItemIds(),
+    };
+  }
+
+  private buildDesktop(): void {
+    this.desktop = new FolderDesktop({
+      title: 'ITEM DESKTOP',
+      accent: '#d8a23a',
+      store: this.store(),
+      drawThumb: (c, id) => drawItemThumb(c, id),
+      labelFor: (id) => `${id} ${getItemName(id) ?? ''}`.trim(),
+      matches: (id, q) => `${id} ${(getItemName(id) ?? '').toLowerCase()}`.includes(q),
+      onFocus: (id) => {
+        this.itemId = id;
+        this.refreshDetails();
+      },
+      onSave: () => this.shell?.markDirty('item-folders'),
+      toast: (m, err) => this.shell?.toast(m, err),
+    });
+    this.desktop.setFocused(this.itemId);
   }
 
   private buildPanel(): void {
@@ -100,34 +131,17 @@ class ItemManagerTool implements EditorTool {
     title.style.cssText = 'color:#d8a23a;font-weight:bold;letter-spacing:1px;';
     this.panel.appendChild(title);
 
-    // Weapons / Items / Custom tabs — same split as the Sprite Editor's picker.
-    this.tabsEl = document.createElement('div');
-    this.tabsEl.style.cssText = 'display:flex;gap:4px;';
-    for (const [t, label] of [
-      ['weapons', 'Weapons'],
-      ['items', 'Items'],
-      ['custom', 'Custom'],
-    ] as [ItemTab, string][]) {
-      const b = document.createElement('button');
-      b.textContent = label;
-      b.dataset.itab = t;
-      b.style.cssText =
-        'flex:1;font:11px monospace;padding:4px 0;background:#2a2a3a;color:#ddd;' +
-        'border:1px solid #444;border-radius:3px;cursor:pointer;';
-      b.onclick = () => this.selectTab(t);
-      this.tabsEl.appendChild(b);
-    }
-    this.panel.appendChild(this.tabsEl);
+    const hint = document.createElement('div');
+    hint.textContent =
+      'Drag items between category folders in the desktop. Categories also drive the Sprite Editor.';
+    hint.style.cssText = 'color:#8a93a8;font-size:10px;line-height:1.4;';
+    this.panel.appendChild(hint);
 
-    // The catalog dropdown — sprite preview + quick search, rebuilt per tab.
-    this.pickerHost = document.createElement('div');
-    this.panel.appendChild(this.pickerHost);
-    this.rebuildPicker();
-    this.highlightTabs();
+    this.mkBtn('🖥 Open item desktop (center)', () => this.desktop?.toggle(), this.panel, true);
 
     this.detailsEl = document.createElement('div');
     this.detailsEl.style.cssText =
-      'display:flex;flex-direction:column;gap:4px;color:#9fb8cc;font-size:11px;';
+      'display:flex;flex-direction:column;gap:4px;color:#9fb8cc;font-size:11px;border-top:1px solid #2a3540;padding-top:7px;';
     this.panel.appendChild(this.detailsEl);
 
     const edit = document.createElement('button');
@@ -136,50 +150,11 @@ class ItemManagerTool implements EditorTool {
       'font:11px monospace;padding:3px 8px;cursor:pointer;border-radius:3px;' +
       'background:#3a2e10;color:#d8a23a;border:1px solid #d8a23a;';
     edit.onclick = () => {
-      // Hand off to the Sprite Editor's item mode focused on this item.
-      void openSpriteEditor({ focusItem: this.itemId });
+      if (this.itemId) void openSpriteEditor({ focusItem: this.itemId });
     };
     this.panel.appendChild(edit);
 
     this.shell!.panelHost.appendChild(this.panel);
-  }
-
-  /** Switch tab, snap the selection to that tab's first item, and rebuild. */
-  private selectTab(t: ItemTab): void {
-    if (t === this.tab) return;
-    this.tab = t;
-    const ids = idsForTab(t);
-    if (!ids.includes(this.itemId)) this.itemId = ids[0] ?? '';
-    this.rebuildPicker();
-    this.highlightTabs();
-    this.refreshDetails();
-  }
-
-  /** (Re)build the dropdown for the current tab's item list. */
-  private rebuildPicker(): void {
-    if (!this.pickerHost) return;
-    this.pickerHost.innerHTML = '';
-    const ids = idsForTab(this.tab);
-    this.picker = createSpritePicker({
-      sections: [{ values: ids }],
-      initial: this.itemId || ids[0] || '',
-      labelFor: (v) => `${v} ${getItemName(v) ?? ''}`.trim(),
-      drawThumb: drawItemThumb,
-      onSelect: (v) => {
-        this.itemId = v;
-        this.refreshDetails();
-      },
-    });
-    this.pickerHost.appendChild(this.picker.el);
-  }
-
-  private highlightTabs(): void {
-    if (!this.tabsEl) return;
-    for (const b of Array.from(this.tabsEl.children) as HTMLButtonElement[]) {
-      const on = b.dataset.itab === this.tab;
-      b.style.background = on ? '#3a4a6a' : '#2a2a3a';
-      b.style.borderColor = on ? '#6af' : '#444';
-    }
   }
 
   private refreshDetails(): void {
@@ -190,10 +165,12 @@ class ItemManagerTool implements EditorTool {
     const eq = itemEquip(id);
     const users = itemUsers(id);
     const sprite = hasItemSprite(id);
+    const cat = folderOfItem(id);
     this.detailsEl.innerHTML = '';
     const rows: [string, string][] = [
       ['name', getItemName(id) ?? '(unnamed)'],
-      ['id', id],
+      ['id', id || '—'],
+      ['category', cat ? folderName(cat) : 'Desktop (unsorted)'],
       ['buy / sell', `$${itemCost(id)} / $${sellPrice(id)}`],
       ['type', `${type}${gear ? ' (equippable gear)' : ' (consumable / key)'}`],
     ];
@@ -210,6 +187,24 @@ class ItemManagerTool implements EditorTool {
       if (k === 'held sprite' && v === 'NEEDS ART') r.style.color = '#e07820';
       this.detailsEl.appendChild(r);
     }
+  }
+
+  private mkBtn(
+    label: string,
+    fn: () => void,
+    parent: HTMLElement,
+    accent = false
+  ): HTMLButtonElement {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.style.cssText =
+      'font:11px monospace;padding:4px 8px;cursor:pointer;border-radius:3px;' +
+      (accent
+        ? 'background:#3a2e10;color:#d8a23a;border:1px solid #d8a23a;'
+        : 'background:#1d2530;color:#cde;border:1px solid #3a4a5a;');
+    b.onclick = fn;
+    parent.appendChild(b);
+    return b;
   }
 }
 

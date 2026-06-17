@@ -251,11 +251,12 @@ class GameHost {
           pk: !!p.pk,
         })),
       (data) => this.broadcastAll(data),
-      (playerId, dmg) => this.damagePlayer(playerId, dmg),
+      (playerId, dmg, _enemy, knock) => this.damagePlayer(playerId, dmg, knock),
       (playerId, xp, _enemy, loot) => this.awardKill(playerId, xp, loot),
       // PvP: a player's swing landed on another player — apply it to the victim's
-      // server-authoritative HP (same path as an enemy hit).
-      (targetId, dmg) => this.damagePlayer(targetId, dmg),
+      // server-authoritative HP (same path as an enemy hit). `knock` is the
+      // sim-computed (collision-clamped) knockback landing spot, or null.
+      (targetId, dmg, _byId, knock) => this.damagePlayer(targetId, dmg, knock),
       // Ground-drop claim: the sim found a player on a drop; we own inventory/cash
       // and decide if they can take it (bag room). Return true to consume it.
       (playerId, drop) => this.tryPickup(playerId, drop)
@@ -318,6 +319,11 @@ class GameHost {
     const w = entry.equipped.weapon;
     const we = w ? this.GOODS[w] && this.GOODS[w].equip : null;
     entry.weaponOffense = we && we.slot === 'weapon' ? we.offense | 0 : 0;
+    // Swing-rate multiplier from the equipped weapon (1 = bare-handed baseline).
+    // Drives the server's per-player attack cooldown AND the client's swing-pose
+    // duration (sent in the equipped payload), so a fast weapon both resolves and
+    // animates quicker. Future haste items would multiply in here too.
+    entry.attackSpeed = we && we.slot === 'weapon' && we.attackSpeed > 0 ? we.attackSpeed : 1;
     let def = 0;
     for (const s of ['body', 'arms', 'other']) {
       const id = entry.equipped[s];
@@ -346,6 +352,10 @@ class GameHost {
       inventory: [...this.STARTING_INVENTORY],
       money: STARTING_MONEY, // on-hand cash (shops spend this)
       bank: 0, // ATM balance — kill money lands here; withdraw to spend
+      // Running tallies for Dad's phone report: money banked from kills and cash
+      // spent at shops since the last time the player called Dad (reset on call).
+      earnedSinceCall: 0,
+      spentSinceCall: 0,
       equipped: { weapon: null, body: null, arms: null, other: null },
       x: this.SPAWN.x,
       y: this.SPAWN.y,
@@ -379,6 +389,14 @@ class GameHost {
       : [...this.STARTING_INVENTORY];
     const money = Number.isInteger(save.money) ? save.money : STARTING_MONEY;
     const bank = Number.isInteger(save.bank) && save.bank >= 0 ? save.bank : 0;
+    // Dad's-report tallies survive relogging so a reconnect doesn't make Dad
+    // forget what he banked / you spent since the last call.
+    const earnedSinceCall =
+      Number.isInteger(save.earnedSinceCall) && save.earnedSinceCall >= 0
+        ? save.earnedSinceCall
+        : 0;
+    const spentSinceCall =
+      Number.isInteger(save.spentSinceCall) && save.spentSinceCall >= 0 ? save.spentSinceCall : 0;
 
     const equipped = { weapon: null, body: null, arms: null, other: null };
     if (save.equipped && typeof save.equipped === 'object') {
@@ -397,6 +415,8 @@ class GameHost {
       inventory,
       money,
       bank,
+      earnedSinceCall,
+      spentSinceCall,
       equipped,
       x: Number.isFinite(save.x) ? save.x : this.SPAWN.x,
       y: Number.isFinite(save.y) ? save.y : this.SPAWN.y,
@@ -445,6 +465,8 @@ class GameHost {
           inventory: [...p.inventory],
           money: p.money,
           bank: p.bank,
+          earnedSinceCall: p.earnedSinceCall | 0,
+          spentSinceCall: p.spentSinceCall | 0,
           equipped: { ...p.equipped },
           x: p.x,
           y: p.y,
@@ -494,7 +516,7 @@ class GameHost {
   // Apply an enemy's landed hit to a player (server-authoritative HP). Broadcast
   // the new HP so every client updates that player's bar; the victim's own
   // client plays the hurt pose. At 0 HP the player respawns at the spawn point.
-  damagePlayer(playerId, dmg) {
+  damagePlayer(playerId, dmg, knock) {
     const p = this.players.get(playerId);
     if (!p || p.hp <= 0) return;
     if (p.editor) return; // out of the world in the dev editor — untargetable
@@ -506,6 +528,16 @@ class GameHost {
     const eff = Math.max(1, dmg - Math.floor(((p.defense || 0) + (p.armorDefense || 0)) / 2));
     p.hp = Math.max(0, p.hp - eff);
     this.broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: eff });
+    if (p.hp > 0 && knock) {
+      // Knocked back (and lived): the sim already collision-clamped the landing
+      // spot. Move our authoritative record and broadcast a push — the victim's
+      // client snaps itself there (and reports from there), others snap the
+      // remote copy. Player movement is client-authoritative, so this is a hint
+      // the client honors, same trust model as ordinary moves.
+      p.x = knock.x;
+      p.y = knock.y;
+      this.broadcastAll({ type: 'player_push', id: playerId, x: p.x, y: p.y });
+    }
     if (p.hp <= 0) {
       // Death penalty: drop half your ON-HAND cash where you fell as a first-touch
       // money pickup (anyone can grab it); your bank balance is untouched. Strong
@@ -573,6 +605,7 @@ class GameHost {
     if (!p || !loot) return;
     if (loot.money > 0) {
       p.bank = (p.bank | 0) + loot.money;
+      p.earnedSinceCall = (p.earnedSinceCall | 0) + loot.money; // for Dad's report
       p._ws.send(JSON.stringify({ type: 'bank', bank: p.bank }));
       this._saveCharacter(playerId);
     }
@@ -684,9 +717,13 @@ class GameHost {
           equipped: init.equipped,
           weaponOffense: 0,
           armorDefense: 0,
+          attackSpeed: 1, // weapon swing-rate multiplier; set by recomputeEquipStats
           inventory: init.inventory, // Goods slots, mutated by use/buy/sell
           money: init.money, // on-hand cash
           bank: init.bank | 0, // ATM balance
+          // Dad's-report tallies (kills banked / cash spent since last call).
+          earnedSinceCall: init.earnedSinceCall | 0,
+          spentSinceCall: init.spentSinceCall | 0,
           // PK (player-kill) flag + remaining enable-lock (in-game ms) — see
           // npcSim canHurt and the set_pk handler. Loaded from the save (anon:
           // off). pkTickAt is reset to now so the lock resumes from join, paused
@@ -748,6 +785,7 @@ class GameHost {
             self: { x: entry.x, y: entry.y, direction: entry.direction },
             stats: statsPayload(entry),
             equipped: entry.equipped,
+            attackSpeed: entry.attackSpeed, // weapon swing-rate mult (scales client swing pose)
             // Saved quest/progress flags (PlayerFlags) — private to this player.
             flags: [...this.flags.get(playerId)],
             // Restore PK state + remaining lock (a player who logged out PK
@@ -801,7 +839,10 @@ class GameHost {
         ny = Math.max(0, Math.min(this.WORLD.h, ny));
         // Read the warp shield BEFORE clearing it: a real door warp is exactly
         // the big jump we'd otherwise clamp as a speed hack.
-        const warping = entry.warping && Date.now() < entry.warpUntil;
+        // The dev editor reports its free-camera center as `move` so the sim
+        // anchors on what the admin is observing — that legitimately leaps far
+        // each pan, so exempt it from the speed-hack clamp (same as a warp).
+        const warping = (entry.warping && Date.now() < entry.warpUntil) || entry.editor;
         if (!warping) {
           const dx = nx - entry.x;
           const dy = ny - entry.y;
@@ -845,7 +886,8 @@ class GameHost {
           playerId,
           entry.offense + (entry.weaponOffense || 0),
           entry.pk,
-          critChanceFromLuck(entry.luck)
+          critChanceFromLuck(entry.luck),
+          entry.attackSpeed || 1
         );
         break;
       }
@@ -867,7 +909,13 @@ class GameHost {
         entry.equipped[slot] = itemId;
         this.recomputeEquipStats(entry);
         // The owner gets their authoritative equipped set...
-        entry._ws.send(JSON.stringify({ type: 'equipped', slots: entry.equipped }));
+        entry._ws.send(
+          JSON.stringify({
+            type: 'equipped',
+            slots: entry.equipped,
+            attackSpeed: entry.attackSpeed,
+          })
+        );
         // ...everyone else just needs the held-weapon sprite.
         this.broadcastExcept({ type: 'equip', id: playerId, itemId: entry.itemId }, playerId);
         this._saveCharacter(playerId);
@@ -922,6 +970,7 @@ class GameHost {
         if (entry.inventory.length >= MAX_SLOTS) break;
         if (entry.money < def.cost) break;
         entry.money -= def.cost;
+        entry.spentSinceCall = (entry.spentSinceCall | 0) + def.cost; // for Dad's report
         entry.inventory.push(itemId);
         entry._ws.send(
           JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) })
@@ -979,6 +1028,23 @@ class GameHost {
         entry.bank += amount;
         entry._ws.send(JSON.stringify({ type: 'money', money: entry.money }));
         entry._ws.send(JSON.stringify({ type: 'bank', bank: entry.bank }));
+        this._saveCharacter(playerId);
+        break;
+      }
+
+      // Calling Dad: report the money banked from kills and cash spent at shops
+      // since the LAST call (EarthBound flavor — "I put $X in your account…"),
+      // then reset the tallies so the next call starts fresh. The money already
+      // lives in the bank (kills credit it directly); these counters are just the
+      // accounting Dad narrates. Server-authoritative — the client only displays.
+      case 'dad_call': {
+        const entry = this.players.get(playerId);
+        if (!entry) break;
+        const earned = entry.earnedSinceCall | 0;
+        const spent = entry.spentSinceCall | 0;
+        entry.earnedSinceCall = 0;
+        entry.spentSinceCall = 0;
+        entry._ws.send(JSON.stringify({ type: 'dad_report', earned, spent, bank: entry.bank | 0 }));
         this._saveCharacter(playerId);
         break;
       }

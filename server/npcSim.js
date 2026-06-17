@@ -69,8 +69,33 @@ const HURT_H = 18;
 const HURT_OY = -18;
 const ATTACK_DAMAGE = 6;
 const CRIT_MULT = 2; // a crit (SMAAAASH!) deals double damage
-const ATTACK_COOLDOWN_MS = 250; // min time between a player's resolved attacks
+const ATTACK_COOLDOWN_MS = 250; // baseline min time between a player's resolved attacks (bare-handed)
+const ATTACK_COOLDOWN_FLOOR_MS = 120; // fastest a weapon can push the cooldown — anti-machinegun clamp
 const HURT_MS = 300; // how long a struck enemy shows its flinch pose
+
+// --- Knockback + stun (combat hit-reactions; server-authoritative) ---
+// Every landed, non-miss hit shoves the victim away from the attacker by a
+// distance that scales with the damage dealt (so a crit flings harder than a
+// chip hit), collision-clamped so nobody is knocked through a wall. In-sim
+// actors (enemies/townsfolk) are moved directly; players live on the host, so
+// the sim computes the landing spot and hands it back through the hit callback.
+const KB_MIN = 5; // px — even a light hit nudges
+const KB_MAX = 44; // px — cap so a big/crit hit can't fling across the room
+const KB_PER_DMG = 1.6; // px of knockback per point of damage dealt
+const KB_STEP = 4; // px — collision sampling step while sliding the knockback (< MINITILE)
+// Stun: a % proc per landed hit FREEZES the victim briefly. Capped + diminishing
+// by an immunity window after each stun, so hits can't chain into a perma-freeze:
+// the frozen fraction tops out at STUN_MS / (STUN_MS + STUN_IMMUNE_MS). v1 stuns
+// only the in-sim actors (enemies/NPCs) — player stun needs a client input-lock
+// (separate trust surface) and is a follow-up; players still get knocked back.
+const STUN_MS = 550; // how long a stun holds the victim frozen
+const STUN_IMMUNE_MS = 1500; // after a stun ends, victim can't be re-stunned for this long
+const PLAYER_STUN_CHANCE = 12; // % a player's landed hit stuns its target (per-weapon stat: TODO)
+
+// Knockback distance for a hit that dealt `dmg` damage (clamped to [MIN,MAX]).
+function knockDist(dmg) {
+  return Math.max(KB_MIN, Math.min(KB_MAX, KB_MIN + dmg * KB_PER_DMG));
+}
 
 // --- Enemy aggression (Heavy) ---
 // Enemies have a level (set from the spawner / a default) and so do players, so
@@ -79,6 +104,12 @@ const HURT_MS = 300; // how long a struck enemy shows its flinch pose
 // hits the nearest living player it can see.
 const DEFAULT_ENEMY_LEVEL = 4;
 const DETECT_RANGE = 220; // px — default aggro radius; per-entity `detectRange` (Entity Manager) overrides it
+// Once an enemy has LOCKED ON it does not give up at the detect radius — it
+// pursues relentlessly (no home-distance leash) until the target gets this far
+// away (or the enemy dies), then it turns back and paths home. Hysteresis:
+// acquire at detectRange, drop only past this larger give-up distance. Per-entity
+// `giveUpRange` (Entity Manager) overrides it; never smaller than detectRange.
+const GIVE_UP_RANGE = 560; // px — chase breaks off when the target exceeds this
 const ATTACK_RANGE = 24; // px — enemy must be this close to land a hit
 const ENEMY_CHASE_SPEED = 1.6; // px/frame while pursuing (player is 2.0) — fast enough to be a real threat, slow enough to outrun
 const ENEMY_ATTACK_COOLDOWN_MS = 700; // min time between one enemy's swings
@@ -101,7 +132,6 @@ const STEER_ANGLES = [0, 0.5, -0.5, 1.0, -1.0, 1.6, -1.6, 2.4, -2.4];
 // door warp reaches us as a one-tick jump in the reported position. Enemies use
 // that to follow a player they're chasing through the door, then once they lose
 // the target they retrace their way out and head back to the spawn point.
-const PURSUIT_LEASH_MULT = 3; // chase reaches this * wanderRadius from home (the patrol leash) before dropping a heading
 const WARP_DELTA = 96; // a one-tick player jump bigger than this is a door warp (players move ~2px/tick)
 const WARP_FOLLOW_RANGE = DETECT_RANGE; // an enemy this close to the door the player took follows it through
 // A detected warp stays followable for this long, NOT just the one tick it
@@ -696,6 +726,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         // refreshes on a timer so the shuffle reads as restless, not twitchy.
         jitterAng: 0,
         jitterUntil: 0,
+        // Stun (combat hit-reactions): frozen until stunUntil; can't be re-stunned
+        // until stunImmuneUntil (the diminishing window that caps perma-freeze).
+        stunUntil: 0,
+        stunImmuneUntil: 0,
       },
       fields
     );
@@ -743,6 +777,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         indoor: !!(sectorForTile(Math.floor(r.x / TILE), Math.floor(r.y / TILE)) || {}).indoor,
         isEnemy: enemy,
         pk: enemy, // enemies are always PK; townsfolk never are
+        // Placed enemies roam, chase, and attack exactly like spawner-pooled
+        // ones — `roam` is the tick dispatch flag that routes to tickEnemy
+        // (full enemy AI) rather than tickNpc (townsfolk self-defense).
+        roam: enemy,
         hp,
         maxHp: hp,
         level: enemy ? entityStat(r.sprite, 'level', DEFAULT_ENEMY_LEVEL) : 1,
@@ -873,6 +911,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           n.dead = true;
           n.isEnemy = false;
           n.pk = false;
+          n.roam = false;
           n.dirty = false;
           n.hpDirty = false;
           n.life = 'idle';
@@ -896,6 +935,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         n.timer = rand(60, 300);
         n.isEnemy = enemy;
         n.pk = enemy;
+        n.roam = enemy; // see buildNpcs: routes placed enemies to tickEnemy
         n.maxHp = hp;
         n.hp = hp;
         n.level = enemy ? entityStat(r.sprite, 'level', DEFAULT_ENEMY_LEVEL) : 1;
@@ -1201,9 +1241,17 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         console.log(
           `[HITDBG] TOWNSPERSON hit player ${e.id}: npc id=${n.id} sprite=${n.sprite} at (${Math.round(n.x)},${Math.round(n.y)}) -> player at (${Math.round(e.x)},${Math.round(e.y)}) dist=${Math.round(dist)} (player must be PK)`
         );
-        if (onPlayerHitCb) onPlayerHitCb(e.id, NPC_DAMAGE, null);
+        if (onPlayerHitCb)
+          onPlayerHitCb(
+            e.id,
+            NPC_DAMAGE,
+            null,
+            knockbackPlayerSpot(e.x, e.y, n.x, n.y, NPC_DAMAGE)
+          );
       } else {
-        applyDamage(e, NPC_DAMAGE, now, null);
+        // Townsfolk knock enemies back but don't stun them (a deliberate
+        // deterrent, not a lockdown) — stunChance 0.
+        applyDamage(e, NPC_DAMAGE, now, null, { x: n.x, y: n.y, stunChance: 0 });
         e.aggressor = n; // the enemy remembers (and may turn on) whoever hit it
         e.aggroUntil = now + ENEMY_AGGRO_MEMORY_MS;
       }
@@ -1336,7 +1384,11 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // townsperson it's allowed to hurt (canHurt). `isPlayer` tells the caller
   // whether to route the hit through the host (players) or apply it here (NPCs).
   function aggroTarget(n, players, now) {
-    const range = n.detectRange || DETECT_RANGE; // per-entity aggro radius (Entity Manager)
+    // Hysteresis: a fresh enemy acquires inside detectRange, but one already
+    // chasing holds the lock until the target passes the larger give-up distance
+    // — it doesn't quit the moment the player steps a pixel past detect.
+    const detect = n.detectRange || DETECT_RANGE; // per-entity aggro radius (Entity Manager)
+    const range = n.mode === 'chase' ? Math.max(n.giveUpRange || GIVE_UP_RANGE, detect) : detect;
     let target = null;
     let best = range;
     for (const p of players) {
@@ -1648,7 +1700,13 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
               console.log(
                 `[HITDBG] ENEMY hit player ${target.id}: enemy id=${n.id} sprite=${n.sprite} kind=${n.kind} mode=${n.mode} dead=${n.dead} at (${Math.round(n.x)},${Math.round(n.y)}) -> player at (${Math.round(target.x)},${Math.round(target.y)}) dist=${Math.round(dist)} dmg=${res.dmg}`
               );
-              if (onEnemyHit) onEnemyHit(target.id, res.dmg, n);
+              if (onEnemyHit)
+                onEnemyHit(
+                  target.id,
+                  res.dmg,
+                  n,
+                  knockbackPlayerSpot(target.x, target.y, n.x, n.y, res.dmg)
+                );
               if (res.crit && broadcastCb)
                 broadcastCb({
                   type: 'combat',
@@ -1660,19 +1718,21 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
                 });
             }
           } else {
-            applyDamage(target, n.damage, now, null);
+            applyDamage(target, n.damage, now, null, {
+              x: n.x,
+              y: n.y,
+              stunChance: entityStat(n.sprite, 'stunChance', 0),
+            });
           }
         }
         return;
       }
 
-      // Otherwise close in. moveToward fans out around walls/each other. Inside
-      // a building (we warped in after the player) the home leash is across the
-      // map and meaningless, so drop it; outside, allow a wide pursuit leash so
-      // a chase can reach a doorway past the patrol wander radius.
-      const wr = (n.spawner && n.spawner.wanderRadius) || 256;
-      const leash = n.warpStack.length ? Infinity : wr * PURSUIT_LEASH_MULT;
-      moveToward(n, target.x, target.y, n.chaseSpeed, players, leash);
+      // Otherwise close in. moveToward fans out around walls/each other. A locked
+      // chase has NO home-distance leash — the enemy follows relentlessly wherever
+      // the target goes (give-up is purely the target-distance check in
+      // aggroTarget above); once it loses the target it paths back home.
+      moveToward(n, target.x, target.y, n.chaseSpeed, players, Infinity);
       return;
     }
 
@@ -1837,7 +1897,82 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // their EXP (players only — killerPlayerId is null for NPC-dealt kills);
   // townsfolk just go down and respawn at home. The single death path shared by
   // player swings (handleAttack), enemy swings, and NPC self-defense.
-  function applyDamage(target, dmg, now, killerPlayerId) {
+  // Shove an in-sim actor away from (fromX,fromY) by knockDist(dmg) px, sliding
+  // in KB_STEP increments and stopping at the first step that would put its
+  // collision box into a wall/edge. Marks it dirty so the new spot broadcasts.
+  function pushActor(o, fromX, fromY, dmg) {
+    if (!o || o.dead) return;
+    let ux = o.x - fromX;
+    let uy = o.y - fromY;
+    const len = Math.hypot(ux, uy);
+    if (len < 0.001) return; // co-located — no push direction
+    ux /= len;
+    uy /= len;
+    let cx = o.x;
+    let cy = o.y;
+    let rem = knockDist(dmg);
+    while (rem > 0) {
+      const step = Math.min(KB_STEP, rem);
+      const nx = cx + ux * step;
+      const ny = cy + uy * step;
+      const [bx, by, bw, bh] = actorBox(o, nx, ny);
+      if (blocked(bx, by, bw, bh)) break;
+      cx = nx;
+      cy = ny;
+      rem -= step;
+    }
+    if (cx !== o.x || cy !== o.y) {
+      o.x = cx;
+      o.y = cy;
+      o.dirty = true;
+    }
+  }
+
+  // Knockback landing spot for a HOST-owned player (foot box) shoved away from
+  // (fromX,fromY). Pure — returns {x,y} (rounded) or null if it can't move; the
+  // host applies it and broadcasts a player_push. Same slide/clamp as pushActor.
+  function knockbackPlayerSpot(px, py, fromX, fromY, dmg) {
+    let ux = px - fromX;
+    let uy = py - fromY;
+    const len = Math.hypot(ux, uy);
+    if (len < 0.001) return null;
+    ux /= len;
+    uy /= len;
+    let cx = px;
+    let cy = py;
+    let rem = knockDist(dmg);
+    while (rem > 0) {
+      const step = Math.min(KB_STEP, rem);
+      const nx = cx + ux * step;
+      const ny = cy + uy * step;
+      if (blocked(nx - COL_W / 2, ny + COL_OY, COL_W, COL_H)) break;
+      cx = nx;
+      cy = ny;
+      rem -= step;
+    }
+    return cx !== px || cy !== py ? { x: Math.round(cx), y: Math.round(cy) } : null;
+  }
+
+  // Roll a `chance`% stun on an in-sim actor. Blocked while the victim is in its
+  // post-stun immunity window (diminishing returns). On a proc, freeze it until
+  // now+STUN_MS and hold the flinch pose for the whole freeze so it reads stunned.
+  function tryStun(target, chance, now) {
+    if (!target || target.dead || chance <= 0) return;
+    if (now < (target.stunImmuneUntil || 0)) return; // still immune from a recent stun
+    if (rng() * 100 >= chance) return; // didn't proc
+    target.stunUntil = now + STUN_MS;
+    target.stunImmuneUntil = target.stunUntil + STUN_IMMUNE_MS;
+    target.pose = 'hurt';
+    target.poseStart = now;
+    target.poseUntil = target.stunUntil; // hold the flinch for the whole freeze
+    target.frame = 0;
+    target.dirty = true;
+  }
+
+  // `atk` (optional) = {x, y, stunChance} of the attacker — drives knockback
+  // (shove the victim away from x,y, scaled by dmg) and the stun proc. Omitted by
+  // legacy/test callers, which just apply HP + the flinch with no hit-reaction.
+  function applyDamage(target, dmg, now, killerPlayerId, atk) {
     if (!target || target.dead || target.hp <= 0) return;
     target.hp -= dmg;
     target.hpDirty = true;
@@ -1883,15 +2018,27 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       } else {
         target.respawnAt = now + NPC_RESPAWN_MS;
       }
+    } else if (atk) {
+      // Survived the hit — react to it: knocked back away from the attacker, and
+      // maybe stunned. (tryStun's longer flinch pose overrides the HURT_MS one
+      // set above, so a stunned victim stays frozen for the whole window.)
+      pushActor(target, atk.x, atk.y, dmg);
+      tryStun(target, atk.stunChance || 0, now);
     }
   }
 
   // Resolve a player's melee swing: a hitbox in front of the attacker damages
   // every live enemy whose hurtbox it overlaps. Authoritative — the client only
   // requests the swing; HP, death, and respawn all live here.
-  function handleAttack(x, y, dir, playerId, offense, attackerPk, critChance = 0) {
+  function handleAttack(x, y, dir, playerId, offense, attackerPk, critChance = 0, attackSpeed = 1) {
     const now = Date.now();
-    if (now - (lastAttackAt[playerId] || 0) < ATTACK_COOLDOWN_MS) return;
+    // Per-player swing cooldown scales with the weapon's attackSpeed (1 = baseline,
+    // >1 = faster), floored so no weapon/buy combo becomes an auto-shredder.
+    const cooldown = Math.max(
+      ATTACK_COOLDOWN_FLOOR_MS,
+      ATTACK_COOLDOWN_MS / (attackSpeed > 0 ? attackSpeed : 1)
+    );
+    if (now - (lastAttackAt[playerId] || 0) < cooldown) return;
     lastAttackAt[playerId] = now;
     // PK gating: build the attacker's shape once. A player is never an enemy;
     // its `pk` decides whether it may hit non-PK targets. Today npcSim only
@@ -1928,7 +2075,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         continue;
       }
       // Shared death path: flinch, HP broadcast, respawn, and EXP to the killer.
-      applyDamage(n, res.dmg, now, playerId);
+      // The attacker's feet (x,y) drive knockback + the stun proc on a survivor.
+      applyDamage(n, res.dmg, now, playerId, { x, y, stunChance: PLAYER_STUN_CHANCE });
       if (res.crit && broadcastCb)
         broadcastCb({
           type: 'combat',
@@ -1967,7 +2115,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         console.log(
           `[HITDBG] PVP hit player ${t.id}: by player ${playerId} at (${Math.round(t.x)},${Math.round(t.y)}) dmg=${res.dmg}`
         );
-        onPlayerHitCb(t.id, res.dmg, playerId);
+        // Knock the victim back from the attacker's feet (host applies + pushes).
+        onPlayerHitCb(t.id, res.dmg, playerId, knockbackPlayerSpot(t.x, t.y, x, y, res.dmg));
         if (res.crit && broadcastCb)
           broadcastCb({
             type: 'combat',
@@ -2067,6 +2216,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
               break;
             }
           }
+          // Stunned: frozen — skip all AI (no move, no swing) until it wears off.
+          // The flinch pose (held to stunUntil by tryStun) keeps showing above.
+          if (now < n.stunUntil) continue;
           if (near) {
             if (n.kind === 'car') tickCar(n, players);
             else if (n.roam) tickEnemy(n, players, now, onEnemyHit, recentWarps);
