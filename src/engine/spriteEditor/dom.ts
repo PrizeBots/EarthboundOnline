@@ -57,6 +57,14 @@ import {
   setItemEditFrame,
   itemTabIds,
 } from './itemEditor';
+import {
+  rebuildPsiPicker,
+  addPsiFrame,
+  deletePsiFrame,
+  setPsiDelivery,
+  setPsiEditFrame,
+} from './psiEditor';
+import { PSI_DELIVERIES, PsiDelivery } from '../PsiAnim';
 import { onTestDown, onTestMove } from './testWalker';
 import { setEditMode } from './index';
 
@@ -73,23 +81,178 @@ export function buildDom(): void {
 
   const title = document.createElement('div');
   title.textContent =
-    'SPRITE EDITOR — attack/hurt frames + held items   (pick a character · Character/Item modes · WASD: test walk · F attack · H hurt · tools 1-8: pencil/eraser/eyedrop/select/move/fill/rotate/skew · marquee a region then ⇄⇅ mirror, ⟲⟳ 90°, or DRAG to free-rotate (Shift=15° snap) / skew · Alt+click: eyedrop · G: cycle item · Ctrl+C/V: copy/paste selection or frame · Ctrl+Z: undo · Esc: deselect/back · edits save automatically · Export/Import PNG)';
+    'SPRITE EDITOR — attack/hurt frames + held items   (pick a character · Character/Item modes · WASD: test walk · F attack · H hurt · tools 1-8: pencil/eraser/eyedrop/select/move/fill/rotate/skew · marquee a region then ⇄⇅ mirror, ⟲⟳ 90°, or DRAG to free-rotate (Shift=15° snap) / skew · Alt+click: eyedrop · G: cycle item · Ctrl+C/V: copy/paste selection or frame · Ctrl+Z: undo · Esc: deselect/back · edits save automatically · Export/Import PNG · drag a panel header to move it, the corner grip to resize — your layout is saved)';
   title.style.cssText = 'padding:10px;color:#fff;letter-spacing:1px;';
   S.overlay.appendChild(title);
 
+  loadPanelLayout();
+
+  // Build every panel, then lay them out in a row (+ the sheet below) ONCE so we
+  // can read each one's natural flow position as its first-run default. After
+  // that they all become free-floating windows (drag header / resize corner),
+  // their position+size restored from the saved layout.
   const row = document.createElement('div');
   row.style.cssText = 'display:flex;gap:16px;align-items:flex-start;';
   S.overlay.appendChild(row);
-
-  row.appendChild(buildToolPanel());
-  row.appendChild(buildStripPanel());
-  row.appendChild(buildEditPanel());
-  row.appendChild(buildTestPanel());
-
-  // Full-width SHEET panel below the row: the whole sheet + add-frame tool.
-  S.overlay.appendChild(buildSheetPanel());
+  const panels: { id: string; el: HTMLDivElement }[] = [
+    { id: 'tools', el: buildToolPanel() },
+    { id: 'frames', el: buildStripPanel() },
+    { id: 'edit', el: buildEditPanel() },
+    { id: 'test', el: buildTestPanel() },
+  ];
+  for (const p of panels) row.appendChild(p.el);
+  const sheet = buildSheetPanel();
+  panels.push({ id: 'sheet', el: sheet });
+  S.overlay.appendChild(sheet);
 
   document.body.appendChild(S.overlay);
+
+  // Measure ALL defaults before detaching any (each absolute-ize shifts the rest).
+  const defs = panels.map((p) => ({
+    id: p.id,
+    el: p.el,
+    x: p.el.offsetLeft,
+    y: p.el.offsetTop,
+  }));
+  for (const d of defs) {
+    S.overlay.appendChild(d.el); // reparent to the overlay (its positioning parent)
+    makeFloating(d.el, d.id, { x: d.x, y: d.y });
+  }
+  row.remove();
+}
+
+// ---------------------------------------------------------------------------
+// Floating panels: drag by header, resize from the bottom-right corner, layout
+// persisted to localStorage so an admin's arrangement is there next session.
+// (Pure UI preference per browser — not game content, so it never touches the
+// overrides save channel.)
+// ---------------------------------------------------------------------------
+
+const PANEL_LAYOUT_KEY = 'eb.spriteEditor.panels.v1';
+const PANEL_MIN_W = 120;
+const PANEL_MIN_H = 64;
+interface PanelRect {
+  x: number;
+  y: number;
+  w?: number;
+  h?: number;
+}
+let panelLayout: Record<string, PanelRect> = {};
+let panelZ = 100; // bumped each interaction so the active panel comes to front
+
+function loadPanelLayout(): void {
+  try {
+    panelLayout = JSON.parse(localStorage.getItem(PANEL_LAYOUT_KEY) || '{}') || {};
+  } catch {
+    panelLayout = {};
+  }
+}
+function savePanelLayout(): void {
+  try {
+    localStorage.setItem(PANEL_LAYOUT_KEY, JSON.stringify(panelLayout));
+  } catch {
+    /* private mode / quota — layout just won't persist */
+  }
+}
+/** Snapshot a panel's current rect into the layout store + persist immediately. */
+function persistPanel(div: HTMLDivElement, id: string): void {
+  const prev = panelLayout[id] || ({} as PanelRect);
+  panelLayout[id] = {
+    x: Math.round(parseFloat(div.style.left) || 0),
+    y: Math.round(parseFloat(div.style.top) || 0),
+    w: div.style.width ? Math.round(parseFloat(div.style.width)) : prev.w,
+    h: div.style.height ? Math.round(parseFloat(div.style.height)) : prev.h,
+  };
+  savePanelLayout();
+}
+
+/** Turn a built panel into a draggable + resizable floating window. `def` is the
+ *  measured flow position used until the admin moves it (then the save wins). */
+function makeFloating(div: HTMLDivElement, id: string, def: PanelRect): void {
+  const head = div.firstElementChild as HTMLElement | null;
+  if (!head) return;
+
+  // Move everything after the header into a scrollable body, so the header stays
+  // put (and grabbable) and content scrolls when the panel is shrunk.
+  const body = document.createElement('div');
+  body.style.cssText =
+    'display:flex;flex-direction:column;gap:6px;overflow:auto;min-height:0;flex:1;';
+  while (head.nextSibling) body.appendChild(head.nextSibling);
+  div.appendChild(body);
+
+  div.style.position = 'absolute';
+  div.style.margin = '0';
+  div.dataset.panelId = id;
+  const r = panelLayout[id] || ({} as PanelRect);
+  div.style.left = `${r.x ?? def.x}px`;
+  div.style.top = `${r.y ?? def.y}px`;
+  if (r.w != null) div.style.width = `${r.w}px`;
+  if (r.h != null) div.style.height = `${r.h}px`; // height set => body scrolls
+
+  // Header = drag handle.
+  head.style.cursor = 'move';
+  head.title = 'Drag to move';
+  head.addEventListener('mousedown', (e) => startPanelDrag(e, div, id));
+
+  // Bottom-right resize grip (the corner marker).
+  const grip = document.createElement('div');
+  grip.title = 'Drag to resize';
+  grip.style.cssText =
+    'position:absolute;right:1px;bottom:1px;width:16px;height:16px;cursor:nwse-resize;z-index:1;' +
+    'background:repeating-linear-gradient(135deg,#557 0 2px,transparent 2px 4px);';
+  grip.addEventListener('mousedown', (e) => startPanelResize(e, div, id));
+  div.appendChild(grip);
+
+  // Any click on the panel raises it above the others.
+  div.addEventListener('mousedown', () => {
+    div.style.zIndex = String(++panelZ);
+  });
+}
+
+function startPanelDrag(e: MouseEvent, div: HTMLDivElement, id: string): void {
+  e.preventDefault();
+  div.style.zIndex = String(++panelZ);
+  const sx = e.clientX;
+  const sy = e.clientY;
+  const ox = parseFloat(div.style.left) || 0;
+  const oy = parseFloat(div.style.top) || 0;
+  const move = (ev: MouseEvent) => {
+    const ow = S.overlay?.clientWidth ?? window.innerWidth;
+    const oh = S.overlay?.clientHeight ?? window.innerHeight;
+    // Keep at least a corner of the header on-screen so a panel is never lost.
+    const nx = Math.max(-(div.offsetWidth - 48), Math.min(ow - 48, ox + ev.clientX - sx));
+    const ny = Math.max(0, Math.min(oh - 20, oy + ev.clientY - sy));
+    div.style.left = `${nx}px`;
+    div.style.top = `${ny}px`;
+  };
+  const up = () => {
+    document.removeEventListener('mousemove', move);
+    document.removeEventListener('mouseup', up);
+    persistPanel(div, id);
+  };
+  document.addEventListener('mousemove', move);
+  document.addEventListener('mouseup', up);
+}
+
+function startPanelResize(e: MouseEvent, div: HTMLDivElement, id: string): void {
+  e.preventDefault();
+  e.stopPropagation(); // not a drag
+  div.style.zIndex = String(++panelZ);
+  const sx = e.clientX;
+  const sy = e.clientY;
+  const ow = div.offsetWidth;
+  const oh = div.offsetHeight;
+  const move = (ev: MouseEvent) => {
+    div.style.width = `${Math.max(PANEL_MIN_W, ow + ev.clientX - sx)}px`;
+    div.style.height = `${Math.max(PANEL_MIN_H, oh + ev.clientY - sy)}px`;
+  };
+  const up = () => {
+    document.removeEventListener('mousemove', move);
+    document.removeEventListener('mouseup', up);
+    persistPanel(div, id);
+  };
+  document.addEventListener('mousemove', move);
+  document.addEventListener('mouseup', up);
 }
 
 function panel(label: string): HTMLDivElement {
@@ -161,6 +324,7 @@ function buildToolPanel(): HTMLDivElement {
   const modes: [EditMode, string][] = [
     ['char', 'Character'],
     ['item', 'Item'],
+    ['psi', 'PSI'],
   ];
   for (const [m, label] of modes) {
     const btn = document.createElement('button');
@@ -227,6 +391,60 @@ function buildToolPanel(): HTMLDivElement {
   div.appendChild(S.itemRow);
   rebuildItemPicker();
   highlightItemTabs();
+
+  // PSI UI (psi mode only): the ability picker (all 52 from psi.json), a delivery
+  // dropdown (caster/target/projectile), and add/delete-frame buttons. The frame
+  // strip itself is the per-frame selector (click a frame in FRAMES). Hidden until
+  // PSI mode.
+  S.psiRow = document.createElement('div');
+  S.psiRow.style.cssText = 'display:none;flex-direction:column;gap:5px;';
+  S.psiPickerHost = document.createElement('div');
+  S.psiRow.appendChild(S.psiPickerHost);
+
+  const delivRow = document.createElement('div');
+  delivRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
+  const delivLbl = document.createElement('span');
+  delivLbl.textContent = 'Delivery';
+  delivLbl.style.cssText = 'color:#9ab;font-size:11px;';
+  delivRow.appendChild(delivLbl);
+  S.psiDeliverySel = document.createElement('select');
+  S.psiDeliverySel.style.cssText =
+    'flex:1;font:11px monospace;padding:3px;background:#2a2a3a;color:#ddd;border:1px solid #444;border-radius:3px;';
+  for (const d of PSI_DELIVERIES) {
+    const o = document.createElement('option');
+    o.value = d;
+    o.textContent =
+      d === 'caster' ? 'on caster' : d === 'target' ? 'on target' : 'projectile (caster→target)';
+    S.psiDeliverySel.appendChild(o);
+  }
+  S.psiDeliverySel.onchange = () => setPsiDelivery(S.psiDeliverySel!.value as PsiDelivery);
+  delivRow.appendChild(S.psiDeliverySel);
+  S.psiRow.appendChild(delivRow);
+
+  const frameBtns = document.createElement('div');
+  frameBtns.style.cssText = 'display:flex;gap:6px;';
+  const mkFrameBtn = (label: string, title: string, fn: () => void, accent: string) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.title = title;
+    b.style.cssText =
+      `flex:1;font:11px monospace;padding:4px 8px;background:#2a2a3a;color:${accent};` +
+      'border:1px solid #444;border-radius:3px;cursor:pointer;';
+    b.onclick = fn;
+    return b;
+  };
+  frameBtns.appendChild(
+    mkFrameBtn('+ Frame', 'Add a frame after the current one (copies it)', addPsiFrame, '#7fe0a0')
+  );
+  frameBtns.appendChild(mkFrameBtn('🗑 Frame', 'Delete the current frame', deletePsiFrame, '#fbb'));
+  S.psiRow.appendChild(frameBtns);
+
+  S.psiNote = document.createElement('div');
+  S.psiNote.style.cssText = 'color:#9fd;font-size:10px;min-height:12px;';
+  S.psiRow.appendChild(S.psiNote);
+
+  div.appendChild(S.psiRow);
+  rebuildPsiPicker();
 
   const tools: [Tool, string][] = [
     ['pencil', '1/Q ✏ Pencil'],
@@ -318,12 +536,12 @@ function buildStripPanel(): HTMLDivElement {
     const r = S.stripCanvas.getBoundingClientRect();
     const x = e.clientX - r.left;
     const y = e.clientY - r.top;
-    // Item mode: the strip IS the frame selector — click a frame to edit it.
-    if (S.editMode === 'item') {
+    // Item / PSI mode: the strip IS the frame selector — click a frame to edit it.
+    if (S.editMode === 'item' || S.editMode === 'psi') {
       const i = S.stripCellRects.findIndex(
         (c) => x >= c.x && x < c.x + c.w && y >= c.y && y < c.y + c.h
       );
-      if (i >= 0) setItemEditFrame(i);
+      if (i >= 0) (S.editMode === 'psi' ? setPsiEditFrame : setItemEditFrame)(i);
       return;
     }
     if (S.viewOnly) return; // read-only vehicle grid: nothing to select
@@ -460,11 +678,11 @@ function buildTestPanel(): HTMLDivElement {
 
 function buildSheetPanel(): HTMLDivElement {
   const div = panel('SHEET — add & edit frames');
-  div.style.maxWidth = '90vw';
 
   S.newFrameBtn = document.createElement('button');
   S.newFrameBtn.textContent = '+ New Frame';
-  S.newFrameBtn.title = 'Drag a region on the sheet (snaps to 8px). Drag past the edge to grow it.';
+  S.newFrameBtn.title =
+    'Drag a box in the empty area BELOW the sheet (snaps to 8px) to add a frame.';
   S.newFrameBtn.style.cssText =
     'align-self:flex-start;margin-bottom:6px;padding:4px 10px;background:#2a3550;color:#cde;' +
     'border:1px solid #4a5a80;border-radius:3px;cursor:pointer;font:11px monospace;';
@@ -487,7 +705,8 @@ function buildSheetPanel(): HTMLDivElement {
   const note = document.createElement('div');
   note.dataset.role = 'sheet-note';
   note.textContent =
-    'Click + New Frame, then drag a box on the sheet. Click a frame in FRAMES to edit it.';
+    'Sheet is shown 12 frames wide (walk · attack · hurt) — same as export/import. ' +
+    'Click + New Frame, then drag a box in the empty area below the sheet. Click a frame in FRAMES to edit it.';
   note.style.cssText = 'color:#888;font-size:10px;margin-top:4px;max-width:480px;';
   div.appendChild(note);
   return div;

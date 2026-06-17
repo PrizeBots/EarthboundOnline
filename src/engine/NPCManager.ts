@@ -10,6 +10,7 @@ import { loadJSON } from './AssetLoader';
 import { loadSpriteGroup, getSpriteGroupMeta } from './SpriteManager';
 import { NPC, NPCKind } from './NPC';
 import { spawnDamageNumber } from './Emitter';
+import { triggerHitstop, addShake, FLASH_MS } from './Juice';
 import { playEventSfxAt } from './SfxEvents';
 import { Direction, POSES } from '../types';
 import type { NpcUpdate } from './Network';
@@ -17,6 +18,7 @@ import { createInterpolator } from './RemoteInterp';
 import { loadShops, shopStoreForNpc } from './Shop';
 import type { EntityCol } from './EntityStats';
 import { hasFlag } from './PlayerFlags';
+import { loadGifts, tagGift, giftGone } from './Gifts';
 
 /** ROM NPC config id from a placement key "areaIdx:npcId:occ", or -1. */
 function npcIdFromKey(k: string | undefined): number {
@@ -293,6 +295,10 @@ export async function loadNPCs(): Promise<void> {
   enemySpriteSet = new Set(enemyCfg.enemySpriteGroups ?? []);
   enemyDefaultHp = enemyCfg.spawners?.[0]?.hp ?? 24;
 
+  // Gift catalog (present contents + flags) — loaded before building so
+  // buildStaticNpcs can tag present-box props as gifts.
+  await loadGifts();
+
   // ROM placements + authored overrides (sprite groups marked hostile in
   // enemy_spawns.json become kind 'enemy').
   npcsById = buildStaticNpcs(raw, overrides);
@@ -358,6 +364,7 @@ function buildStaticNpcs(raw: RawNPC[], overrides: NpcOverrides | null): (NPC | 
     if (kind === 'person') npc.shopStore = shopStoreForNpc(npcIdFromKey(r.k));
     npc.placementKey = r.k !== undefined ? r.k : `+${addIdx++}`;
     npcByKey.set(npc.placementKey, npc);
+    tagGift(npc); // present boxes (sprite 195) with a catalog entry become gifts
     return npc;
   });
   for (const npc of arr) {
@@ -387,12 +394,25 @@ export async function reloadNpcsLive(): Promise<void> {
     // saveOverride() primed this cache entry with the just-saved data.
     loadJSON<NpcOverrides>('/overrides/npcs.json').catch(() => null),
   ]);
+  await loadGifts(); // re-pull authored gift contents so re-tagging is current
   npcsById = buildStaticNpcs(raw, overrides);
   let id = npcsById.length;
   for (const npc of roamers) npcsById[id++] = npc;
   // Cars sit after the enemy pool — re-append the existing instances so wire
   // ids stay aligned and live cars keep their positions across the reload.
   for (const car of cars) npcsById[id++] = car;
+}
+
+// Epoch-ms of the local player's last swing. Enemy-hit juice (hitstop/shake)
+// only fires within ATTACK_CREDIT_MS of it, so townsfolk defending themselves or
+// other players hitting nearby enemies don't rattle YOUR screen when you're not
+// fighting. The white flash still plays for every hit — it's harmless cosmetic.
+let lastLocalAttackAt = 0;
+const ATTACK_CREDIT_MS = 400; // swing + travel window a hit is credited to your attack
+
+/** Stamp that the local player just swung (called from Game on a started attack). */
+export function noteLocalAttack(): void {
+  lastLocalAttackAt = Date.now();
 }
 
 /** Apply authoritative enemy HP (welcome snapshot + on-damage deltas). */
@@ -404,7 +424,20 @@ export function applyNpcHp(rows: [number, number, number][]): void {
     npc.applyHp(hp, maxHp);
     // Pop a damage number on a real hit. Guard prev > 0 so the join snapshot
     // (0 -> full HP on inactive pool slots) and respawns don't spawn numbers.
-    if (prev > 0 && hp < prev) spawnDamageNumber(npc.x, npc.y, prev - hp);
+    if (prev > 0 && hp < prev) {
+      const dmg = prev - hp;
+      const now = Date.now();
+      spawnDamageNumber(npc.x, npc.y, dmg);
+      // Flash the struck sprite white — always; it's harmless cosmetic feedback.
+      npc.flashUntil = now + FLASH_MS;
+      // Freeze + shake only when this is plausibly OUR hit (we swung recently).
+      // Otherwise townsfolk/other players fighting nearby would shake your screen
+      // while you're just walking through.
+      if (now - lastLocalAttackAt < ATTACK_CREDIT_MS) {
+        triggerHitstop(2);
+        addShake(Math.min(0.5, 0.18 + dmg * 0.02));
+      }
+    }
     // Died/hidden: clear its interp buffer so a later respawn (which teleports
     // it back to its spawn point) starts fresh instead of gliding across town.
     // Positional death sfx, but only on a real kill (prev > 0 skips the join
@@ -413,6 +446,14 @@ export function applyNpcHp(rows: [number, number, number][]): void {
       if (prev > 0) playEventSfxAt('enemy-die', npc.x, npc.y);
       npcInterp.drop(String(id));
     }
+  }
+}
+
+/** Apply server status-set deltas to actors: [id, [statusId,…]] → npc.statuses. */
+export function applyNpcStatus(rows: [number, string[]][]): void {
+  for (const [id, statuses] of rows) {
+    const npc = npcsById[id];
+    if (npc) npc.statuses = statuses;
   }
 }
 
@@ -629,6 +670,7 @@ export function getNearbyNPCs(px: number, py: number): NPC[] {
   const ax = Math.floor(px / AREA_PX);
   const ay = Math.floor(py / AREA_PX);
   const result: NPC[] = [];
+  const now = Date.now();
 
   for (let dy = -NEAR_RANGE; dy <= NEAR_RANGE; dy++) {
     for (let dx = -NEAR_RANGE; dx <= NEAR_RANGE; dx++) {
@@ -639,6 +681,7 @@ export function getNearbyNPCs(px: number, py: number): NPC[] {
       if (!bucket) continue;
       for (const npc of bucket) {
         if (npc.dead) continue; // dead enemy / inactive slot — hidden
+        if (npc.isGift && giftGone(npc, now)) continue; // present already opened by this player
         ensureSheet(npc);
         result.push(npc);
       }

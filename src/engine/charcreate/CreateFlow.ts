@@ -8,7 +8,9 @@
  * re-validates the alloc and owns the canonical save.
  */
 import { CharacterSummary, createCharacter, ApiError } from '../Auth';
-import { createStatRadar, Alloc } from './StatRadar';
+import { createStatRadar, Alloc, STAT_KEYS, STAT_MIN } from './StatRadar';
+import { deriveCombatStats } from './deriveCombatStats';
+import { createDerivedAttrs } from './DerivedStatsPanel';
 import { Recolorer } from './Recolor';
 import {
   loadSpriteCatalog,
@@ -16,9 +18,11 @@ import {
   loadSpriteImage,
   drawSouthFrame,
 } from './spritePreview';
-import { ensureEbFont, ebText, ebButton, injectEbChrome } from '../EbText';
+import { ensureEbFont, ebText, ebButton, ebWindow, injectEbChrome } from '../EbText';
+import { playCharSelectMusic } from '../MusicManager';
 
 const NAME_MAX = 24;
+const FAV_MAX = 24; // favorite thing / favorite food (EarthBound naming prompts)
 const SPRITE_CHOICES = 3;
 
 export async function mountCreateFlow(
@@ -27,6 +31,11 @@ export async function mountCreateFlow(
 ): Promise<void> {
   injectStyles();
   injectEbChrome();
+  // Same naming-screen song as character select ("Your Name, Please"). Called
+  // before any await so it stays inside the click gesture that opened this screen
+  // (the AudioContext can only resume from a gesture); idempotent if it's already
+  // playing — e.g. you came straight here without leaving the select music.
+  playCharSelectMusic();
   await Promise.all([loadSpriteCatalog(), ensureEbFont()]);
 
   let chosenSprite: number | null = null;
@@ -34,25 +43,33 @@ export async function mountCreateFlow(
   let alloc: Alloc | null = null;
   let pointsLeft = 10;
 
-  const root = el('div', 'eb-cc');
+  const outer = el('div', 'eb-cc');
   container.innerHTML = '';
-  container.appendChild(root);
+  container.appendChild(outer);
 
-  root.appendChild(heading('CREATE CHARACTER'));
+  // EarthBound-style scrolling green/blue checkerboard, behind everything. Fixed
+  // + z-index:-1 so it fills the viewport under the panes and scrolls while the
+  // content scrolls over it. Mounted/unmounted with this screen only, so the
+  // other Start Screen tabs keep the plain dark backdrop. (We don't have the ROM
+  // background — this is a procedural recreation; tune colors in injectStyles.)
+  outer.appendChild(el('div', 'eb-cc-bg'));
 
-  // --- name ---
-  const name = document.createElement('input');
-  name.className = 'eb-cc-name';
-  name.placeholder = 'Character name';
-  name.maxLength = NAME_MAX;
-  name.spellcheck = false;
-  name.addEventListener('input', refreshCreate);
-  root.appendChild(labeled('NAME', name));
+  // Title banner, then a few separate EarthBound menu windows ("panes") laid out
+  // across the checkerboard (they wrap to a column on narrow screens). Actions
+  // get their own pane at the bottom.
+  outer.appendChild(heading('CREATE CHARACTER'));
+  const panes = el('div', 'eb-cc-panes');
+  outer.appendChild(panes);
 
-  // --- sprite picker (3 random) ---
-  root.appendChild(sectionTitle('Choose a Character'));
+  // --- LEFT COLUMN: one pane stacking Choose a Character → Tweak Colors →
+  // Name Your Character. Colors reveal once a sprite is picked. ---
+  const idPane = ebWindow('eb-cc-pane');
+  panes.appendChild(idPane);
+
+  // 1) Choose a Character (top).
+  idPane.appendChild(sectionTitle('Choose a Character'));
   const tiles = el('div', 'eb-cc-sprites');
-  root.appendChild(tiles);
+  idPane.appendChild(tiles);
   const ids = pickRandomSprites(SPRITE_CHOICES);
   const tileEls: HTMLButtonElement[] = [];
   await Promise.all(
@@ -71,19 +88,50 @@ export async function mountCreateFlow(
     })
   );
 
-  // --- recolor (revealed after a sprite is chosen) ---
+  // 2) Tweak Colors — in the same pane, just under the character choices.
+  // Hidden until a sprite is chosen (buildRecolorUI fills recolorBox).
+  const colorPane = el('div', 'eb-cc-colorsec');
+  colorPane.style.display = 'none';
+  idPane.appendChild(colorPane);
   const recolorBox = el('div', 'eb-cc-recolor');
-  recolorBox.style.display = 'none';
-  root.appendChild(recolorBox);
+  colorPane.appendChild(recolorBox);
   const previewCanvas = document.createElement('canvas');
   previewCanvas.width = 64;
   previewCanvas.height = 72;
   previewCanvas.className = 'eb-cc-preview';
 
-  // --- stat radar ---
-  root.appendChild(sectionTitle('ALLOCATE STATS'));
-  // Declared BEFORE the radar: createStatRadar fires onChange synchronously
-  // during construction, and the callback writes to pointsReadout.
+  // 3) Name Your Character (bottom): name + favorite thing + favorite food.
+  idPane.appendChild(sectionTitle('Name Your Character'));
+  const name = document.createElement('input');
+  name.className = 'eb-cc-name';
+  name.placeholder = 'Character name';
+  name.maxLength = NAME_MAX;
+  name.spellcheck = false;
+  name.addEventListener('input', refreshCreate);
+  idPane.appendChild(labeled('NAME', name));
+  const favThing = document.createElement('input');
+  favThing.className = 'eb-cc-name';
+  favThing.placeholder = 'e.g. baseball';
+  favThing.maxLength = FAV_MAX;
+  favThing.spellcheck = false;
+  favThing.addEventListener('input', refreshCreate);
+  idPane.appendChild(labeled('FAVORITE THING', favThing));
+  const favFood = document.createElement('input');
+  favFood.className = 'eb-cc-name';
+  favFood.placeholder = 'e.g. steak';
+  favFood.maxLength = FAV_MAX;
+  favFood.spellcheck = false;
+  favFood.addEventListener('input', refreshCreate);
+  idPane.appendChild(labeled('FAVORITE FOOD', favFood));
+
+  // --- Pane: stats. The pentagon PLUS the SAME derived-stat preview the in-game
+  // level-up modal shows (createDerivedAttrs), so you see what the pentagon does
+  // to HP / Offense / Defense / … live as you allocate. ---
+  const statPane = ebWindow('eb-cc-pane');
+  panes.appendChild(statPane);
+  statPane.appendChild(sectionTitle('ALLOCATE STATS'));
+  // Declared BEFORE the radar: createStatRadar fires onChange during its initial
+  // draw, and the callbacks write to these.
   const pointsReadout = el('div', 'eb-cc-points');
   const setPoints = (left: number): void => {
     pointsReadout.innerHTML = '';
@@ -93,26 +141,41 @@ export async function mountCreateFlow(
         : ebText('ALL POINTS SPENT', 1, '#6fdc8c')
     );
   };
+  // The "+N" is measured against the all-minimum build, so each row shows both
+  // the level-1 derived value AND how much the allocation has earned.
+  const baseDerived = deriveCombatStats(
+    STAT_KEYS.reduce((o, k) => ((o[k] = STAT_MIN), o), {} as Alloc)
+  );
+  const attrs = createDerivedAttrs((dkey, d) => ({
+    shown: d[dkey],
+    delta: d[dkey] - baseDerived[dkey],
+  }));
   const radar = createStatRadar((a, left) => {
     alloc = a;
     pointsLeft = left;
     setPoints(left);
+    attrs.render(a);
     refreshCreate();
   });
-  root.appendChild(radar.el);
-  root.appendChild(pointsReadout);
+  statPane.appendChild(radar.el);
+  statPane.appendChild(pointsReadout);
+  statPane.appendChild(sectionTitle('YOUR STATS'));
+  statPane.appendChild(attrs.el);
   alloc = radar.getAlloc();
   pointsLeft = radar.pointsLeft();
+  attrs.render(alloc);
 
-  // --- actions ---
+  // --- Pane: actions ---
+  const actions = ebWindow('eb-cc-actions');
+  outer.appendChild(actions);
   const err = el('div', 'eb-ss-error');
-  root.appendChild(err);
+  actions.appendChild(err);
   const create = ebButton('Create', () => void doCreate(), 2);
   create.style.justifyContent = 'center';
-  root.appendChild(create);
+  actions.appendChild(create);
   const back = ebButton('< Back', () => opts.onCancel(), 2);
   back.style.justifyContent = 'center';
-  root.appendChild(back);
+  actions.appendChild(back);
 
   setPoints(pointsLeft);
   refreshCreate();
@@ -123,7 +186,7 @@ export async function mountCreateFlow(
     const img = await loadSpriteImage(id);
     recolorer = new Recolorer(img);
     buildRecolorUI();
-    recolorBox.style.display = '';
+    colorPane.style.display = '';
     refreshCreate();
   }
 
@@ -170,7 +233,12 @@ export async function mountCreateFlow(
   }
 
   function refreshCreate(): void {
-    const ok = !!name.value.trim() && chosenSprite != null && pointsLeft === 0;
+    const ok =
+      !!name.value.trim() &&
+      !!favThing.value.trim() &&
+      !!favFood.value.trim() &&
+      chosenSprite != null &&
+      pointsLeft === 0;
     create.disabled = !ok;
   }
 
@@ -184,6 +252,8 @@ export async function mountCreateFlow(
         spriteGroupId: chosenSprite,
         appearance: recolorer.toDataURL(),
         alloc,
+        favoriteThing: favThing.value.trim(),
+        favoriteFood: favFood.value.trim(),
       });
       opts.onCreated(character);
     } catch (e) {
@@ -220,7 +290,41 @@ function labeled(label: string, input: HTMLElement): HTMLElement {
 function injectStyles(): void {
   if (document.getElementById('eb-cc-styles')) return;
   const css = `
-  .eb-cc { display: flex; flex-direction: column; gap: 8px; }
+  .eb-cc { display: flex; flex-direction: column; align-items: center; gap: 14px; position: relative; }
+  /* A few separate EB menu windows on the checkerboard. They flow in a row and
+     wrap to a column on narrow screens; the hidden Colors pane just collapses. */
+  .eb-cc-panes {
+    display: flex; flex-wrap: wrap; gap: 16px;
+    justify-content: center; align-items: flex-start; width: 100%;
+  }
+  /* Each pane is an EB window (.eb-win supplies the black fill + white border). */
+  .eb-cc-pane {
+    width: 340px; max-width: 100%; box-sizing: border-box;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .eb-cc-actions {
+    width: 340px; max-width: 100%; box-sizing: border-box;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  /* EarthBound "Choose a file" backdrop: a green/blue checkerboard that drifts
+     diagonally. repeating-conic-gradient draws a 2x2 checker per tile (axis-aligned
+     edges = crisp pixels); --sq is the square size, tile = 2*--sq. Tweak the two
+     colors / speed here to taste. */
+  .eb-cc-bg {
+    --eb-checker-green: #38b038;
+    --eb-checker-blue: #2a52d8;
+    --sq: 44px;
+    position: fixed; inset: 0; z-index: -1;
+    background:
+      repeating-conic-gradient(
+        var(--eb-checker-blue) 0% 25%, var(--eb-checker-green) 0% 50%
+      ) 0 0 / calc(var(--sq) * 2) calc(var(--sq) * 2);
+    animation: eb-cc-bg-scroll 3.2s linear infinite;
+  }
+  @keyframes eb-cc-bg-scroll {
+    to { background-position: calc(var(--sq) * 2) calc(var(--sq) * 2); }
+  }
+  @media (prefers-reduced-motion: reduce) { .eb-cc-bg { animation: none; } }
   .eb-cc-heading { display: flex; justify-content: center; margin-bottom: 2px; }
   .eb-cc-section { display: flex; justify-content: flex-start; margin-top: 8px; }
   .eb-cc-heading canvas, .eb-cc-section canvas, .eb-cc-field canvas, .eb-cc-points canvas { image-rendering: pixelated; }

@@ -21,6 +21,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const status = require('./status'); // EB status-condition engine (catalog + timer/DoT math)
 
 // --- Map constants (mirror src/types.ts) ---
 const MINITILE = 8;
@@ -83,14 +84,16 @@ const KB_MIN = 5; // px — even a light hit nudges
 const KB_MAX = 44; // px — cap so a big/crit hit can't fling across the room
 const KB_PER_DMG = 1.6; // px of knockback per point of damage dealt
 const KB_STEP = 4; // px — collision sampling step while sliding the knockback (< MINITILE)
-// Stun: a % proc per landed hit FREEZES the victim briefly. Capped + diminishing
-// by an immunity window after each stun, so hits can't chain into a perma-freeze:
-// the frozen fraction tops out at STUN_MS / (STUN_MS + STUN_IMMUNE_MS). v1 stuns
-// only the in-sim actors (enemies/NPCs) — player stun needs a client input-lock
-// (separate trust surface) and is a follow-up; players still get knocked back.
-const STUN_MS = 550; // how long a stun holds the victim frozen
-const STUN_IMMUNE_MS = 1500; // after a stun ends, victim can't be re-stunned for this long
-const PLAYER_STUN_CHANCE = 12; // % a player's landed hit stuns its target (per-weapon stat: TODO)
+// Status conditions (Paralysis/Numb, Diamond, Sleep, Poison, …) are the EB-derived
+// hit-reaction layer. The catalog + all the timer/immunity/DoT math live in
+// server/status.js (shared with the host for players); npcSim just rolls procs and
+// reads the action-block. Paralysis ("numb") is the old ad-hoc stun — a % proc that
+// freezes the victim, capped by a post-effect immunity window so it can't chain into
+// a perma-lock. v1 applies it only to in-sim actors (enemies/NPCs); player-side
+// status enforcement needs a client input-lock (a follow-up) — players still get
+// knocked back. Per-entity proc/resist from the ROM vulnerability table is a TODO.
+const PLAYER_PARALYSIS_CHANCE = 12; // % a player's landed hit paralyzes its target (per-weapon: TODO)
+const ENEMY_PARALYZE_CHANCE = 8; // % an enemy's landed hit paralyzes the player it struck (per-entity: TODO)
 
 // Knockback distance for a hit that dealt `dmg` damage (clamped to [MIN,MAX]).
 function knockDist(dmg) {
@@ -184,6 +187,23 @@ const NPC_FLEE_LEASH = 220; // a coward may run further before the home leash bi
 // When an NPC hits an enemy, the enemy remembers its attacker this long and (if
 // no player is in range — players keep priority) turns to retaliate against it.
 const ENEMY_AGGRO_MEMORY_MS = 4000;
+
+// --- Vehicles (Entity Manager `vehicle` flag) ---
+// A vehicle is a friendly, autonomous actor (kind 'person', so it carries HP +
+// a health bar + is destructible). It roams like an NPC, but HUNTS foes (enemies
+// + PKers), and instead of a melee swing it has ONE attack: it just collides.
+// On body-contact it deals its damage with a much larger, *scattered* knockback
+// (forward + sideways variance) that plows foes out of the way; friendlies take
+// no damage but are nudged minimally aside so the plow never stalls. Vehicle
+// movement is wall-only (it drives THROUGH the crowd), which is what sells it.
+const VEHICLE_SPEED = 1.5; // px/tick cruising (townsfolk wander 0.5; enemy chase 1.6)
+const VEHICLE_DAMAGE = 14; // HP per collide (heavy — the whole point of a car)
+const VEHICLE_DETECT = 280; // px — spots and bears down on foes from far off
+const VEHICLE_HIT_COOLDOWN_MS = 450; // min ms between collide-hits on the same victim
+const VEHICLE_KB_MULT = 2.6; // plow knockback force vs a normal same-damage hit
+const VEHICLE_KB_VARIANCE = 0.9; // ±rad (~50°) random spread so a pack scatters
+const VEHICLE_FRIENDLY_KB = 6; // px gentle shove that clears a friendly from the lane
+const VEHICLE_HP = 80; // default max HP if the Entity Manager set none
 
 // Pose -> wire code, indexing POSES in src/types.ts: walk,climb,attack,hurt.
 // Broadcast in npc_update rows so every client sees the same animation pose.
@@ -514,6 +534,35 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     return e && e[key] != null ? e[key] : def;
   }
 
+  // Per-element status vulnerability % for a sprite (100 = fully susceptible,
+  // 0 = immune), straight from the ROM enemy catalog's `vuln` block. The status
+  // engine scales each proc by this — a canon resist. Tolerates the legacy
+  // "50%" string form as well as numeric. `def` for sprites with no catalog
+  // entry (townsfolk): fully vulnerable.
+  function entityVuln(sprite, key, def = 100) {
+    const e = entityDefs[String(sprite)];
+    const v = e && e.vuln ? e.vuln[key] : undefined;
+    if (typeof v === 'number') return v;
+    if (typeof v === 'string') {
+      const m = /-?\d+/.exec(v);
+      if (m) return +m[0];
+    }
+    return def;
+  }
+
+  // The status-inflict spec an enemy's swing carries ([{type, chance}]). Prefers
+  // an authored general `inflict` array (Entity Manager / catalog), else the
+  // single `paralysisChance` field, else the flat ENEMY_PARALYZE_CHANCE so an
+  // unauthored enemy still procs paralysis as before. The same spec applies
+  // whether it hits a player or a townsperson — the target's per-element resist
+  // (entityVuln / _playerVuln) scales each proc when it lands.
+  function enemyInflict(n) {
+    const authored = status.normalizeInflict(entityStat(n.sprite, 'inflict', null));
+    if (authored.length) return authored;
+    const pc = entityStat(n.sprite, 'paralysisChance', ENEMY_PARALYZE_CHANCE);
+    return pc > 0 ? [{ type: status.STATUS.PARALYSIS, chance: pc }] : [];
+  }
+
   // Roll an enemy's loot on death from the merged catalog: money is always
   // granted; the item drops with probability `drop.rate` (ROM "Item Rarity",
   // e.g. 1/128). Returns {money, item:{item,itemName}|null} or null if neither.
@@ -594,6 +643,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   let onPlayerHitCb = null; // set in start(): (targetPlayerId, dmg, byPlayerId) => void (PvP)
   let getPlayersCb = null; // set in start(): () => player snapshots (PvP targeting)
   let onPickupCb = null; // set in start(): (playerId, drop) => bool — host claims a ground drop
+  let onPlayerShoveCb = null; // set in start(): (playerId, spot) => void — push a player, NO damage
+  // Per-player cooldown so a vehicle plowing over a foe doesn't re-hit them every
+  // tick (in-sim actors carry their own `lastVehicleHit`; players don't).
+  const vehiclePlayerHitAt = Object.create(null);
 
   // --- Ground loot drops (first-touch FFA pickup; never despawn) -------------
   // A drop is a world entity at a fixed spot. The tick finds the first player
@@ -696,6 +749,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         isEnemy: false,
         pk: false, // PK flag (see canHurt). Enemies set true in build*; people false.
         roam: false,
+        isVehicle: false, // vehicle behaviour (tickVehicle): hunt + plow. Set in build*.
+        lastVehicleHit: 0, // ms this actor was last struck by a vehicle (per-victim cd)
         hp: 0,
         maxHp: 0,
         level: 1,
@@ -726,10 +781,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         // refreshes on a timer so the shuffle reads as restless, not twitchy.
         jitterAng: 0,
         jitterUntil: 0,
-        // Stun (combat hit-reactions): frozen until stunUntil; can't be re-stunned
-        // until stunImmuneUntil (the diminishing window that caps perma-freeze).
-        stunUntil: 0,
-        stunImmuneUntil: 0,
+        // Active status conditions (see server/status.js): { [type]: {until,…} }.
+        // Paralysis/numb, poison, etc. Empty = clean.
+        statuses: {},
       },
       fields
     );
@@ -758,15 +812,29 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         });
       }
       const enemy = isEnemyPlacement(r);
-      const person = !enemy && r.kind === 'person'; // props/deleted carry no HP
+      // A vehicle (Entity Manager flag) is a friendly NPC with its own behaviour.
+      // It's NOT an enemy; it rides on the 'person' kind so it has HP, a health
+      // bar, and lives in the actor list — see tickVehicle.
+      const vehicle = !enemy && !!entityStat(r.sprite, 'vehicle', false);
+      const person = !enemy && (r.kind === 'person' || vehicle); // props/deleted carry no HP
       // Enemy stats come from the merged per-entity table (ROM catalog overlaid
       // by authored entities), keyed by sprite — same source the spawner pool
       // uses, so a placed enemy and a spawned one of the same sprite match.
-      const hp = enemy ? entityStat(r.sprite, 'hp', STATIC_ENEMY_HP) : person ? NPC_HP : 0;
-      const speed = enemy ? entityStat(r.sprite, 'speed', ENEMY_SPEED) : ENEMY_SPEED;
+      const hp = enemy
+        ? entityStat(r.sprite, 'hp', STATIC_ENEMY_HP)
+        : vehicle
+          ? entityStat(r.sprite, 'hp', VEHICLE_HP)
+          : person
+            ? NPC_HP
+            : 0;
+      const speed = enemy
+        ? entityStat(r.sprite, 'speed', ENEMY_SPEED)
+        : vehicle
+          ? entityStat(r.sprite, 'speed', VEHICLE_SPEED)
+          : ENEMY_SPEED;
       return baseActor({
         id,
-        kind: enemy ? 'enemy' : r.kind,
+        kind: enemy ? 'enemy' : vehicle ? 'person' : r.kind,
         sprite: r.sprite,
         x: r.x,
         y: r.y,
@@ -776,22 +844,31 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         homeDir: r.dir,
         indoor: !!(sectorForTile(Math.floor(r.x / TILE), Math.floor(r.y / TILE)) || {}).indoor,
         isEnemy: enemy,
-        pk: enemy, // enemies are always PK; townsfolk never are
+        pk: enemy, // enemies are always PK; townsfolk/vehicles never are
         // Placed enemies roam, chase, and attack exactly like spawner-pooled
         // ones — `roam` is the tick dispatch flag that routes to tickEnemy
         // (full enemy AI) rather than tickNpc (townsfolk self-defense).
         roam: enemy,
+        isVehicle: vehicle,
         hp,
         maxHp: hp,
         level: enemy ? entityStat(r.sprite, 'level', DEFAULT_ENEMY_LEVEL) : 1,
         xp: enemy ? entityStat(r.sprite, 'xp', DEFAULT_ENEMY_XP) : 0,
-        damage: enemy ? entityStat(r.sprite, 'damage', ENEMY_DAMAGE) : ENEMY_DAMAGE,
+        damage: enemy
+          ? entityStat(r.sprite, 'damage', ENEMY_DAMAGE)
+          : vehicle
+            ? entityStat(r.sprite, 'damage', VEHICLE_DAMAGE)
+            : ENEMY_DAMAGE,
         attackCooldown: enemy
           ? entityStat(r.sprite, 'attackCooldownMs', ENEMY_ATTACK_COOLDOWN_MS)
           : ENEMY_ATTACK_COOLDOWN_MS,
         speed,
         chaseSpeed: speed * CHASE_RATIO,
-        detectRange: enemy ? entityStat(r.sprite, 'detectRange', DETECT_RANGE) : DETECT_RANGE,
+        detectRange: enemy
+          ? entityStat(r.sprite, 'detectRange', DETECT_RANGE)
+          : vehicle
+            ? entityStat(r.sprite, 'detectRange', VEHICLE_DETECT)
+            : DETECT_RANGE,
         attackRange: enemy ? entityStat(r.sprite, 'attackRange', ATTACK_RANGE) : ATTACK_RANGE,
       });
     });
@@ -1249,9 +1326,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             knockbackPlayerSpot(e.x, e.y, n.x, n.y, NPC_DAMAGE)
           );
       } else {
-        // Townsfolk knock enemies back but don't stun them (a deliberate
-        // deterrent, not a lockdown) — stunChance 0.
-        applyDamage(e, NPC_DAMAGE, now, null, { x: n.x, y: n.y, stunChance: 0 });
+        // Townsfolk knock enemies back but don't paralyze them (a deliberate
+        // deterrent, not a lockdown) — no status inflict.
+        applyDamage(e, NPC_DAMAGE, now, null, { x: n.x, y: n.y, inflict: [] });
         e.aggressor = n; // the enemy remembers (and may turn on) whoever hit it
         e.aggroUntil = now + ENEMY_AGGRO_MEMORY_MS;
       }
@@ -1368,6 +1445,139 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     } else {
       startIdle(n);
     }
+  }
+
+  // --- Vehicle behaviour (the Entity Manager `vehicle` flag) ---
+
+  // Scatter heading for a plow hit: blend the car's travel direction (forward),
+  // the perpendicular toward the victim's SIDE (shove them out of the lane), and
+  // a little straight-away, then jitter — so a crowd flies apart instead of all
+  // sliding the same way. Returns a unit vector.
+  function vehicleKnockDir(travelX, travelY, carX, carY, vx, vy) {
+    let ax = vx - carX;
+    let ay = vy - carY;
+    const al = Math.hypot(ax, ay) || 1;
+    ax /= al;
+    ay /= al;
+    const tl = Math.hypot(travelX, travelY);
+    const tx = tl > 0.01 ? travelX / tl : ax; // parked → just shove away
+    const ty = tl > 0.01 ? travelY / tl : ay;
+    let px = -ty; // perpendicular to travel…
+    let py = tx;
+    if (px * ax + py * ay < 0) {
+      px = -px; // …pointed toward the side the victim is on
+      py = -py;
+    }
+    let dx = tx * 0.5 + px * 0.95 + ax * 0.3;
+    let dy = ty * 0.5 + py * 0.95 + ay * 0.3;
+    const dl = Math.hypot(dx, dy) || 1;
+    dx /= dl;
+    dy /= dl;
+    const ang = (rng() * 2 - 1) * VEHICLE_KB_VARIANCE; // random spread
+    const c = Math.cos(ang);
+    const s = Math.sin(ang);
+    return { x: dx * c - dy * s, y: dx * s + dy * c };
+  }
+
+  // Resolve everything the vehicle's body overlaps after a step: foes (enemies +
+  // PKers) take the collide-hit + scatter knockback (per-victim cooldown so it's
+  // one hit, not one-per-tick); friendlies (townsfolk + peaceful players) take no
+  // damage, just a minimal nudge aside so the plow never stalls. `travelX/Y` is
+  // this tick's movement, biasing the knockback forward + sideways.
+  function plow(n, travelX, travelY, players, now) {
+    const [bx, by, bw, bh] = actorBox(n, n.x, n.y);
+    for (const e of enemies) {
+      if (e.dead || e.hp <= 0 || !canHurt(n, e)) continue;
+      const [ex, ey, ew, eh] = actorBox(e, e.x, e.y);
+      if (!aabb(bx, by, bw, bh, ex, ey, ew, eh)) continue;
+      if (now - (e.lastVehicleHit || 0) < VEHICLE_HIT_COOLDOWN_MS) continue;
+      e.lastVehicleHit = now;
+      const dir = vehicleKnockDir(travelX, travelY, n.x, n.y, e.x, e.y);
+      applyDamage(e, n.damage, now, null, {
+        x: n.x,
+        y: n.y,
+        inflict: [],
+        kb: { mult: VEHICLE_KB_MULT, dir },
+      });
+    }
+    // Friendly townsfolk (non-enemy actors): gentle shove out of the lane.
+    for (const o of actors) {
+      if (o === n || o.dead || o.kind === 'deleted' || o.isEnemy) continue;
+      const [ox, oy, ow, oh] = actorBox(o, o.x, o.y);
+      if (!aabb(bx, by, bw, bh, ox, oy, ow, oh)) continue;
+      const dir = vehicleKnockDir(travelX, travelY, n.x, n.y, o.x, o.y);
+      pushActor(o, n.x, n.y, 0, { dir, dist: VEHICLE_FRIENDLY_KB }); // minimal nudge
+    }
+    if (players)
+      for (const p of players) {
+        if (p.editor || (p.hp !== undefined && p.hp <= 0)) continue;
+        const px = p.x - COL_W / 2;
+        const py = p.y + COL_OY;
+        if (!aabb(bx, by, bw, bh, px, py, COL_W, COL_H)) continue;
+        const dir = vehicleKnockDir(travelX, travelY, n.x, n.y, p.x, p.y);
+        if (canHurt(n, { isEnemy: false, pk: p.pk })) {
+          if (now - (vehiclePlayerHitAt[p.id] || 0) < VEHICLE_HIT_COOLDOWN_MS) continue;
+          vehiclePlayerHitAt[p.id] = now;
+          if (onPlayerHitCb)
+            onPlayerHitCb(
+              p.id,
+              n.damage,
+              null,
+              knockbackPlayerSpot(p.x, p.y, n.x, n.y, n.damage, { mult: VEHICLE_KB_MULT, dir })
+            );
+        } else if (onPlayerShoveCb) {
+          const spot = knockbackPlayerSpot(p.x, p.y, n.x, n.y, 0, {
+            dir,
+            dist: VEHICLE_FRIENDLY_KB,
+          });
+          if (spot) onPlayerShoveCb(p.id, spot);
+        }
+      }
+  }
+
+  // One tick of a vehicle: bear down on the nearest foe (enemy/PKer) if one is in
+  // range, else cruise on a wandering heading. Movement is WALL-ONLY — the car
+  // drives straight through the crowd (plow() resolves who it runs over), which
+  // is what makes the plow read. Never leashed to home; doesn't flinch.
+  function tickVehicle(n, players, now) {
+    let hx;
+    let hy;
+    const foe = n.hp > 0 ? nearestFoeTo(n, n.detectRange || VEHICLE_DETECT, players) : null;
+    if (foe) {
+      hx = foe.enemy.x - n.x;
+      hy = foe.enemy.y - n.y;
+      n.life = 'idle';
+    } else {
+      if (n.life !== 'drive' || --n.timer <= 0) {
+        const c = CARDINALS[rand(0, CARDINALS.length - 1)];
+        n.walkDx = c.dx;
+        n.walkDy = c.dy;
+        n.life = 'drive';
+        n.timer = rand(40, 120);
+      }
+      hx = n.walkDx;
+      hy = n.walkDy;
+    }
+    const len = Math.hypot(hx, hy) || 1;
+    const ux = hx / len;
+    const uy = hy / len;
+    const sp = n.speed || VEHICLE_SPEED;
+    const nx = n.x + ux * sp;
+    const ny = n.y + uy * sp;
+    const [bx, by, bw, bh] = actorBox(n, nx, ny);
+    if (blocked(bx, by, bw, bh)) {
+      n.timer = 0; // walled in — repick a heading next tick
+      plow(n, ux, uy, players, now); // still shove whatever we're pressed against
+      return;
+    }
+    const travelX = nx - n.x;
+    const travelY = ny - n.y;
+    n.x = nx;
+    n.y = ny;
+    n.dir = faceDir(ux, uy);
+    n.dirty = true;
+    stepAnimation(n);
+    plow(n, travelX, travelY, players, now);
   }
 
   // --- Enemy behaviour & combat ---
@@ -1705,7 +1915,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
                   target.id,
                   res.dmg,
                   n,
-                  knockbackPlayerSpot(target.x, target.y, n.x, n.y, res.dmg)
+                  knockbackPlayerSpot(target.x, target.y, n.x, n.y, res.dmg),
+                  enemyInflict(n)
                 );
               if (res.crit && broadcastCb)
                 broadcastCb({
@@ -1718,11 +1929,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
                 });
             }
           } else {
-            applyDamage(target, n.damage, now, null, {
-              x: n.x,
-              y: n.y,
-              stunChance: entityStat(n.sprite, 'stunChance', 0),
-            });
+            // Enemy → townsperson: the SAME inflict spec the enemy uses on
+            // players (enemyInflict); tryStatus scales it by the victim's resist.
+            applyDamage(target, n.damage, now, null, { x: n.x, y: n.y, inflict: enemyInflict(n) });
           }
         }
         return;
@@ -1900,17 +2109,21 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // Shove an in-sim actor away from (fromX,fromY) by knockDist(dmg) px, sliding
   // in KB_STEP increments and stopping at the first step that would put its
   // collision box into a wall/edge. Marks it dirty so the new spot broadcasts.
-  function pushActor(o, fromX, fromY, dmg) {
+  // `opts` (optional) tunes the shove: `dir` overrides the away-from-attacker
+  // unit heading (vehicles aim the scatter), `mult` scales the distance past the
+  // normal cap (a car plows much further than a fist). Default = old behaviour.
+  function pushActor(o, fromX, fromY, dmg, opts) {
     if (!o || o.dead) return;
-    let ux = o.x - fromX;
-    let uy = o.y - fromY;
+    let ux = opts && opts.dir ? opts.dir.x : o.x - fromX;
+    let uy = opts && opts.dir ? opts.dir.y : o.y - fromY;
     const len = Math.hypot(ux, uy);
-    if (len < 0.001) return; // co-located — no push direction
+    if (len < 0.001) return; // co-located / no heading — no push
     ux /= len;
     uy /= len;
     let cx = o.x;
     let cy = o.y;
-    let rem = knockDist(dmg);
+    let rem =
+      opts && opts.dist != null ? opts.dist : knockDist(dmg) * (opts && opts.mult ? opts.mult : 1);
     while (rem > 0) {
       const step = Math.min(KB_STEP, rem);
       const nx = cx + ux * step;
@@ -1931,16 +2144,17 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // Knockback landing spot for a HOST-owned player (foot box) shoved away from
   // (fromX,fromY). Pure — returns {x,y} (rounded) or null if it can't move; the
   // host applies it and broadcasts a player_push. Same slide/clamp as pushActor.
-  function knockbackPlayerSpot(px, py, fromX, fromY, dmg) {
-    let ux = px - fromX;
-    let uy = py - fromY;
+  function knockbackPlayerSpot(px, py, fromX, fromY, dmg, opts) {
+    let ux = opts && opts.dir ? opts.dir.x : px - fromX;
+    let uy = opts && opts.dir ? opts.dir.y : py - fromY;
     const len = Math.hypot(ux, uy);
     if (len < 0.001) return null;
     ux /= len;
     uy /= len;
     let cx = px;
     let cy = py;
-    let rem = knockDist(dmg);
+    let rem =
+      opts && opts.dist != null ? opts.dist : knockDist(dmg) * (opts && opts.mult ? opts.mult : 1);
     while (rem > 0) {
       const step = Math.min(KB_STEP, rem);
       const nx = cx + ux * step;
@@ -1953,20 +2167,24 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     return cx !== px || cy !== py ? { x: Math.round(cx), y: Math.round(cy) } : null;
   }
 
-  // Roll a `chance`% stun on an in-sim actor. Blocked while the victim is in its
-  // post-stun immunity window (diminishing returns). On a proc, freeze it until
-  // now+STUN_MS and hold the flinch pose for the whole freeze so it reads stunned.
-  function tryStun(target, chance, now) {
-    if (!target || target.dead || chance <= 0) return;
-    if (now < (target.stunImmuneUntil || 0)) return; // still immune from a recent stun
-    if (rng() * 100 >= chance) return; // didn't proc
-    target.stunUntil = now + STUN_MS;
-    target.stunImmuneUntil = target.stunUntil + STUN_IMMUNE_MS;
-    target.pose = 'hurt';
-    target.poseStart = now;
-    target.poseUntil = target.stunUntil; // hold the flinch for the whole freeze
-    target.frame = 0;
+  // Roll a `chance`% proc of status `type` on an in-sim actor. The catalog +
+  // duration + the post-effect immunity window (diminishing returns) live in
+  // status.js. The proc is scaled by the target's ROM vulnerability for the
+  // status' element (paralysis/hypnosis/flash; canon resist — 0% = immune).
+  // A successful action-blocking proc holds the flinch pose for the freeze.
+  function tryStatus(target, type, chance, now) {
+    if (!target || target.dead) return;
+    const el = status.elementOf(type);
+    const eff = el ? chance * (entityVuln(target.sprite, el, 100) / 100) : chance;
+    if (!status.tryInflict(target, type, eff, now, rng)) return;
+    if (status.defOf(type) && status.defOf(type).blocksAction) {
+      target.pose = 'hurt';
+      target.poseStart = now;
+      target.poseUntil = target.statuses[type].until; // hold the flinch for the freeze
+      target.frame = 0;
+    }
     target.dirty = true;
+    target.statusDirty = true; // re-broadcast this actor's status set (drives client pips)
   }
 
   // `atk` (optional) = {x, y, stunChance} of the attacker — drives knockback
@@ -1974,6 +2192,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // legacy/test callers, which just apply HP + the flinch with no hit-reaction.
   function applyDamage(target, dmg, now, killerPlayerId, atk) {
     if (!target || target.dead || target.hp <= 0) return;
+    status.breakOnHit(target, now); // a hit wakes a sleeping actor
     target.hp -= dmg;
     target.hpDirty = true;
     target.pose = 'hurt';
@@ -2019,19 +2238,38 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         target.respawnAt = now + NPC_RESPAWN_MS;
       }
     } else if (atk) {
-      // Survived the hit — react to it: knocked back away from the attacker, and
-      // maybe stunned. (tryStun's longer flinch pose overrides the HURT_MS one
-      // set above, so a stunned victim stays frozen for the whole window.)
-      pushActor(target, atk.x, atk.y, dmg);
-      tryStun(target, atk.stunChance || 0, now);
+      // Survived the hit — react to it: knocked back away from the attacker, plus
+      // any status procs the hit carries (each element-scaled by the target's ROM
+      // resist in tryStatus; an action-block holds the flinch for the freeze).
+      // `atk.kb` (vehicles) overrides the shove heading/force for the plow effect.
+      pushActor(target, atk.x, atk.y, dmg, atk.kb);
+      for (const inf of atk.inflict || []) tryStatus(target, inf.type, inf.chance, now);
     }
   }
 
   // Resolve a player's melee swing: a hitbox in front of the attacker damages
   // every live enemy whose hurtbox it overlaps. Authoritative — the client only
   // requests the swing; HP, death, and respawn all live here.
-  function handleAttack(x, y, dir, playerId, offense, attackerPk, critChance = 0, attackSpeed = 1) {
+  function handleAttack(
+    x,
+    y,
+    dir,
+    playerId,
+    offense,
+    attackerPk,
+    critChance = 0,
+    attackSpeed = 1,
+    inflict = null
+  ) {
     const now = Date.now();
+    // The status spec this swing carries. The equipped weapon supplies it
+    // (gameHost → recomputeEquipStats); `null` means an unauthored weapon / bare
+    // hands / a legacy caller, which falls back to the baseline paralysis proc so
+    // behavior is unchanged unless a weapon authors its own inflicts.
+    const swingInflict =
+      inflict == null
+        ? [{ type: status.STATUS.PARALYSIS, chance: PLAYER_PARALYSIS_CHANCE }]
+        : inflict;
     // Per-player swing cooldown scales with the weapon's attackSpeed (1 = baseline,
     // >1 = faster), floored so no weapon/buy combo becomes an auto-shredder.
     const cooldown = Math.max(
@@ -2075,8 +2313,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         continue;
       }
       // Shared death path: flinch, HP broadcast, respawn, and EXP to the killer.
-      // The attacker's feet (x,y) drive knockback + the stun proc on a survivor.
-      applyDamage(n, res.dmg, now, playerId, { x, y, stunChance: PLAYER_STUN_CHANCE });
+      // The attacker's feet (x,y) drive knockback; the swing carries a paralysis
+      // proc (element-scaled by the enemy's ROM resist in tryStatus).
+      applyDamage(n, res.dmg, now, playerId, { x, y, inflict: swingInflict });
       if (res.crit && broadcastCb)
         broadcastCb({
           type: 'combat',
@@ -2115,8 +2354,15 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         console.log(
           `[HITDBG] PVP hit player ${t.id}: by player ${playerId} at (${Math.round(t.x)},${Math.round(t.y)}) dmg=${res.dmg}`
         );
-        // Knock the victim back from the attacker's feet (host applies + pushes).
-        onPlayerHitCb(t.id, res.dmg, playerId, knockbackPlayerSpot(t.x, t.y, x, y, res.dmg));
+        // Knock the victim back from the attacker's feet (host applies + pushes)
+        // and carry the same paralysis proc a player swing lands on enemies.
+        onPlayerHitCb(
+          t.id,
+          res.dmg,
+          playerId,
+          knockbackPlayerSpot(t.x, t.y, x, y, res.dmg),
+          swingInflict
+        );
         if (res.crit && broadcastCb)
           broadcastCb({
             type: 'combat',
@@ -2143,11 +2389,12 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
      *   killing blow; the host awards EXP and `loot` ({money, item} | null,
      *   already rolled against the ROM drop rate).
      */
-    start(getPlayers, broadcast, onEnemyHit, onEnemyKill, onPlayerHit, onPickup) {
+    start(getPlayers, broadcast, onEnemyHit, onEnemyKill, onPlayerHit, onPickup, onPlayerShove) {
       onEnemyKillCb = onEnemyKill || null;
       onPlayerHitCb = onPlayerHit || null; // PvP: apply a landed swing to a player
       getPlayersCb = getPlayers || null; // PvP: who else is in the world
       onPickupCb = onPickup || null; // ground-drop claim: (playerId, drop) => bool
+      onPlayerShoveCb = onPlayerShove || null; // vehicle nudge: push a player, NO damage
       broadcastCb = broadcast; // handleAttack uses this for crit/miss events
       tickInterval = setInterval(() => {
         const players = getPlayers();
@@ -2216,12 +2463,30 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
               break;
             }
           }
-          // Stunned: frozen — skip all AI (no move, no swing) until it wears off.
-          // The flinch pose (held to stunUntil by tryStun) keeps showing above.
-          if (now < n.stunUntil) continue;
+          // Tick status conditions: expire ended ones, apply any DoT (no attacker
+          // context — DoT never re-knocks or re-paralyzes). No actor inflicts DoT
+          // yet, so this is dormant until poison-on-enemies lands.
+          const st = status.tickStatuses(n, now);
+          for (const d of st.dot) {
+            applyDamage(n, Math.max(1, Math.floor(n.maxHp * d.pct)), now, null);
+            if (n.dead) break;
+          }
+          if (st.changed) n.statusDirty = true; // a status expired — refresh client pips
+          if (n.dead) continue;
+          // Action-blocked (paralysis/diamond/sleep): frozen — skip all AI (no
+          // move, no swing). The flinch pose (held to the status' end by
+          // tryParalyze) keeps showing above.
+          if (status.isActionBlocked(n, now)) continue;
+          // Scrambled (feeling strange / possessed): no aggro — the actor just
+          // shuffles randomly until it wears off (cars don't get statuses).
+          if (status.isScrambled(n, now) && n.kind !== 'car') {
+            jitter(n, players, NPC_COMBAT_LEASH, now);
+            continue;
+          }
           if (near) {
             if (n.kind === 'car') tickCar(n, players);
             else if (n.roam) tickEnemy(n, players, now, onEnemyHit, recentWarps);
+            else if (n.isVehicle) tickVehicle(n, players, now);
             else tickNpc(n, players, now);
           } else if (n.roam && n.mode !== 'patrol') {
             // Off-station with no player nearby (the target fled far): keep
@@ -2255,6 +2520,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       sendInterval = setInterval(() => {
         const moved = [];
         const hps = [];
+        const stat = []; // [id, [statusId,...]] rows for actors whose set changed
+        const nowSend = Date.now();
         for (const n of actors) {
           if (n.dirty && !n.dead) {
             n.dirty = false;
@@ -2271,9 +2538,14 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             n.hpDirty = false;
             hps.push([n.id, n.hp, n.maxHp]);
           }
+          if (n.statusDirty) {
+            n.statusDirty = false;
+            stat.push([n.id, status.activeStatuses(n, nowSend)]);
+          }
         }
         if (moved.length > 0) broadcast({ type: 'npc_update', npcs: moved });
         if (hps.length > 0) broadcast({ type: 'npc_hp', hps });
+        if (stat.length > 0) broadcast({ type: 'npc_status', statuses: stat });
       }, 1000 / BROADCAST_HZ);
     },
 
@@ -2324,6 +2596,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         hp: n.hp,
         maxHp: n.maxHp,
         dead: !!n.dead,
+        statuses: { ...n.statuses }, // active status set (for inflict-model tests/debug)
       }));
     },
 
@@ -2340,6 +2613,30 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
 
     /** Resolve a player's melee swing (server-authoritative). */
     handleAttack,
+
+    /**
+     * Offense PSI strike: damage the nearest LIVE enemy within `range` px of
+     * (x,y) that has line of sight (no wall between), crediting `killerPlayerId`
+     * for XP/loot on a kill. Knockback flings it away from the caster. Returns
+     * the struck enemy's {x,y} (for the projectile target), or null if none.
+     */
+    psiStrike(x, y, range, dmg, killerPlayerId, inflict) {
+      let best = null;
+      let bestD = range;
+      for (const n of enemies) {
+        if (n.dead) continue;
+        const d = Math.hypot(n.x - x, n.y - y);
+        if (d <= bestD && !wallBetween(x, y, n.x, n.y)) {
+          bestD = d;
+          best = n;
+        }
+      }
+      if (!best) return null;
+      // Damage (may be 0 for a pure-ailment PSI) + the PSI's status inflict, each
+      // element-scaled by the enemy's ROM resist inside applyDamage's atk path.
+      applyDamage(best, dmg || 0, Date.now(), killerPlayerId, { x, y, inflict: inflict || [] });
+      return { x: Math.round(best.x), y: Math.round(best.y) };
+    },
 
     /** World pixel bounds {w, h} — the host clamps player positions to these. */
     bounds() {

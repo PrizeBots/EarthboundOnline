@@ -51,6 +51,11 @@ export interface EntityStats {
   dodge: number;
   col?: EntityCol; // authored collision box; absent = kind default (see EntityCol)
   combat?: CombatPersonality; // townsfolk threat behavior; absent = seeded default (npcSim)
+  // Vehicle behavior (server tickVehicle): a friendly, autonomous actor that
+  // roams, HUNTS foes (enemies + PKers), and plows them with one collide-attack —
+  // a heavy, direction-scattered knockback. Friendlies it touches are only nudged
+  // aside (no damage). Carries HP + a health bar like any person. Absent = false.
+  vehicle?: boolean;
 }
 
 /** sprite group id (as a string key) -> its stats. */

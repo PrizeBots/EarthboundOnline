@@ -50,24 +50,43 @@ function loadShops(assetsDir) {
 
   // GOODS catalog keyed by numeric-string id: { name, cost, heal }. Replaces the
   // old hand-authored registry; inventoryView + use_item read the same shape.
+  // Numeric override helper: use the authored value when it's a finite number,
+  // else the ROM/base default. Keeps `0` as a real override (not falsy-skipped).
+  const num = (v, def) => (typeof v === 'number' && Number.isFinite(v) ? v : def);
+
   const goods = {};
   for (const [id, it] of Object.entries(items)) {
+    // Our per-item authoring overrides (overrides/equip_stats.json), edited in the
+    // Item Manager. Every field is OPTIONAL and layers over the ROM item table:
+    // gear gets offense/defense/crit/dodge/attackSpeed/inflict; ALL items can
+    // override cost + heal. ROM data is never mutated — this is the mod layer.
+    const ov = equipStats[id] || {};
     // Equip data (slot + offense/defense) for gear; null for consumables. Lets
     // the server apply weapon offense to attack damage and refuse to "use"
-    // (consume) equippable gear. See tools/extract_shops.py. Crit/dodge from our
-    // override file are folded in here so combat reads one shape.
+    // (consume) equippable gear. See tools/extract_shops.py.
     let equip = it.equip || null;
     if (equip) {
-      const ov = equipStats[id] || {};
       // attackSpeed defaults to 1 (baseline) when unauthored; a non-positive
       // value would divide-by-zero the cooldown, so clamp to a small positive.
       const aspd = typeof ov.attackSpeed === 'number' && ov.attackSpeed > 0 ? ov.attackSpeed : 1;
-      equip = { ...equip, crit: ov.crit | 0, dodge: ov.dodge | 0, attackSpeed: aspd };
+      // Raw status-inflict spec for a weapon ([{type, chance}]); gameHost
+      // sanitizes it via status.normalizeInflict. null = none authored (the
+      // weapon falls back to the baseline paralysis proc in npcSim).
+      const inflict = Array.isArray(ov.inflict) ? ov.inflict : null;
+      equip = {
+        ...equip,
+        offense: num(ov.offense, equip.offense),
+        defense: num(ov.defense, equip.defense),
+        crit: ov.crit | 0,
+        dodge: ov.dodge | 0,
+        attackSpeed: aspd,
+        inflict,
+      };
     }
     goods[id] = {
       name: it.name,
-      cost: it.cost | 0,
-      heal: HEAL_BY_ID[id] || 0,
+      cost: num(ov.cost, it.cost | 0),
+      heal: num(ov.heal, HEAL_BY_ID[id] || 0),
       equip,
     };
   }

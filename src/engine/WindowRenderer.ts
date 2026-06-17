@@ -26,6 +26,11 @@ export async function loadWindowStyle(_styleId: number = 0): Promise<void> {
   // No-op — purely programmatic, no assets to load
 }
 
+/** Interior fill color for a flavor — e.g. to notch a label into the border. */
+export function windowFillColor(styleId: number = 0): string {
+  return (FLAVORS[styleId] ?? FLAVORS[0])[3];
+}
+
 /**
  * Trace a 1px rounded outline along the inside of rect (x, y, w, h).
  * `edge` is where the straight edges start; `corner` lists the quarter-arc
@@ -42,14 +47,14 @@ function traceRoundOutline(
   color: string
 ): void {
   ctx.fillStyle = color;
-  ctx.fillRect(x + edge, y, w - edge * 2, 1);          // top
-  ctx.fillRect(x + edge, y + h - 1, w - edge * 2, 1);  // bottom
-  ctx.fillRect(x, y + edge, 1, h - edge * 2);          // left
-  ctx.fillRect(x + w - 1, y + edge, 1, h - edge * 2);  // right
+  ctx.fillRect(x + edge, y, w - edge * 2, 1); // top
+  ctx.fillRect(x + edge, y + h - 1, w - edge * 2, 1); // bottom
+  ctx.fillRect(x, y + edge, 1, h - edge * 2); // left
+  ctx.fillRect(x + w - 1, y + edge, 1, h - edge * 2); // right
   for (const [cx, cy] of corner) {
-    ctx.fillRect(x + cx, y + cy, 1, 1);                // top-left
-    ctx.fillRect(x + w - 1 - cx, y + cy, 1, 1);        // top-right
-    ctx.fillRect(x + cx, y + h - 1 - cy, 1, 1);        // bottom-left
+    ctx.fillRect(x + cx, y + cy, 1, 1); // top-left
+    ctx.fillRect(x + w - 1 - cx, y + cy, 1, 1); // top-right
+    ctx.fillRect(x + cx, y + h - 1 - cy, 1, 1); // bottom-left
     ctx.fillRect(x + w - 1 - cx, y + h - 1 - cy, 1, 1); // bottom-right
   }
 }
@@ -70,8 +75,17 @@ function fillRoundRect(
 }
 
 // Quarter-arc pixels (top-left corner) for each nested outline radius.
-const ARC_R4: [number, number][] = [[2, 1], [3, 1], [1, 2], [1, 3]];
-const ARC_R3: [number, number][] = [[1, 1], [2, 1], [1, 2]];
+const ARC_R4: [number, number][] = [
+  [2, 1],
+  [3, 1],
+  [1, 2],
+  [1, 3],
+];
+const ARC_R3: [number, number][] = [
+  [1, 1],
+  [2, 1],
+  [1, 2],
+];
 const ARC_R2: [number, number][] = [[1, 1]];
 
 /**
@@ -84,7 +98,7 @@ export function drawWindow(
   y: number,
   width: number,
   height: number,
-  styleId: number = 0,
+  styleId: number = 0
 ): void {
   const [, bright, medium, fill] = FLAVORS[styleId] ?? FLAVORS[0];
 
@@ -110,7 +124,7 @@ export function drawWindowFill(
   y: number,
   width: number,
   height: number,
-  styleId: number = 0,
+  styleId: number = 0
 ): void {
   fillRoundRect(ctx, x, y, width, height, (FLAVORS[styleId] ?? FLAVORS[0])[3]);
 }

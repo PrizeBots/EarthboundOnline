@@ -32,6 +32,7 @@ Run:
 """
 import json
 import os
+import re
 import sys
 
 import yaml
@@ -72,6 +73,14 @@ def parse_rarity(raw):
 def is_real_name(name):
     n = str(name).strip()
     return n and n.lower() != "null"
+
+
+def parse_pct(raw, default=100):
+    """'50%' -> 50, '100%' -> 100, blank/garbage -> default. EarthBound's
+    per-element vulnerability: 100 = fully susceptible, 0 = immune. The realtime
+    status engine scales each status proc by the target's resistance %."""
+    m = re.search(r"-?\d+", str(raw))
+    return int(m.group()) if m else default
 
 
 def load_yaml(path):
@@ -145,12 +154,16 @@ def main():
             "defense": defense,
             "romSpeed": int(cfg.get("Speed", 0) or 0),
             "boss": str(cfg.get("Boss Flag", "false")).lower() == "true",
+            # Per-element vulnerability % (100 = fully susceptible, 0 = immune).
+            # Canon, straight from the ROM; the realtime status engine scales each
+            # status proc by the matching element here (paralysis wired; the
+            # others land as their statuses do — sleep/strange via hypnosis, etc).
             "vuln": {
-                "fire": str(cfg.get("Fire vulnerability", "")),
-                "freeze": str(cfg.get("Freeze vulnerability", "")),
-                "flash": str(cfg.get("Flash vulnerability", "")),
-                "paralysis": str(cfg.get("Paralysis vulnerability", "")),
-                "hypnosis": str(cfg.get("Hypnosis/Brainshock vulnerability", "")),
+                "fire": parse_pct(cfg.get("Fire vulnerability", "")),
+                "freeze": parse_pct(cfg.get("Freeze vulnerability", "")),
+                "flash": parse_pct(cfg.get("Flash vulnerability", "")),
+                "paralysis": parse_pct(cfg.get("Paralysis vulnerability", "")),
+                "hypnosis": parse_pct(cfg.get("Hypnosis/Brainshock vulnerability", "")),
             },
         }
         if drop:

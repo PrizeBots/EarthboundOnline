@@ -104,6 +104,9 @@ export function closeStartScreen(): void {
 function render(): void {
   if (!panel) return;
   panel.innerHTML = '';
+  // The creator spreads its panes across the screen, so it needs a wider column
+  // than the 420px form screens. Toggled off whenever we leave the create screen.
+  panel.classList.toggle('eb-ss-panel--wide', screen === 'create');
   if (screen === 'create') {
     // The create flow owns the whole panel (it has its own Back button).
     panel.appendChild(closeButton());
@@ -414,6 +417,8 @@ function injectStyles(): void {
     color: #fff;
     display: flex; flex-direction: column; gap: 12px;
   }
+  /* Character creator: a wide column so its EB panes can sit side by side. */
+  .eb-ss-panel--wide { width: min(1100px, calc(100vw - 32px)); }
   /* Title block: a little breathing room between the EB-font canvases. */
   .eb-ss-panel > .eb-label { margin: 2px 0; }
   .eb-ss-tabs { display: flex; gap: 8px; margin-bottom: 4px; }

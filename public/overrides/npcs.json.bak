@@ -100,7 +100,37 @@
       "y": 336,
       "sprite": 388,
       "dir": 0,
-      "kind": "enemy"
+      "kind": "prop"
+    },
+    {
+      "x": 1992,
+      "y": 1728,
+      "sprite": 74,
+      "dir": 0,
+      "kind": "person"
+    },
+    {
+      "x": 2016,
+      "y": 1720,
+      "sprite": 74,
+      "dir": 0,
+      "kind": "person",
+      "t": 900006
+    },
+    {
+      "x": 2080,
+      "y": 1728,
+      "sprite": 75,
+      "dir": 0,
+      "kind": "person",
+      "t": 900005
+    },
+    {
+      "x": 1656,
+      "y": 1152,
+      "sprite": 58,
+      "dir": 0,
+      "kind": "person"
     }
   ]
 }

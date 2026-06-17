@@ -162,7 +162,7 @@ function createAuthApi(store, { now = () => Date.now(), editorApi = false } = {}
   });
 
   api.post('/api/characters', requireAuth, (req, res) => {
-    const { name, spriteGroupId, appearance, alloc } = req.body || {};
+    const { name, spriteGroupId, appearance, alloc, favoriteThing, favoriteFood } = req.body || {};
     if (typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ error: 'name required' });
     }
@@ -178,15 +178,24 @@ function createAuthApi(store, { now = () => Date.now(), editorApi = false } = {}
     if (appearance != null && (typeof appearance !== 'string' || appearance.length > 65536)) {
       return res.status(400).json({ error: 'appearance too large' });
     }
+    // EarthBound naming prompts — optional flavor stored in the save (trimmed +
+    // capped; non-strings ignored). Not combat-relevant, so no strict validation.
+    const fav = (v) => (typeof v === 'string' ? v.trim().slice(0, NAME_MAX) : '');
     try {
-      // Canonical starting save: only the build + level/exp. The game host fills
-      // in starting inventory/money/spawn on first join (it owns that state).
+      // Canonical starting save: build + level/exp + the EB favorites. The game
+      // host fills in starting inventory/money/spawn on first join (it owns that).
       const character = store.createCharacter({
         accountId: req.accountId,
         name: name.trim().slice(0, NAME_MAX),
         spriteGroupId,
         appearance: appearance ?? null,
-        save: { alloc, level: 1, exp: 0 },
+        save: {
+          alloc,
+          level: 1,
+          exp: 0,
+          favoriteThing: fav(favoriteThing),
+          favoriteFood: fav(favoriteFood),
+        },
         now: now(),
       });
       res.status(201).json({ character: publicCharacter(character) });

@@ -39,6 +39,8 @@ type NetworkCallback = {
   onNpcUpdate: (npcs: NpcUpdate[]) => void;
   /** Authoritative enemy HP (welcome snapshot + on-damage deltas). */
   onNpcHp: (hps: NpcHp[]) => void;
+  /** An actor's active status set changed: [npcId, [statusId,…]] rows. */
+  onNpcStatus?: (rows: [number, string[]][]) => void;
   /**
    * A player's HP changed (enemy hit / respawn refill / item use). dmg>0 = took
    * a hit; heal>0 = restored HP (e.g. ate a Cookie).
@@ -62,6 +64,9 @@ type NetworkCallback = {
   onInventory: (items: GoodsItem[]) => void;
   /** The local player's on-hand cash (welcome snapshot + deltas). */
   onMoney: (amount: number) => void;
+  /** Restore the saved quick-select hotbar (welcome only): per slot a weapon /
+   *  usable item id, a 'psi:<id>' tag, or null. */
+  onHotbar?: (hotbar: (string | null)[]) => void;
   /** The local player's bank/ATM balance (welcome snapshot + deltas). */
   onBank?: (amount: number) => void;
   /**
@@ -78,6 +83,25 @@ type NetworkCallback = {
    * reports from there, remote players just snap their interpolated copy.
    */
   onPlayerPush?: (id: string, x: number, y: number) => void;
+  /** A player's active status-condition set changed (paralysis, poison, …). */
+  onPlayerStatus?: (id: string, statuses: string[]) => void;
+  /** A PSI was cast — play its effect. (x,y)=caster, (tx,ty)=target (projectile
+   *  flies between them). Sent to everyone incl. the caster. Visual only. */
+  onPsiCast?: (id: string, casterId: string, x: number, y: number, tx: number, ty: number) => void;
+  /**
+   * A status was just inflicted on a player — drives the floating EB battle-text
+   * ("became numb!") at (x, y). `blocks` = it locks action (paralysis/sleep/
+   * diamond); `ms` = its duration, used as the local input-lock deadline.
+   */
+  onStatusApplied?: (
+    id: string,
+    x: number,
+    y: number,
+    statusType: string,
+    text: string,
+    ms: number,
+    blocks: boolean
+  ) => void;
   /** Server-authoritative progression: EXP gained / level-up / stat growth. */
   onPlayerStats: (id: string, stats: PlayerStatsPayload, leveled: boolean, gained: number) => void;
   /**
@@ -108,6 +132,15 @@ type NetworkCallback = {
   onLoot?: (loot: LootPayload) => void;
   /** A server notice for the LOCAL player (e.g. "Your bag is full!"). */
   onNotice?: (text: string, code?: string) => void;
+  /** Server confirmed a present open (by placement key) — play the open→fade. */
+  onGiftOpened?: (k: string) => void;
+  /**
+   * Ness's mom's food response (server-authoritative). `healed` HP restored this
+   * meal (0 if on cooldown or already full); `readyInMs` is the wait before the
+   * next meal (>0 only when on cooldown); `food` is the player's favorite food
+   * name (empty → the client uses a generic fallback). Drives her dialogue.
+   */
+  onMomFood?: (healed: number, readyInMs: number, food: string) => void;
 };
 
 /** Progression block the server pushes (field names match StatusModal). */
@@ -224,6 +257,10 @@ function openSocket() {
         // live progression/equip handlers). Anonymous joins omit these.
         if (msg.stats) callbacks?.onPlayerStats(msg.playerId, msg.stats, false, 0);
         if (msg.equipped) callbacks?.onEquipped(msg.equipped, msg.attackSpeed);
+        // Restore the saved quick-select hotbar (incl. an assigned PSI, which —
+        // unlike the weapon — can't be re-derived from the equip set). After
+        // onEquipped so the saved layout wins over the weapon auto-placement.
+        if (Array.isArray(msg.hotbar)) callbacks?.onHotbar?.(msg.hotbar);
         // Restore saved player flags (empty for anonymous joins).
         callbacks?.onFlags?.(Array.isArray(msg.flags) ? msg.flags : []);
         // Restore PK state + remaining lock (a player who logged out PK stays PK).
@@ -246,6 +283,9 @@ function openSocket() {
         break;
       case 'npc_update':
         callbacks?.onNpcUpdate(msg.npcs);
+        break;
+      case 'npc_status':
+        if (msg.statuses) callbacks?.onNpcStatus?.(msg.statuses);
         break;
       case 'npc_hp':
         callbacks?.onNpcHp(msg.hps);
@@ -277,6 +317,30 @@ function openSocket() {
       case 'player_push':
         callbacks?.onPlayerPush?.(msg.id, msg.x, msg.y);
         break;
+      case 'player_status':
+        callbacks?.onPlayerStatus?.(msg.id, Array.isArray(msg.statuses) ? msg.statuses : []);
+        break;
+      case 'psi_cast':
+        callbacks?.onPsiCast?.(
+          msg.id,
+          msg.caster,
+          msg.x,
+          msg.y,
+          typeof msg.tx === 'number' ? msg.tx : msg.x,
+          typeof msg.ty === 'number' ? msg.ty : msg.y
+        );
+        break;
+      case 'status_applied':
+        callbacks?.onStatusApplied?.(
+          msg.id,
+          msg.x,
+          msg.y,
+          msg.status,
+          msg.text ?? '',
+          typeof msg.ms === 'number' ? msg.ms : 0,
+          !!msg.blocks
+        );
+        break;
       case 'player_respawn':
         callbacks?.onPlayerRespawn(msg.id, msg.x, msg.y, (msg.dir ?? 0) as Direction);
         break;
@@ -294,6 +358,14 @@ function openSocket() {
         break;
       case 'loot':
         callbacks?.onLoot?.(msg);
+        break;
+      case 'gift_opened':
+        // Server confirmed a one-time present open: play the open→fade. The item
+        // (if any) arrives separately via 'inventory' + 'loot'.
+        if (typeof msg.k === 'string') callbacks?.onGiftOpened?.(msg.k);
+        break;
+      case 'mom_food':
+        callbacks?.onMomFood?.(msg.healed ?? 0, msg.readyInMs ?? 0, msg.food ?? '');
         break;
       case 'notice':
         callbacks?.onNotice?.(msg.text ?? '', msg.code);
@@ -410,6 +482,14 @@ export function sendEquip(slot: string, itemId: string | null) {
   }
 }
 
+/** Persist the quick-select hotbar layout (the server validates + saves it with
+ *  the character, so an assigned PSI survives a relog). */
+export function sendHotbar(hotbar: (string | null)[]) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'hotbar', hotbar }));
+  }
+}
+
 /** Ask the server to use a Goods item; it validates ownership and resolves it. */
 export function sendUseItem(itemId: string) {
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -457,6 +537,23 @@ export function sendFlag(action: 'set' | 'clear' | 'reset', id?: number) {
     ws.send(JSON.stringify({ type: 'clear_all_flags' }));
   } else {
     ws.send(JSON.stringify({ type: action === 'set' ? 'set_flag' : 'clear_flag', id }));
+  }
+}
+
+/**
+ * Ask the server to open a present box (by its placement key). The server is
+ * authoritative: it grants the item once per player and acks 'gift_opened'.
+ */
+export function sendOpenGift(k: string) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'open_gift', k }));
+  }
+}
+
+/** Ask Ness's mom to cook the player's favorite food (server heals + cooldown). */
+export function sendMomFood() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'mom_food' }));
   }
 }
 

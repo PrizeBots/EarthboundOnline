@@ -16,6 +16,8 @@ import {
   sfxLabel,
   getSfxEventMap,
   setSfxEventMap,
+  getSfxVolumeMap,
+  setSfxVolumeMap,
 } from '../../engine/SfxEvents';
 import {
   getSongName,
@@ -98,6 +100,9 @@ class SoundTool implements EditorTool {
   // Working copy of the event→sfx map (merged defaults+overrides). Edits mutate
   // this and persist to overrides/sfx_events.json via the 'sfx_events' handler.
   private sfxMap: Record<string, string> = {};
+  // Working copy of the per-event playback volume (0..1, default 1). Saved in the
+  // same overrides/sfx_events.json under `volumes`.
+  private sfxVolumes: Record<string, number> = {};
 
   activate(shell: EditorShellApi): void {
     this.shell = shell;
@@ -107,6 +112,7 @@ class SoundTool implements EditorTool {
     registerSaveHandler('music', () => this.save());
     registerSaveHandler('sfx_events', () => this.saveSfx());
     this.sfxMap = getSfxEventMap(); // defaults + any loaded overrides
+    this.sfxVolumes = getSfxVolumeMap(); // per-event volume (defaults to full)
     this.buildPanel();
     this.refreshList();
     this.rebuildForm();
@@ -590,7 +596,8 @@ class SoundTool implements EditorTool {
     this.mkBtn('▶', () => playSfx(libSel), libRow);
 
     const sub = document.createElement('div');
-    sub.textContent = 'Game event → sound. ▶ tests · pick to reassign (auto-saves).';
+    sub.textContent =
+      'Game event → sound. ▶ tests · pick to reassign · drag vol to set loudness (auto-saves).';
     sub.style.cssText =
       'color:#9fb8cc;font-size:10px;border-top:1px solid #2a3540;padding-top:6px;';
     host.appendChild(sub);
@@ -605,22 +612,30 @@ class SoundTool implements EditorTool {
 
   private sfxListEl: HTMLDivElement | null = null;
 
-  /** Render one row per game event: label · current sound picker · ▶ test. */
+  /** Render one card per game event: label · sound picker · ▶ test, plus a
+   *  volume slider on a second line that scales that event's playback gain. */
   private refreshSfxList(): void {
     const list = this.sfxListEl;
     if (!list) return;
     list.innerHTML = '';
     const sounds = listSfx();
     for (const evt of SFX_EVENTS) {
-      const row = document.createElement('div');
-      row.style.cssText = 'display:flex;align-items:center;gap:6px;';
+      const audition = () =>
+        playSfx(this.sfxMap[evt.id] ?? evt.defaultSfx, this.sfxVolumes[evt.id] ?? 1);
 
+      const card = document.createElement('div');
+      card.style.cssText =
+        'display:flex;flex-direction:column;gap:3px;padding:5px 2px;border-bottom:1px solid #1c2730;';
+
+      // Line 1: event label · current sound picker · ▶ test.
+      const top = document.createElement('div');
+      top.style.cssText = 'display:flex;align-items:center;gap:6px;';
       const label = document.createElement('span');
       label.textContent = evt.label;
       label.title = `event id: ${evt.id}`;
       label.style.cssText =
         'width:120px;flex:none;color:#cde;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-      row.appendChild(label);
+      top.appendChild(label);
 
       const cur = this.sfxMap[evt.id] ?? evt.defaultSfx;
       const picker = createSpritePicker({
@@ -632,24 +647,62 @@ class SoundTool implements EditorTool {
           this.sfxMap[evt.id] = v;
           setSfxEventMap(this.sfxMap); // live in this client immediately
           this.shell?.markDirty('sfx_events');
-          playSfx(v); // audition the newly-picked sound
+          audition(); // hear the newly-picked sound at its current volume
         },
       });
       picker.el.style.flex = '1';
       picker.el.style.minWidth = '0';
-      row.appendChild(picker.el);
+      top.appendChild(picker.el);
+      this.mkBtn('▶', audition, top);
+      card.appendChild(top);
 
-      this.mkBtn('▶', () => playSfx(this.sfxMap[evt.id] ?? evt.defaultSfx), row);
-      list.appendChild(row);
+      // Line 2: volume slider (0–100%) + live readout.
+      const volRow = document.createElement('div');
+      volRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
+      const volLbl = document.createElement('span');
+      volLbl.textContent = 'vol';
+      volLbl.style.cssText = 'width:120px;flex:none;color:#9fb8cc;font-size:11px;';
+      volRow.appendChild(volLbl);
+
+      const slider = document.createElement('input');
+      slider.type = 'range';
+      slider.min = '0';
+      slider.max = '100';
+      slider.step = '5';
+      slider.value = String(Math.round((this.sfxVolumes[evt.id] ?? 1) * 100));
+      slider.style.cssText = 'flex:1;min-width:0;accent-color:#5ad0e8;cursor:pointer;';
+      const readout = document.createElement('span');
+      readout.textContent = `${slider.value}%`;
+      readout.style.cssText =
+        'width:34px;flex:none;text-align:right;color:#cde;font-size:11px;font-variant-numeric:tabular-nums;';
+      slider.oninput = () => {
+        const pct = parseInt(slider.value, 10) || 0;
+        this.sfxVolumes[evt.id] = pct / 100;
+        readout.textContent = `${pct}%`;
+        setSfxVolumeMap(this.sfxVolumes); // live in this client immediately
+        this.shell?.markDirty('sfx_events');
+      };
+      slider.onchange = () => audition(); // audition once on release, not per tick
+      volRow.append(slider, readout);
+      card.appendChild(volRow);
+
+      list.appendChild(card);
     }
   }
 
-  /** Persist the event→sfx map to overrides/sfx_events.json (OUR shippable data). */
+  /** Persist the event→sfx map + per-event volumes to overrides/sfx_events.json. */
   private async saveSfx(): Promise<void> {
-    await saveOverride('sfx_events.json', { version: 1, events: this.sfxMap });
+    await saveOverride('sfx_events.json', {
+      version: 1,
+      events: this.sfxMap,
+      volumes: this.sfxVolumes,
+    });
     setSfxEventMap(this.sfxMap);
+    setSfxVolumeMap(this.sfxVolumes);
     this.shell?.clearDirty('sfx_events');
-    this.shell?.toast('Saved SFX assignments — live here; other clients refresh to resync');
+    this.shell?.toast(
+      'Saved SFX assignments + volumes — live here; other clients refresh to resync'
+    );
   }
 
   private refreshList(): void {

@@ -29,6 +29,9 @@ export abstract class Entity implements EntityView {
   spriteGroupId: number;
   maxHp: number;
   hp: number;
+  /** Epoch-ms until which this sprite blinks white from a hit (see Juice.FLASH_MS
+   *  / drawSprite). 0 = not flashing. */
+  flashUntil = 0;
   protected animTimer = 0;
 
   constructor(x: number, y: number, spriteGroupId: number, maxHp = 30) {

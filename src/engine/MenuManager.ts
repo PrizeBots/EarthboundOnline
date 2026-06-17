@@ -22,20 +22,21 @@ import {
   consumePointerPress,
   consumePointerRelease,
 } from './Input';
-import { getGoods } from './Inventory';
+import { getGoods, goodsCount } from './Inventory';
 import { getMoney, getBank } from './Wallet';
 import {
   sendUseItem,
   sendUsePsi,
   sendBuy,
   sendSell,
-  sendEquip,
+  sendHotbar,
   sendAtmWithdraw,
   sendAtmDeposit,
   sendDadCall,
 } from './Network';
 import { playEventSfx } from './SfxEvents';
 import { getStoreItems, itemEquip, itemOffense, itemDefense } from './Shop';
+import { isFoodItem } from './ItemFolders';
 import { getItemName } from './Items';
 import { EquipSlot, EQUIP_SLOTS } from './Equipment';
 import { SCREEN_WIDTH, SCREEN_HEIGHT } from '../types';
@@ -52,6 +53,7 @@ import {
   HOTBAR_SLOTS,
   MENU_ITEMS,
   PSI_ABILITIES,
+  psiCost,
   PSI_TAG,
   isPsiEntry,
   drawCursor,
@@ -99,6 +101,35 @@ const STUB_MESSAGES: Record<string, string> = {
 const hotbar: (string | null)[] = new Array(HOTBAR_SLOTS).fill(null);
 // A drag in progress: the item id being dragged onto a hotbar box.
 let drag: { id: string } | null = null;
+
+/** Push the current hotbar layout to the server so it persists with the
+ *  character (the server re-validates + saves it). Call after any user edit. */
+function persistHotbar(): void {
+  sendHotbar([...hotbar]);
+}
+
+/** Restore the saved hotbar from the server (welcome). Fixed length; unknown
+ *  ids are kept as-is (the server already validated them on save). */
+export function setHotbar(slots: (string | null)[]): void {
+  for (let i = 0; i < HOTBAR_SLOTS; i++) hotbar[i] = slots[i] ?? null;
+}
+
+/** Clear any hotbar slot whose CONSUMABLE has run out (count 0) so the slot
+ *  goes empty when you use the last one. Gear (re-derived from the equip set)
+ *  and PSI (not an inventory item) are never auto-cleared. Persists if changed.
+ *  Call after every inventory update. */
+export function reconcileHotbarStock(): void {
+  let changed = false;
+  for (let i = 0; i < hotbar.length; i++) {
+    const id = hotbar[i];
+    if (!id || isPsiEntry(id) || itemEquip(id)) continue; // only plain consumables
+    if (goodsCount(id) === 0) {
+      hotbar[i] = null;
+      changed = true;
+    }
+  }
+  if (changed) persistHotbar();
+}
 
 // Equip screen: one combined list — the 4 slots (each showing the equipped
 // item; selecting an occupied slot takes it off) followed by the player's
@@ -230,10 +261,20 @@ function activateEquipRow(i: number): void {
 }
 
 /** Auto-equip a Good if it's gear (else use it). Shows the resulting stat. */
+/** Use a consumable from EITHER the Goods menu or a hotbar slot: ask the server
+ *  to apply it, and — only for FOOD (the item's category folder, see
+ *  ItemFolders) — play the eat SFX. Non-food consumables (sprays, key items…)
+ *  use the same path but don't chomp. The server validates/may refuse, but the
+ *  cue fires on send, matching how PSI/equip play their SFX. */
+function useConsumable(id: string): void {
+  if (isFoodItem(id)) playEventSfx('eat');
+  sendUseItem(id);
+}
+
 function useOrEquipGood(id: string): void {
   const eq = itemEquip(id);
   if (!eq) {
-    sendUseItem(id);
+    useConsumable(id);
     return;
   }
   hooks?.equip(eq.slot, id);
@@ -254,12 +295,28 @@ function equipToggle(id: string): void {
 /** Cast a PSI ability (server-authoritative) + its cast/heal SFX. Shared by the
  *  PSI menu and the hotbar so both paths sound and behave identically. */
 function usePsi(abilityId: string): void {
+  // "Can't concentrate" (noPsi) disables ALL PSI regardless of PP — blocks here
+  // for instant feedback; the server enforces it too (gameHost use_psi).
+  if (hooks?.psiBlocked?.()) {
+    hooks?.notify?.("Can't concentrate!");
+    return;
+  }
+  // Gate on PP up front (the server enforces it too — gameHost use_psi — but
+  // without this the client would play the cast FX/SFX and only be SILENTLY
+  // rejected, so it looked like the move worked). getStatus().pp is the
+  // server-authoritative value (refreshed after every cast via onPlayerStats).
+  if (getStatus().pp < psiCost(abilityId)) {
+    hooks?.notify?.('Not enough PP');
+    return; // no send, no FX, no SFX — the move simply doesn't happen
+  }
   // Server checks PP, applies the effect, and pushes back player_hp (heal) +
   // player_stats (PP decrease) so the bars redraw.
   sendUsePsi(abilityId);
   playEventSfx('player-try-psi');
   // Lifeup layers its heal chime on top of the generic PSI cast sound.
   if (abilityId === 'lifeup') playEventSfx('heal');
+  // The cast ANIMATION is server-driven (psi_cast → onPsiCast), so everyone —
+  // including us — sees it at the authoritative caster/target positions.
 }
 
 /** Trigger a hotbar slot. Weapon → swap to / equip it; consumable → use it
@@ -275,7 +332,7 @@ function activateSlot(i: number): void {
   const eq = itemEquip(id);
   if (eq?.slot === 'weapon')
     equipToggle(id); // swap to this weapon
-  else sendUseItem(id); // consumable
+  else useConsumable(id); // consumable (food → eat SFX + server use)
 }
 
 /** Trigger hotbar slot `n` (0-based) — keys 1/2 in the field. Toggle-brandishes
@@ -294,18 +351,19 @@ function hotbarEligible(id: string): boolean {
 }
 
 /**
- * Guarantee the equipped weapon is in a hotbar slot, so "if a weapon is equipped
- * it's on the hotbar" always holds and key 1/2 can swap to it. If it's already
- * in a slot, nothing changes. Otherwise it takes the first EMPTY slot (so a
- * second weapon you placed isn't evicted — you can swap between them), else an
- * existing weapon slot, else box 0. Consumables/PSI the player placed stay put.
- * Call whenever the equipped weapon changes.
+ * Make the equipped weapon quick-selectable: if it's not already on the hotbar,
+ * drop it into the first EMPTY slot, else swap out an OLD weapon (you only carry
+ * one). It NEVER evicts a consumable/PSI the player deliberately placed — if both
+ * slots are full of non-weapons, the weapon just isn't on the bar until a slot
+ * frees up (the player's layout wins). Call whenever the equipped weapon changes.
+ * Non-evicting is also what keeps a saved PSI intact when this runs on restore.
  */
 export function syncWeaponHotbar(weaponId: string | null): void {
   if (!weaponId || hotbar.includes(weaponId)) return;
   const empty = hotbar.indexOf(null);
   const weaponSlot = hotbar.findIndex((id) => id !== null && itemEquip(id)?.slot === 'weapon');
-  hotbar[empty !== -1 ? empty : weaponSlot !== -1 ? weaponSlot : 0] = weaponId;
+  const target = empty !== -1 ? empty : weaponSlot; // -1 = full of non-weapons → leave it
+  if (target !== -1) hotbar[target] = weaponId;
 }
 
 // Pointer drag/drop. Goods: drag a row to a hotbar box to assign it, or release
@@ -335,7 +393,12 @@ function updateHotbarDrag(): void {
       // The hotbar is for things you ACT with — a weapon to brandish, a
       // consumable buff, or a PSI move. Armor (body/arms/other) belongs only on
       // the Equip screen, so reject it here.
-      if (hotbarEligible(drag.id)) hotbar[box] = drag.id;
+      if (hotbarEligible(drag.id)) {
+        // Save the new layout — especially an assigned PSI, which (unlike the
+        // weapon) has no other anchor to be re-derived from on reload.
+        hotbar[box] = drag.id;
+        persistHotbar();
+      }
     } else if (menuState === 'goods') {
       // Released back on a Goods row (not a box): treat as a click → use/equip.
       const i = goodsRowAt(rel.x, rel.y);

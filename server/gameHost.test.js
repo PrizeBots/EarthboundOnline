@@ -197,12 +197,26 @@ check('equip → other players get the held-item broadcast', () => {
 });
 
 check('use_item consumable → slot consumed (inventory no longer has it)', () => {
-  assert(host.players.get(aliceId).inventory.includes(COOKIE), 'precondition: owns cookie');
+  const p = host.players.get(aliceId);
+  assert(p.inventory.includes(COOKIE), 'precondition: owns cookie');
+  p.hp = p.maxHp - 5; // hurt, so the heal item isn't refused as "HP already full"
   alice.clear();
   alice.recv({ type: 'use_item', itemId: COOKIE });
   const inv = alice.last('inventory');
   assert(inv, 'no inventory delta after use');
   assert(!inv.items.some((i) => i.id === COOKIE), 'cookie was not consumed');
+});
+
+check('use_item heal at FULL HP → refused (not wasted), player notified', () => {
+  const p = host.players.get(aliceId);
+  if (!p.inventory.includes(COOKIE)) p.inventory.push(COOKIE); // re-grant (prior test ate it)
+  p.hp = p.maxHp; // full HP — a pure-heal item would heal 0
+  alice.clear();
+  alice.recv({ type: 'use_item', itemId: COOKIE });
+  assert.strictEqual(alice.ofType('inventory').length, 0, 'cookie must NOT be consumed at full HP');
+  assert(p.inventory.includes(COOKIE), 'cookie should still be owned');
+  const n = alice.last('notice');
+  assert(n && /full/i.test(n.text), 'expected an "HP is full" notice');
 });
 
 check('use_item on equippable gear is refused (never consumed)', () => {
@@ -401,6 +415,127 @@ check('set_pk off after the lock runs out → cleared', () => {
   assert.strictEqual(host.players.get(aliceId).pkLockMs, 0, 'lock reset');
 });
 
+// ===================== 4c. Status conditions =====================
+// A landed hit can carry status inflicts (e.g. paralysis); the host applies them
+// via the status engine, broadcasts the set + a status_applied (floating text /
+// input-lock), ticks DoT, and clears everything on death.
+const statusMod = require('./status');
+
+check('a hit carrying a paralysis inflict applies it + broadcasts', () => {
+  const p = host.players.get(aliceId);
+  p.hp = p.maxHp;
+  p.warping = false;
+  p.editor = false;
+  p.statuses = {};
+  alice.clear();
+  // chance 100 always procs (Math.random()*100 < 100), so this is deterministic.
+  host.damagePlayer(aliceId, 5, null, [{ type: statusMod.STATUS.PARALYSIS, chance: 100 }]);
+  assert(
+    statusMod.hasStatus(p, statusMod.STATUS.PARALYSIS, Date.now()),
+    'paralysis should be active'
+  );
+  const sa = alice.last('status_applied');
+  assert(
+    sa && sa.status === statusMod.STATUS.PARALYSIS && sa.blocks === true,
+    'status_applied sent'
+  );
+  const ps = alice.last('player_status');
+  assert(ps && ps.statuses.includes(statusMod.STATUS.PARALYSIS), 'player_status set broadcast');
+});
+
+check('poison ticks HP down over time (DoT)', () => {
+  const p = host.players.get(aliceId);
+  p.hp = p.maxHp;
+  p.statuses = {};
+  statusMod.applyStatus(p, statusMod.STATUS.POISON, Date.now());
+  p.statuses[statusMod.STATUS.POISON].nextDotAt = Date.now() - 1; // first tick due now
+  const before = p.hp;
+  alice.clear();
+  host._tickPlayerStatuses();
+  assert(host.players.get(aliceId).hp < before, 'poison should tick HP down');
+  assert(alice.ofType('player_hp').length > 0, 'a DoT tick broadcasts player_hp');
+});
+
+check('death clears every status and broadcasts an empty set', () => {
+  const p = host.players.get(aliceId);
+  p.hp = 5;
+  p.statuses = {};
+  statusMod.applyStatus(p, statusMod.STATUS.PARALYSIS, Date.now());
+  alice.clear();
+  host.damagePlayer(aliceId, 9999); // lethal
+  const after = host.players.get(aliceId);
+  assert.strictEqual(Object.keys(after.statuses).length, 0, 'death wipes statuses');
+  const ps = alice.last('player_status');
+  assert(ps && ps.statuses.length === 0, 'empty status set broadcast on death');
+});
+
+// ===================== 4d. PSI casting =====================
+// use_psi is server-authoritative: it checks PP, applies the effect (heal the
+// caster / strike the nearest enemy), and broadcasts psi_cast (the animation) to
+// EVERYONE incl. the caster, with the PsiAnim id + caster/target positions.
+
+check('use_psi (heal) spends PP and broadcasts psi_cast at the caster', () => {
+  const p = host.players.get(aliceId);
+  p.hp = p.maxHp;
+  p.pp = 7;
+  alice.clear();
+  alice.recv({ type: 'use_psi', psiId: 'lifeup' });
+  assert.strictEqual(host.players.get(aliceId).pp, 7 - 3, 'lifeup costs 3 PP');
+  const cast = alice.last('psi_cast');
+  assert(cast && cast.id === 'lifeup_alpha', 'broadcasts the PsiAnim id to the caster too');
+  assert.strictEqual(cast.tx, cast.x, 'self/heal PSI targets the caster spot');
+  assert.strictEqual(cast.ty, cast.y);
+});
+
+check('use_psi (offense) spends PP and broadcasts a projectile psi_cast', () => {
+  const p = host.players.get(aliceId);
+  p.pp = 9;
+  alice.clear();
+  alice.recv({ type: 'use_psi', psiId: 'fire' });
+  assert.strictEqual(host.players.get(aliceId).pp, 9 - 5, 'PSI Fire costs 5 PP');
+  const cast = alice.last('psi_cast');
+  assert(cast && cast.id === 'psi_fire_alpha', 'fire broadcasts its anim id');
+  assert(typeof cast.tx === 'number' && typeof cast.ty === 'number', 'carries a projectile target');
+});
+
+check('use_psi is refused without enough PP (no cast)', () => {
+  const p = host.players.get(aliceId);
+  p.pp = 1; // below lifeup (3) and fire (5)
+  alice.clear();
+  alice.recv({ type: 'use_psi', psiId: 'fire' });
+  assert.strictEqual(host.players.get(aliceId).pp, 1, 'PP untouched when too low');
+  assert.strictEqual(alice.ofType('psi_cast').length, 0, 'no cast broadcast');
+});
+
+check('use_psi is blocked while "can\'t concentrate" (noPsi), even with PP', () => {
+  const p = host.players.get(aliceId);
+  p.pp = 9;
+  p.statuses = {};
+  statusMod.applyStatus(p, statusMod.STATUS.NO_PSI, Date.now());
+  alice.clear();
+  alice.recv({ type: 'use_psi', psiId: 'lifeup' });
+  assert.strictEqual(host.players.get(aliceId).pp, 9, 'PP untouched while noPsi');
+  assert.strictEqual(alice.ofType('psi_cast').length, 0, 'no cast while noPsi');
+  p.statuses = {};
+});
+
+check("Healing PSI clears the caster's status conditions", () => {
+  const p = host.players.get(aliceId);
+  p.pp = 9;
+  p.statuses = {};
+  statusMod.applyStatus(p, statusMod.STATUS.PARALYSIS, Date.now());
+  statusMod.applyStatus(p, statusMod.STATUS.POISON, Date.now());
+  alice.clear();
+  alice.recv({ type: 'use_psi', psiId: 'healing' });
+  assert.strictEqual(
+    Object.keys(host.players.get(aliceId).statuses).length,
+    0,
+    'healing wiped all statuses'
+  );
+  const ps = alice.last('player_status');
+  assert(ps && ps.statuses.length === 0, 'broadcasts the cleared (empty) set');
+});
+
 // ============================ 5. Leave ============================
 
 alice.clear();
@@ -434,6 +569,94 @@ check('_reapIdle reaps a silent connection but keeps a live one', () => {
   assert(!host.players.has(zid), 'silent zombie should be reaped');
   assert(host.players.has(lid), 'live player must survive the sweep');
   live.close();
+});
+
+// ============================ 4. Gifts (present boxes) ============================
+
+const GIFT_FLAG_BASE = 910000;
+
+check('open_gift grants the item once, sets the flag, and acks gift_opened', () => {
+  let found = null;
+  for (const [k, g] of host.GIFTS) {
+    if (g.item != null && host.GOODS[String(g.item)]) {
+      found = [k, g];
+      break;
+    }
+  }
+  assert(found, 'no resolvable gift in the catalog');
+  const [k, g] = found;
+  const flagId = GIFT_FLAG_BASE + g.romFlag;
+
+  const s = new FakeSocket();
+  host.handleConnection(s);
+  s.recv({ type: 'join', name: 'Gifter', spriteGroupId: 1 });
+  const id = s.last('welcome').playerId;
+  const before = host.players.get(id).inventory.length;
+  s.clear();
+
+  s.recv({ type: 'open_gift', k });
+  const inv = host.players.get(id).inventory;
+  assert.strictEqual(inv.length, before + 1, 'item not granted');
+  assert.strictEqual(inv[inv.length - 1], String(g.item), 'wrong item granted');
+  assert(host.flags.get(id).has(flagId), 'one-time flag not set');
+  assert.strictEqual(s.last('gift_opened') && s.last('gift_opened').k, k, 'no gift_opened ack');
+  assert(s.last('loot'), 'no loot toast');
+  s.close();
+});
+
+check('a second open of the same gift is refused (no item, no ack)', () => {
+  let found = null;
+  for (const [k, g] of host.GIFTS) {
+    if (g.item != null && host.GOODS[String(g.item)]) {
+      found = [k, g];
+      break;
+    }
+  }
+  const [k] = found;
+  const s = new FakeSocket();
+  host.handleConnection(s);
+  s.recv({ type: 'join', name: 'Twice', spriteGroupId: 1 });
+  const id = s.last('welcome').playerId;
+  s.recv({ type: 'open_gift', k }); // first open
+  const after = host.players.get(id).inventory.length;
+  s.clear();
+  s.recv({ type: 'open_gift', k }); // re-open
+  assert.strictEqual(host.players.get(id).inventory.length, after, 're-open granted again');
+  assert(!s.last('gift_opened'), 're-open should not ack');
+  s.close();
+});
+
+check('open_gift on an unknown key is ignored', () => {
+  const s = new FakeSocket();
+  host.handleConnection(s);
+  s.recv({ type: 'join', name: 'NoGift', spriteGroupId: 1 });
+  s.clear();
+  s.recv({ type: 'open_gift', k: 'definitely:not:a:gift' });
+  assert(!s.last('gift_opened'), 'unknown gift should not ack');
+  s.close();
+});
+
+check('a special (unresolved) gift opens once but grants no item', () => {
+  let found = null;
+  for (const [k, g] of host.GIFTS) {
+    if (g.item == null) {
+      found = [k, g];
+      break;
+    }
+  }
+  if (!found) return; // catalog has no specials — nothing to assert
+  const [k, g] = found;
+  const s = new FakeSocket();
+  host.handleConnection(s);
+  s.recv({ type: 'join', name: 'Special', spriteGroupId: 1 });
+  const id = s.last('welcome').playerId;
+  const before = host.players.get(id).inventory.length;
+  s.clear();
+  s.recv({ type: 'open_gift', k });
+  assert(host.flags.get(id).has(GIFT_FLAG_BASE + g.romFlag), 'special flag not set');
+  assert.strictEqual(host.players.get(id).inventory.length, before, 'special granted an item');
+  assert(s.last('gift_opened'), 'special gift should still ack');
+  s.close();
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

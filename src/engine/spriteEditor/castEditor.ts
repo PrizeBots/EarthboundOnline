@@ -37,16 +37,17 @@ import {
   StripCell,
   BAND_Y,
   BAND_H,
-  EXPORT_ORIG_ROWS,
-  EXPORT_CUST_ROWS,
-  EXPORT_ORIG_H,
-  EXPORT_CUST_H,
-  EXPORT_CUST_SRC_Y,
+  WIDE_W,
+  WIDE_H,
+  WIDE_BANDS,
+  WIDE_BLOCK_LABELS,
+  WIDE_ROW_LABELS,
+  wideCellPos,
+  buildWideSheet,
   EXPORT_HDR_W,
   EXPORT_HDR_H,
-  EXPORT_ORIG_Y,
-  EXPORT_MID_Y,
-  EXPORT_CUST_Y,
+  EXPORT_BODY_X,
+  EXPORT_BODY_Y,
   EXPORT_W,
   EXPORT_H,
   SHEET_PANEL_SCALE,
@@ -55,7 +56,6 @@ import {
   vehicleName,
   setSrc,
   snap8,
-  exportRowY,
   cellHasContent,
   safeName,
   downloadCanvasPNG,
@@ -76,6 +76,7 @@ import {
   renderSwatches,
 } from './pixelCanvas';
 import { itemStripCells, applyImportedItemImage } from './itemEditor';
+import { psiStripCells } from './psiEditor';
 
 // ---------------------------------------------------------------------------
 // Cast roster + per-character loading
@@ -375,13 +376,15 @@ export function resetSelectedFrame(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Labeled comparison PNG export / import (artist handoff)
+// 12-wide labeled PNG export / import (artist handoff). Walk | attack | hurt sit
+// side by side (cols 0-3 | 4-7 | 8-11); see WIDE_BANDS in ./constants.
 // ---------------------------------------------------------------------------
 
 /**
- * Faint EMPTY BOX outlining every slot — in EITHER band — that this character is
- * missing but Ness (the master) has. Boxes are low alpha (<128); import treats
- * alpha <128 as transparent, so untouched guides are never saved as art.
+ * Faint EMPTY BOX outlining every slot this character is missing but Ness (the
+ * master) has. Boxes are low alpha (<128); import treats alpha <128 as
+ * transparent, so untouched guides are never saved as art. Each native cell is
+ * remapped into the 12-wide body via wideCellPos.
  */
 function drawMissingFrameBoxes(ctx: CanvasRenderingContext2D): void {
   const ness = S.groupId === DEFAULT_GROUP ? null : getLiveSheet(DEFAULT_GROUP);
@@ -392,8 +395,10 @@ function drawMissingFrameBoxes(ctx: CanvasRenderingContext2D): void {
     for (let c = 0; c < SHEET_COLS; c++) {
       if (cellHasContent(S.sheetCtx!, c, r)) continue; // char already has this frame
       if (!cellHasContent(nessCtx, c, r)) continue; // Ness lacks it too — not "missing"
-      const x = EXPORT_HDR_W + c * FRAME_W;
-      const y = exportRowY(r);
+      const pos = wideCellPos(r, c);
+      if (!pos) continue; // cell not carried into the 12-wide layout
+      const x = EXPORT_BODY_X + pos.x;
+      const y = EXPORT_BODY_Y + pos.y;
       ctx.fillRect(x, y, FRAME_W, 1); // top
       ctx.fillRect(x, y + FRAME_H - 1, FRAME_W, 1); // bottom
       ctx.fillRect(x, y, 1, FRAME_H); // left
@@ -402,79 +407,43 @@ function drawMissingFrameBoxes(ctx: CanvasRenderingContext2D): void {
   }
 }
 
-/** Paint the A/B/C column letters + row numbers into the margins. */
+/** Pose-block headers (WALK/ATTACK/HURT) across the top + direction-pair labels
+ *  down the left margin, so each frame in the 12-wide grid is self-describing. */
 function drawExportLabels(ctx: CanvasRenderingContext2D): void {
   ctx.fillStyle = '#16161e';
-  ctx.fillRect(0, 0, EXPORT_HDR_W, EXPORT_H); // left row-number column
-  ctx.fillRect(0, 0, EXPORT_W, EXPORT_HDR_H); // original band header strip
-  ctx.fillRect(0, EXPORT_MID_Y, EXPORT_W, EXPORT_HDR_H); // custom band header strip
+  ctx.fillRect(0, 0, EXPORT_W, EXPORT_HDR_H); // top header strip
+  ctx.fillRect(0, 0, EXPORT_HDR_W, EXPORT_H); // left label column
 
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
-  // column letters A B C … across both header strips
+  // pose-block headers, centered over each 4-col group
   ctx.fillStyle = '#9af';
-  ctx.font = 'bold 11px monospace';
-  for (let c = 0; c < SHEET_COLS; c++) {
-    const x = EXPORT_HDR_W + c * FRAME_W + FRAME_W / 2;
-    const letter = String.fromCharCode(65 + c);
-    ctx.fillText(letter, x, EXPORT_HDR_H / 2);
-    ctx.fillText(letter, x, EXPORT_MID_Y + EXPORT_HDR_H / 2);
-  }
-
-  // row numbers — the sheet's real 1-based row index, so a frame names uniquely
-  ctx.fillStyle = '#ddd';
   ctx.font = 'bold 10px monospace';
-  for (let r = 0; r < EXPORT_ORIG_ROWS; r++) {
-    ctx.fillText(String(r + 1), EXPORT_HDR_W / 2, EXPORT_ORIG_Y + r * FRAME_H + FRAME_H / 2);
-  }
-  for (let r = 0; r < EXPORT_CUST_ROWS; r++) {
-    const sheetRow = ATTACK_ROW_START + r;
-    ctx.fillText(String(sheetRow + 1), EXPORT_HDR_W / 2, EXPORT_CUST_Y + r * FRAME_H + FRAME_H / 2);
+  for (const b of WIDE_BLOCK_LABELS) {
+    const x = EXPORT_BODY_X + (b.col + b.span / 2) * FRAME_W;
+    ctx.fillText(b.label, x, EXPORT_HDR_H / 2);
   }
 
-  // band tags in the corner cells
-  ctx.fillStyle = '#6c8';
-  ctx.font = 'bold 7px monospace';
-  ctx.fillText('ORIG', EXPORT_HDR_W / 2, EXPORT_HDR_H / 2);
-  ctx.fillText('CUST', EXPORT_HDR_W / 2, EXPORT_MID_Y + EXPORT_HDR_H / 2);
+  // per-row direction labels down the left margin
+  ctx.fillStyle = '#ddd';
+  ctx.font = 'bold 8px monospace';
+  for (let r = 0; r < WIDE_ROW_LABELS.length; r++) {
+    const y = EXPORT_BODY_Y + r * FRAME_H + FRAME_H / 2;
+    ctx.fillText(WIDE_ROW_LABELS[r], EXPORT_HDR_W / 2, y);
+  }
 }
 
-/** Build the labeled comparison export: ROM frames (walk/climb) on top, editable
- *  attack/hurt frames below, with column-letter / row-number headers in the margins. */
+/** Build the 12-wide labeled export: the re-flowed sheet (walk | attack | hurt)
+ *  dropped in past the pose-block / direction labels in the margins. */
 function buildExportSheet(): HTMLCanvasElement {
   const out = document.createElement('canvas');
   out.width = EXPORT_W;
   out.height = EXPORT_H;
   const ctx = out.getContext('2d', { willReadFrequently: true })!;
   ctx.imageSmoothingEnabled = false;
-
-  // ORIGINAL band: walk + climb (rows 0-4)
-  ctx.drawImage(
-    S.sheet!,
-    0,
-    0,
-    SHEET_W,
-    EXPORT_ORIG_H,
-    EXPORT_HDR_W,
-    EXPORT_ORIG_Y,
-    SHEET_W,
-    EXPORT_ORIG_H
-  );
-  // CUSTOM band: attack + hurt (rows 5-12)
-  ctx.drawImage(
-    S.sheet!,
-    0,
-    EXPORT_CUST_SRC_Y,
-    SHEET_W,
-    EXPORT_CUST_H,
-    EXPORT_HDR_W,
-    EXPORT_CUST_Y,
-    SHEET_W,
-    EXPORT_CUST_H
-  );
+  ctx.drawImage(buildWideSheet(S.sheet!), EXPORT_BODY_X, EXPORT_BODY_Y);
   drawMissingFrameBoxes(ctx);
-
   drawExportLabels(ctx);
   return out;
 }
@@ -494,9 +463,7 @@ export function exportPNG(): void {
   }
   const name = safeName(getSpriteName(S.groupId) ?? `char_${S.groupId}`);
   downloadCanvasPNG(buildExportSheet(), `${name}_${S.groupId}_sheet.png`);
-  updateCharNote(
-    ` — exported ${EXPORT_W}×${EXPORT_H} PNG (original top · custom bottom · A–D cols · 1–${SHEET_ROWS} rows)`
-  );
+  updateCharNote(` — exported ${EXPORT_W}×${EXPORT_H} PNG (12-wide: walk · attack · hurt)`);
 }
 
 /** Open a file picker and import a PNG back into the active surface. */
@@ -538,15 +505,16 @@ function applyImportedImage(img: HTMLImageElement): void {
       S.charNote.textContent = `Import needs ${EXPORT_W}×${EXPORT_H} sheet (got ${img.width}×${img.height})`;
     return;
   }
-  // Pull both sprite bands out of the labeled sheet (skipping the header margins)
-  // and write each onto its rows. ROM frames re-imported match pristine, so Save
-  // still won't re-save them — only the artist's hand-painted blanks persist.
+  // Reverse the 12-wide re-flow: crop each band out of the wide body (skipping the
+  // label margins), snap it to the palette, and write it back to its native rows.
+  // ROM frames re-imported match pristine, so Save still won't re-save them — only
+  // the artist's hand-painted blanks persist.
   const full = imageToData(img, EXPORT_W, EXPORT_H);
-  const origBand = cropImageData(full, EXPORT_HDR_W, EXPORT_ORIG_Y, SHEET_W, EXPORT_ORIG_H);
-  const custBand = cropImageData(full, EXPORT_HDR_W, EXPORT_CUST_Y, SHEET_W, EXPORT_CUST_H);
   pushUndo();
-  S.sheetCtx!.putImageData(snapImageToPalette(origBand, S.palette), 0, 0);
-  S.sheetCtx!.putImageData(snapImageToPalette(custBand, S.palette), 0, EXPORT_CUST_SRC_Y);
+  for (const b of WIDE_BANDS) {
+    const band = cropImageData(full, EXPORT_BODY_X + b.dx, EXPORT_BODY_Y + b.dy, b.w, b.h);
+    S.sheetCtx!.putImageData(snapImageToPalette(band, S.palette), b.sx, b.sy);
+  }
   refreshDiagSupport(S.groupId); // import may add/remove diagonal frames
   updateCharNote(' — imported (auto-saved)'); // pushUndo above schedules the save
   S.dirty = true;
@@ -603,12 +571,13 @@ function drawFramesGrid(cells: StripCell[], cols: number): void {
   ctx.font = '9px monospace';
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'center';
-  const selectable = S.editMode === 'item'; // item frames are clickable to edit
+  const selectable = S.editMode !== 'char'; // item + psi frames are clickable to edit
+  const editFrame = S.editMode === 'psi' ? S.psiEditFrame : S.itemEditFrame;
   cells.forEach((cell, i) => {
     const cx = GAP + (i % cols) * (cw + GAP);
     const cy = GAP + Math.floor(i / cols) * (ch + GAP);
     S.stripCellRects.push({ x: cx, y: cy, w: cw, h: ch });
-    const active = selectable && i === S.itemEditFrame;
+    const active = selectable && i === editFrame;
     if (active) {
       // Tint the whole cell so the frame being edited stands out.
       ctx.fillStyle = '#26314a';
@@ -656,6 +625,11 @@ export function drawStrip(): void {
   // Item / view-only groups show a read-only grid of every frame they have.
   if (S.editMode === 'item') {
     drawFramesGrid(itemStripCells(), ITEM_FRAMES); // the 3 swing frames, side by side
+    return;
+  }
+  if (S.editMode === 'psi') {
+    const cells = psiStripCells();
+    drawFramesGrid(cells, Math.min(cells.length, 6)); // flipbook, wraps after 6 across
     return;
   }
   if (S.viewOnly) {
@@ -752,18 +726,27 @@ export function syncNewFrameBtn(): void {
   S.newFrameBtn.style.background = S.addingFrame ? '#553030' : '#2a3550';
 }
 
-/** Sheet-canvas pixel (snapped) from a mouse event. */
+// The preview shows the 12-wide artist layout (WIDE_H tall), but custom frames
+// still live in NATIVE sheet coords below the (taller) native sheet. The drag pad
+// under the 12-wide body maps to that native region: canvas y = WIDE_H ⇒ native y
+// = SHEET_H, so new frames are carved into the empty space below the sheet exactly
+// as before. PAD_OFF is the native↔canvas y shift for that pad.
+const PAD_OFF = SHEET_H - WIDE_H;
+
+/** Sheet-canvas pixel (snapped) → NATIVE sheet coords. The 12-wide body occupies
+ *  canvas y [0, WIDE_H); the drag pad below it maps to native y ≥ SHEET_H. */
 function sheetEventPx(e: MouseEvent): { x: number; y: number } {
   const r = S.sheetCanvas!.getBoundingClientRect();
   return {
     x: snap8((e.clientX - r.left) / SHEET_PANEL_SCALE),
-    y: snap8((e.clientY - r.top) / SHEET_PANEL_SCALE),
+    y: snap8((e.clientY - r.top) / SHEET_PANEL_SCALE + PAD_OFF),
   };
 }
 
 export function onSheetDown(e: MouseEvent): void {
   if (!S.addingFrame || !S.sheet) return;
   const p = sheetEventPx(e);
+  if (p.y < SHEET_H) return; // only carve new frames in the empty pad below the sheet
   S.frameDrag = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
   S.dirty = true;
 }
@@ -792,8 +775,12 @@ export function onSheetUp(): void {
 export function drawSheetPanel(): void {
   if (!S.sheetCanvas || !S.sheet) return;
   const sc = SHEET_PANEL_SCALE;
-  const wPx = Math.max(S.sheetPxW, S.sheet.width);
-  const hPx = Math.max(S.sheetPxH, S.sheet.height) + SHEET_DRAG_PAD;
+  // Body is the 12-wide layout; widen only if a custom frame grew the sheet past
+  // it. Height = the 12-wide body + the pad + room for any custom frames (whose
+  // native y ≥ SHEET_H maps to canvas y = nativeY - PAD_OFF).
+  const wPx = Math.max(WIDE_W, S.sheetPxW);
+  const customBottom = S.customFrames.reduce((m, f) => Math.max(m, f.y + f.h - PAD_OFF), WIDE_H);
+  const hPx = customBottom + SHEET_DRAG_PAD;
   if (S.sheetCanvas.width !== wPx * sc || S.sheetCanvas.height !== hPx * sc) {
     S.sheetCanvas.width = wPx * sc;
     S.sheetCanvas.height = hPx * sc;
@@ -801,44 +788,33 @@ export function drawSheetPanel(): void {
   const ctx = S.sheetCanvas.getContext('2d')!;
   ctx.imageSmoothingEnabled = false;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  // backing + the drag-zone band below the sheet
+  // backing + the drag-zone band below the 12-wide body
   ctx.fillStyle = '#15151c';
   ctx.fillRect(0, 0, S.sheetCanvas.width, S.sheetCanvas.height);
   ctx.fillStyle = '#1b1b24';
-  ctx.fillRect(
-    0,
-    S.sheet.height * sc,
-    S.sheetCanvas.width,
-    S.sheetCanvas.height - S.sheet.height * sc
-  );
+  ctx.fillRect(0, WIDE_H * sc, S.sheetCanvas.width, S.sheetCanvas.height - WIDE_H * sc);
 
-  ctx.drawImage(
-    S.sheet,
-    0,
-    0,
-    S.sheet.width,
-    S.sheet.height,
-    0,
-    0,
-    S.sheet.width * sc,
-    S.sheet.height * sc
-  );
+  // The re-flowed 12-wide sheet (walk | attack | hurt), same layout as export.
+  const wide = buildWideSheet(S.sheet);
+  ctx.drawImage(wide, 0, 0, WIDE_W, WIDE_H, 0, 0, WIDE_W * sc, WIDE_H * sc);
 
-  // Outline + label each custom frame.
+  // Custom frames live in native coords below the sheet; shift them into the pad.
   ctx.lineWidth = 1;
   ctx.font = '10px monospace';
   ctx.textBaseline = 'bottom';
   for (const f of S.customFrames) {
+    const cy = f.y - PAD_OFF;
+    ctx.drawImage(S.sheet, f.x, f.y, f.w, f.h, f.x * sc, cy * sc, f.w * sc, f.h * sc);
     ctx.strokeStyle = S.selOX === f.x && S.selOY === f.y ? '#ff0' : '#6cf';
-    ctx.strokeRect(f.x * sc + 0.5, f.y * sc + 0.5, f.w * sc - 1, f.h * sc - 1);
+    ctx.strokeRect(f.x * sc + 0.5, cy * sc + 0.5, f.w * sc - 1, f.h * sc - 1);
     ctx.fillStyle = '#9cf';
-    ctx.fillText(f.name, f.x * sc + 2, f.y * sc - 1);
+    ctx.fillText(f.name, f.x * sc + 2, cy * sc - 1);
   }
 
-  // In-progress drag rect.
+  // In-progress drag rect (native coords → canvas via PAD_OFF).
   if (S.frameDrag) {
     const x = Math.min(S.frameDrag.x0, S.frameDrag.x1) * sc;
-    const y = Math.min(S.frameDrag.y0, S.frameDrag.y1) * sc;
+    const y = (Math.min(S.frameDrag.y0, S.frameDrag.y1) - PAD_OFF) * sc;
     const w = Math.abs(S.frameDrag.x1 - S.frameDrag.x0) * sc;
     const h = Math.abs(S.frameDrag.y1 - S.frameDrag.y0) * sc;
     ctx.strokeStyle = '#ff0';

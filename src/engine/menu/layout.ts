@@ -54,9 +54,21 @@ export const ROWS = 3;
 
 // PSI abilities castable from the PSI command. Static for now; the server
 // validates the PP cost and resolves the effect (so a client can't self-heal).
+// `pp` cost MIRRORS the server PSI table (gameHost.js PSI) — keep in sync.
 export const PSI_ABILITIES = [
-  { id: 'lifeup', name: 'Lifeup α' }, // Lifeup α — restores HP
+  { id: 'lifeup', name: 'Lifeup α', pp: 3 }, // restores HP (on the caster)
+  { id: 'healing', name: 'Healing α', pp: 4 }, // clears your status conditions
+  { id: 'fire', name: 'PSI Fire α', pp: 5 }, // strikes the nearest enemy (projectile)
+  { id: 'hypnosis', name: 'Hypnosis α', pp: 4 }, // sleeps the nearest enemy
+  { id: 'paralysis', name: 'Paralysis α', pp: 5 }, // paralyzes the nearest enemy
+  { id: 'brainshock', name: 'Brainshock α', pp: 6 }, // feeling strange + can't-concentrate
 ];
+
+/** PP cost of a PSI ability (0 if unknown). The server is authoritative; the
+ *  client uses this only to gate the cast (don't fire FX/SFX with too little PP). */
+export function psiCost(abilityId: string): number {
+  return PSI_ABILITIES.find((a) => a.id === abilityId)?.pp ?? 0;
+}
 
 // Hotbar entries are normally item ids; a PSI ability is stored tagged as
 // `psi:<abilityId>` so activateSlot/renderHotbar can tell them apart from items.

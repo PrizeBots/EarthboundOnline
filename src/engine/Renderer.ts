@@ -8,6 +8,7 @@ import { drawSprite, getSpriteGroupMeta, SpritePart } from './SpriteManager';
 import { getNameplate, getLevelPlate } from './NamePlate';
 import { drawHeldItem, isItemBehind } from './Items';
 import { renderDrops } from './DropManager';
+import { giftAlpha } from './Gifts';
 import { getSpritePriority, getPromotedMinitiles } from './Collision';
 import { getStatus } from './StatusModal';
 import {
@@ -187,6 +188,52 @@ function drawNameplate(
   }
 }
 
+// Status-condition pips: a small color-coded square per active status, drawn
+// just right of the bar stack (mirror of the Lv plate on the left). Color per
+// status id (mirror of server/status.js STATUS). Cheap, no art needed; real
+// icons are a later polish.
+const STATUS_PIP_COLOR: Record<string, string> = {
+  paralysis: '#ffe14d', // yellow — numb
+  sleep: '#66ccff', // cyan
+  diamond: '#dffbff', // pale white-blue
+  strange: '#ff66cc', // magenta
+  possessed: '#b07cff', // purple
+  noPsi: '#88aaff', // blue
+  crying: '#7799ff', // soft blue
+  poison: '#66ee66', // green
+  nauseous: '#cccc66', // olive
+  sunstroke: '#ff9933', // orange
+  cold: '#aaddff', // light blue
+  homesick: '#ffaacc', // pink
+};
+
+function drawStatusPips(
+  ctx: CanvasRenderingContext2D,
+  centerX: number,
+  feetY: number,
+  spriteGroupId: number,
+  hasPP: boolean,
+  statuses: string[] | undefined
+): void {
+  if (!statuses || statuses.length === 0) return;
+  const spriteH = getSpriteGroupMeta(spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
+  const capsule = BAR_H + 1;
+  const barCount = hasPP ? 2 : 1;
+  const barTop = feetY - spriteH - BAR_GAP - barCount * capsule;
+  const PIP = 2.5;
+  const GAP = 1;
+  const barRight = centerX + BAR_W / 2 + 0.5;
+  let x = Math.round(barRight + 1);
+  const y = barTop + (barCount * capsule) / 2 - PIP / 2;
+  for (const s of statuses) {
+    ctx.fillStyle = '#101018'; // 1px dark backing so pale pips stay legible
+    ctx.fillRect(x - 0.5, y - 0.5, PIP + 1, PIP + 1);
+    ctx.fillStyle = STATUS_PIP_COLOR[s] ?? '#bbbbbb';
+    ctx.fillRect(x, y, PIP, PIP);
+    x += PIP + GAP;
+  }
+}
+
 export class Renderer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -288,6 +335,10 @@ export class Renderer {
     const camX = Math.round(camera.x);
     const camY = Math.round(camera.y);
 
+    // Hit-flash window: a sprite whose flashUntil is still ahead of `now` blinks
+    // white this frame (set by Juice.FLASH_MS when it took damage).
+    const now = Date.now();
+
     // In interiors, clip everything to the current room's tiles so adjacent
     // rooms (packed next to each other on the map) stay hidden behind black.
     const room = camera.roomBounds;
@@ -373,13 +424,14 @@ export class Renderer {
       itemId: string | null,
       sx: number,
       sy: number,
-      part: SpritePart
+      part: SpritePart,
+      flash: boolean
     ) => {
       const itemHere = itemId !== null && part !== 'upper';
       if (itemHere && isItemBehind(direction)) {
         drawHeldItem(this.ctx, itemId!, direction, frame, pose, sx, sy);
       }
-      drawSprite(this.ctx, groupId, direction, frame, sx, sy, part, pose);
+      drawSprite(this.ctx, groupId, direction, frame, sx, sy, part, pose, flash);
       if (itemHere && !isItemBehind(direction)) {
         drawHeldItem(this.ctx, itemId!, direction, frame, pose, sx, sy);
       }
@@ -399,7 +451,8 @@ export class Renderer {
           player.heldItemId,
           playerSx,
           playerSy,
-          part
+          part,
+          player.flashUntil > now
         ),
       () => {
         // Your own bar: HP + a PSI bar beneath it (PP from the authoritative
@@ -424,6 +477,7 @@ export class Renderer {
           true,
           player.pk
         );
+        drawStatusPips(this.ctx, playerSx, playerSy, player.spriteGroupId, true, player.statuses);
       },
       true
     );
@@ -445,7 +499,8 @@ export class Renderer {
             rp.itemId ?? null,
             rpScreenX,
             rpScreenY,
-            part
+            part,
+            (rp.flashUntil ?? 0) > now
           ),
         () => {
           // Other players: an HP bar (no PSI — that's private) with their
@@ -462,6 +517,7 @@ export class Renderer {
             false,
             rp.pk ?? false
           );
+          drawStatusPips(this.ctx, rpScreenX, rpScreenY, rp.spriteGroupId, false, rp.statuses);
         }
       );
     }
@@ -473,14 +529,29 @@ export class Renderer {
       if (nScreenY < -48 || nScreenY > vh + 48) continue;
       // Props are scenery — only people/enemies carry health bars, and a bar is
       // hidden at full HP (shown to everyone only once it drops below 100%).
+      // Status pips show even at full HP (a paralyzed but undamaged enemy).
+      const combatant = npc.kind === 'person' || npc.kind === 'enemy';
+      const showBar = combatant && npc.healthRatio < 1;
+      const showPips = combatant && npc.statuses.length > 0;
       const drawBar =
-        (npc.kind === 'person' || npc.kind === 'enemy') && npc.healthRatio < 1
-          ? () => drawHealthBar(this.ctx, nScreenX, nScreenY, npc.spriteGroupId, npc.healthRatio)
+        showBar || showPips
+          ? () => {
+              if (showBar)
+                drawHealthBar(this.ctx, nScreenX, nScreenY, npc.spriteGroupId, npc.healthRatio);
+              drawStatusPips(this.ctx, nScreenX, nScreenY, npc.spriteGroupId, false, npc.statuses);
+            }
           : undefined;
+      // An opening present fades out (sprite already swapped to the open box);
+      // everything else draws fully opaque.
+      const alpha = npc.isGift ? giftAlpha(npc, now) : 1;
       addSprite(
         npc.x,
         npc.y,
-        (part) =>
+        (part) => {
+          if (alpha < 1) {
+            this.ctx.save();
+            this.ctx.globalAlpha = alpha;
+          }
           drawSprite(
             this.ctx,
             npc.spriteGroupId,
@@ -489,8 +560,11 @@ export class Renderer {
             nScreenX,
             nScreenY,
             part,
-            npc.pose
-          ),
+            npc.pose,
+            npc.flashUntil > now
+          );
+          if (alpha < 1) this.ctx.restore();
+        },
         drawBar
       );
     }

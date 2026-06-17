@@ -27,6 +27,7 @@ STEPS = [
     "build_atlases.py",        # pre-render BG + FG tile atlases
     "extract_npcs.py",         # NPC/prop placements + dialogue
     "extract_shops.py",        # shop catalog + clerk->store map
+    "extract_gifts.py",        # present-box catalog (contents + flags), needs npcs.json
 ]
 
 TOOLS_DIR = Path(__file__).resolve().parent

@@ -10,10 +10,11 @@
  */
 import { drawWindow } from '../WindowRenderer';
 import { drawText, measureText, FONT_LINE_HEIGHT } from '../TextRenderer';
-import { getGoods } from '../Inventory';
+import { getGoods, goodsCount } from '../Inventory';
 import { getMoney } from '../Wallet';
 import { itemEquip } from '../Shop';
 import { drawItemIcon, getItemName } from '../Items';
+import { drawPsiIcon } from '../PsiFx';
 import { getPointer } from '../Input';
 import { EQUIP_SLOTS, SLOT_LABELS } from '../Equipment';
 import { SCREEN_WIDTH, SCREEN_HEIGHT } from '../../types';
@@ -218,7 +219,12 @@ function drawHotbarGlyph(
   bh: number
 ): void {
   if (isPsiEntry(id)) {
-    let label = psiName(id.slice(PSI_TAG.length));
+    const abilityId = id.slice(PSI_TAG.length);
+    // Use the PSI's first animation frame as the slot icon, like weapons/items.
+    const s = Math.min(16, bw - 2);
+    if (drawPsiIcon(ctx, abilityId, bx + (bw - s) / 2, by + (bh - s) / 2, s)) return;
+    // Fallback (frames still decoding / no art authored): abbreviated name.
+    let label = psiName(abilityId);
     while (label.length > 1 && measureText(label, FONT_ID) > bw - 2) label = label.slice(0, -1);
     const tx = bx + (bw - measureText(label, FONT_ID)) / 2;
     drawText(ctx, label, tx, by + (bh - FONT_LINE_HEIGHT) / 2, FONT_ID);
@@ -246,6 +252,26 @@ export function renderHotbar(ctx: CanvasRenderingContext2D, v: MenuView): void {
       if (eq && v.hooks?.getEquipped(eq.slot) === id) {
         ctx.strokeStyle = '#7ee07e';
         ctx.strokeRect(b.x + 1.5, b.y + 1.5, b.w - 3, b.h - 3);
+      }
+      // Stack count for a CONSUMABLE (not gear/PSI): "x12" in the bottom-right,
+      // only when you hold more than one. It reads getGoods live, so it ticks
+      // down as you use them; at 0 the slot is cleared (reconcileHotbarStock).
+      if (!isPsiEntry(id) && !eq) {
+        const n = goodsCount(id);
+        if (n > 1) {
+          const label = `x${n}`;
+          ctx.save();
+          ctx.font = '5px monospace';
+          ctx.textBaseline = 'bottom';
+          ctx.textAlign = 'right';
+          const rx = b.x + b.w - 1;
+          const ry = b.y + b.h;
+          ctx.fillStyle = '#000'; // 1px shadow so it reads over the icon
+          ctx.fillText(label, rx + 0.5, ry);
+          ctx.fillStyle = '#fff';
+          ctx.fillText(label, rx, ry - 0.5);
+          ctx.restore();
+        }
       }
     }
     // Tiny number-key label in the top-left corner (native small font — the

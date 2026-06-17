@@ -53,6 +53,9 @@ import {
   drawItemPreview,
 } from './itemEditor';
 import { updateWalker, drawTestPane, finishTestPointer } from './testWalker';
+import { buildPsiBuffer, rebuildPsiPicker, loadPsiIntoBuffer, drawPsiPreview } from './psiEditor';
+import { loadPsiCatalog, listPsi } from '../PsiCatalog';
+import { loadPsiAnims } from '../PsiAnim';
 import { buildDom } from './dom';
 
 export type { SpriteEditorCallbacks };
@@ -70,6 +73,8 @@ export async function openSpriteEditor(callbacks: SpriteEditorCallbacks = {}): P
   await loadRoster();
   await loadOverridesDoc();
   await loadSavedItems(); // restore saved item edits before seeding the buffer
+  await loadPsiCatalog(); // PSI ability list for the editor's PSI mode
+  await loadPsiAnims(); // any authored PSI animations (overrides/psi_anim.json)
   if (callbacks.focusItem) S.itemEditId = callbacks.focusItem; // Item Manager handoff
   // Make sure itemEditId is a real, selectable item in some category (the module
   // default is a legacy seed id). If it isn't, fall back to the first item in the
@@ -81,6 +86,8 @@ export async function openSpriteEditor(callbacks: SpriteEditorCallbacks = {}): P
   }
   S.itemTab = S.itemEditId ? tabForItem(S.itemEditId) : (cats[0]?.id ?? 'custom');
   buildItemBuffer();
+  if (!S.psiEditId) S.psiEditId = listPsi()[0]?.id ?? '';
+  buildPsiBuffer(); // seed the PSI frame buffers (Lifeup / first ability)
 
   buildDom();
   await loadGroupIntoEditor(DEFAULT_GROUP);
@@ -118,6 +125,15 @@ export function closeSpriteEditor(): void {
   S.itemRow = null;
   S.itemPickerHost = null;
   S.charPicker = null;
+  S.psiPicker = null;
+  S.psiRow = null;
+  S.psiPickerHost = null;
+  S.psiDeliverySel = null;
+  S.psiNote = null;
+  S.psiFrameBuffers = [];
+  S.psiFrameCtxs = [];
+  S.psiCanvas = null;
+  S.psiCtx = null;
   S.charNote = null;
   S.nameInput = null;
   S.copyNote = null;
@@ -145,14 +161,20 @@ export function setEditMode(m: EditMode): void {
   }
   if (S.editMode === m) return;
   S.editMode = m;
-  clearSelection(); // char cells and item buffers have different geometry
+  clearSelection(); // char cells, item buffers, and PSI frames differ in geometry
   if (S.itemRow) S.itemRow.style.display = m === 'item' ? 'flex' : 'none';
+  if (S.psiRow) S.psiRow.style.display = m === 'psi' ? 'flex' : 'none';
   if (m === 'item') {
     S.colorIndex = 1;
     S.itemTab = tabForItem(S.itemEditId); // open on the tab holding the current item
     rebuildItemPicker();
     highlightItemTabs();
     loadItemIntoBuffer(S.itemEditId); // also sets walkerItem so it previews on the character
+  } else if (m === 'psi') {
+    S.colorIndex = 1;
+    S.walkerItem = null;
+    rebuildPsiPicker();
+    if (S.psiEditId) loadPsiIntoBuffer(S.psiEditId);
   } else {
     S.walkerItem = null;
     if (S.itemNote) S.itemNote.textContent = 'Item: none (G cycles)';
@@ -325,6 +347,7 @@ function tick(): void {
     S.dirty = false;
   }
   drawTestPane();
-  drawItemPreview();
+  if (S.editMode === 'psi') drawPsiPreview();
+  else drawItemPreview();
   S.rafId = requestAnimationFrame(tick);
 }

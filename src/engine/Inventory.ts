@@ -9,7 +9,7 @@
  */
 
 export interface GoodsItem {
-  id: string;   // server slug (e.g. 'cookie')
+  id: string; // server slug (e.g. 'cookie')
   name: string; // display label (e.g. 'Cookie')
 }
 
@@ -22,4 +22,12 @@ export function setGoods(items: GoodsItem[]): void {
 
 export function getGoods(): readonly GoodsItem[] {
   return goods;
+}
+
+/** How many of item `id` the player holds (Goods is a flat list — one entry per
+ *  item, so duplicate entries ARE the stack count). Drives the hotbar count badge. */
+export function goodsCount(id: string): number {
+  let n = 0;
+  for (const g of goods) if (g.id === id) n++;
+  return n;
 }

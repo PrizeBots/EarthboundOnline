@@ -33,12 +33,19 @@ const PHONE_SPRITE_GROUPS = new Set([215, 216, 412, 427]);
 // money between your account and on-hand cash. Sprite groups 259 / 447.
 const ATM_SPRITE_GROUPS = new Set([259, 447]);
 
+// Ness's mom (sprite group 145) — talking to her cooks the player's favorite
+// food (server-authoritative heal + cooldown). Mirrors how shopStore/phones tag
+// a special interaction by sprite.
+const MOM_SPRITE_GROUP = 145;
+
 export class NPC extends Entity {
   readonly kind: NPCKind;
   /** NPC config id keying npc_text.json, or null if this NPC has no dialogue. */
   readonly textId: number | null;
   /** Server-driven animation pose (walk/attack/hurt), same as players. */
   pose: Pose = 'walk';
+  /** Active status-condition ids (server-synced) — drives the HP-bar pips. */
+  statuses: string[] = [];
   /** Store id if this NPC is a shop clerk (set by NPCManager), else null. */
   shopStore: number | null = null;
   /**
@@ -49,6 +56,22 @@ export class NPC extends Entity {
    */
   placementKey: string | null = null;
 
+  /**
+   * Gift (present box) state — set by NPCManager via Gifts.tagGift when this is
+   * a sprite-195 prop with a catalog entry. `giftItem` is the item inside (null
+   * = unresolved special), `giftRomFlag` the ROM Event Flag (its identity, →
+   * per-player flag). `giftOpenedAt` is the epoch-ms the open→fade started (0 =
+   * unopened); set by Gifts.beginGiftOpen on the server's confirmation.
+   */
+  giftItem: number | null | undefined = undefined;
+  giftRomFlag: number | undefined = undefined;
+  giftOpenedAt = 0;
+
+  /** True if this placement is an openable present box. */
+  get isGift(): boolean {
+    return this.giftRomFlag != null;
+  }
+
   /** True if this placement is a telephone — talking to it triggers a save. */
   get isPhone(): boolean {
     return PHONE_SPRITE_GROUPS.has(this.spriteGroupId);
@@ -57,6 +80,11 @@ export class NPC extends Entity {
   /** True if this placement is an ATM — talking to it opens the bank menu. */
   get isAtm(): boolean {
     return ATM_SPRITE_GROUPS.has(this.spriteGroupId);
+  }
+
+  /** True if this is Ness's mom — talking cooks the player's favorite food. */
+  get isMom(): boolean {
+    return this.spriteGroupId === MOM_SPRITE_GROUP;
   }
 
   constructor(

@@ -4,13 +4,50 @@
 // the browser. Add a schema + a case here whenever a new override file is hand-
 // or editor-authored.
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { EnemySpawnsSchema } from '../src/data/overrideSchemas';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const readJson = (rel: string) => JSON.parse(readFileSync(resolve(root, rel), 'utf8'));
+
+/** Recursively list every .ts file under `dir` (skips node_modules). */
+function tsFiles(dir: string): string[] {
+  const out: string[] = [];
+  for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    if (ent.name === 'node_modules') continue;
+    const p = resolve(dir, ent.name);
+    if (ent.isDirectory()) out.push(...tsFiles(p));
+    else if (ent.name.endsWith('.ts')) out.push(p);
+  }
+  return out;
+}
+
+// Every override file an editor tool writes MUST be on vite.config.ts's
+// OVERRIDE_ALLOW list, or the dev-server save channel 400s ("unknown override
+// file") and edits silently fail to persist. This drift is easy to introduce
+// (add a saveOverride call, forget the allowlist) and invisible until you try to
+// save — so assert the two stay in lockstep at test time.
+describe('editor save channel allowlist', () => {
+  it('every saveOverride() filename is on vite.config OVERRIDE_ALLOW', () => {
+    // Extract the allowlisted filenames from the OVERRIDE_ALLOW Set literal.
+    const cfg = readFileSync(resolve(root, 'vite.config.ts'), 'utf8');
+    const block = cfg.match(/OVERRIDE_ALLOW\s*=\s*new Set\(\[([\s\S]*?)\]\)/);
+    if (!block) throw new Error('Could not find OVERRIDE_ALLOW in vite.config.ts');
+    const allow = new Set([...block[1].matchAll(/['"]([^'"]+\.json)['"]/g)].map((m) => m[1]));
+
+    // Collect every literal saveOverride('x.json', …) call site under src/.
+    const saved = new Set<string>();
+    for (const file of tsFiles(resolve(root, 'src'))) {
+      const src = readFileSync(file, 'utf8');
+      for (const m of src.matchAll(/saveOverride\(\s*['"]([^'"]+\.json)['"]/g)) saved.add(m[1]);
+    }
+
+    const missing = [...saved].filter((f) => !allow.has(f)).sort();
+    expect(missing, `saveOverride targets missing from OVERRIDE_ALLOW: ${missing}`).toHaveLength(0);
+  });
+});
 
 describe('public/overrides/enemy_spawns.json', () => {
   const data = readJson('public/overrides/enemy_spawns.json');

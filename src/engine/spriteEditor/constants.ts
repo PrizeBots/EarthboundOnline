@@ -66,8 +66,11 @@ export const CHECKER_B = '#bcbcc8';
 export const UNDO_LIMIT = 64;
 
 export type Tool = 'pencil' | 'eraser' | 'eyedrop' | 'fill' | 'select' | 'move' | 'rotate' | 'skew';
-// The editor edits either the 16x24 character sheet or a 16x16 held-item buffer.
-export type EditMode = 'char' | 'item';
+// The editor edits the 16x24 character sheet ('char'), a 16x16 held-item buffer
+// ('item'), or a 48x48 PSI effect frame ('psi'). Item and PSI share the engine's
+// "buffer surface" path (see pixelCanvas.activeBuffer); only dims + the persist
+// target differ.
+export type EditMode = 'char' | 'item' | 'psi';
 
 // A pixel-rect selection within the active target (region-local coords). When
 // set, fill / transforms / copy act on it; otherwise they act on the whole frame.

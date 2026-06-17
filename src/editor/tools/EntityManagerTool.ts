@@ -59,7 +59,7 @@ type DragPayload = { type: 'entities' } | { type: 'folder'; id: string };
 // keeps fractional precision (speed); the rest are clamped positive integers.
 // Numeric stat fields only (col is edited separately, in the collision section).
 const STAT_FIELDS: {
-  key: Exclude<keyof EntityStats, 'col' | 'combat'>;
+  key: Exclude<keyof EntityStats, 'col' | 'combat' | 'vehicle'>;
   label: string;
   min: number;
   max?: number;
@@ -275,6 +275,17 @@ class EntityManagerTool implements EditorTool {
     const next: EntityStats = { ...entityStatsFor(this.entities, sprite) };
     if (val) next.combat = val;
     else delete next.combat;
+    this.entities[String(sprite)] = next;
+    this.shell?.markDirty('entities');
+  }
+
+  // Flag (or unflag) this sprite group as a VEHICLE — a friendly, autonomous
+  // actor that roams, hunts foes (enemies + PKers), and plows them with one
+  // heavy collide-attack (server tickVehicle). Stored on the per-entity stats.
+  private setVehicle(sprite: number, on: boolean): void {
+    const next: EntityStats = { ...entityStatsFor(this.entities, sprite) };
+    if (on) next.vehicle = true;
+    else delete next.vehicle;
     this.entities[String(sprite)] = next;
     this.shell?.markDirty('entities');
   }
@@ -964,6 +975,27 @@ class EntityManagerTool implements EditorTool {
     sel.onchange = () => this.setCombat(this.sprite, sel.value as CombatPersonality | '');
     row.appendChild(sel);
     this.formEl.appendChild(row);
+
+    // Vehicle toggle — turns this sprite group into a plowing vehicle (server
+    // tickVehicle: roam, hunt enemies/PKers, heavy scattered collide-knockback;
+    // friendlies nudged aside, no damage). HP/health bar come from the stats above.
+    const vrow = document.createElement('div');
+    vrow.style.cssText = 'display:flex;align-items:center;gap:6px;';
+    const vlbl = document.createElement('span');
+    vlbl.textContent = 'vehicle';
+    vlbl.style.cssText = 'width:56px;color:#9fb8cc;';
+    vrow.appendChild(vlbl);
+    const vchk = document.createElement('input');
+    vchk.type = 'checkbox';
+    vchk.checked = !!this.entities[String(this.sprite)]?.vehicle;
+    vchk.style.cssText = 'width:14px;height:14px;cursor:pointer;';
+    vchk.onchange = () => this.setVehicle(this.sprite, vchk.checked);
+    vrow.appendChild(vchk);
+    const vhint = document.createElement('span');
+    vhint.textContent = 'plows enemies/PKers; friendlies yield';
+    vhint.style.cssText = 'color:#667;font-size:10px;';
+    vrow.appendChild(vhint);
+    this.formEl.appendChild(vrow);
 
     this.refreshColSection();
   }

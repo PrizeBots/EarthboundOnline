@@ -40,7 +40,8 @@ eb_project/  (CoilSnake decompile: scripts, NPC/door tables, music) ──┘   
    `enemy_configuration_table.yml`: per-sprite stats (HP/XP/level/money/damage)
    - item drops & rates, keyed by sprite id. The DEFAULTS layer for combat (see
      Combat & enemies).
-8. `npm run dev` — Vite on port 4444 (game WebSocket server attaches to Vite
+8. `tools/extract_gifts.py` — present-box catalog (`gifts.json`), see Gifts below
+9. `npm run dev` — Vite on port 4444 (game WebSocket server attaches to Vite
    in dev; `server/index.js` is the standalone deployment)
 
 The event-flag state for the open world lives in `src/world_flags.json` — the
@@ -474,6 +475,44 @@ accessor added for tests/debug). Enemies AND townsfolk are damageable
 (see NPC self-defense below); health bars hide at full HP, so a damaged shark or
 hurt townsperson shows its bar while the local player always sees its own.
 
+**Hit feedback / game feel.** Impact is sold client-side and is purely cosmetic —
+the server stays authoritative for HP/death. **Knockback** is server-computed
+(`npcSim.knockbackPlayerSpot`, collision-clamped) and broadcast as a landing
+spot; the local player eases to it over a few frames (`Player.knockTo`) so the
+camera glides instead of teleporting. The **juice trio** lives in `Juice.ts`, a
+module-level singleton (like `Emitter`) any hit-detector can poke: **hitstop**
+(`Game.update` skips the world sim for a few frames while the freeze holds —
+render still runs), **screen shake** (decaying trauma → camera offset applied
+around the world/overlay draws in `Game.render`, restored before the HUD), and a
+per-sprite **hit flash** (`Entity.flashUntil` → `drawSprite`'s `flash` arg paints
+a white silhouette via a scratch-canvas `source-atop` tint). Triggers: enemy hits
+fire from `NPCManager.applyNpcHp` but only credit shake/hitstop when the local
+player swung within `ATTACK_CREDIT_MS` (`noteLocalAttack`) — so townsfolk or other
+players hitting nearby enemies flash the sprite but don't rattle your screen while
+you're just walking through. Player hits fire from `Game`'s `onPlayerHp` (heavier
+— taking a hit outweighs landing one), and crits add an extra punch in `onCombat`
+only when the local player dealt or took it. Weapon **attack speed** (`equip_stats.json`
+`attackSpeed`, server-authoritative) scales both the swing cooldown and the
+client swing-pose duration so fast weapons animate as fast as they resolve.
+
+**Status conditions + inflict model.** `server/status.js` is the single catalog +
+timer/immunity/DoT engine (paralysis, sleep, diamond, poison, …), shared by
+in-sim actors (npcSim) and players (gameHost). Each status names the ROM
+**element** that resists it (`elementOf` → paralysis/fire/freeze/flash/hypnosis).
+Every damage source carries a **data-sourced inflict spec** `[{type, chance}]`:
+weapons from `equip_stats.json` `inflict` (→ `gameHost.weaponInflict` →
+`handleAttack`), enemies from `enemyInflict()` (authored `inflict`/`paralysisChance`,
+else a baseline). On a landed, non-dodged, **non-lethal** hit each entry's chance
+is scaled by the target's per-element vulnerability (`entityVuln` for actors,
+`_playerVuln` for players — player resist is gear-based, a TODO, so 100% for now)
+and rolled immunity-gated (`tryStatus` / `_applyHitStatuses`). `normalizeInflict`
+sanitizes all authored specs; unauthored weapon/bare hands → baseline paralysis.
+Action-blocking statuses freeze actor AI and lock the local player's input.
+`overrides/equip_stats.json` is the **per-item mod layer** edited in the **Item
+Manager** (offense/defense/crit/dodge/attackSpeed/cost/heal + the inflict list);
+`shops.js` layers every field over the ROM item table (ROM data untouched). It's
+read once at host start, so authored combat values apply on the next server start.
+
 **NPC self-defense.** Every `person` carries HP (`NPC_HP`, matching the client's
 Entity default so full-HP folk need no sync) and defends itself on
 **defend-on-sight** (no first hit needed) against the nearest living enemy within
@@ -497,6 +536,21 @@ first (over a closer bystander). `applyDamage` is the one death path shared by
 player swings, enemy swings, and NPC swings (it awards EXP only on player-dealt
 enemy kills); all damage is still gated by `canHurt`. `hpSnapshot` ships
 damaged/downed persons too so late joiners see their bars.
+
+**Vehicles.** A sprite group flagged **`vehicle`** in the Entity Manager
+(`entities[sprite].vehicle`) becomes an autonomous friendly actor (`tickVehicle`)
+— it rides on the `person` kind, so it carries HP + a health bar and is
+destructible. It roams, but HUNTS foes (enemies + PKers via `nearestFoeTo`) within
+`VEHICLE_DETECT` and drives at them. Its movement is **wall-only** — it plows
+straight _through_ the crowd; `plow()` resolves whoever its body box overlaps each
+step. Its single "attack" is the collision: a foe takes `VEHICLE_DAMAGE` with a
+**scattered knockback** (`pushActor`/`knockbackPlayerSpot` now accept a `dir`
+override + `mult`/`dist`) — `vehicleKnockDir` blends the car's travel heading with
+the perpendicular toward the victim's _side_ plus jitter, so foes fly _out of the
+lane_ (`VEHICLE_KB_MULT` force) instead of straight back, per-victim
+cooldown-gated. Friendlies (townsfolk + peaceful players) take **no damage**, only
+a minimal `VEHICLE_FRIENDLY_KB` nudge aside (players via the new damage-free
+`onPlayerShove` host callback) so the plow never stalls.
 
 **Pursuit into buildings & regroup.** Each enemy runs a small `mode` machine:
 `patrol` (wander) → `chase` (has a target) → `return` (lost it). Player movement
@@ -674,6 +728,50 @@ otherwise override it). Dialogue is client-local; no server messages.
 flag state baked in, so flag-conditional NPCs always say their open-world
 line. Runtime flag evaluation means porting the decoder into the engine,
 which fits the planned client-side Web Worker extraction (CLAUDE.md).
+
+### Gifts (present boxes)
+
+EarthBound present boxes are `Type: item` TPT entries on overworld sprite group
+195 (closed) / 196 (open). Each one's data lives entirely in its
+`npc_config_table.yml` entry: **`Text Pointer 2`** is the item id (`$XX` hex),
+and **`Event Flag`** is the box's unique ROM identity. (All real presents share
+one opener script, so the contents are NOT in the script — they're that field.)
+A handful carry a 2-byte `Text Pointer 2` (a custom-script pointer, not an item)
+and are flagged `special` with `item: null` for manual authoring, never guessed.
+
+`tools/extract_gifts.py` joins the sprite-195 placements already in `npcs.json`
+(so each gift's `k` matches its rendered prop) with those config fields and
+writes `public/assets/map/gifts.json` =
+`[{k, x, y, romFlag, item, itemName, special?}, ...]`. Authored contents layer
+on via `overrides/gifts.json` (`{edits: {k: {item}}}`), edited in the **Gift
+Manager** tool — same overrides pattern as enemies/npcs.
+
+**Per-player one-time open.** The ROM's single global "opened" flag can't model
+an MMO (shared world, personal progress), so each gift maps to a PRIVATE
+PlayerFlag at `GIFT_FLAG_BASE (910000) + romFlag` (kept in sync between
+`src/engine/Gifts.ts` and `server/gameHost.js`). The flow is
+server-authoritative: pressing Talk on a box (`Game.tryTalk` → `sendOpenGift(k)`)
+sends `open_gift`; the host checks the flag, the bag has room, grants the item
+(`inventory` + `loot`), sets the flag, and acks `gift_opened`. The client then
+plays open (swap to 196) → fade (`Gifts.beginGiftOpen`/`giftAlpha`) and marks
+the flag locally. A box the player already opened is hidden on load
+(`giftGone` filters it out of `getNearbyNPCs`); the editor's `getNpcsInRect`
+shows every box so the Gift Manager always lists them all. Special gifts (no
+resolved item) still open + set the flag, just grant nothing until authored.
+
+### Ness's mom (favorite-food heal)
+
+Talking to **Ness's mom** (sprite group 145; `NPC.isMom`, gated in `Game.tryTalk`
+like phones/ATMs/gifts) cooks the player's **favorite food** — a server-
+authoritative heal of `MOM_FOOD_HEAL` (50 HP) on a `MOM_FOOD_COOLDOWN_MS` (5 min)
+wall-clock cooldown. The client sends `mom_food`; the host heals (clamped, via a
+`player_hp` broadcast), arms `momFoodReadyAt`, and replies `{healed, readyInMs,
+food}`; the client renders her dialogue from those facts (heal line / "ready in
+Xm Ys" while cooling down / "already full"). `momFoodReadyAt` is **persisted in
+the save**, so relogging can't reset the timer. `favoriteThing`/`favoriteFood`
+are authored at character creation (CreateFlow → `POST /api/characters`) and live
+in the character save; `_loadCharacterInit`/`_saveCharacter` round-trip them (and
+must keep including them, or a later save would wipe them).
 
 **Verification** — `tools/verify_dialogue.mjs` drives the real game in
 headless Chromium (Playwright) and screenshots the dialogue flow. Note:

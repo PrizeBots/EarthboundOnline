@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "events": {
+    "cursor-confirm": "cursor-confirm",
+    "cursor-horizontal": "cursor-horizontal",
+    "cursor-vertical": "cursor-vertical",
+    "player-attack": "player-attack",
+    "player-try-psi": "player-try-psi",
+    "heal": "heal",
+    "player-hurt": "player-hurt",
+    "player-die": "player-die",
+    "enemy-die": "enemy-die",
+    "crit": "smaaaash",
+    "attack-miss": "just-missed-fell-over",
+    "player-dodge": "dodge",
+    "level-up": "maxed-out",
+    "menu-open": "menu-open-and-close",
+    "menu-close": "menu-open-and-close",
+    "shop-purchase": "purchase-item",
+    "shop-sell": "cash-register",
+    "equip": "equip"
+  },
+  "volumes": {
+    "cursor-confirm": 1,
+    "cursor-horizontal": 1,
+    "cursor-vertical": 1,
+    "player-attack": 0.35,
+    "player-try-psi": 1,
+    "heal": 1,
+    "player-hurt": 1,
+    "player-die": 1,
+    "enemy-die": 1,
+    "crit": 1,
+    "attack-miss": 1,
+    "player-dodge": 1,
+    "level-up": 1,
+    "menu-open": 1,
+    "menu-close": 1,
+    "shop-purchase": 1,
+    "shop-sell": 1,
+    "equip": 1
+  }
+}

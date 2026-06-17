@@ -20,6 +20,7 @@ const OVERRIDE_ALLOW = new Set([
   'dialogue.json',
   'sprites.json',
   'names.json',
+  'song_names.json', // Sound Manager — admin song renames (parallel to names.json)
   'enemy_spawns.json',
   // NOTE: places.json is NO LONGER a file override — the Places outline now lives
   // in the DB (world_docs, via /api/world/places). Left out on purpose.
@@ -33,6 +34,11 @@ const OVERRIDE_ALLOW = new Set([
   'sprite_frames.json',
   'flags.json', // Flag Editor — flag catalog (id/name/scope/default)
   'triggers.json', // Flag Editor — event→flag rules
+  'sfx_events.json', // Sound Manager SFX tab — event→sound map + per-event volumes
+  'entity_folders.json', // Entity Desktop — folder layout + sprite→folder assignment
+  'item_folders.json', // Item Desktop — folder layout + item→folder assignment
+  'equip_stats.json', // Item Manager — per-item stat overrides (offense/defense/crit/dodge/attackSpeed/cost/heal/inflict)
+  'gifts.json', // Gift Manager — authored present-box contents (edits[k]={item})
 ]);
 const SAVE_BODY_LIMIT = 8 * 1024 * 1024; // sprite overrides carry data URLs
 
@@ -57,15 +63,16 @@ function editorSavePlugin() {
   return {
     name: 'editor-save-channel',
     apply: 'serve' as const, // dev server only — excluded from `vite build`
-    // The Reload toggle only governs OUR override-file saves (public/overrides):
-    // when OFF we swallow their HMR so an editor save doesn't kick you out of the
-    // editor. SOURCE edits (.ts/.js) must ALWAYS hot-reload — otherwise code
-    // changes never reach the browser even on a hard refresh, because Vite skips
-    // invalidating the cached module when we return [].
+    // The Reload toggle governs ALL hot reloading so you can keep working in the
+    // editor while files change under you — your own override saves AND source
+    // (.ts/.js) edits (e.g. an agent updating code). OFF (default): suppress every
+    // HMR update + full-reload so the running page stays put and you don't get
+    // kicked out of the editor. Vite still INVALIDATES the changed modules in its
+    // graph (handleHotUpdate only governs HMR propagation, not the file-watch
+    // invalidation), so a MANUAL refresh serves the fresh code. ON: normal HMR /
+    // full-reload as usual. Flipped live via /__editor/hotreload (no restart).
     handleHotUpdate(ctx: any) {
-      const f = String(ctx.file || '').replace(/\\/g, '/');
-      const isOverride = f.includes('/public/overrides/');
-      if (isOverride && !overrideHotReload) return [];
+      if (!overrideHotReload) return []; // toggle OFF → no auto-reload of any kind
       return ctx.modules;
     },
     configureServer(server: any) {

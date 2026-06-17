@@ -140,6 +140,21 @@ export function folderName(id: string): string {
   return folders.find((f) => f.id === id)?.name ?? id;
 }
 
+/** The base "Food" category id (see BASE_FOLDERS). */
+export const FOOD_FOLDER_ID = 'food';
+
+/** True if an item is in the Food category — the 'food' folder OR any descendant
+ *  of it (so food subfolders still count). Drives gameplay like the eat SFX.
+ *  Returns false when folders aren't loaded yet (itemFoldersLoaded() is false). */
+export function isFoodItem(id: string): boolean {
+  let f = folderOfItem(id);
+  while (f) {
+    if (f === FOOD_FOLDER_ID) return true;
+    f = folders.find((x) => x.id === f)?.parent ?? null;
+  }
+  return false;
+}
+
 /** Item ids filed directly in `parent` (null = Desktop), id-sorted. */
 export function itemsInFolder(parent: string | null): string[] {
   return allItemIds()

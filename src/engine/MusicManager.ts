@@ -362,7 +362,7 @@ async function loadSfx(id: string): Promise<AudioBuffer | null> {
  * the audio engine isn't up yet, for the 'none' id, or when the file is absent.
  * Async load on first use; subsequent plays are instant from cache.
  */
-export function playSfx(id: string | undefined | null): void {
+export function playSfx(id: string | undefined | null, vol = 1): void {
   if (!id || id === 'none' || sfxMuted || !initialized || !audioContext) return;
   const ctx = audioContext;
   if (!sfxGain) {
@@ -370,11 +370,22 @@ export function playSfx(id: string | undefined | null): void {
     sfxGain.gain.value = 1;
     sfxGain.connect(ctx.destination);
   }
+  const v = Math.max(0, Math.min(1, vol));
+  if (v <= 0) return; // silenced
   void loadSfx(id).then((buf) => {
     if (!buf || sfxMuted) return; // re-check mute: load is async
     const src = ctx.createBufferSource();
     src.buffer = buf;
-    src.connect(sfxGain!);
+    // A per-shot gain applies this sound's authored volume; skip the extra node
+    // at full volume (the common case) so most SFX wire straight to the bus.
+    if (v >= 1) {
+      src.connect(sfxGain!);
+    } else {
+      const g = ctx.createGain();
+      g.gain.value = v;
+      src.connect(g);
+      g.connect(sfxGain!);
+    }
     trackSfxSource(src);
     src.start();
   });
@@ -435,12 +446,15 @@ const SFX_MAX_DIST = 384; // beyond this radius: inaudible
  * listener (the local player, tracked by updateMusic) so far-off world events
  * (enemy deaths, remote swings) fade out instead of blasting at full volume.
  */
-export function playSfxAt(id: string | undefined | null, x: number, y: number): void {
+export function playSfxAt(id: string | undefined | null, x: number, y: number, vol = 1): void {
   if (!id || id === 'none' || sfxMuted || !initialized || !audioContext) return;
   const dist = Math.hypot(x - listenerX, y - listenerY);
   if (dist >= SFX_MAX_DIST) return; // too far to hear
-  const vol =
+  const atten =
     dist <= SFX_FULL_DIST ? 1 : 1 - (dist - SFX_FULL_DIST) / (SFX_MAX_DIST - SFX_FULL_DIST);
+  // Final gain = distance attenuation × this sound's authored volume.
+  const gain = atten * Math.max(0, Math.min(1, vol));
+  if (gain <= 0) return;
   const ctx = audioContext;
   if (!sfxGain) {
     sfxGain = ctx.createGain();
@@ -452,7 +466,7 @@ export function playSfxAt(id: string | undefined | null, x: number, y: number): 
     const src = ctx.createBufferSource();
     src.buffer = buf;
     const g = ctx.createGain();
-    g.gain.value = vol;
+    g.gain.value = gain;
     src.connect(g);
     g.connect(sfxGain!);
     trackSfxSource(src);

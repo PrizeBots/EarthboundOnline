@@ -99,6 +99,23 @@ export const S = {
   // Per-cell hit boxes of the FRAMES strip (set by drawFramesGrid).
   stripCellRects: [] as { x: number; y: number; w: number; h: number }[],
 
+  // --- PSI-animation-editing mode (48x48 frames, variable count) ---
+  psiEditId: '' as string, // active PSI ability id (from psi.json)
+  psiDelivery: 'target' as 'caster' | 'target' | 'projectile',
+  psiFrameBuffers: [] as HTMLCanvasElement[], // N 48x48 frame canvases
+  psiFrameCtxs: [] as CanvasRenderingContext2D[],
+  psiEditFrame: 0,
+  psiCanvas: null as HTMLCanvasElement | null, // = psiFrameBuffers[psiEditFrame]
+  psiCtx: null as CanvasRenderingContext2D | null,
+  psiUndo: [] as ImageData[],
+  psiPreviewFrame: 0,
+  psiPreviewTimer: 0,
+  psiPicker: null as SpritePicker | null,
+  psiRow: null as HTMLDivElement | null, // the whole PSI UI (picker + delivery + frames)
+  psiPickerHost: null as HTMLDivElement | null,
+  psiDeliverySel: null as HTMLSelectElement | null,
+  psiNote: null as HTMLDivElement | null,
+
   selRow: 1, // start on the south-facing frame — the classic editing view
   selCol: 0,
   // Pixel size of the currently selected frame.

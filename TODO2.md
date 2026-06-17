@@ -20,39 +20,51 @@
 
 ### Framework (build first)
 
-- [ ] **Status-effect engine (server-authoritative)** — every combatant (player, enemy, townsperson) carries a set of active statuses `{type, until, data}`. The sim tick applies each status' effect (DoT, action-block, control-scramble, debuff) and clears expired ones. Single source of truth: `npcSim` for in-sim actors, `gameHost` for players. Generalizes the current ad-hoc `stunUntil`.
-- [ ] **Inflict model** — every damage source (weapon, PSI, enemy attack) carries an inflict spec `[{status, element, chance}]`. On a landed, non-dodged hit, roll `chance` against the target's per-element **vulnerability/resist**. Hooks into the existing `resolveMelee` path.
-- [ ] **Per-entity vulnerabilities from the ROM** — port `enemy_configuration_table.yml`'s `Paralysis / Fire / Freeze / Flash / Hypnosis-Brainshock vulnerability %` + `Initial Status` into the enemy catalog (`enemies.json`, `extract_enemies.py` + the TS extractor, with parity). These become each entity's resist table (replaces today's flat `PLAYER_STUN_CHANCE` constant).
-- [ ] **Weapon / PSI inflict authoring** — which weapon procs which status at what %, and which PSI inflicts what. Authored in the Entity Manager (entities) + item/PSI data; merges over the ROM catalog like every other stat.
-- [ ] **Status broadcast + client render** — push each combatant's active statuses; client shows status icons on HP bars + EB-style floating battle text ("became numb!", "solidified!", "got poisoned!") with the `sound(83)` sting (reuse SfxEvents).
-- [ ] **Player-side enforcement (the deferred piece)** — paralysis / diamond / sleep must lock the LOCAL player's input (movement/attack/PSI) for the duration; same trust model as movement. This is the `player_stun` / input-lock piece deferred from the knockback+stun work.
-- [ ] **Cures** — items + PSI clear statuses per EB (Healing β+ → paralysis & diamond; Secret Herb → most; red springs; Refreshing Herb; hospital). Death/respawn clears all. Map each cure → the statuses it removes.
+- [x] **Status-effect engine (server-authoritative)** — `server/status.js` (catalog + timer/immunity/DoT math, 8 unit tests) is the single source of truth, shared by actors + players. `npcSim` migrated off the ad-hoc `stunUntil` → the general `statuses` map (old "stun" → **Paralysis**, action-block + DoT in the actor loop). `gameHost` wired for **players**: a 4Hz status tick (DoT on player HP + expiry), inflicts via `damagePlayer`, clear-on-death; 3 host tests green. (Actor DoT application stays dormant until a poison-on-enemies source exists.)
+- [x] **Inflict model** — every damage source carries a data-sourced inflict spec `[{type, chance}]` (element is intrinsic to the status — `status.elementOf`). On a landed, non-dodged, non-lethal hit each entry rolls `chance × target per-element vuln%` and applies the status (immunity-gated). **Weapons** supply their spec from `equip_stats.json` `inflict` (→ `gameHost.recomputeEquipStats.weaponInflict` → `handleAttack`); **enemies** from `enemyInflict()` (authored `inflict` array or `paralysisChance`, else the `ENEMY_PARALYZE_CHANCE` baseline), the SAME spec vs players and townsfolk. `status.normalizeInflict` sanitizes all authored specs. Unauthored weapon / bare hands → baseline paralysis (behavior unchanged). 5 tests in `combat.test.js`. REMAINING: PSI becomes a source once the PSI/magic system lands; per-weapon/enemy values are the "authoring" item below.
+- [~] **Per-entity vulnerabilities from the ROM** — DONE: `extract_enemies.py` now parses `Paralysis / Fire / Freeze / Flash / Hypnosis-Brainshock vulnerability %` into the catalog's `vuln` block as **numbers** (canon, 100=susceptible/0=immune); `npcSim.entityVuln` reads it and **scales the paralysis proc** by the target's resist. REMAINING: scale the other elements as their statuses land (sleep/strange ← hypnosis, diamond ← flash, fire/freeze damage); **player** resist (EB gear-protection, not levels — needs community item data); and the same `vuln` read in the TS ROM-port extractor.
+- [~] **Weapon / PSI inflict authoring** — DONE (weapons): the **Item Manager** now edits per-item stat overrides → `overrides/equip_stats.json` (offense/defense/crit/dodge/attackSpeed/cost/heal + a **status-inflict list editor**: status dropdown × chance%), layered over the ROM item table in `shops.js`. Enemy inflicts authorable via the Entity Manager's `inflict`/`paralysisChance` (read by `enemyInflict`). REMAINING: PSI inflict authoring (waits on the PSI system); a per-enemy `inflict` array field in the Entity Manager UI (only `paralysisChance` is surfaced there today); and server hot-reload of `equip_stats.json` (combat values currently apply on server restart).
+- [~] **Status broadcast + client render** — DONE: `player_status` + `status_applied` (floating EB battle-text), AND color-coded **status pips** on the HP bars for players (local + remote) AND enemies/NPCs (new `npc_status` broadcast). REMAINING: a status SFX (the `sound(83)` sting — needs a manifest entry), and real icon art (pips are colored squares for now).
+- [x] **Player-side enforcement** — action-block (paralysis/sleep/diamond) locks field input via `Player.freezeUntil`; **scramble** reverses controls; **noPsi** blocks casting (server + client gate). Every status flag now has a live consumer (block/DoT/scramble/blocksPsi/accuracyDown/fumble/breaksOnHit). REMAINING (cosmetic): a "frozen" tint on the avatar.
+- [x] **Cures** — **Healing α** PSI clears ALL of the caster's statuses (`def.cures` → `status.clearAll` + broadcast); death/respawn already clears. REMAINING (refinement): per-cure granularity (Healing β = paralysis/diamond only, etc.) + curative ITEMS (Secret Herb, red springs).
 
 ### The statuses (adapted to real-time action)
 
 Incapacitating (can't act):
 
-- [ ] **Paralyzed / "Numb"** — real-time action lock. This is what our shipped "stun" becomes: rename it and drive the proc off each entity's **Paralysis-vulnerability %**. Battle text "body became numb!" / "suddenly could not move!". Cured by Healing β+, Secret Herb, red springs, or timeout.
-- [ ] **Diamondized / "Solidified"** — hard CC, longer + rarer than paralysis: immobile, diamond-tinted sprite. Needs a cure (Healing γ / Cup of Lifenoodles / Secret Herb) or a long timeout. (EB's whole-party-diamondized = game over has no MMO analog — skip it.) Battle text "body solidified!".
-- [ ] **Asleep** — action lock that **breaks when the victim takes a hit** (or times out). From the Hypnosis / Brainshock element. Battle text "fell asleep!".
+- [x] **Paralyzed / "Numb"** — live end-to-end: players↔enemies inflict it on a landed hit (action-lock + post-effect immunity + "became numb!" battle text + local input-lock). REMAINING (folded into the framework items): drive the proc off each entity's **Paralysis-vulnerability %** instead of the current flat constants (`PLAYER_PARALYSIS_CHANCE` / `ENEMY_PARALYZE_CHANCE`), and a cure path.
+- [x] **Asleep** — action-lock (via `blocksAction`) that **breaks when struck** (`status.breakOnHit` in `applyDamage` + `_applyHitStatuses`). Inflicted by **Hypnosis α** PSI. Battle text "fell asleep!".
+- [~] **Diamondized / "Solidified"** — the EFFECT works (action-block + immunity + pip + "solidified!" text, same path as paralysis, longer/rarer). REMAINING: an inflict source (a Flash PSI / enemy) + a diamond-tint sprite.
 
-Control-scramble (can act, but wrong):
+Control-scramble (can act, but wrong) — **DONE**:
 
-- [ ] **Feeling Strange / Mushroomized** — invert/scramble movement + auto-target for a duration; Mushroomized also plants the mushroom-on-head sprite and lasts much longer. Battle text "began to feel strange!".
-- [ ] **Possessed (mini-ghost)** — periodic random action / movement override. Battle text "possessed by a mini-ghost!".
+- [x] **Feeling Strange** — controls reversed (`Player.statuses` → input negated in `Player.update`); scrambled actors shuffle randomly (`jitter`) instead of aggro. Inflicted by **Brainshock α**. Battle text "feels strange!".
+- [~] **Possessed (mini-ghost)** — uses the same `scramble` consumer (reversed/random). REMAINING: an inflict source + the random-action flavor.
 
-Soft debuffs:
+Soft debuffs — **DONE**:
 
-- [ ] **Can't concentrate** — PSI disabled for a duration. Battle text "could not use PSI!".
-- [ ] **Crying** — accuracy / hit-rate down. Battle text "could not stop crying!".
+- [x] **Can't concentrate (noPsi)** — blocks ALL PSI (server `use_psi` gate + client `psiBlocked` hook + "Can't concentrate!" notify). Inflicted by **Brainshock α**.
+- [x] **Crying** — accuracy down: a crying attacker whiffs (`CRY_MISS_CHANCE`, broadcast MISS). REMAINING: an inflict source (an onion-type enemy).
 
-Damage-over-time:
+Damage-over-time — engine DONE (the DoT tick applies HP loss for actors + players; **Nauseous** also fumbles swings). Each just needs an inflict source (enemy attack data, authored per-entity):
 
-- [ ] **Poisoned** — HP ticks down over time. "got poisoned!".
-- [ ] **Nauseous** — DoT + chance to fumble an action. "felt somewhat nauseous...".
-- [ ] **Sunstroke** — heat DoT variant.
-- [ ] **Sniffling / Cold** — cold DoT variant. "caught a cold!".
-- [ ] **Homesick** (Ness / flavor) — periodic forced pause / morale dip; low priority.
+- [~] **Poisoned** / **Nauseous** / **Sunstroke** / **Sniffling-Cold** — DoT + fumble consumers all live; REMAINING: which enemy attack inflicts each (Entity Manager authoring).
+- [ ] **Homesick** (Ness / flavor) — periodic forced pause; low priority, no consumer yet.
+
+### PSI animation authoring (sprite editor) — NEXT
+
+> DESIGN LOCKED (2026-06-17): **48×48** frames, **variable** count (add/remove,
+> flipbook), per-PSI **delivery** mode: `caster` (on the caster) / `target` (on
+> the affected entity, Lifeup default) / `projectile` (travels caster→target —
+> the "kamehameha"). Authored art → `public/overrides/psi_anim.json` (OUR data,
+> shippable), keyed by PSI id from `psi.json`. Start with **Lifeup**.
+
+- [x] **PSI catalog loader** (client) — `PsiCatalog.ts` loads `assets/map/psi.json` (52 abilities) for the editor picker + cast system.
+- [x] **PSI-anim asset store** (client) — `PsiAnim.ts`: load/get/set `overrides/psi_anim.json` (`{ [psiId]: { delivery, frames: string[] } }`, 48×48 PNG data URLs).
+- [x] **Sprite-editor "PSI" mode** — third mode beside char/item: ability picker (✎ marks authored ones), **variable** 48×48 frame strip (click to select, +Frame / 🗑Frame), the full shared pixel engine painting the selected frame, a **delivery** dropdown (caster/target/projectile), looping preview, autosave → `psi_anim.json`. Generalized `pixelCanvas` to a dynamic `activeBuffer()` so item + PSI share the engine; typecheck clean, server suite green.
+- [x] **Procedural art for all 52 PSIs** — `tools/author_psi_anim.py` (same workflow as `author_item_sprites.py`): one effect style per family (fire/freeze/thunder/flash/stars/heal/shield/buff/hypnosis/magnet/teleport/paralysis), tier-scaled (α<β<γ<Ω), 6 frames each → `psi_anim.json`. **Placeholders to hand-polish in the editor**, NOT final artist art (flagged per the no-fabrication rule). Lifeup → `target` (heal sparkles).
+- [~] **Cast/effect runtime** — DONE: `PsiFx.ts` rasterizes the authored frames + plays them in world space per delivery (caster/target spot, or projectile travel). **Server-authoritative**: `use_psi` heals the caster OR (offense PSI) the server picks the **nearest live enemy with line-of-sight in range** (`npcSim.psiStrike` → damage + knockback + XP/loot on kill), then `psi_cast` broadcasts to EVERYONE (incl. caster) with the PsiAnim id + caster/target positions so the projectile flies caster→target. **PSI Fire α** added as the first offense PSI (PP 5, dmg 14, range 240) + in the cast menu. 3 host tests. REMAINING: the `noPsi` status gate (block casting while can't-concentrate); hand-polish the 51 non-Lifeup effects in the editor; more offense PSI (Freeze/Thunder/Rockin) once tuned.
+- [ ] **PSI editor polish** — dynamic EDIT-panel title (shows 48×48 in PSI mode), a status SFX, and a per-PSI "test cast" button.
 
 ### Elements (the inflict channels — from enemy config)
 
@@ -62,7 +74,7 @@ Damage-over-time:
 ## Phase 4: Build the Game
 
 - [ ] Real-time action combat system design doc (combat is built ahead of the doc — write it up to lock the rules)
-- [ ] PSI/magic system (projectiles, AoE)
+- [~] PSI/magic system (projectiles, AoE) — canon **PSI catalog** extracted: `tools/extract_psi.py` → `public/assets/map/psi.json` (52 abilities — names/tiers/learn-levels/PP/target from `psi_ability_table` + `psi_name_table` + `battle_action_table`; e.g. Lifeup α/β/γ/Ω, PP 5/8/13/24, Ness Lv 2/20/39/70). NEXT: PSI animation authoring in the sprite editor (frames per ability, Lifeup first) → then cast/effect runtime.
 - [~] Inventory + equipment system — Goods (buy/use/sell, server-authoritative) + full ROM item table extracted (offense/defense/slot/who-can-equip → `extract_shops.py`). **Equipment**: EB 4-slot screen (Weapon/Body/Arms/Other) + a 2-slot quick-select hotbar; equipped **weapon offense → attack damage**, **armor defense → damage taken** (`Equipment.ts` mirror, server-authoritative per-slot equip). Inventory/money/equipped gear now **persist** (per-character save). TODO: armor types beyond offense/defense (status resist, etc.), more hotbar slots, and **hotbar persistence** (the 2 quick-slots are still client-only/in-memory). DEV: a Cracked bat is granted on join for testing (`server/shops.js` — remove before launch)
 - [~] Custom sprites for combat animations — player attack/hurt bands done (SpriteEditor); enemy bands still need the NPC Sprite Animator
 - [~] Sound effects / music integration — music PLAYS, but region triggers come from the ROM's per-sector musicId, which the door-stitched world often gets wrong. Fix is authoring-driven: the **Sound Manager** editor tool (`overrides/music.json` areas win over the sector lookup). Still to do: author correct regions across the map, then SFX (hit/attack/etc.)

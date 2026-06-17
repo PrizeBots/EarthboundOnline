@@ -20,10 +20,26 @@ const path = require('path');
 const { createNpcSim } = require('./npcSim');
 const { loadShops } = require('./shops');
 const { sanitizeAlloc, deriveCombatStats, STAT_KEYS } = require('./charStats');
+const status = require('./status'); // EB status-condition engine (shared with npcSim)
 
 const POSES = ['walk', 'climb', 'attack', 'hurt'];
 const PLAYER_MAX_HP = 60;
 const MAX_SLOTS = 14; // EarthBound's Goods menu holds 14 items per character
+// Present boxes: each ROM gift's Event Flag maps to a PRIVATE per-player flag at
+// this base, so every player can open each gift exactly once. KEEP IN SYNC with
+// src/engine/Gifts.ts GIFT_FLAG_BASE.
+const GIFT_FLAG_BASE = 910000;
+// Ness's mom (sprite 145) cooks the player's favorite food on request: heals a
+// fixed amount, then won't cook again until the wall-clock cooldown elapses. The
+// ready-at timestamp persists in the save, so relogging can't reset the timer.
+const MOM_FOOD_HEAL = 50; // HP restored per home-cooked meal
+const MOM_FOOD_COOLDOWN_MS = 5 * 60 * 1000; // 5 min between meals
+// Quick-select hotbar: 2 slots (keys 1/2), each holding a weapon, a usable item,
+// or a PSI move tagged 'psi:<id>'. Persisted per character so an assigned PSI
+// (which, unlike a weapon, can't be re-derived from the equip set) survives a
+// relog. KEEP IN SYNC with the client (menu/layout HOTBAR_SLOTS + PSI_TAG).
+const HOTBAR_SLOTS = 2;
+const HOTBAR_PSI_TAG = 'psi:';
 const BAG_FULL_NOTICE_MS = 2500; // min gap between "bag full" popups (anti-spam)
 const STARTING_MONEY = 1000; // every player joins with $1000
 const DEATH_CASH_PCT = 0.5; // fraction of ON-HAND cash dropped on death (bank is safe)
@@ -61,6 +77,13 @@ const MAX_MOVE_STEP = 96;
 // saves + cleans up). Generous, so only true zombies are reaped.
 const IDLE_TIMEOUT_MS = 30000;
 const HEARTBEAT_MS = 5000;
+// How often the host ticks player status conditions (DoT + expiry). 4Hz — fine
+// for ~1s damage-over-time cadence and snappy enough for status wear-off.
+const STATUS_TICK_MS = 250;
+// Accuracy penalties from status: a Crying attacker whiffs this often, a
+// Nauseous one fumbles this often (rolled per swing; either ends the swing).
+const CRY_MISS_CHANCE = 0.4;
+const FUMBLE_CHANCE = 0.3;
 // PK enable-lock: once a player turns PK on they're committed for this much
 // IN-GAME (connected) time before they can turn it off. Stored as remaining ms
 // (pkLockMs) that only counts down while the player is online — the lock PAUSES
@@ -68,12 +91,54 @@ const HEARTBEAT_MS = 5000;
 // escape it (pkLockMs is persisted).
 const PK_LOCK_MS = 5 * 60 * 1000;
 
-// PSI abilities (server-authoritative). `pp` is the cost; `heal` restores HP.
-// Lifeup α heal amount is a placeholder — set it to the exact EarthBound value
-// when confirmed.
+// PSI abilities (server-authoritative). `pp` = cost; `heal` restores the caster's
+// HP; `damage` strikes the nearest enemy within `range` px (offense PSI); `anim`
+// is the PsiAnim catalog id whose authored frames play on cast. Heal/damage
+// amounts are placeholders pending the canon effect values.
 const PSI = {
-  lifeup: { name: 'Lifeup α', pp: 3, heal: 30 },
+  // heal / cure (self)
+  lifeup: { name: 'Lifeup α', pp: 3, heal: 30, anim: 'lifeup_alpha' },
+  healing: { name: 'Healing α', pp: 4, cures: true, anim: 'healing_alpha' }, // clears the caster's statuses
+  // offense (strikes the nearest enemy)
+  fire: { name: 'PSI Fire α', pp: 5, damage: 14, range: 240, anim: 'psi_fire_alpha' },
+  // ailment (status on the nearest enemy; chances are element-scaled by its resist)
+  hypnosis: {
+    name: 'Hypnosis α',
+    pp: 4,
+    range: 240,
+    anim: 'hypnosis_alpha',
+    inflict: [{ type: 'sleep', chance: 90 }],
+  },
+  paralysis: {
+    name: 'Paralysis α',
+    pp: 5,
+    range: 240,
+    anim: 'paralysis_alpha',
+    inflict: [{ type: 'paralysis', chance: 90 }],
+  },
+  brainshock: {
+    name: 'Brainshock α',
+    pp: 6,
+    range: 240,
+    anim: 'brainshock_alpha',
+    inflict: [
+      { type: 'strange', chance: 80 },
+      { type: 'noPsi', chance: 80 },
+    ],
+  },
 };
+// Unit facing vectors by Direction (S,N,W,E,NW,SW,SE,NE) — where an offense PSI
+// fizzles toward when no enemy is in range (so the projectile still reads).
+const PSI_DIR = [
+  [0, 1],
+  [0, -1],
+  [-1, 0],
+  [1, 0],
+  [-0.7, -0.7],
+  [-0.7, 0.7],
+  [0.7, 0.7],
+  [0.7, -0.7],
+];
 
 // --- Player progression (server-authoritative; full stat growth) ---
 // Level-1 baseline mirrors StatusModal's defaults so the client's display
@@ -94,9 +159,10 @@ const BASE_STATS = {
   iq: 9,
   luck: 9,
 };
-// Per-level stat gains (tunable). HP/maxHp, offense and defense are wired into
-// combat today; speed/guts/vitality/iq/luck grow and show on the Status screen
-// but aren't mechanically hooked up yet.
+// Per-level stat gains (tunable). HP/maxHp, offense and defense feed combat;
+// SPEED now drives both dodge (dodgeChanceFromSpeed) AND the player's walk speed
+// (client Player.moveSpeedFor) — so leveling visibly quickens your legs. guts/
+// vitality/iq/luck grow and show on the Status screen but aren't hooked up yet.
 const GROWTH = {
   maxHp: 8,
   ppMax: 2,
@@ -211,6 +277,11 @@ class GameHost {
     const root = path.resolve(assetsDir, '..', '..');
     this.SPAWN = GameHost._readSpawn(root);
 
+    // Present box catalog: placement key -> { romFlag, item }. ROM-derived
+    // (assets/map/gifts.json) with authored contents layered on
+    // (overrides/gifts.json). Drives the one-time 'open_gift' grant.
+    this.GIFTS = GameHost._loadGifts(assetsDir, root);
+
     // Server-authoritative NPC simulation: same world for every client.
     this.npcSim = createNpcSim(assetsDir);
     // World pixel bounds for move validation (clamp players onto the map).
@@ -218,6 +289,8 @@ class GameHost {
 
     // Idle-connection sweep handle (set in start()).
     this._heartbeat = null;
+    // Player status-condition tick handle (DoT + expiry; set in start()).
+    this._statusTimer = null;
   }
 
   static _readSpawn(root) {
@@ -229,6 +302,36 @@ class GameHost {
       }
     }
     return { x: 1296, y: 1168, dir: 0 };
+  }
+
+  /**
+   * Load the present-box catalog: placement key -> { romFlag, item }. ROM base
+   * (assets/map/gifts.json) with authored contents (overrides/gifts.json edits)
+   * layered on. Missing files -> empty catalog (gifts simply won't open).
+   */
+  static _loadGifts(assetsDir, root) {
+    const gifts = new Map();
+    let base = [];
+    try {
+      base = JSON.parse(fs.readFileSync(path.join(assetsDir, 'map', 'gifts.json'), 'utf8'));
+    } catch {
+      return gifts; // not extracted yet
+    }
+    for (const g of base) {
+      if (g && typeof g.k === 'string') gifts.set(g.k, { romFlag: g.romFlag, item: g.item });
+    }
+    try {
+      const ov = JSON.parse(
+        fs.readFileSync(path.join(root, 'public', 'overrides', 'gifts.json'), 'utf8')
+      );
+      for (const [k, e] of Object.entries(ov?.edits || {})) {
+        const g = gifts.get(k);
+        if (g && e && e.item !== undefined) g.item = e.item;
+      }
+    } catch {
+      /* no authored overrides yet */
+    }
+    return gifts;
   }
 
   /** Start the NPC simulation. Call once after construction. */
@@ -251,21 +354,63 @@ class GameHost {
           pk: !!p.pk,
         })),
       (data) => this.broadcastAll(data),
-      (playerId, dmg, _enemy, knock) => this.damagePlayer(playerId, dmg, knock),
+      // `inflict` = status procs the hit carries (e.g. paralysis), applied to the
+      // victim's status set by damagePlayer; `knock` = the knockback landing spot.
+      (playerId, dmg, _enemy, knock, inflict) => this.damagePlayer(playerId, dmg, knock, inflict),
       (playerId, xp, _enemy, loot) => this.awardKill(playerId, xp, loot),
       // PvP: a player's swing landed on another player — apply it to the victim's
-      // server-authoritative HP (same path as an enemy hit). `knock` is the
-      // sim-computed (collision-clamped) knockback landing spot, or null.
-      (targetId, dmg, _byId, knock) => this.damagePlayer(targetId, dmg, knock),
+      // server-authoritative HP (same path as an enemy hit).
+      (targetId, dmg, _byId, knock, inflict) => this.damagePlayer(targetId, dmg, knock, inflict),
       // Ground-drop claim: the sim found a player on a drop; we own inventory/cash
       // and decide if they can take it (bag room). Return true to consume it.
-      (playerId, drop) => this.tryPickup(playerId, drop)
+      (playerId, drop) => this.tryPickup(playerId, drop),
+      // Vehicle nudge: a friendly player got clipped by a plowing vehicle — shove
+      // them clear of the lane with NO damage (the sim already clamped the spot).
+      (playerId, spot) => this.shovePlayer(playerId, spot)
     );
     // Graceful disconnects: reap dead/zombie sockets that stopped sending. A live
     // client sends a move every ~3 frames, so silence past IDLE_TIMEOUT_MS means
     // the connection is gone; close it so the close handler saves + cleans up.
     this._heartbeat = setInterval(() => this._reapIdle(), HEARTBEAT_MS);
     if (this._heartbeat.unref) this._heartbeat.unref(); // don't keep tests alive
+    // Status conditions tick (DoT + expiry) for players. npcSim ticks its own
+    // actors; players live here, so the host drives their poison/etc + clears
+    // worn-off statuses (re-broadcasting the set). 4Hz is plenty for ~1s DoT.
+    this._statusTimer = setInterval(() => this._tickPlayerStatuses(), STATUS_TICK_MS);
+    if (this._statusTimer.unref) this._statusTimer.unref();
+  }
+
+  // Per-tick player status upkeep: apply due DoT, drop worn-off statuses, and
+  // re-broadcast the set when it changes. Skips clean/editor/dead players.
+  _tickPlayerStatuses() {
+    const now = Date.now();
+    for (const [id, p] of this.players) {
+      if (p.editor || p.hp <= 0 || !p.statuses) continue;
+      if (Object.keys(p.statuses).length === 0) continue;
+      const r = status.tickStatuses(p, now);
+      for (const d of r.dot) {
+        this.damagePlayer(id, Math.max(1, Math.floor(p.maxHp * d.pct)), null, null);
+        if (p.hp <= 0) break; // death cleared everything + respawned
+      }
+      if (r.changed && p.hp > 0) this._broadcastPlayerStatus(p);
+    }
+  }
+
+  // A player's status vulnerability % for an element (100 = no resist). EB grants
+  // status protection via EQUIPMENT (e.g. items that "protect from paralysis"),
+  // not level — wiring that needs the item-flag data (community source; the ROM
+  // decompile doesn't expose it). Until then players are fully susceptible.
+  _playerVuln(_p, _element) {
+    return 100;
+  }
+
+  /** Broadcast a player's current active status-id set (drives client icons + lock). */
+  _broadcastPlayerStatus(p) {
+    this.broadcastAll({
+      type: 'player_status',
+      id: p.id,
+      statuses: status.activeStatuses(p, Date.now()),
+    });
   }
 
   // Close any connection silent longer than IDLE_TIMEOUT_MS. Closing triggers the
@@ -283,10 +428,12 @@ class GameHost {
     }
   }
 
-  /** Stop the heartbeat (tests / shutdown). */
+  /** Stop the heartbeat + status tick (tests / shutdown). */
   stop() {
     if (this._heartbeat) clearInterval(this._heartbeat);
     this._heartbeat = null;
+    if (this._statusTimer) clearInterval(this._statusTimer);
+    this._statusTimer = null;
   }
 
   // Project an inventory (array of ids) to the wire shape the client renders:
@@ -324,6 +471,12 @@ class GameHost {
     // duration (sent in the equipped payload), so a fast weapon both resolves and
     // animates quicker. Future haste items would multiply in here too.
     entry.attackSpeed = we && we.slot === 'weapon' && we.attackSpeed > 0 ? we.attackSpeed : 1;
+    // Status-inflict spec the equipped weapon carries ([{type, chance}], sanitized).
+    // null = nothing authored → npcSim applies the baseline paralysis proc, so
+    // unauthored weapons / bare hands behave exactly as before. An authored spec
+    // overrides it (e.g. a weapon that procs sleep instead of paralysis).
+    const wInf = status.normalizeInflict(we && we.slot === 'weapon' ? we.inflict : null);
+    entry.weaponInflict = wInf.length ? wInf : null;
     let def = 0;
     for (const s of ['body', 'arms', 'other']) {
       const id = entry.equipped[s];
@@ -357,6 +510,7 @@ class GameHost {
       earnedSinceCall: 0,
       spentSinceCall: 0,
       equipped: { weapon: null, body: null, arms: null, other: null },
+      hotbar: new Array(HOTBAR_SLOTS).fill(null),
       x: this.SPAWN.x,
       y: this.SPAWN.y,
       direction: this.SPAWN.dir || 0,
@@ -365,6 +519,10 @@ class GameHost {
       flags: [],
       pk: false,
       pkLockMs: 0,
+      // EB naming flavor (anon players never set these); mom's food cooldown.
+      favoriteThing: '',
+      favoriteFood: '',
+      momFoodReadyAt: 0,
     };
   }
 
@@ -408,6 +566,7 @@ class GameHost {
     }
 
     return {
+      hotbar: this._sanitizeHotbar(save.hotbar),
       name: character.name,
       spriteGroupId: character.spriteGroupId,
       appearance: this._validAppearance(character.appearance),
@@ -431,7 +590,34 @@ class GameHost {
       // while online, so it resumes (paused) right where it left off.
       pk: !!save.pk,
       pkLockMs: Number.isFinite(save.pkLockMs) ? save.pkLockMs : 0,
+      // EB naming prompts (set at creation) + mom's food cooldown (epoch ms),
+      // persisted so the timer can't be reset by relogging.
+      favoriteThing: typeof save.favoriteThing === 'string' ? save.favoriteThing : '',
+      favoriteFood: typeof save.favoriteFood === 'string' ? save.favoriteFood : '',
+      momFoodReadyAt: Number.isFinite(save.momFoodReadyAt) ? save.momFoodReadyAt : 0,
     };
+  }
+
+  // Validate a saved/echoed hotbar into a fixed-length array of: null, a known
+  // GOODS id (weapon or usable item — never armor), or a 'psi:<id>' tag for a
+  // known PSI move. Lenient on inventory membership (a PSI isn't an inventory
+  // item, and an equipped weapon is re-synced client-side), strict on the id
+  // existing so a tampered/garbage hotbar never persists.
+  _sanitizeHotbar(arr) {
+    const out = new Array(HOTBAR_SLOTS).fill(null);
+    if (!Array.isArray(arr)) return out;
+    for (let i = 0; i < HOTBAR_SLOTS; i++) {
+      const id = arr[i];
+      if (typeof id !== 'string' || id.length > 32) continue;
+      if (id.startsWith(HOTBAR_PSI_TAG)) {
+        if (PSI[id.slice(HOTBAR_PSI_TAG.length)]) out[i] = id;
+      } else {
+        const good = this.GOODS[id];
+        const armor = good && good.equip && good.equip.slot !== 'weapon';
+        if (good && !armor) out[i] = id;
+      }
+    }
+    return out;
   }
 
   // Decrement a player's PK lock by the IN-GAME time elapsed since the last tick.
@@ -468,12 +654,17 @@ class GameHost {
           earnedSinceCall: p.earnedSinceCall | 0,
           spentSinceCall: p.spentSinceCall | 0,
           equipped: { ...p.equipped },
+          hotbar: Array.isArray(p.hotbar) ? [...p.hotbar] : new Array(HOTBAR_SLOTS).fill(null),
           x: p.x,
           y: p.y,
           direction: p.direction,
           flags: [...(this.flags.get(playerId) || [])],
           pk: !!p.pk,
           pkLockMs: p.pkLockMs || 0,
+          // Preserve the EB naming flavor + advance mom's food cooldown.
+          favoriteThing: p.favoriteThing || '',
+          favoriteFood: p.favoriteFood || '',
+          momFoodReadyAt: p.momFoodReadyAt || 0,
         },
         Date.now()
       );
@@ -516,7 +707,18 @@ class GameHost {
   // Apply an enemy's landed hit to a player (server-authoritative HP). Broadcast
   // the new HP so every client updates that player's bar; the victim's own
   // client plays the hurt pose. At 0 HP the player respawns at the spawn point.
-  damagePlayer(playerId, dmg, knock) {
+  // Push a player to a sim-computed spot with NO damage (a vehicle clipping a
+  // friendly out of its lane). Same client-honored hint as a knockback move.
+  shovePlayer(playerId, spot) {
+    const p = this.players.get(playerId);
+    if (!p || p.hp <= 0 || p.editor || !spot) return;
+    if (p.warping && Date.now() < p.warpUntil) return;
+    p.x = spot.x;
+    p.y = spot.y;
+    this.broadcastAll({ type: 'player_push', id: playerId, x: p.x, y: p.y });
+  }
+
+  damagePlayer(playerId, dmg, knock, inflict) {
     const p = this.players.get(playerId);
     if (!p || p.hp <= 0) return;
     if (p.editor) return; // out of the world in the dev editor — untargetable
@@ -528,6 +730,7 @@ class GameHost {
     const eff = Math.max(1, dmg - Math.floor(((p.defense || 0) + (p.armorDefense || 0)) / 2));
     p.hp = Math.max(0, p.hp - eff);
     this.broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: eff });
+    if (p.hp > 0) this._applyHitStatuses(p, inflict); // break sleep + roll any inflicts
     if (p.hp > 0 && knock) {
       // Knocked back (and lived): the sim already collision-clamped the landing
       // spot. Move our authoritative record and broadcast a push — the victim's
@@ -555,10 +758,45 @@ class GameHost {
       p.direction = this.SPAWN.dir || 0;
       p.frame = 0;
       p.pose = 'walk';
+      status.clearAll(p); // death wipes every status condition
       this.npcSim.noteRespawn(playerId); // exempt this teleport from enemy door-warp follow
       this.broadcastAll({ type: 'player_respawn', id: playerId, x: p.x, y: p.y, dir: p.direction });
       this.broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: 0 });
+      this._broadcastPlayerStatus(p); // clear the client's status icons/lock
     }
+  }
+
+  // Apply a landed hit's status side-effects to a player: any "breaks on hit"
+  // status (Sleep) clears, then each `inflict` {type, chance} is rolled against
+  // the status engine (immunity-gated). On a successful proc, broadcast a
+  // `status_applied` (drives the floating battle-text + SFX + the local input
+  // lock); re-broadcast the active set whenever it changed. `inflict` may be
+  // null (a plain hit) — Sleep still breaks. Per-element vulnerability/resist
+  // (ROM table) is a TODO; for now `chance` is the attack's flat proc odds.
+  _applyHitStatuses(p, inflict) {
+    const now = Date.now();
+    const before = status.activeStatuses(p, now).join(',');
+    status.breakOnHit(p, now); // a hit wakes a sleeper
+    for (const inf of inflict || []) {
+      // Element-scale by the player's resist for the status' element. Players
+      // have no vuln table yet (EB resistance is gear-based, not level-based —
+      // a TODO needing community item data), so this is 100% for now.
+      const eff = inf.chance * (this._playerVuln(p, status.elementOf(inf.type)) / 100);
+      if (status.tryInflict(p, inf.type, eff, now, Math.random)) {
+        const def = status.defOf(inf.type) || {};
+        this.broadcastAll({
+          type: 'status_applied',
+          id: p.id,
+          x: Math.round(p.x),
+          y: Math.round(p.y),
+          status: inf.type,
+          text: def.text || '',
+          ms: def.durationMs || 0, // local input-lock deadline for blocking statuses
+          blocks: !!def.blocksAction,
+        });
+      }
+    }
+    if (status.activeStatuses(p, now).join(',') !== before) this._broadcastPlayerStatus(p);
   }
 
   // Award a kill's EXP, apply any level-ups, then push the new stats to that
@@ -711,13 +949,21 @@ class GameHost {
           direction: init.direction,
           frame: 0,
           pose: 'walk',
+          // Active status conditions (see server/status.js): paralysis, poison, …
+          // Transient (not persisted); cleared on death/respawn.
+          statuses: {},
           itemId: null, // set by recomputeEquipStats (held = equipped weapon)
           // EarthBound equip slots (loaded from the save or empty). Server-
           // authoritative; offense/defense from these apply to combat.
           equipped: init.equipped,
+          // Quick-select hotbar (keys 1/2): weapon / usable item / 'psi:<id>'.
+          // Persisted so an assigned PSI survives a relog (a weapon would be
+          // re-derived from the equip set, but a PSI move has no other anchor).
+          hotbar: Array.isArray(init.hotbar) ? init.hotbar : new Array(HOTBAR_SLOTS).fill(null),
           weaponOffense: 0,
           armorDefense: 0,
           attackSpeed: 1, // weapon swing-rate multiplier; set by recomputeEquipStats
+          weaponInflict: null, // weapon status-inflict spec; set by recomputeEquipStats
           inventory: init.inventory, // Goods slots, mutated by use/buy/sell
           money: init.money, // on-hand cash
           bank: init.bank | 0, // ATM balance
@@ -731,6 +977,10 @@ class GameHost {
           pk: init.pk,
           pkLockMs: init.pkLockMs,
           pkTickAt: Date.now(),
+          // EB naming flavor + Ness's-mom food cooldown (epoch ms; 0 = ready).
+          favoriteThing: init.favoriteThing ?? '',
+          favoriteFood: init.favoriteFood ?? '',
+          momFoodReadyAt: init.momFoodReadyAt | 0,
           // Door-transition shield (see 'warp'): whiffs enemy swings on the
           // frozen ghost left at a doorway mid-fade.
           warping: false,
@@ -785,6 +1035,7 @@ class GameHost {
             self: { x: entry.x, y: entry.y, direction: entry.direction },
             stats: statsPayload(entry),
             equipped: entry.equipped,
+            hotbar: entry.hotbar, // restore quick-select slots (incl. assigned PSI)
             attackSpeed: entry.attackSpeed, // weapon swing-rate mult (scales client swing pose)
             // Saved quest/progress flags (PlayerFlags) — private to this player.
             flags: [...this.flags.get(playerId)],
@@ -876,6 +1127,23 @@ class GameHost {
       case 'attack': {
         const entry = this.players.get(playerId);
         if (!entry) break;
+        // Status accuracy penalties: Crying lowers your hit rate, Nausea makes
+        // you fumble — either can whiff the swing outright (broadcast a MISS).
+        const nowA = Date.now();
+        if (
+          (status.isCrying(entry, nowA) && Math.random() < CRY_MISS_CHANCE) ||
+          (status.hasFlag(entry, nowA, 'fumble') && Math.random() < FUMBLE_CHANCE)
+        ) {
+          this.broadcastAll({
+            type: 'combat',
+            evt: 'miss',
+            x: Math.round(entry.x),
+            y: Math.round(entry.y),
+            byPlayer: playerId,
+            targetPlayer: null,
+          });
+          break;
+        }
         // Server-authoritative: resolve from the tracked position so reach can't
         // be spoofed. Damage scales with the player's Offense stat + weapon; crit
         // chance comes from Luck (SMAAAASH! → 2× damage, broadcast to all).
@@ -887,7 +1155,8 @@ class GameHost {
           entry.offense + (entry.weaponOffense || 0),
           entry.pk,
           critChanceFromLuck(entry.luck),
-          entry.attackSpeed || 1
+          entry.attackSpeed || 1,
+          entry.weaponInflict
         );
         break;
       }
@@ -922,17 +1191,41 @@ class GameHost {
         break;
       }
 
+      case 'hotbar': {
+        // The client owns hotbar layout (assign by drag); it echoes the full
+        // 2-slot array here so the server can persist it with the character. We
+        // re-validate every entry (null / known good / known PSI) so a tampered
+        // payload can't store junk, then save — same trust model as 'equip'.
+        const entry = this.players.get(playerId);
+        if (!entry) break;
+        entry.hotbar = this._sanitizeHotbar(msg.hotbar);
+        this._saveCharacter(playerId);
+        break;
+      }
+
       case 'use_item': {
         const entry = this.players.get(playerId);
         if (!entry || entry.hp <= 0) break;
         const itemId = typeof msg.itemId === 'string' ? msg.itemId : null;
         const def = itemId ? GOODS[itemId] : null;
+        if (!def) break; // unknown id — ignore
         const slot = entry.inventory.indexOf(itemId);
-        // Must actually own a slot of a known item to consume it.
-        if (!def || slot === -1) break;
+        // Stock ran out but a hotbar slot still points at it — tell the player
+        // instead of a silent no-op (the assignment intentionally lingers).
+        if (slot === -1) {
+          entry._ws.send(JSON.stringify({ type: 'notice', text: `You're out of ${def.name}.` }));
+          break;
+        }
         // Equippable gear is NOT a consumable — "using" a weapon/armor must
         // never destroy it. It's equipped via the 'equip' path instead.
         if (def.equip) break;
+        // A pure-heal item at full HP heals 0 and would just be consumed, which
+        // reads as "nothing happened". Refuse + say so (EarthBound does the same)
+        // so a hotbar press at full HP isn't a silent dud that wastes the item.
+        if (def.heal && entry.hp >= entry.maxHp) {
+          entry._ws.send(JSON.stringify({ type: 'notice', text: 'Your HP is already full.' }));
+          break;
+        }
 
         // Cookie (and any future `heal` good) restores HP up to the cap;
         // broadcast so every client redraws the bar, tagging `heal` so the
@@ -1055,7 +1348,16 @@ class GameHost {
         const psiId = typeof msg.psiId === 'string' ? msg.psiId : null;
         const def = psiId ? PSI[psiId] : null;
         if (!def || entry.pp < def.pp) break; // unknown ability or not enough PP
+        // "Can't concentrate" (noPsi) blocks ALL PSI, even a cure — it must wear
+        // off. The client also gates this; the server is the authority.
+        if (status.isPsiBlocked(entry, Date.now())) break;
         entry.pp -= def.pp;
+
+        // Effect target for the projectile animation: the caster's own spot for a
+        // heal/self PSI; the struck enemy for an offense PSI (else it fizzles
+        // forward so the bolt still reads).
+        let tx = Math.round(entry.x);
+        let ty = Math.round(entry.y);
         if (def.heal) {
           const healed = Math.min(entry.maxHp, entry.hp + def.heal) - entry.hp;
           entry.hp += healed;
@@ -1068,6 +1370,33 @@ class GameHost {
             heal: healed,
           });
         }
+        if (def.cures) {
+          // Healing PSI clears the caster's status conditions (paralysis, sleep,
+          // poison, …). Death/respawn already clears; this is the in-field cure.
+          status.clearAll(entry);
+          this._broadcastPlayerStatus(entry);
+        }
+        if (def.damage || def.inflict) {
+          // Server picks the target: nearest live enemy in range with line of
+          // sight (it owns enemy positions). Damage + knockback + the PSI's status
+          // inflict (element-scaled by the enemy's resist) resolve in the sim.
+          const hit = this.npcSim.psiStrike(
+            entry.x,
+            entry.y,
+            def.range || 240,
+            def.damage || 0,
+            playerId,
+            def.inflict
+          );
+          if (hit) {
+            tx = hit.x;
+            ty = hit.y;
+          } else {
+            const v = PSI_DIR[entry.direction] || [0, 1];
+            tx = Math.round(entry.x + v[0] * 96);
+            ty = Math.round(entry.y + v[1] * 96);
+          }
+        }
         // PP changed — push updated stats so the caster's PSI bar redraws.
         this.broadcastAll({
           type: 'player_stats',
@@ -1075,6 +1404,17 @@ class GameHost {
           stats: statsPayload(entry),
           leveled: false,
           gained: 0,
+        });
+        // Cast animation to EVERYONE (incl. caster): `id` is the PsiAnim catalog
+        // id; (x,y)=caster, (tx,ty)=target so a projectile flies caster→target.
+        this.broadcastAll({
+          type: 'psi_cast',
+          id: def.anim || psiId,
+          caster: playerId,
+          x: Math.round(entry.x),
+          y: Math.round(entry.y),
+          tx,
+          ty,
         });
         break;
       }
@@ -1149,6 +1489,81 @@ class GameHost {
         const set = this.flags.get(playerId);
         if (!set || set.size === 0) break;
         set.clear();
+        this._saveCharacter(playerId);
+        break;
+      }
+
+      case 'mom_food': {
+        // Talk to Ness's mom (client gates this to sprite 145): she cooks the
+        // player's favorite food, healing MOM_FOOD_HEAL once per cooldown. SERVER-
+        // AUTHORITATIVE: we own the heal, the cooldown clock, and the food name.
+        // The client renders the dialogue from the facts we return.
+        const p = this.players.get(playerId);
+        if (!p || p.hp <= 0) break;
+        const now = Date.now();
+        const food = p.favoriteFood && p.favoriteFood.trim() ? p.favoriteFood.trim() : '';
+        const readyAt = p.momFoodReadyAt || 0;
+        if (now < readyAt) {
+          // Still cooling down — tell them how long until the next meal.
+          this.sendTo(playerId, { type: 'mom_food', healed: 0, readyInMs: readyAt - now, food });
+          break;
+        }
+        const healed = Math.min(p.maxHp, p.hp + MOM_FOOD_HEAL) - p.hp;
+        if (healed <= 0) {
+          // Already full — no meal served, no cooldown spent.
+          this.sendTo(playerId, { type: 'mom_food', healed: 0, readyInMs: 0, food });
+          break;
+        }
+        p.hp += healed;
+        p.momFoodReadyAt = now + MOM_FOOD_COOLDOWN_MS;
+        this.broadcastAll({
+          type: 'player_hp',
+          id: playerId,
+          hp: p.hp,
+          maxHp: p.maxHp,
+          dmg: 0,
+          heal: healed,
+        });
+        this._saveCharacter(playerId); // persist the cooldown (relog-proof)
+        this.sendTo(playerId, { type: 'mom_food', healed, readyInMs: MOM_FOOD_COOLDOWN_MS, food });
+        break;
+      }
+
+      case 'open_gift': {
+        // Open a present box ONCE per player. SERVER-AUTHORITATIVE: we own the
+        // per-player flag (already-opened guard), the bag-room check, and the
+        // item grant — the client only asks by placement key.
+        const p = this.players.get(playerId);
+        const set = this.flags.get(playerId);
+        const gift = typeof msg.k === 'string' ? this.GIFTS.get(msg.k) : null;
+        if (!p || !set || !gift || !Number.isInteger(gift.romFlag)) break;
+        const flagId = GIFT_FLAG_BASE + gift.romFlag;
+        if (set.has(flagId)) break; // already opened by this player
+
+        // A real item needs bag room; a "special" gift (item null/unknown) opens
+        // with no grant. A full bag leaves the present closed so they can return.
+        const itemId = gift.item != null ? String(gift.item) : null;
+        const givable = itemId != null && this.GOODS[itemId];
+        if (givable && p.inventory.length >= MAX_SLOTS) {
+          const now = Date.now();
+          if (now - (p._bagFullAt || 0) >= BAG_FULL_NOTICE_MS) {
+            p._bagFullAt = now;
+            p._ws.send(
+              JSON.stringify({ type: 'notice', code: 'bag_full', text: 'Your bag is full!' })
+            );
+          }
+          break;
+        }
+
+        set.add(flagId); // mark opened (persists below)
+        if (givable) {
+          p.inventory.push(itemId);
+          p._ws.send(JSON.stringify({ type: 'inventory', items: this.inventoryView(p.inventory) }));
+          p._ws.send(
+            JSON.stringify({ type: 'loot', item: itemId, name: this.GOODS[itemId].name || '' })
+          );
+        }
+        p._ws.send(JSON.stringify({ type: 'gift_opened', k: msg.k }));
         this._saveCharacter(playerId);
         break;
       }

@@ -476,6 +476,27 @@ export function listSpriteGroupIds(): number[] {
 // foreground layer (two stacked OAM sprites on real hardware).
 export type SpritePart = 'full' | 'upper' | 'lower';
 
+// Scratch canvas for the hit-flash white tint. One reusable buffer (grown as
+// needed) — we draw the sprite slice into it, paint white with source-atop so
+// only the opaque pixels tint, then blit the result over the real sprite.
+let flashCanvas: HTMLCanvasElement | null = null;
+let flashCtx: CanvasRenderingContext2D | null = null;
+function flashScratch(
+  w: number,
+  h: number
+): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
+  if (!flashCanvas || !flashCtx) {
+    flashCanvas = document.createElement('canvas');
+    flashCtx = flashCanvas.getContext('2d')!;
+  }
+  if (flashCanvas.width < w || flashCanvas.height < h) {
+    flashCanvas.width = Math.max(flashCanvas.width, w);
+    flashCanvas.height = Math.max(flashCanvas.height, h);
+    flashCtx.imageSmoothingEnabled = false; // keep pixel-art crisp (reset on resize)
+  }
+  return { canvas: flashCanvas, ctx: flashCtx };
+}
+
 export function drawSprite(
   ctx: CanvasRenderingContext2D,
   groupId: number,
@@ -484,7 +505,8 @@ export function drawSprite(
   x: number,
   y: number,
   part: SpritePart = 'full',
-  pose: Pose = 'walk'
+  pose: Pose = 'walk',
+  flash = false
 ) {
   const img = spriteImages.get(groupId);
   if (!img) return;
@@ -542,15 +564,22 @@ export function drawSprite(
   }
   srcY += sliceOffset;
 
-  ctx.drawImage(
-    img,
-    srcX,
-    srcY,
-    meta.width,
-    sliceH,
-    Math.floor(x - meta.width / 2),
-    Math.floor(y - meta.height - 1) + sliceOffset,
-    meta.width,
-    sliceH
-  );
+  const destX = Math.floor(x - meta.width / 2);
+  const destY = Math.floor(y - meta.height - 1) + sliceOffset;
+  ctx.drawImage(img, srcX, srcY, meta.width, sliceH, destX, destY, meta.width, sliceH);
+
+  // Hit flash: overlay a white silhouette of this exact slice. Tinting in a
+  // scratch buffer (source-atop) keeps the blink to the sprite's opaque pixels
+  // instead of painting a white box.
+  if (flash) {
+    const { canvas, ctx: sctx } = flashScratch(meta.width, sliceH);
+    sctx.clearRect(0, 0, meta.width, sliceH);
+    sctx.globalCompositeOperation = 'source-over';
+    sctx.drawImage(img, srcX, srcY, meta.width, sliceH, 0, 0, meta.width, sliceH);
+    sctx.globalCompositeOperation = 'source-atop';
+    sctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+    sctx.fillRect(0, 0, meta.width, sliceH);
+    sctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(canvas, 0, 0, meta.width, sliceH, destX, destY, meta.width, sliceH);
+  }
 }

@@ -23,10 +23,14 @@ import {
   getNpcsInRect,
   applyNpcUpdates,
   applyNpcHp,
+  applyNpcStatus,
+  noteLocalAttack,
   getNpcDialogue,
   interpolateNpcs,
+  liveNpcForKey,
 } from './NPCManager';
 import { NPC } from './NPC';
+import { beginGiftOpen } from './Gifts';
 import { loadAtlas } from './TilesetManager';
 import {
   loadCollision,
@@ -52,6 +56,8 @@ import {
   sendSpendPoints,
   sendFlag,
   sendSetPk,
+  sendOpenGift,
+  sendMomFood,
   JoinAuth,
 } from './Network';
 import { getToken, CharacterSummary } from './Auth';
@@ -62,7 +68,8 @@ import { loadNameOverrides, getSpriteName } from './SpriteNames';
 import { loadSongNameOverrides } from './SongNames';
 import { setStatus } from './StatusModal';
 import { pushRemoteSnapshot, dropRemoteBuffer, interpolateRemotePlayer } from './RemoteInterp';
-import { loadItemSprites } from './Items';
+import { loadItemSprites, loadCustomItems } from './Items';
+import { loadItemFolders } from './ItemFolders';
 import { loadCustomTiles } from './CustomTiles';
 import { getEquipped, setEquipped, setEquippedFromServer } from './Equipment';
 import {
@@ -97,6 +104,8 @@ import {
   renderHotbarOverlay,
   triggerHotbarSlot,
   syncWeaponHotbar,
+  setHotbar,
+  reconcileHotbarStock,
   openShop,
   openPhoneMenu,
   openAtmMenu,
@@ -135,6 +144,8 @@ import {
   spawnLootText,
   spawnNoticeText,
 } from './Emitter';
+import { triggerHitstop, tickHitstop, addShake, tickShake, FLASH_MS } from './Juice';
+import { initPsiFx, updatePsiFx, renderPsiFx, spawnPsiFx } from './PsiFx';
 import { setDrops, addDrop, removeDrop } from './DropManager';
 import { playEventSfx, loadSfxEvents } from './SfxEvents';
 import { setGoods } from './Inventory';
@@ -154,6 +165,10 @@ import {
   MINITILE_SIZE,
 } from '../types';
 
+// Status ids that lock the player out of acting (mirror of the blocksAction
+// statuses in server/status.js). Their presence in our status set freezes input.
+const BLOCKING_STATUSES = new Set(['paralysis', 'diamond', 'sleep']);
+
 type GamePhase = 'loading' | 'charselect' | 'playing';
 
 /** Options for starting the game: anonymous (char-select) or a signed-in save. */
@@ -163,6 +178,14 @@ interface StartOpts {
   name?: string;
   spawn?: { x: number; y: number; dir: number };
   auth?: JoinAuth | null;
+}
+
+/** Human-friendly countdown, e.g. 90000 → "1m 30s", 45000 → "45s". */
+function fmtDuration(ms: number): string {
+  const total = Math.max(1, Math.ceil(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
 // Unit facing vectors, indexed by Direction, for the talk/check probe.
@@ -207,6 +230,10 @@ export class Game {
   private riding: { dx: number; dy: number; dist: number; exit: DoorData | null } | null = null;
   private stairSuppressed = false;
   private talkingNpc: NPC | null = null;
+  // Status input-lock deadline (ms epoch) for the LOCAL player — set when an
+  // action-blocking status (paralysis/sleep/diamond) lands, cleared on its
+  // server-side wear-off/cure. While active, field actions are suppressed.
+  private statusLockUntil = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
@@ -347,15 +374,20 @@ export class Game {
     await Promise.all([
       loadMapData(),
       loadDoors(),
-      loadNPCs(),
+      loadNPCs(), // also loads the shops catalog (clerk→store + item equip data)
       loadItemSprites(),
+      loadCustomItems(), // admin-minted items — needed before the folder layout
       loadCustomTiles(), // author-drawn custom room tiles (overrides/custom_tiles.json)
     ]);
+    // Item category folders (food/weapons/…). The game reads them at runtime —
+    // e.g. only FOOD plays the eat SFX. After shops + custom items are loaded so
+    // a first-run seed (absent override file) can categorize the full catalog.
+    await loadItemFolders();
 
     // Flag/quest system: load the catalog (seeds new-player defaults) and the
     // trigger table (subscribes to the EventBus). After loadNPCs so dialogue
     // branches resolve against a populated PlayerFlags store.
-    await Promise.all([loadFlagRegistry(), initFlagTriggers()]);
+    await Promise.all([loadFlagRegistry(), initFlagTriggers(), initPsiFx()]);
 
     // Editor-authored spawn override (public/overrides/spawn.json) takes
     // precedence over the src/spawn.json default baked into Player.
@@ -409,6 +441,9 @@ export class Game {
       // and asks the server to flip it; the result returns via onPlayerPk.
       getPk: () => ({ on: this.player.pk, lockedUntil: this.player.pkUntil }),
       setPk: (on) => sendSetPk(on),
+      // Float a short notice over the player (e.g. a blocked "Not enough PP" cast).
+      notify: (text) => spawnNoticeText(this.player.x, this.player.y, text),
+      psiBlocked: () => this.player.statuses.includes('noPsi'),
     });
     initChat(getKeySet());
     initDialogue(getKeySet());
@@ -487,11 +522,21 @@ export class Game {
           this.player.attackSpeed = attackSpeed && attackSpeed > 0 ? attackSpeed : 1;
           syncWeaponHotbar(slots.weapon ?? null); // show the saved weapon on the hotbar
         },
+        onHotbar: (slots) => {
+          // Restore the saved quick-select layout (incl. an assigned PSI), then
+          // make sure the equipped weapon still occupies a slot — a save from
+          // before hotbar persistence won't include it.
+          setHotbar(slots);
+          syncWeaponHotbar(this.player.heldItemId);
+        },
         onNpcUpdate: (rows) => {
           applyNpcUpdates(rows);
         },
         onNpcHp: (rows) => {
           applyNpcHp(rows);
+        },
+        onNpcStatus: (rows) => {
+          applyNpcStatus(rows);
         },
         onPlayerHp: (id, hp, maxHp, dmg, heal) => {
           if (id === this.localPlayerId) {
@@ -500,6 +545,11 @@ export class Game {
             if (dmg > 0) {
               spawnDamageNumber(this.player.x, this.player.y, dmg);
               this.player.hurt(); // flinch pose; broadcast to others via sendPosition
+              // Impact juice: YOU got hit — flash, freeze, and a heavier shake
+              // (taking a hit should feel weightier than landing one).
+              this.player.flashUntil = Date.now() + FLASH_MS;
+              triggerHitstop(3);
+              addShake(Math.min(0.65, 0.3 + dmg * 0.02));
               // Lethal blow gets the death sting instead of the hurt grunt.
               playEventSfx(hp <= 0 ? 'player-die' : 'player-hurt');
             }
@@ -510,13 +560,17 @@ export class Game {
             if (rp) {
               rp.hp = hp;
               rp.maxHp = maxHp;
-              if (dmg > 0) spawnDamageNumber(rp.x, rp.y, dmg);
+              if (dmg > 0) {
+                spawnDamageNumber(rp.x, rp.y, dmg);
+                rp.flashUntil = Date.now() + FLASH_MS; // blink, but no shake/freeze — not our hit
+              }
               if (heal > 0) spawnHealNumber(rp.x, rp.y, heal);
             }
           }
         },
         onInventory: (items) => {
           setGoods(items); // mirror the server's Goods list for the menu
+          reconcileHotbarStock(); // empty a hotbar slot whose consumable just ran out
         },
         onMoney: (amount) => {
           setMoney(amount); // mirror the server's on-hand cash for the menu
@@ -539,12 +593,39 @@ export class Game {
         },
         onLoot: (loot) => {
           // We picked something up — float a gold toast off the player.
-          const label =
-            typeof loot.money === 'number' ? `Got $${loot.money}` : `Found ${loot.name || 'item'}!`;
+          const isItem = typeof loot.money !== 'number';
+          const label = isItem ? `Found ${loot.name || 'item'}!` : `Got $${loot.money}`;
           spawnLootText(this.player.x, this.player.y, label);
+          if (isItem) playEventSfx('get-item'); // grabbed an item off the ground
         },
         onNotice: (text) => {
           if (text) spawnNoticeText(this.player.x, this.player.y, text);
+        },
+        onGiftOpened: (k) => {
+          // Server granted the present — play the open→fade on the live box.
+          const npc = liveNpcForKey(k);
+          if (npc) beginGiftOpen(npc);
+          playEventSfx('get-item'); // present opened → "got item from present" jingle
+        },
+        onMomFood: (healed, readyInMs, food) => {
+          // Ness's mom's response — render her line from the server's facts. The
+          // heal itself already arrived via player_hp (green number on the bar).
+          const dish = food || 'a home-cooked meal';
+          let pages: string[];
+          if (healed > 0) {
+            pages = [
+              `Oh, you must be starving! Here, I made your favorite — ${dish}.`,
+              `You recovered ${healed} HP!`,
+              `Now don't push yourself too hard out there, dear.`,
+            ];
+          } else if (readyInMs > 0) {
+            pages = [
+              `You just ate, dear! Let me cook more ${dish} — it'll be ready in ${fmtDuration(readyInMs)}.`,
+            ];
+          } else {
+            pages = [`You look full of energy! Come back when you're hungry, dear.`];
+          }
+          openDialogue(pages);
         },
         onPlayerPush: (id, x, y) => {
           // Knockback: slide to the server's collision-clamped spot over a few
@@ -565,6 +646,35 @@ export class Game {
             }
             dropRemoteBuffer(id); // snap the shove, don't glide to it
           }
+        },
+        onStatusApplied: (id, x, y, _statusType, text, ms, blocks) => {
+          // Floating EB battle-text over whoever caught it ("became numb!").
+          if (text) spawnNoticeText(x, y, text);
+          // If WE were action-locked (paralysis/sleep/diamond), freeze our input
+          // until the status' deadline. The server's player_status clear (cure /
+          // wear-off) lifts it early; this deadline is the backstop.
+          if (id === this.localPlayerId && blocks && ms > 0) {
+            this.statusLockUntil = Math.max(this.statusLockUntil, Date.now() + ms);
+            this.player.freezeUntil(this.statusLockUntil);
+          }
+        },
+        onPlayerStatus: (id, statuses) => {
+          if (id === this.localPlayerId) {
+            this.player.statuses = statuses; // drives our HP-bar pips
+            // No blocking status left → release the input lock immediately.
+            if (!statuses.some((s) => BLOCKING_STATUSES.has(s))) {
+              this.statusLockUntil = 0;
+              this.player.freezeUntil(0);
+            }
+          } else {
+            const rp = this.remotePlayers.get(id);
+            if (rp) rp.statuses = statuses;
+          }
+        },
+        onPsiCast: (id, _casterId, x, y, tx, ty) => {
+          // Server-driven (everyone incl. the caster): play the effect, flying
+          // caster (x,y) → target (tx,ty) for projectile-delivery PSI.
+          spawnPsiFx(id, x, y, tx, ty);
         },
         onPlayerRespawn: (id, x, y, dir) => {
           if (id === this.localPlayerId) {
@@ -603,6 +713,7 @@ export class Game {
           setStatus(stats);
           this.player.maxHp = stats.hpMax;
           this.player.hp = stats.hp;
+          this.player.speed = stats.speed; // drives walk speed — faster as Speed grows
           if (gained > 0) spawnXpNumber(this.player.x, this.player.y, gained);
           if (leveled) {
             spawnLevelUp(this.player.x, this.player.y);
@@ -621,6 +732,13 @@ export class Game {
           // right SFX for the LOCAL player (see SfxEvents / ARCHITECTURE combat).
           if (evt === 'crit') {
             spawnCritText(x, y);
+            // SMAAAASH! — a crit you dealt or took gets an extra-heavy punch on top
+            // of the normal hit juice (the enemy-HP / player-HP handlers already
+            // fired theirs). Distant players' crits don't rattle your screen.
+            if (byPlayer === this.localPlayerId || targetPlayer === this.localPlayerId) {
+              triggerHitstop(6);
+              addShake(0.7);
+            }
             if (byPlayer === this.localPlayerId) playEventSfx('crit');
           } else {
             spawnMissText(x, y);
@@ -951,8 +1069,20 @@ export class Game {
       if (this.transitionAlpha <= 0) {
         this.transitionAlpha = 0;
         this.transitioning = false;
-        // Fade done — position sends resume; lift the damage shield. (A move
-        // would clear it server-side anyway; this ends it promptly.)
+        // Report our post-warp position to the server WHILE STILL warp-shielded,
+        // BEFORE lifting the shield. Position sends are frozen during the fade, so
+        // this is the first time the server hears the big door jump; sending it
+        // under the shield exempts it from the speed-hack move clamp so the server
+        // records the real jump — which is exactly what npcSim reads as a door warp
+        // to make chasing enemies follow you through (clamped to 96px, it never
+        // looked like a warp and they'd give up at the door). THEN end the shield.
+        sendPosition(
+          this.player.x,
+          this.player.y,
+          this.player.direction,
+          this.player.frame,
+          this.player.pose
+        );
         sendWarpState(false);
       }
     }
@@ -1009,9 +1139,15 @@ export class Game {
 
     if (this.phase !== 'playing') return;
 
+    // Hitstop: a landed hit freezes the whole world sim for a few frames so the
+    // impact reads. render() still runs, so the held frame is a crisp freeze (and
+    // screen shake, which decays in render, keeps animating through the freeze).
+    if (tickHitstop()) return;
+
     // Float/fade chat bubbles + damage/heal popups regardless of other state.
     updateChatBubbles();
     updateEmitters();
+    updatePsiFx(); // PSI cast animations advance even while a menu/dialogue is up
 
     // Remote players + server NPCs/enemies keep gliding even while menus/
     // dialogue/transitions freeze the local world — their senders haven't stopped.
@@ -1084,6 +1220,14 @@ export class Game {
       return;
     }
 
+    // Status-locked (paralyzed / asleep / diamondized): can't act. Skip talk,
+    // attack, hotbar and movement — player.update() (called below) self-freezes
+    // movement via freezeUntil. Animation/poses still advance.
+    if (Date.now() < this.statusLockUntil) {
+      this.player.update();
+      return;
+    }
+
     // E = Talk to / Check whatever is in front of the player.
     if (isTalkPressed()) {
       this.tryTalk();
@@ -1095,6 +1239,7 @@ export class Game {
     // is sent to the server, which resolves the hit (server-authoritative damage).
     if (isAttackPressed() && this.player.attack()) {
       sendAttack(this.player.x, this.player.y, this.player.direction);
+      noteLocalAttack(); // credit incoming enemy-HP drops to us → hit juice fires
       playEventSfx('player-attack');
     }
     // 1/2 = trigger the quick-select slot during overworld play (brandish a
@@ -1220,7 +1365,7 @@ export class Game {
         best = npc;
       }
       const pages = getNpcDialogue(npc);
-      if ((pages || npc.shopStore !== null) && score < bestInteractiveScore) {
+      if ((pages || npc.shopStore !== null || npc.isGift) && score < bestInteractiveScore) {
         bestInteractiveScore = score;
         bestInteractive = npc;
         bestPages = pages;
@@ -1241,6 +1386,24 @@ export class Game {
       if (target.isAtm) {
         console.log('Talk: ATM -> bank menu');
         openAtmMenu();
+        return;
+      }
+      // Ness's mom cooks your favorite food: ask the server (it owns the heal +
+      // cooldown) and render her line from the response (onMomFood).
+      if (target.isMom) {
+        console.log('Talk: Ness’s mom -> mom_food');
+        sendMomFood();
+        this.talkingNpc = target;
+        this.faceTalkingNpc();
+        return;
+      }
+      // A present box: ask the server to open it (server grants the item once
+      // per player and acks 'gift_opened', which plays the open→fade).
+      if (target.isGift) {
+        if (target.placementKey && !target.giftOpenedAt) {
+          console.log(`Talk: present -> open_gift ${target.placementKey}`);
+          sendOpenGift(target.placementKey);
+        }
         return;
       }
       // A shop clerk opens its store; anyone else talks (or gives the Check
@@ -1310,6 +1473,17 @@ export class Game {
       return;
     }
 
+    // Screen shake: nudge the camera by the decaying shake offset for the world +
+    // world-anchored overlays, then restore it before the HUD/dialogue so those
+    // stay rock-steady. tickShake() is called unconditionally so trauma decays
+    // even in the editor; the offset is only applied during normal play.
+    const shake = tickShake();
+    const shaking = !this.editor?.isActive() && (shake.x !== 0 || shake.y !== 0);
+    if (shaking) {
+      this.camera.x += shake.x;
+      this.camera.y += shake.y;
+    }
+
     // Editor: render every NPC the free camera shows (its view is decoupled from
     // the frozen avatar). Gameplay stays anchored on the player's AOI window.
     const cam = this.camera;
@@ -1324,12 +1498,20 @@ export class Game {
     if (this.camera.zoom !== 1) {
       this.ctx.save();
       this.ctx.scale(this.camera.zoom, this.camera.zoom);
+      renderPsiFx(this.ctx, this.camera);
       renderEmitters(this.ctx, this.camera);
       renderChat(this.ctx, this.camera, this.player, this.remotePlayers);
       this.ctx.restore();
     } else {
+      renderPsiFx(this.ctx, this.camera);
       renderEmitters(this.ctx, this.camera);
       renderChat(this.ctx, this.camera, this.player, this.remotePlayers);
+    }
+
+    // Undo the shake offset so the dialogue box, fade, and HUD don't jitter.
+    if (shaking) {
+      this.camera.x -= shake.x;
+      this.camera.y -= shake.y;
     }
 
     // NPC dialogue window, above bubbles but below the fade and menu.

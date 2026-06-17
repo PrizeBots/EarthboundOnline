@@ -158,7 +158,7 @@ sim.start(
   () => {}, // broadcast (combat crit/miss events) — ignored here
   () => {}, // onEnemyHit
   () => {}, // onEnemyKill
-  (targetId, dmg, byId, knock) => pvpHits.push({ targetId, dmg, byId, knock })
+  (targetId, dmg, byId, knock, inflict) => pvpHits.push({ targetId, dmg, byId, knock, inflict })
 );
 
 // Attacker A swings EAST from 14px west of B (spawn street: walkable, open), so
@@ -215,6 +215,86 @@ check('PvP: a swing never hits the attacker themselves', () => {
   pvpRoster = [{ id: 'A4', x: BX, y: BY, hp: 60, pk: true, dodge: 0, editor: false }];
   sim.handleAttack(AX, AY, 3, 'A4', 5, true, 0);
   assert(!pvpHits.some((x) => x.targetId === 'A4'), 'must never self-hit');
+});
+
+// --- Status inflict model (data-sourced specs) ---
+// The swing carries a status-inflict spec from its source (the equipped weapon,
+// via gameHost). handleAttack forwards it to the victim path verbatim; omitting
+// it falls back to the baseline paralysis proc. These check the SPEC threading
+// (deterministic — no rng/vuln); the proc roll + immunity live in status.test.js.
+const PLAYER_PARALYSIS_CHANCE = 12; // mirror npcSim.js; baseline when none authored
+
+check('inflict model: a swing carries its weapon spec to the victim', () => {
+  pvpHits.length = 0;
+  pvpRoster = roster(true, false);
+  const spec = [{ type: 'sleep', chance: 50 }];
+  sim.handleAttack(AX, AY, 3, 'WI', 5, true, 0, 1, spec); // fresh id (cooldown)
+  const h = pvpHits.find((x) => x.targetId === 'B');
+  assert.deepStrictEqual(h && h.inflict, spec, 'victim should receive the authored spec');
+});
+
+check('inflict model: no spec falls back to baseline paralysis', () => {
+  pvpHits.length = 0;
+  pvpRoster = roster(true, false);
+  sim.handleAttack(AX, AY, 3, 'WI2', 5, true, 0); // no inflict arg → default
+  const h = pvpHits.find((x) => x.targetId === 'B');
+  assert.deepStrictEqual(
+    h && h.inflict,
+    [{ type: 'paralysis', chance: PLAYER_PARALYSIS_CHANCE }],
+    'an unauthored weapon keeps the baseline paralysis proc'
+  );
+});
+
+check('inflict model: an empty spec carries NO status', () => {
+  pvpHits.length = 0;
+  pvpRoster = roster(true, false);
+  sim.handleAttack(AX, AY, 3, 'WI3', 5, true, 0, 1, []); // weapon authored as no-proc
+  const h = pvpHits.find((x) => x.targetId === 'B');
+  assert.deepStrictEqual(h && h.inflict, [], 'an empty spec means no status proc');
+});
+
+check('inflict model: normalizeInflict sanitizes authored data', () => {
+  const { normalizeInflict } = require('./status');
+  assert.deepStrictEqual(
+    normalizeInflict([
+      { type: 'sleep', chance: 30 }, // kept
+      { type: 'bogus', chance: 50 }, // unknown status → dropped
+      { type: 'poison', chance: 0 }, // non-positive → dropped
+      { type: 'paralysis', chance: 250 }, // clamped to 100
+      'garbage', // non-object → dropped
+    ]),
+    [
+      { type: 'sleep', chance: 30 },
+      { type: 'paralysis', chance: 100 },
+    ]
+  );
+  assert.deepStrictEqual(normalizeInflict(null), [], 'non-array → []');
+});
+
+// End-to-end proc: with an rng that always rolls 0, a carried status actually
+// lands on an enemy (applyDamage → tryStatus → the actor's status set). A fresh
+// sim so the always-proc rng doesn't taint the geometry sim above.
+check('inflict model: a carried status lands on a struck enemy', () => {
+  const simP = createNpcSim(path.join(__dirname, '..', 'public', 'assets'), () => 0);
+  const targets = simP
+    .enemyState()
+    .filter((e) => !e.dead && e.hp > 0 && !simP.wallBetween(e.x - ATTACK_REACH, e.y + 1, e.x, e.y));
+  let applied = false;
+  for (const e of targets) {
+    const a = aimAt(e);
+    // offense 1 so the enemy SURVIVES (the inflict only rolls on a non-lethal
+    // hit — a kill takes the death branch). chance 100 + rng 0 → procs on any
+    // target not fully paralysis-immune.
+    simP.handleAttack(a.x, a.y, a.dir, `IP-${e.id}`, 1, false, 0, 1, [
+      { type: 'paralysis', chance: 100 },
+    ]);
+    const st = simP.enemyState().find((x) => x.id === e.id);
+    if (st && st.statuses && st.statuses.paralysis) {
+      applied = true;
+      break;
+    }
+  }
+  assert(applied, 'expected the carried paralysis to land on at least one enemy');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

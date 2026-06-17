@@ -13,51 +13,51 @@
  * ports directly.
  */
 
-import { drawWindow }                              from './WindowRenderer';
+import { drawWindow, windowFillColor } from './WindowRenderer';
 import { drawText, measureText, FONT_LINE_HEIGHT } from './TextRenderer';
-import { SCREEN_WIDTH }                            from '../types';
+import { SCREEN_WIDTH, SCREEN_HEIGHT } from '../types';
 
-const STYLE   = 0;   // EB "Plain" dark-blue flavor, matching the command window
-const BORDER  = 6;
+const STYLE = 0; // EB "Plain" dark-blue flavor, matching the command window
+const BORDER = 6;
 const PADDING = 6;
 const FONT_ID = 0;
 
 export interface PlayerStats {
-  name:      string;
-  level:     number;
-  hp:        number;
-  hpMax:     number;
-  pp:        number;
-  ppMax:     number;
-  exp:       number;
+  name: string;
+  level: number;
+  hp: number;
+  hpMax: number;
+  pp: number;
+  ppMax: number;
+  exp: number;
   expToNext: number;
-  offense:   number;
-  defense:   number;
-  speed:     number;
-  guts:      number;
-  vitality:  number;
-  iq:        number;
-  luck:      number;
+  offense: number;
+  defense: number;
+  speed: number;
+  guts: number;
+  vitality: number;
+  iq: number;
+  luck: number;
   condition: string;
 }
 
 // Level-1 defaults until a real stat/leveling system exists.
 const stats: PlayerStats = {
-  name:      'Player',
-  level:     1,
-  hp:        60,   // mirrors the server's PLAYER_MAX_HP; live HP arrives via setStatus
-  hpMax:     60,
-  pp:        7,
-  ppMax:     7,
-  exp:       0,
+  name: 'Player',
+  level: 1,
+  hp: 60, // mirrors the server's PLAYER_MAX_HP; live HP arrives via setStatus
+  hpMax: 60,
+  pp: 7,
+  ppMax: 7,
+  exp: 0,
   expToNext: 30,
-  offense:   7,
-  defense:   3,
-  speed:     8,
-  guts:      7,
-  vitality:  6,
-  iq:        9,
-  luck:      9,
+  offense: 7,
+  defense: 3,
+  speed: 8,
+  guts: 7,
+  vitality: 6,
+  iq: 9,
+  luck: 9,
   condition: 'Normal',
 };
 
@@ -70,66 +70,79 @@ export function getStatus(): Readonly<PlayerStats> {
   return stats;
 }
 
-/** Draw "Label" left-aligned and "value" right-aligned within [x, x+w]. */
-function drawRow(
-  ctx: CanvasRenderingContext2D,
-  label: string,
-  value: string,
-  x: number,
-  y: number,
-  w: number,
-): void {
-  drawText(ctx, label, x, y, FONT_ID);
-  drawText(ctx, value, x + w - measureText(value, FONT_ID), y, FONT_ID);
-}
-
+/**
+ * Render the status screen, laid out like EarthBound's:
+ *   - left column: name, level, condition, then full-label vitals + experience
+ *   - right column: the seven stats stacked top-down, values flush right
+ *   - footer: the game's iconic PSI-info prompt, centered
+ * The window is centered rather than full-screen, matching the real game's box.
+ */
 export function renderStatus(ctx: CanvasRenderingContext2D): void {
-  const winX = 8;
-  const winY = 8;
-  const winW = SCREEN_WIDTH - 16;
-  const winH = 208;
+  const winW = 248;
+  const winH = 160;
+  const winX = (SCREEN_WIDTH - winW) >> 1;
+  const winY = (SCREEN_HEIGHT - winH) >> 1;
   drawWindow(ctx, winX, winY, winW, winH, STYLE);
 
-  const x  = winX + BORDER + PADDING;
-  const w  = winW - (BORDER + PADDING) * 2;
+  const x = winX + BORDER + PADDING;
+  const top = winY + BORDER + PADDING;
+  const innerRight = winX + winW - (BORDER + PADDING);
   const lh = FONT_LINE_HEIGHT;
-  let y    = winY + BORDER + PADDING;
 
-  // Header: name on the left, level on the right.
-  drawRow(ctx, stats.name, `LV ${stats.level}`, x, y, w);
-  y += lh + 4;
+  // Name plate on the top border (like the game) — notch the border with the
+  // window fill, then draw the name straddling the top edge.
+  const nameX = winX + 14;
+  const nameW = measureText(stats.name, FONT_ID);
+  ctx.fillStyle = windowFillColor(STYLE);
+  ctx.fillRect(nameX - 4, winY - 5, nameW + 8, 8);
+  drawText(ctx, stats.name, nameX, winY - 6, FONT_ID);
 
-  // Vitals.
-  drawRow(ctx, 'HP', `${stats.hp} / ${stats.hpMax}`, x, y, w); y += lh;
-  drawRow(ctx, 'PP', `${stats.pp} / ${stats.ppMax}`, x, y, w); y += lh + 2;
-
-  // EXP / next level.
-  drawRow(ctx, 'EXP',          `${stats.exp}`,       x, y, w); y += lh;
-  drawRow(ctx, 'To next level', `${stats.expToNext}`, x, y, w); y += lh + 4;
-
-  // Stats, in EB's order — two columns so all seven fit without overflowing.
-  const left: [string, number][] = [
+  // --- Right column: the seven stats, in EB order, values flush to the edge. ---
+  const statRows: [string, number][] = [
     ['Offense', stats.offense],
     ['Defense', stats.defense],
-    ['Speed',   stats.speed],
-    ['Guts',    stats.guts],
-  ];
-  const right: [string, number][] = [
+    ['Speed', stats.speed],
+    ['Guts', stats.guts],
     ['Vitality', stats.vitality],
-    ['IQ',       stats.iq],
-    ['Luck',     stats.luck],
+    ['IQ', stats.iq],
+    ['Luck', stats.luck],
   ];
-  const gap  = 12;
-  const colW = (w - gap) / 2;
-  const rightX = x + colW + gap;
-  const rows = Math.max(left.length, right.length);
-  for (let i = 0; i < rows; i++) {
-    if (left[i])  drawRow(ctx, left[i][0],  `${left[i][1]}`,  x,      y, colW);
-    if (right[i]) drawRow(ctx, right[i][0], `${right[i][1]}`, rightX, y, colW);
-    y += lh;
+  let statLabelW = 0;
+  for (const [label] of statRows) {
+    statLabelW = Math.max(statLabelW, measureText(`${label}:`, FONT_ID));
   }
-  y += 2;
+  const valColW = measureText('000', FONT_ID); // reserve up to 3 digits
+  const statLabelX = innerRight - statLabelW - 6 - valColW;
+  let sy = top;
+  for (const [label, value] of statRows) {
+    drawText(ctx, `${label}:`, statLabelX, sy, FONT_ID);
+    const v = `${value}`;
+    drawText(ctx, v, innerRight - measureText(v, FONT_ID), sy, FONT_ID);
+    sy += lh;
+  }
 
-  // Condition (status ailment) line.
-  drawRow(ctx, 'Condition', stats.condition, x, y, w);
+  // --- Left column: level, condition, vitals, experience (name is on the border). ---
+  let y = top;
+  drawText(ctx, `Level: ${stats.level}`, x, y, FONT_ID);
+  y += lh; // level
+  drawText(ctx, stats.condition, x, y, FONT_ID);
+  y += lh + 8; // condition
+
+  // Vitals + EXP — numbers align in a sub-column after the longest label.
+  const valX = x + measureText('Experience Points: ', FONT_ID);
+  drawText(ctx, 'Hit Points:', x, y, FONT_ID);
+  drawText(ctx, `${stats.hp} / ${stats.hpMax}`, valX, y, FONT_ID);
+  y += lh;
+  drawText(ctx, 'Psychic Points:', x, y, FONT_ID);
+  drawText(ctx, `${stats.pp} / ${stats.ppMax}`, valX, y, FONT_ID);
+  y += lh + 2;
+  drawText(ctx, 'Experience Points:', x, y, FONT_ID);
+  drawText(ctx, `${stats.exp}`, valX, y, FONT_ID);
+  y += lh;
+  drawText(ctx, `${stats.expToNext} Exp. for next level.`, x, y, FONT_ID);
+  y += lh + 8;
+
+  // Footer: the game's iconic centered prompt.
+  const footer = 'Press the -A- Button for PSI info.';
+  drawText(ctx, footer, winX + (winW - measureText(footer, FONT_ID)) / 2, y, FONT_ID);
 }

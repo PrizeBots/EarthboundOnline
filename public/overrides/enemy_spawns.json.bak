@@ -63,17 +63,20 @@
       "speed": 0.7
     },
     "291": {
-      "name": "Ramblin' Evil Mushroom",
       "hp": 60,
       "xp": 95,
       "level": 7,
       "damage": 15,
-      "defense": 10,
-      "money": 15,
       "attackCooldownMs": 700,
       "speed": 0.7,
       "detectRange": 220,
-      "attackRange": 24
+      "attackRange": 24,
+      "crit": 4,
+      "dodge": 4,
+      "name": "Ramblin' Evil Mushroom",
+      "defense": 10,
+      "money": 15,
+      "combat": "skirmisher"
     },
     "330": {
       "name": "Runaway Dog",
@@ -237,7 +240,7 @@
       "sprite": 330,
       "x": 1562,
       "y": 843,
-      "wanderRadius": 600,
+      "wanderRadius": 200,
       "poolSize": 6,
       "maxActive": 3,
       "spawnIntervalMs": 3500,
@@ -278,6 +281,54 @@
       "maxActive": 3,
       "spawnIntervalMs": 68000,
       "respawnDelayMs": 22000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-18",
+      "sprite": 330,
+      "x": 2070,
+      "y": 1552,
+      "wanderRadius": 300,
+      "poolSize": 7,
+      "maxActive": 4,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-19",
+      "sprite": 283,
+      "x": 2569,
+      "y": 1323,
+      "wanderRadius": 300,
+      "poolSize": 7,
+      "maxActive": 4,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-20",
+      "sprite": 291,
+      "x": 2527,
+      "y": 1055,
+      "wanderRadius": 600,
+      "poolSize": 7,
+      "maxActive": 4,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-21",
+      "sprite": 284,
+      "x": 1813,
+      "y": 646,
+      "wanderRadius": 600,
+      "poolSize": 7,
+      "maxActive": 4,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
       "enabled": true
     }
   ]

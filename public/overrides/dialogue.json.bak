@@ -1,18 +1,21 @@
 {
   "version": 1,
   "edits": {
-    "900000": [
-      "You smell that?"
-    ],
-    "900001": [
-      "You smell that?"
-    ],
-    "900002": [
-      "You smell that?",
-      "dads"
-    ],
     "900003": [
-      "yo"
+      "Hey, do you smell that?",
+      "I just farted."
+    ],
+    "900004": [
+      ""
+    ],
+    "900005": [
+      "Scram, we're busy!"
+    ],
+    "900006": [
+      "Shouldn't you be at work?"
+    ],
+    "900007": [
+      ""
     ]
   }
 }

@@ -30,6 +30,11 @@ export interface MenuHooks {
   equip(slot: EquipSlot, itemId: string | null): void;
   getPk(): { on: boolean; lockedUntil: number };
   setPk(on: boolean): void;
+  /** Float a short notice over the player (e.g. "Not enough PP"). Optional. */
+  notify?(text: string): void;
+  /** True if PSI is currently disabled by a status (the "can't concentrate"
+   *  noPsi debuff). Casting is blocked while set. Optional. */
+  psiBlocked?(): boolean;
 }
 
 /** One row of the combined Equip list: a slot, or an unequipped gear item. */

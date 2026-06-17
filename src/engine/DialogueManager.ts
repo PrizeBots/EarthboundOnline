@@ -5,7 +5,8 @@
  * what the game showed between button prompts; '\n' separates the original
  * `@` speech lines). Pages are word-wrapped and re-split into fixed
  * 3-line boxes, revealed with a typewriter effect. The action keys
- * (Q/Space/Enter/Z) skip the reveal, then advance boxes, then close.
+ * (Q/Space/Enter/Z) OR a left mouse click skip the reveal, then advance boxes,
+ * then close.
  *
  * On real SNES this is just the standard dialogue window — text prints via
  * the same fixed-width font tiles, so it ports cleanly.
@@ -14,10 +15,11 @@
 import { drawWindow } from './WindowRenderer';
 import { drawText } from './TextRenderer';
 import { wrapText } from './ChatManager';
+import { consumePointerClick } from './Input';
 import { SCREEN_WIDTH, SCREEN_HEIGHT } from '../types';
 
-const FONT = 0;                      // regular EB dialogue font
-const LINE_H = 16;                   // font 0 cell height
+const FONT = 0; // regular EB dialogue font
+const LINE_H = 16; // font 0 cell height
 const LINES_PER_BOX = 3;
 const INSET = 6;
 const BOX_W = 240;
@@ -26,13 +28,13 @@ const INNER_W = BOX_W - INSET * 2;
 const BOX_H = LINES_PER_BOX * LINE_H + INSET * 2;
 const BOX_TOP = SCREEN_HEIGHT - 8 - BOX_H;
 const WINDOW_STYLE = 0;
-const CHARS_PER_FRAME = 2;           // typewriter speed
-const PROMPT_BLINK = 400;            // ms per ▼ blink phase
+const CHARS_PER_FRAME = 2; // typewriter speed
+const PROMPT_BLINK = 400; // ms per ▼ blink phase
 
 let keySet: Set<string> | null = null;
-let boxes: string[][] = [];          // wrapped lines, LINES_PER_BOX per box
+let boxes: string[][] = []; // wrapped lines, LINES_PER_BOX per box
 let boxIndex = 0;
-let revealed = 0;                    // characters shown of the current box
+let revealed = 0; // characters shown of the current box
 let open = false;
 
 export function initDialogue(keys: Set<string>): void {
@@ -63,7 +65,13 @@ export function updateDialogue(): void {
   const total = boxes[boxIndex].reduce((n, line) => n + line.length, 0);
   if (revealed < total) revealed = Math.min(total, revealed + CHARS_PER_FRAME);
 
-  if (actionPressed()) {
+  // Advance on an action key OR a left mouse click. Evaluate BOTH (no
+  // short-circuit) so a pending click is always consumed while a box is open —
+  // that also clears the attack latch (see Input.consumePointerClick), so the
+  // click that dismisses the last box never leaks through as a sword swing.
+  const keyAdvance = actionPressed();
+  const clickAdvance = consumePointerClick() !== null;
+  if (keyAdvance || clickAdvance) {
     if (revealed < total) {
       revealed = total;
     } else if (boxIndex + 1 < boxes.length) {

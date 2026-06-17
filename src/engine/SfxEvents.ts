@@ -26,6 +26,12 @@ export const SFX_EVENTS: SfxEventDef[] = [
   { id: 'player-attack', label: 'Player attack', defaultSfx: 'player-attack' },
   { id: 'player-try-psi', label: 'Player uses PSI', defaultSfx: 'player-try-psi' },
   { id: 'heal', label: 'Heal (Lifeup PSI)', defaultSfx: 'heal' },
+  { id: 'eat', label: 'Eat food (consumable)', defaultSfx: 'eat' },
+  {
+    id: 'get-item',
+    label: 'Get item (ground pickup / gift box)',
+    defaultSfx: 'get-item-from-present',
+  },
   { id: 'player-hurt', label: 'Player hurt', defaultSfx: 'player-hurt' },
   { id: 'player-die', label: 'Player die', defaultSfx: 'player-die' },
   { id: 'enemy-die', label: 'Enemy die', defaultSfx: 'enemy-die' },
@@ -53,27 +59,40 @@ const SFX_LABELS: Map<string, string> = new Map(
   (manifest as { id: string; label: string }[]).map((s) => [s.id, s.label])
 );
 
-// Admin overrides (overrides/sfx_events.json `{events:{eventId: sfxId}}`).
+// Admin overrides (overrides/sfx_events.json). `events` maps eventId→sfxId;
+// `volumes` maps eventId→0..1 playback gain (unset = full volume).
 let overrides: Record<string, string> = {};
+let volumes: Record<string, number> = {};
+
+const DEFAULT_VOLUME = 1; // events with no authored volume play at full gain
 
 export interface SfxEventsFile {
   version?: number;
   events?: Record<string, string>;
+  volumes?: Record<string, number>;
 }
 
-/** Load the authored event→sfx map (falls back to defaults for unset events). */
+/** Load the authored event→sfx map + per-event volumes (defaults for unset). */
 export async function loadSfxEvents(): Promise<void> {
   try {
     const res = await fetch('/overrides/sfx_events.json', { cache: 'no-store' });
-    overrides = res.ok ? (((await res.json()) as SfxEventsFile)?.events ?? {}) : {};
+    const file = res.ok ? ((await res.json()) as SfxEventsFile) : null;
+    overrides = file?.events ?? {};
+    volumes = file?.volumes ?? {};
   } catch {
     overrides = {}; // none authored yet — pure defaults
+    volumes = {};
   }
 }
 
-/** Live-replace the map (editor pushes its working set without a refetch). */
+/** Live-replace the sfx map (editor pushes its working set without a refetch). */
 export function setSfxEventMap(map: Record<string, string>): void {
   overrides = { ...map };
+}
+
+/** Live-replace the per-event volume map (editor pushes its working set). */
+export function setSfxVolumeMap(map: Record<string, number>): void {
+  volumes = { ...map };
 }
 
 /** The sfx id currently bound to an event (override wins, else the default). */
@@ -81,14 +100,27 @@ export function getSfxForEvent(eventId: string): string {
   return overrides[eventId] ?? DEFAULTS[eventId] ?? 'none';
 }
 
+/** The 0..1 playback volume for an event (authored value, else full volume). */
+export function getSfxVolumeForEvent(eventId: string): number {
+  const v = volumes[eventId];
+  return typeof v === 'number' ? Math.max(0, Math.min(1, v)) : DEFAULT_VOLUME;
+}
+
 /** Merged view (defaults + overrides) for the editor to render the current map. */
 export function getSfxEventMap(): Record<string, string> {
   return { ...DEFAULTS, ...overrides };
 }
 
+/** Per-event volumes for the editor (every event keyed, defaulting to full). */
+export function getSfxVolumeMap(): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const e of SFX_EVENTS) out[e.id] = getSfxVolumeForEvent(e.id);
+  return out;
+}
+
 /** Play the sound bound to a game event. No-op if it resolves to 'none'/missing. */
 export function playEventSfx(eventId: string): void {
-  playSfx(getSfxForEvent(eventId));
+  playSfx(getSfxForEvent(eventId), getSfxVolumeForEvent(eventId));
 }
 
 /**
@@ -97,7 +129,7 @@ export function playEventSfx(eventId: string): void {
  * remote players) so far-off sounds aren't heard.
  */
 export function playEventSfxAt(eventId: string, x: number, y: number): void {
-  playSfxAt(getSfxForEvent(eventId), x, y);
+  playSfxAt(getSfxForEvent(eventId), x, y, getSfxVolumeForEvent(eventId));
 }
 
 // --- SFX library helpers (shared by the Sound Manager SFX tab) ---------------

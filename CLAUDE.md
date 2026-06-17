@@ -69,7 +69,9 @@ pre-launch TODO; see TODO.md):
 3. `python tools/build_atlases.py` — pre-renders BG + FG tile atlases with correct palettes
 4. `python tools/extract_enemies.py` — enemy catalog (`enemies.json`): per-sprite stats +
    item drops from the ROM, keyed by sprite id. Combat's default stat layer (see ARCHITECTURE.md).
-5. `npm run dev` — runs the game in browser
+5. `python tools/extract_gifts.py` — present-box catalog (`gifts.json`): each gift's contents
+   (item) + ROM flag, keyed by placement. Authored via the Gift Manager tool (see ARCHITECTURE.md).
+6. `npm run dev` — runs the game in browser
 
 ## Rendering
 

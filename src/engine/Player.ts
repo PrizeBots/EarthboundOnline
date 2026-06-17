@@ -6,7 +6,20 @@ import { blockedByNPC } from './NPCManager';
 import { nextHeldItem } from './Items';
 import spawn from '../spawn.json';
 
-const SPEED = 2; // pixels per frame
+// Walk speed scales with the Speed STAT (server-authoritative; grows on
+// level-up — see GROWTH in server/gameHost.js). A fresh level-1 character
+// (Speed ~8) starts deliberately slow and quickens as Speed climbs, so leveling
+// is felt in the legs. Clamped so a low allocation never crawls and a maxed one
+// never blurs past the colliders. Replaces the old flat SPEED=2, which made
+// level 1 feel sprint-fast. `moveSpeedFor` is the single source of truth.
+const SPEED_BASE = 0.5; // px/frame floor contribution
+const SPEED_PER_STAT = 0.07; // px/frame added per point of the Speed stat
+const SPEED_MIN = 0.9; // never slower than this (a crawl isn't fun)
+const SPEED_MAX = 2.6; // never faster than this (camera/collision stay sane)
+const DEFAULT_SPEED_STAT = 8; // server BASE_STATS.speed — used until stats arrive
+function moveSpeedFor(speedStat: number): number {
+  return Math.max(SPEED_MIN, Math.min(SPEED_MAX, SPEED_BASE + speedStat * SPEED_PER_STAT));
+}
 
 // Player collision box (relative to position, which is center-bottom of sprite)
 const COL_WIDTH = 14;
@@ -33,6 +46,10 @@ const HURT_TOTAL = 20;
 const KB_SLIDE_FRAMES = 8;
 const KB_SLIDE_EASE = 0.4; // fraction of the remaining gap closed per frame
 
+// Statuses that reverse the player's controls (mirror of the `scramble` flag in
+// server/status.js): feeling strange / mushroomized / possessed.
+const SCRAMBLE_STATUSES = new Set(['strange', 'possessed']);
+
 export class Player extends Entity {
   pose: Pose = 'walk';
   heldItemId: string | null = null;
@@ -42,6 +59,9 @@ export class Player extends Entity {
   attackSpeed = 1;
   /** PK (player-kill) flag — server-authoritative; red nameplate when on. */
   pk = false;
+  /** The Speed STAT (server-authoritative; grows on level-up). Drives walk
+   *  speed via moveSpeedFor. Defaults to the level-1 base until stats arrive. */
+  speed = DEFAULT_SPEED_STAT;
   /** Epoch-ms the PK enable-lock expires (can't disable PK before this). */
   pkUntil = 0;
   private poseTimer = 0;
@@ -49,6 +69,11 @@ export class Player extends Entity {
   private kbX = 0;
   private kbY = 0;
   private kbFrames = 0;
+  // Status input-lock deadline (ms epoch). While Date.now() < frozenUntil the
+  // player can't move (paralysis / sleep / diamondized); set by the server.
+  private frozenUntil = 0;
+  // Active status-condition ids (server-synced) — drives the HP-bar pips.
+  statuses: string[] = [];
 
   constructor() {
     // Spawn position/facing come from src/spawn.json (Onett default), so the
@@ -84,6 +109,17 @@ export class Player extends Entity {
     this.kbX = x;
     this.kbY = y;
     this.kbFrames = KB_SLIDE_FRAMES;
+  }
+
+  /** Lock movement input until `until` (ms epoch); 0 clears it. Set from the
+   *  server's status broadcasts (paralysis / sleep / diamondized). */
+  freezeUntil(until: number): void {
+    this.frozenUntil = until;
+  }
+
+  /** True while a status input-lock is in effect (drives the lock indicator). */
+  get frozen(): boolean {
+    return Date.now() < this.frozenUntil;
   }
 
   cycleHeldItem(): void {
@@ -142,7 +178,19 @@ export class Player extends Entity {
       return;
     }
 
-    const { dx, dy } = getDirection();
+    // Status-frozen (paralysis / sleep / diamondized): the server locked our
+    // input until `frozenUntil`. Hold still — movement input is ignored.
+    if (Date.now() < this.frozenUntil) {
+      this.moving = false;
+      return;
+    }
+
+    let { dx, dy } = getDirection();
+    // Scrambled (feeling strange / possessed): your controls are reversed.
+    if (this.statuses.some((s) => SCRAMBLE_STATUSES.has(s))) {
+      dx = -dx;
+      dy = -dy;
+    }
     const moving = dx !== 0 || dy !== 0;
 
     if (moving) {
@@ -156,9 +204,11 @@ export class Player extends Entity {
       const curColX = this.x - COL_WIDTH / 2;
       const curColY = this.y + COL_OFFSET_Y;
 
-      // Normalize diagonal movement so speed is consistent
+      // Normalize diagonal movement so speed is consistent. Base speed scales
+      // with the Speed stat (slow at level 1, faster as you level up).
       const diagonal = dx !== 0 && dy !== 0;
-      const moveSpeed = diagonal ? SPEED * Math.SQRT1_2 : SPEED;
+      const base = moveSpeedFor(this.speed);
+      const moveSpeed = diagonal ? base * Math.SQRT1_2 : base;
 
       // Compute desired position
       const newX = this.x + dx * moveSpeed;
@@ -210,7 +260,7 @@ export class Player extends Entity {
    * machine in Game uses it to detect arrival at the far landing).
    */
   rideStep(dx: number, dy: number): number {
-    const moveSpeed = SPEED * Math.SQRT1_2; // escalators always run diagonally
+    const moveSpeed = moveSpeedFor(this.speed) * Math.SQRT1_2; // escalators always run diagonally
     this.x += dx * moveSpeed;
     this.y += dy * moveSpeed;
     this.direction = this.dirFromInput(dx, dy);

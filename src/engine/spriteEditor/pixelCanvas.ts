@@ -26,6 +26,8 @@ import {
 } from './constants';
 import { S } from './state';
 import { commitItemEdit, persistItem } from './itemEditor';
+import { commitPsiEdit, persistPsi } from './psiEditor';
+import { PSI_W, PSI_H } from '../PsiAnim';
 import { requestAutosave } from './autosave';
 
 /** True once a paintable character sheet is loaded (false for view-only groups). */
@@ -42,21 +44,41 @@ export function activeTarget(): {
   ox: number;
   oy: number;
 } {
-  if (S.editMode === 'item') return { ctx: S.itemCtx!, w: ITEM_W, h: ITEM_H, ox: 0, oy: 0 };
+  if (S.editMode !== 'char') {
+    const b = activeBuffer();
+    return { ctx: b.ctx, w: b.w, h: b.h, ox: 0, oy: 0 };
+  }
   return { ctx: S.sheetCtx!, w: S.selW, h: S.selH, ox: S.selOX, oy: S.selOY };
+}
+
+// The active non-char "buffer surface": the held-item buffer (16×16, fixed 3
+// frames) or a PSI effect frame (48×48, variable count). Both paint through the
+// same engine and use the item palette — only dims, the undo stack, and the
+// persist/commit target differ.
+export function activeBuffer(): {
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+  undo: ImageData[];
+  w: number;
+  h: number;
+} {
+  if (S.editMode === 'psi') {
+    return { canvas: S.psiCanvas!, ctx: S.psiCtx!, undo: S.psiUndo, w: PSI_W, h: PSI_H };
+  }
+  return { canvas: S.itemCanvas!, ctx: S.itemCtx!, undo: S.itemUndo, w: ITEM_W, h: ITEM_H };
 }
 
 /** CSS color for a palette index in the active mode, or null for transparent. */
 export function colorFor(i: number): string | null {
   if (i === 0) return null;
-  if (S.editMode === 'item') return ITEM_PALETTE[i] || null;
+  if (S.editMode !== 'char') return ITEM_PALETTE[i] || null; // item + psi share the palette
   const c = S.palette[i];
   return c ? `rgb(${c[0]},${c[1]},${c[2]})` : null;
 }
 
 /** Nearest palette index to an RGB color in the active mode (for eyedrop). */
 function nearestActiveIndex(r: number, g: number, b: number): number {
-  if (S.editMode !== 'item') return nearestPaletteIndex(r, g, b);
+  if (S.editMode === 'char') return nearestPaletteIndex(r, g, b);
   let best = 1;
   let bestDist = Infinity;
   for (let i = 1; i < itemPaletteRGB.length; i++) {
@@ -265,8 +287,8 @@ function applyToolAt(e: MouseEvent): void {
     ctx.fillRect(sx, sy, 1, 1);
   }
 
-  if (S.editMode === 'item') {
-    commitItemEdit(); // push the buffer as a live override so the test pane updates
+  if (S.editMode !== 'char') {
+    commitActive(); // push the buffer to its live preview (item override / PSI thumb)
   } else {
     // Auto-mirror: keep the west/diagonal-left partner cell a flipped copy of the
     // canonical cell being edited (selection is always canonical — see strip click).
@@ -291,9 +313,10 @@ export function syncMirrorCell(row: number, col: number): void {
 }
 
 export function pushUndo(): void {
-  if (S.editMode === 'item') {
-    S.itemUndo.push(S.itemCtx!.getImageData(0, 0, ITEM_W, ITEM_H));
-    if (S.itemUndo.length > UNDO_LIMIT) S.itemUndo.shift();
+  if (S.editMode !== 'char') {
+    const b = activeBuffer();
+    b.undo.push(b.ctx.getImageData(0, 0, b.w, b.h));
+    if (b.undo.length > UNDO_LIMIT) b.undo.shift();
     return;
   }
   if (!S.sheetCtx) return; // view-only group: no sheet to snapshot
@@ -303,12 +326,13 @@ export function pushUndo(): void {
 }
 
 export function undo(): void {
-  if (S.editMode === 'item') {
-    const snap = S.itemUndo.pop();
+  if (S.editMode !== 'char') {
+    const b = activeBuffer();
+    const snap = b.undo.pop();
     if (!snap) return;
-    S.itemCtx!.putImageData(snap, 0, 0);
-    commitItemEdit();
-    persistItem();
+    b.ctx.putImageData(snap, 0, 0);
+    commitActive();
+    persistActive();
     S.dirty = true;
     return;
   }
@@ -320,10 +344,17 @@ export function undo(): void {
   requestAutosave(); // persist the undone state too
 }
 
-/** Persist whichever surface is currently being edited. Item art autosaves;
+/** Persist whichever surface is currently being edited. Item + PSI art autosave;
  *  character anim edits persist only via the explicit Save. */
 export function persistActive(): void {
   if (S.editMode === 'item') persistItem();
+  else if (S.editMode === 'psi') persistPsi();
+}
+
+/** Re-commit the active buffer to its live preview (item or PSI). */
+function commitActive(): void {
+  if (S.editMode === 'item') commitItemEdit();
+  else if (S.editMode === 'psi') commitPsiEdit();
 }
 
 /** Human label for a sheet cell (selection is always a canonical strip cell). */
@@ -353,7 +384,7 @@ function opRegion(): PixelRect {
 /** Current paint color as RGBA bytes (alpha 0 for the transparent clear index). */
 function fillRGBA(): [number, number, number, number] {
   if (S.colorIndex === 0) return [0, 0, 0, 0];
-  if (S.editMode === 'item') {
+  if (S.editMode !== 'char') {
     const hex = ITEM_PALETTE[S.colorIndex];
     if (!hex) return [0, 0, 0, 0];
     const [r, g, b] = parseHexColor(hex);
@@ -365,7 +396,7 @@ function fillRGBA(): [number, number, number, number] {
 
 /** Re-commit / re-mirror / persist after a non-stroke pixel edit, and redraw. */
 function afterRegionEdit(): void {
-  if (S.editMode === 'item') commitItemEdit();
+  if (S.editMode !== 'char') commitActive();
   else {
     syncMirrorCell(S.selRow, S.selCol);
     refreshDiagSupport(S.groupId);
@@ -598,7 +629,7 @@ export function finishEditInteraction(): boolean {
     if (S.editMode === 'char') refreshDiagSupport(S.groupId);
   } else if (S.painting && !S.strokeChanged) {
     // stroke did nothing (e.g. eyedrop) — drop its snapshot from the active stack
-    if (S.editMode === 'item') S.itemUndo.pop();
+    if (S.editMode !== 'char') activeBuffer().undo.pop();
     else S.undoStack.pop();
   }
   S.painting = false;
@@ -625,7 +656,7 @@ export function renderSwatches(): void {
   if (!S.paletteGrid) return;
   S.paletteGrid.innerHTML = '';
   S.swatchEls = [];
-  const count = S.editMode === 'item' ? ITEM_PALETTE.length : S.palette.length;
+  const count = S.editMode !== 'char' ? ITEM_PALETTE.length : S.palette.length;
   for (let i = 0; i < count; i++) {
     const sw = document.createElement('div');
     sw.style.cssText =
@@ -681,15 +712,16 @@ function drawViewOnlyPreview(): void {
 }
 
 export function drawEditCanvas(): void {
-  // Edit grid follows the active target (16x24 char cell vs 16x16 item).
-  const isItem = S.editMode === 'item';
+  // Edit grid follows the active target (16x24 char cell, 16x16 item, 48x48 PSI).
+  const buf = S.editMode !== 'char';
   // View-only group (vehicle): there's no editable cell — show a scaled preview.
-  if (!isItem && S.viewOnly) {
+  if (!buf && S.viewOnly) {
     drawViewOnlyPreview();
     return;
   }
-  const gw = isItem ? ITEM_W : S.selW;
-  const gh = isItem ? ITEM_H : S.selH;
+  const b = buf ? activeBuffer() : null;
+  const gw = b ? b.w : S.selW;
+  const gh = b ? b.h : S.selH;
   if (S.editCanvas.width !== gw * ZOOM || S.editCanvas.height !== gh * ZOOM) {
     S.editCanvas.width = gw * ZOOM;
     S.editCanvas.height = gh * ZOOM;
@@ -709,8 +741,8 @@ export function drawEditCanvas(): void {
     }
   }
 
-  if (isItem) {
-    ctx.drawImage(S.itemCanvas!, 0, 0, ITEM_W, ITEM_H, 0, 0, gw * ZOOM, gh * ZOOM);
+  if (b) {
+    ctx.drawImage(b.canvas, 0, 0, b.w, b.h, 0, 0, gw * ZOOM, gh * ZOOM);
   } else {
     ctx.drawImage(S.sheet!, S.selOX, S.selOY, S.selW, S.selH, 0, 0, gw * ZOOM, gh * ZOOM);
   }

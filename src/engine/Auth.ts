@@ -138,6 +138,9 @@ export async function createCharacter(input: {
   appearance?: string | null;
   // The 5-stat creation allocation (server validates + derives combat stats).
   alloc: Record<string, number>;
+  // EarthBound naming prompts — flavor, stored in the character save.
+  favoriteThing?: string;
+  favoriteFood?: string;
 }): Promise<CharacterSummary> {
   const d = await api<{ character: CharacterSummary }>('/api/characters', {
     method: 'POST',

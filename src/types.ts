@@ -80,6 +80,10 @@ export interface RemotePlayer {
   level?: number;
   /** PK (player-kill) flag — server-synced; drives the red nameplate + PvP rules. */
   pk?: boolean;
+  /** Active status-condition ids (paralysis, poison, …); server-synced. */
+  statuses?: string[];
+  /** Epoch-ms until which this player blinks white from a hit (see Juice.FLASH_MS). */
+  flashUntil?: number;
 }
 
 export enum Direction {
