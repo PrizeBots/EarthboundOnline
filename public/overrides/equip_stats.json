@@ -34,5 +34,13 @@
   },
   "252": {
     "revive": 9999
+  },
+  "36": {
+    "ranged": true,
+    "range": 130
+  },
+  "41": {
+    "ranged": true,
+    "range": 200
   }
 }

@@ -566,10 +566,12 @@ export function sendSell(item: string) {
   }
 }
 
-/** Ask the server to cast a PSI ability; it validates PP and resolves the effect. */
-export function sendUsePsi(psiId: string) {
+/** Ask the server to cast a PSI ability; it validates PP and resolves the effect.
+ *  `targetId` aims a party-target PSI (Lifeup/Healing/revive) at an ally; omit it
+ *  to target self (or, for revive, the server uses the nearest downed ally). */
+export function sendUsePsi(psiId: string, targetId?: string) {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'use_psi', psiId }));
+    ws.send(JSON.stringify({ type: 'use_psi', psiId, ...(targetId ? { targetId } : {}) }));
   }
 }
 

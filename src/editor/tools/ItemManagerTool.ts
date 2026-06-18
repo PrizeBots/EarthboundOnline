@@ -94,6 +94,8 @@ interface ItemOverride {
   cure?: string[];
   buffs?: BuffEntry[];
   revive?: number;
+  ranged?: boolean;
+  range?: number;
   inflict?: InflictEntry[];
 }
 
@@ -199,6 +201,15 @@ class ItemManagerTool implements EditorTool {
     const ov = this.ovOf(id);
     if (list.length) ov.inflict = list;
     else delete ov.inflict; // no rows → weapon falls back to baseline paralysis
+    if (!Object.keys(ov).length) delete this.overrides[id];
+    this.shell?.markDirty('item-stats');
+  }
+
+  /** Set/clear a boolean override (e.g. `ranged`). False clears it (revert). */
+  private setBool(id: string, key: 'ranged', on: boolean): void {
+    const ov = this.ovOf(id);
+    if (on) ov[key] = true;
+    else delete ov[key];
     if (!Object.keys(ov).length) delete this.overrides[id];
     this.shell?.markDirty('item-stats');
   }
@@ -443,6 +454,17 @@ class ItemManagerTool implements EditorTool {
         this.mkNumRow('atk speed', ov.attackSpeed, 1, 0.1, undefined, true, (v) =>
           this.setOv(id, 'attackSpeed', v)
         );
+        // Ranged ("gun") weapon: fires a forward shot up to `range` px (a piercing
+        // beam) instead of a melee swing. Off = melee.
+        this.mkCheckRow('ranged', !!ov.ranged, (on) => {
+          this.setBool(id, 'ranged', on);
+          this.refreshStats(); // show/hide the range row
+        });
+        if (ov.ranged) {
+          this.mkNumRow('range px', ov.range, 120, 16, 480, false, (v) =>
+            this.setOv(id, 'range', v)
+          );
+        }
       } else {
         this.mkNumRow('defense', ov.defense, base?.defense ?? 0, 0, undefined, false, (v) =>
           this.setOv(id, 'defense', v)
@@ -530,6 +552,23 @@ class ItemManagerTool implements EditorTool {
       cur === undefined ? 'using base value' : 'overridden — clear the field to revert to base';
     rev.style.cssText = `color:${cur === undefined ? '#667' : '#d8a23a'};font-size:10px;`;
     row.appendChild(rev);
+    this.statsEl!.appendChild(row);
+  }
+
+  /** A labelled checkbox row (boolean override). */
+  private mkCheckRow(label: string, on: boolean, onSet: (v: boolean) => void): void {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;';
+    const l = document.createElement('span');
+    l.textContent = label;
+    l.style.cssText = 'width:56px;color:#9fb8cc;';
+    row.appendChild(l);
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = on;
+    cb.style.cursor = 'pointer';
+    cb.onchange = () => onSet(cb.checked);
+    row.appendChild(cb);
     this.statsEl!.appendChild(row);
   }
 

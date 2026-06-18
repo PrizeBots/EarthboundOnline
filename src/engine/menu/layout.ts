@@ -152,25 +152,41 @@ export const ROWS = 3;
 // table (gameHost.js PSI). `anim` is the PsiAnim catalog id whose authored frames
 // play on cast AND show as the hotbar icon (the game id differs, e.g. fire →
 // psi_fire_alpha, so we carry the mapping explicitly).
+// `target`: who the cast applies to — 'ally' (self OR a chosen friend; the game
+// enters target mode), 'enemy' (auto/aim a foe), 'self' (the caster only). PP +
+// effects MIRROR the server (gameHost.js PSI); both are canon (psi.json).
 export const PSI_ABILITIES = [
-  { id: 'lifeup', name: 'Lifeup α', pp: 3, anim: 'lifeup_alpha' }, // heal self
-  { id: 'healing', name: 'Healing α', pp: 4, anim: 'healing_alpha' }, // cure your statuses
-  { id: 'fire', name: 'PSI Fire α', pp: 5, anim: 'psi_fire_alpha' }, // offense (projectile)
-  { id: 'freeze', name: 'PSI Freeze α', pp: 4, anim: 'psi_freeze_alpha' }, // offense
-  { id: 'thunder', name: 'PSI Thunder α', pp: 3, anim: 'psi_thunder_alpha' }, // offense
-  { id: 'flash', name: 'PSI Flash α', pp: 8, anim: 'psi_flash_alpha' }, // offense + paralyze
-  { id: 'starstorm', name: 'PSI Starstorm α', pp: 24, anim: 'psi_starstorm_alpha' }, // big offense
-  { id: 'rockin', name: 'PSI Rockin α', pp: 6, anim: 'psi_alpha' }, // offense (the ???? move)
-  { id: 'hypnosis', name: 'Hypnosis α', pp: 4, anim: 'hypnosis_alpha' }, // sleep a foe
-  { id: 'paralysis', name: 'Paralysis α', pp: 5, anim: 'paralysis_alpha' }, // paralyze a foe
-  { id: 'brainshock', name: 'Brainshock α', pp: 6, anim: 'brainshock_alpha' }, // strange + noPsi
-  { id: 'shield', name: 'Shield α', pp: 6, anim: 'shield_alpha' }, // (effect TODO — anim only)
-  { id: 'psishield', name: 'PSI Shield α', pp: 8, anim: 'psi_shield_alpha' }, // (anim only)
-  { id: 'offenseup', name: 'Offense up α', pp: 10, anim: 'offense_up_alpha' }, // (anim only)
-  { id: 'defensedown', name: 'Defense down α', pp: 6, anim: 'defense_down_alpha' }, // (anim only)
-  { id: 'magnet', name: 'PSI Magnet α', pp: 1, anim: 'psi_magnet_alpha' }, // (anim only)
-  { id: 'teleport', name: 'Teleport α', pp: 2, anim: 'teleport_alpha' }, // (anim only)
+  { id: 'lifeup', name: 'Lifeup α', pp: 5, anim: 'lifeup_alpha', target: 'ally' }, // heal
+  { id: 'healing', name: 'Healing α', pp: 5, anim: 'healing_alpha', target: 'ally' }, // cure statuses
+  { id: 'healing_gamma', name: 'Healing γ', pp: 20, anim: 'healing_alpha', target: 'ally' }, // cure + revive (half HP)
+  { id: 'healing_omega', name: 'Healing Ω', pp: 38, anim: 'healing_alpha', target: 'ally' }, // cure + revive (full HP)
+  { id: 'fire', name: 'PSI Fire α', pp: 5, anim: 'psi_fire_alpha', target: 'enemy' }, // offense (projectile)
+  { id: 'freeze', name: 'PSI Freeze α', pp: 4, anim: 'psi_freeze_alpha', target: 'enemy' }, // offense
+  { id: 'thunder', name: 'PSI Thunder α', pp: 3, anim: 'psi_thunder_alpha', target: 'enemy' }, // offense
+  { id: 'flash', name: 'PSI Flash α', pp: 8, anim: 'psi_flash_alpha', target: 'enemy' }, // offense + paralyze
+  {
+    id: 'starstorm',
+    name: 'PSI Starstorm α',
+    pp: 24,
+    anim: 'psi_starstorm_alpha',
+    target: 'enemy',
+  }, // big offense
+  { id: 'rockin', name: 'PSI Rockin α', pp: 6, anim: 'psi_alpha', target: 'enemy' }, // offense (the ???? move)
+  { id: 'hypnosis', name: 'Hypnosis α', pp: 4, anim: 'hypnosis_alpha', target: 'enemy' }, // sleep a foe
+  { id: 'paralysis', name: 'Paralysis α', pp: 5, anim: 'paralysis_alpha', target: 'enemy' }, // paralyze a foe
+  { id: 'brainshock', name: 'Brainshock α', pp: 6, anim: 'brainshock_alpha', target: 'enemy' }, // strange + noPsi
+  { id: 'shield', name: 'Shield α', pp: 6, anim: 'shield_alpha', target: 'self' }, // (effect TODO — anim only)
+  { id: 'psishield', name: 'PSI Shield α', pp: 8, anim: 'psi_shield_alpha', target: 'self' }, // (anim only)
+  { id: 'offenseup', name: 'Offense up α', pp: 10, anim: 'offense_up_alpha', target: 'self' }, // (anim only)
+  { id: 'defensedown', name: 'Defense down α', pp: 6, anim: 'defense_down_alpha', target: 'enemy' }, // (anim only)
+  { id: 'magnet', name: 'PSI Magnet α', pp: 1, anim: 'psi_magnet_alpha', target: 'enemy' }, // (anim only)
+  { id: 'teleport', name: 'Teleport α', pp: 2, anim: 'teleport_alpha', target: 'self' }, // (anim only)
 ];
+
+/** Who a PSI ability targets: 'ally' (self/friend), 'enemy', or 'self'. */
+export function psiTarget(abilityId: string): string {
+  return PSI_ABILITIES.find((a) => a.id === abilityId)?.target ?? 'enemy';
+}
 
 /** PP cost of a PSI ability (0 if unknown). The server is authoritative; the
  *  client uses this only to gate the cast (don't fire FX/SFX with too little PP). */

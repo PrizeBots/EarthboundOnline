@@ -10,7 +10,6 @@
     331,
     317,
     101,
-    195,
     274,
     276,
     277,
@@ -47,7 +46,6 @@
     318,
     319,
     320,
-    322,
     323,
     324,
     325,
@@ -319,9 +317,9 @@
     {
       "name": "spawner-12",
       "sprite": 283,
-      "x": 2092,
-      "y": 1043,
-      "wanderRadius": 200,
+      "x": 1926,
+      "y": 977,
+      "wanderRadius": 100,
       "poolSize": 6,
       "maxActive": 3,
       "spawnIntervalMs": 11000,
@@ -372,7 +370,7 @@
       "wanderRadius": 100,
       "poolSize": 32,
       "maxActive": 20,
-      "spawnIntervalMs": 5000,
+      "spawnIntervalMs": 1000,
       "respawnDelayMs": 30000,
       "enabled": true
     },
@@ -530,7 +528,7 @@
       "maxActive": 1,
       "spawnIntervalMs": 3500,
       "respawnDelayMs": 9000,
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "rom-mr--batty",
@@ -974,7 +972,7 @@
       "maxActive": 1,
       "spawnIntervalMs": 3500,
       "respawnDelayMs": 9000,
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "rom-noose-man",

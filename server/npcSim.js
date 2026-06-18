@@ -615,9 +615,22 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   let SPAWNERS = ((enemyCfg && enemyCfg.spawners) || []).filter((s) => s.enabled !== false);
   let STATIC_ENEMY_HP = (SPAWNERS[0] && SPAWNERS[0].hp) || 24;
 
-  // True if a placement is an enemy: explicit kind, or a legacy enemy sprite.
+  // Item-container sprites (presents 195, trash cans 214, gift boxes 233, crates
+  // 262, jars 322, baskets 33) double as some ROM ENEMY sprites — e.g. the
+  // Worthless Protoplasm shares the present sprite 195, the jar collides too — so
+  // those sprites can land in enemySpriteGroups. A bare placement with one of
+  // these sprites is a GIFT container, NOT a foe: never auto-classify it hostile
+  // by sprite alone (it would attack instead of opening). A genuine enemy that
+  // reuses a container sprite must be placed EXPLICITLY as kind:'enemy'.
+  // KEEP IN SYNC with src/engine/Gifts.ts CONTAINER_TYPE_NAMES.
+  const CONTAINER_SPRITES = new Set([195, 214, 233, 262, 322, 33]);
+
+  // True if a placement is an enemy: explicit kind, or a legacy enemy sprite
+  // (excluding gift-container sprites, which are passive unless kind:'enemy').
   function isEnemyPlacement(r) {
-    return r.kind === 'enemy' || ENEMY_SPRITES.has(r.sprite);
+    if (r.kind === 'enemy') return true;
+    if (CONTAINER_SPRITES.has(r.sprite)) return false;
+    return ENEMY_SPRITES.has(r.sprite);
   }
   // One effective per-entity stat (merged catalog+authored), or `def`.
   function entityStat(sprite, key, def) {
@@ -2580,7 +2593,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     attackerPk,
     critChance = 0,
     attackSpeed = 1,
-    inflict = null
+    inflict = null,
+    range = 0
   ) {
     const now = Date.now();
     // The status spec this swing carries. The equipped weapon supplies it
@@ -2608,10 +2622,25 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     // harder); falls back to the flat constant if none was passed.
     const base = offense > 0 ? offense : ATTACK_DAMAGE;
     const v = DIR_VEC[dir] || DIR_VEC[0];
-    const hx = x + v[0] * ATTACK_REACH - ATTACK_HALF;
-    const hy = y - 10 + v[1] * ATTACK_REACH - ATTACK_HALF;
-    const hw = ATTACK_HALF * 2;
-    const hh = ATTACK_HALF * 2;
+    // Hitbox: a small box in front for a melee swing; a long forward "beam" out to
+    // `range` for a ranged ("gun") weapon — the same loop then damages EVERY enemy
+    // along it (a piercing shot) with the usual dodge/crit/LoS resolution.
+    let hx, hy, hw, hh;
+    if (range > 0) {
+      const BEAM_HALF = 10; // beam half-width
+      const oy = y - 10; // shots leave from chest height, like the melee box
+      const fx = x + v[0] * range;
+      const fy = oy + v[1] * range;
+      hx = Math.min(x, fx) - BEAM_HALF;
+      hy = Math.min(oy, fy) - BEAM_HALF;
+      hw = Math.abs(fx - x) + BEAM_HALF * 2;
+      hh = Math.abs(fy - oy) + BEAM_HALF * 2;
+    } else {
+      hx = x + v[0] * ATTACK_REACH - ATTACK_HALF;
+      hy = y - 10 + v[1] * ATTACK_REACH - ATTACK_HALF;
+      hw = ATTACK_HALF * 2;
+      hh = ATTACK_HALF * 2;
+    }
     for (const n of enemies) {
       if (n.dead) continue;
       if (!canHurt(attacker, n)) continue; // PK rules decide if this lands

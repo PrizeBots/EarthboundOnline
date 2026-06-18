@@ -39,6 +39,10 @@ export interface MenuHooks {
   /** Play an item's "use" animation on the local player (e.g. eating a Cookie).
    *  Visual only — the server broadcasts it so other players see it too. */
   itemUseFx?(itemId: string): void;
+  /** Begin target-selection for a PARTY-target PSI (Lifeup/Healing/revive): the
+   *  game enters a mode to pick self or an ally, then sends the cast. Returning
+   *  true means the game took over (the menu should NOT cast directly). Optional. */
+  beginPsiTarget?(abilityId: string): boolean;
 }
 
 /** Stat-change preview for the highlighted Buy item: how a stat would read after

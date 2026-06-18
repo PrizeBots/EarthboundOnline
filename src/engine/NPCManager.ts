@@ -573,6 +573,16 @@ export function interpolateNpcs(): void {
 // in an NPC — spawning on one, or a wanderer/server-teleport stepping onto them
 // — can always walk back out instead of being trapped (every candidate move
 // from inside the box would otherwise still overlap and be rejected).
+/** World-space collision (foot) box `[x,y,w,h]` for a sprite group at (x,y):
+ *  the authored Entity Manager `col` if present, else the default foot box.
+ *  Mirrors blockedByNPC's people/enemy math. Used by the debug hitbox overlay
+ *  (Renderer.drawDebugBoxes) so what's drawn matches what blocks movement. */
+export function colBoxFor(sprite: number, x: number, y: number): [number, number, number, number] {
+  const c = entityCols.get(sprite);
+  if (c) return [x + c.offX - c.w / 2, y + c.offY - c.h, c.w, c.h];
+  return [x - NPC_COL_W / 2, y + NPC_COL_OY, NPC_COL_W, NPC_COL_H];
+}
+
 export function blockedByNPC(
   x: number,
   y: number,

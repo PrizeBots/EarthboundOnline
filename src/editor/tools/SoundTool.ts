@@ -9,6 +9,7 @@ import {
   stopAllSounds,
   playSfx,
   setMusicMuted,
+  setSfxMuted,
 } from '../../engine/MusicManager';
 import {
   SFX_EVENTS,
@@ -109,9 +110,11 @@ class SoundTool implements EditorTool {
 
   activate(shell: EditorShellApi): void {
     this.shell = shell;
-    // The editor mutes music on entry (so other tools edit in silence); the
-    // Sound Manager is the exception — unmute so Test/auditioning is audible.
+    // The editor mutes music AND sfx on entry (so other tools edit in silence);
+    // the Sound Manager is the exception — unmute both so Test/auditioning is
+    // audible. deactivate() restores the editor's edit-in-silence state.
     setMusicMuted(false);
+    setSfxMuted(false);
     registerSaveHandler('music', () => this.save());
     registerSaveHandler('sfx_events', () => this.saveSfx());
     this.sfxMap = getSfxEventMap(); // defaults + any loaded overrides
@@ -126,6 +129,7 @@ class SoundTool implements EditorTool {
   deactivate(): void {
     stopAllSounds(); // drop any music/sfx preview before leaving the tool
     setMusicMuted(true); // restore the editor's edit-in-silence state
+    setSfxMuted(true);
     this.panel?.remove();
     this.panel = null;
     this.placing = this.drawing = this.moving = this.resizing = false;

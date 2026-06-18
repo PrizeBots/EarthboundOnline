@@ -55,6 +55,7 @@ import {
   MENU_ITEMS,
   PSI_ABILITIES,
   psiCost,
+  psiTarget,
   PSI_TAG,
   isPsiEntry,
   drawCursor,
@@ -438,6 +439,12 @@ function usePsi(abilityId: string): void {
   if (getStatus().pp < psiCost(abilityId)) {
     hooks?.notify?.('Not enough PP');
     return; // no send, no FX, no SFX — the move simply doesn't happen
+  }
+  // Party-target PSI (Lifeup/Healing/revive): hand off to the game's target
+  // picker (self or an ally). If it takes over, don't cast here — the picker
+  // sends the cast (with a targetId) once a target is chosen.
+  if (psiTarget(abilityId) === 'ally' && hooks?.beginPsiTarget?.(abilityId)) {
+    return;
   }
   // Server checks PP, applies the effect, and pushes back player_hp (heal) +
   // player_stats (PP decrease) so the bars redraw.

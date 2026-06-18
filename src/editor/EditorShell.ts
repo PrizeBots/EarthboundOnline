@@ -10,10 +10,11 @@ import {
 import { RoomBounds } from '../engine/Camera';
 import { getSectorForTile } from '../engine/MapManager';
 import { getCollisionByteAt } from '../engine/Collision';
-import { isMusicMuted, setMusicMuted } from '../engine/MusicManager';
+import { isMusicMuted, setMusicMuted, setSfxMuted, stopAllSfx } from '../engine/MusicManager';
 import { setMuteButtonHidden } from '../engine/MuteButton';
 import { isSpriteEditorOpen, closeSpriteEditor } from '../engine/spriteEditor';
 import { getKeySet } from '../engine/Input';
+import { setDebugBoxes, debugBoxesOn } from '../engine/Renderer';
 import { CommandStack } from './CommandStack';
 import { LocationNav, PlaceAnchor } from './LocationNav';
 import { findEditorTool, getEditorTools, getSaveHandler } from './registry';
@@ -149,9 +150,14 @@ export class EditorShell {
     this.heldKeys.clear();
 
     // Silence the game while editing and hide the mute button (the editor owns
-    // audio here). The player's own mute preference is restored on exit.
+    // audio here). Mute BOTH music and sfx — otherwise world events (enemy
+    // deaths, swings) keep ringing while you fly the camera. The Sound Manager
+    // tool re-enables sfx for itself so auditioning still works. The player's
+    // own mute preference is restored on exit.
     this.mutedBeforeEditor = isMusicMuted();
     setMusicMuted(true);
+    setSfxMuted(true);
+    stopAllSfx(); // cut anything already in flight
     setMuteButtonHidden(true);
 
     window.addEventListener('keydown', this.onKeyDown, true);
@@ -255,6 +261,7 @@ export class EditorShell {
 
     // Restore the player's pre-editor mute preference and bring the button back.
     setMusicMuted(this.mutedBeforeEditor);
+    setSfxMuted(this.mutedBeforeEditor);
     setMuteButtonHidden(false);
 
     this.setTool(null);
@@ -960,6 +967,22 @@ export class EditorShell {
     }
 
     mkBtn('Places', () => this.nav?.toggle());
+
+    // Hitbox overlay toggle: draws combat hurt/collision/attack boxes live over
+    // the world (same flag as the B key). Manages its own on/off color since
+    // it's not part of the data-toggle grid group.
+    const syncBoxesBtn = (btn: HTMLButtonElement) => {
+      const on = debugBoxesOn();
+      btn.style.color = on ? '#7fe07f' : '#cde';
+      btn.style.borderColor = on ? '#7fe07f' : '#3a4a5a';
+    };
+    const boxesBtn = mkBtn('Hitboxes', () => {
+      setDebugBoxes(!debugBoxesOn());
+      syncBoxesBtn(boxesBtn);
+    });
+    boxesBtn.title =
+      'Show combat hit/hurt/collision boxes live (cyan=hurt, blue=collision, red=attack; also B key)';
+    syncBoxesBtn(boxesBtn);
 
     // Reload toggle: when OFF (default) NOTHING refreshes the page — neither
     // editor override saves nor source (.ts) edits via Vite HMR — so you stay in

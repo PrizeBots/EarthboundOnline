@@ -154,6 +154,27 @@
       "sprite": 52,
       "dir": 0,
       "kind": "person"
+    },
+    {
+      "x": 1960,
+      "y": 1744,
+      "sprite": 74,
+      "dir": 0,
+      "kind": "person"
+    },
+    {
+      "x": 1976,
+      "y": 1208,
+      "sprite": 59,
+      "dir": 0,
+      "kind": "person"
+    },
+    {
+      "x": 2152,
+      "y": 1200,
+      "sprite": 54,
+      "dir": 0,
+      "kind": "person"
     }
   ]
 }

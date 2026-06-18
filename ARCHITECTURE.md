@@ -603,21 +603,46 @@ and `revive` (HP an **auto-revive** restores). `server/buffs.js` is the buff eng
 at each use-site — attack offense, incoming-damage defense, dodge-from-speed — and
 pruned each tick; `statsPayload` reports EFFECTIVE base+buff so the status screen
 agrees). `use_item` applies heal/healPp/cure/buffs and refuses an all-no-op use
-(full bars, nothing to cure). `revive` is NOT a use effect — since death is instant
-respawn (no downed state), a carried revive item is consumed automatically on a
-killing blow (`_tryReviveOnDeath`), restoring HP at the spot instead of dying.
-Heroes-only ally-target revive would need a downed/targeting state (backlog).
+(full bars, nothing to cure).
+
+**Downed / KO + revive.** A killing blow no longer respawns instantly: the player
+enters a **downed** state for `DOWNED_MS` (30s) — `_enterDowned` (laying pose,
+statuses/buffs cleared, untargetable via the `hp<=0` guards). The cash-drop penalty
+is **deferred** to `_trueDeath` (timer elapses via `_tickPlayerStatuses`, or the
+player **gives up the ghost** — client holds Space/touch 2s → `give_up`), so a
+revive costs nothing. An ally **revives** a downed friend (`_reviveDowned`, stands
+them up in place) two ways, both server-validated so a bad/out-of-range attempt is
+refused without consuming anything: a **revive item** (`revive` HP; `use_item` with
+optional `targetId`, else nearest downed within `REVIVE_RANGE`) — canon Horn of
+life/Secret herb/Cup of Lifenoodles — or **revive PSI** (Healing γ/Ω `reviveFrac`).
+Client: `player_downed`/`player_revived` drive the laying render (90° rotation),
+the over-head countdown, and the owner's closing **vignette**.
+
+**PSI targeting.** Support PSI (Lifeup/Healing/revive — `target:'ally'`) is
+PARTY-target: the client enters a **target picker** (rings on valid targets, `Z`=
+self, click an ally, `Esc`) and sends `use_psi` with a `targetId`; the server routes
+heal/cure/revive to that target (or self) and validates range (`PSI_HEAL_RANGE`).
+Offense PSI still auto-strikes the nearest enemy. PP/effects are canon (`psi.json`):
+Healing γ/Ω revive (γ half HP, Ω full), Lifeup heals. (Full multi-tier roster +
+per-character learn-by-level gating remains a backlog content/system task.)
+
+**Ranged weapons.** A weapon's `equip_stats.json` can set `ranged:true` + `range`
+(px); `recomputeEquipStats` exposes `weaponRange`, and `handleAttack` swaps the 14px
+melee box for a forward **beam** out to `range` (the same loop damages every enemy
+along it — a piercing shot, LoS-gated). Aim is the facing direction (click-an-enemy
+targeting is a possible enhancement on the same picker).
 
 `overrides/equip_stats.json` is the **per-item mod layer** edited in the **Item
 Manager** — name, kind (`slot`, incl. `'none'`=consumable), users,
-offense/defense/crit/dodge/attackSpeed/cost/heal/healPp/cure/buffs/revive + the
-inflict list. It is
-layered over the ROM item table on BOTH sides (ROM data untouched): `server/shops.js`
-applies every field (combat + the catalog-facing name/cost/kind/users) and `src/engine/Shop.ts`
-applies the catalog-facing fields client-side, so client and server agree on what
-each item is and what slot it fits. The server reads it once at host start (combat
-values apply on the next server start); the client reads it in `loadShops`, so
-name/cost/kind apply on the next client reload.
+offense/defense/crit/dodge/attackSpeed/ranged/range/cost/heal/healPp/cure/buffs/revive
+
+- the inflict list. It is
+  layered over the ROM item table on BOTH sides (ROM data untouched): `server/shops.js`
+  applies every field (combat + the catalog-facing name/cost/kind/users) and `src/engine/Shop.ts`
+  applies the catalog-facing fields client-side, so client and server agree on what
+  each item is and what slot it fits. The server reads it once at host start (combat
+  values apply on the next server start); the client reads it in `loadShops`, so
+  name/cost/kind apply on the next client reload.
 
 **NPC self-defense.** Every `person` carries HP (`NPC_HP`, matching the client's
 Entity default so full-HP folk need no sync) and defends itself on

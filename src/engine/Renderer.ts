@@ -2,6 +2,7 @@ import { Camera } from './Camera';
 import { Player } from './Player';
 import { NPC } from './NPC';
 import { getTileAt, getSectorForTile } from './MapManager';
+import { colBoxFor } from './NPCManager';
 import { drawTile, drawForegroundTile, hasForegroundTile } from './TilesetManager';
 import { isComposite, drawComposite, drawCompositeFg } from './CompositeTiles';
 import { drawSprite, getSpriteGroupMeta, SpritePart } from './SpriteManager';
@@ -327,7 +328,7 @@ function drawGiveUpPrompt(ctx: CanvasRenderingContext2D, progress: number): void
   const y = SCREEN_HEIGHT - 20;
   ctx.save();
   ctx.scale(0.5, 0.5);
-  drawText(ctx, 'HOLD TO GIVE UP', x * 2, (y - 11) * 2 + 1, 1, 1);
+  drawText(ctx, 'HOLD DOWN TO GIVE UP', x * 2, (y - 11) * 2 + 1, 1, 1);
   ctx.restore();
   ctx.fillStyle = '#222';
   ctx.fillRect(x, y, w, h);
@@ -864,7 +865,13 @@ export class Renderer {
     }
   }
 
-  /** Draw entity hurtboxes (cyan) + the player's attack hitbox (red) when set. */
+  /**
+   * Draw combat debug boxes (toggle: B key, or the editor header "Hitboxes"
+   * button). Cyan = hurtbox (what an attack must overlap to land); blue =
+   * collision/foot box (what blocks movement, per-entity `col` or the default);
+   * red = the player's attack hitbox while a swing plays. Geometry mirrors
+   * server/npcSim.js so what's drawn matches what the server resolves.
+   */
   private drawDebugBoxes(
     camX: number,
     camY: number,
@@ -875,7 +882,7 @@ export class Renderer {
     const ctx = this.ctx;
     ctx.lineWidth = 1;
     const hurt = (x: number, y: number) => {
-      ctx.strokeStyle = 'rgba(0,224,255,0.9)';
+      ctx.strokeStyle = 'rgba(0,224,255,0.9)'; // cyan
       ctx.strokeRect(
         Math.round(x - HURT_W / 2) - camX + 0.5,
         Math.round(y + HURT_OY) - camY + 0.5,
@@ -883,11 +890,23 @@ export class Renderer {
         HURT_H
       );
     };
+    const col = (sprite: number, x: number, y: number) => {
+      const [bx, by, bw, bh] = colBoxFor(sprite, x, y);
+      ctx.strokeStyle = 'rgba(96,160,255,0.9)'; // blue
+      ctx.strokeRect(Math.round(bx) - camX + 0.5, Math.round(by) - camY + 0.5, bw, bh);
+    };
 
     hurt(player.x, player.y);
-    for (const [, rp] of remotePlayers) hurt(rp.x, rp.y);
+    col(player.spriteGroupId, player.x, player.y);
+    for (const [, rp] of remotePlayers) {
+      hurt(rp.x, rp.y);
+      col(rp.spriteGroupId, rp.x, rp.y);
+    }
     for (const npc of npcs) {
-      if (npc.kind === 'person' || npc.kind === 'enemy') hurt(npc.x, npc.y);
+      if (npc.kind === 'person' || npc.kind === 'enemy') {
+        hurt(npc.x, npc.y);
+        col(npc.spriteGroupId, npc.x, npc.y);
+      }
     }
 
     // Player attack hitbox during a swing (same math as npcSim.handleAttack).

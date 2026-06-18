@@ -50,6 +50,9 @@ const DEATH_CASH_PCT = 0.5; // fraction of ON-HAND cash dropped on death (bank i
 const DOWNED_MS = 30000;
 // How close (px) an ally must be to a downed friend to revive them (item or PSI).
 const REVIVE_RANGE = 44;
+// Range (px) within which support PSI (Lifeup/Healing) may target an ally; revive
+// PSI is ranged, so it's more generous than the hands-on item revive (REVIVE_RANGE).
+const PSI_HEAL_RANGE = 160;
 const EQUIP_SLOTS = ['weapon', 'body', 'arms', 'other'];
 // Skill points granted per level-up (banked until spent on the pentagon) and the
 // per-stat cap a spend can raise an allocation to. Both server-authoritative.
@@ -103,9 +106,28 @@ const PK_LOCK_MS = 5 * 60 * 1000;
 // is the PsiAnim catalog id whose authored frames play on cast. Heal/damage
 // amounts are placeholders pending the canon effect values.
 const PSI = {
-  // heal / cure (self)
-  lifeup: { name: 'Lifeup α', pp: 3, heal: 30, anim: 'lifeup_alpha' },
-  healing: { name: 'Healing α', pp: 4, cures: true, anim: 'healing_alpha' }, // clears the caster's statuses
+  // heal / cure / revive — PARTY-target (self OR an ally; the client picks the
+  // target, the server validates + applies). PP mirrors canon (psi.json). Lifeup
+  // restores HP; Healing cures statuses; Healing γ/Ω also REVIVE a downed ally
+  // (γ = partial HP, Ω = full HP + full cure) — canon (item help text, data_56).
+  lifeup: { name: 'Lifeup α', pp: 5, heal: 30, target: 'ally', anim: 'lifeup_alpha' },
+  healing: { name: 'Healing α', pp: 5, cures: true, target: 'ally', anim: 'healing_alpha' },
+  healing_gamma: {
+    name: 'Healing γ',
+    pp: 20,
+    cures: true,
+    reviveFrac: 0.5, // revives a downed ally to half HP (canon: "HP is not maxed out")
+    target: 'ally',
+    anim: 'healing_alpha',
+  },
+  healing_omega: {
+    name: 'Healing Ω',
+    pp: 38,
+    cures: true,
+    reviveFrac: 1, // revives a downed ally to FULL HP (canon: "maxes out HP")
+    target: 'ally',
+    anim: 'healing_alpha',
+  },
   // offense (strikes the nearest enemy)
   // multi: ROM target "row"/"all" — the bolt penetrates and hits EVERY enemy in range.
   fire: { name: 'PSI Fire α', pp: 5, damage: 14, range: 240, anim: 'psi_fire_alpha', multi: true },
@@ -572,6 +594,8 @@ class GameHost {
     // overrides it (e.g. a weapon that procs sleep instead of paralysis).
     const wInf = status.normalizeInflict(we && we.slot === 'weapon' ? we.inflict : null);
     entry.weaponInflict = wInf.length ? wInf : null;
+    // Ranged-weapon reach (px): a gun fires a forward shot this far; 0 = melee.
+    entry.weaponRange = we && we.slot === 'weapon' && we.ranged ? we.range | 0 : 0;
     let def = 0;
     for (const s of ['body', 'arms', 'other']) {
       const id = entry.equipped[s];
@@ -1380,7 +1404,8 @@ class GameHost {
           entry.pk,
           critChanceFromLuck(entry.luck),
           entry.attackSpeed || 1,
-          entry.weaponInflict
+          entry.weaponInflict,
+          entry.weaponRange || 0
         );
         break;
       }
@@ -1718,31 +1743,62 @@ class GameHost {
         if (!def || entry.pp < def.pp) break; // unknown ability or not enough PP
         // "Can't concentrate" (noPsi) blocks ALL PSI, even a cure — it must wear
         // off. The client also gates this; the server is the authority.
-        if (status.isPsiBlocked(entry, Date.now())) break;
+        const now = Date.now();
+        if (status.isPsiBlocked(entry, now)) break;
+
+        // Support PSI (heal / cure / revive) is PARTY-target: it acts on SELF by
+        // default or on an ALLY the client picked (targetId). Validate the chosen
+        // ally BEFORE spending PP so a bad/out-of-range pick never wastes the cast.
+        const support = !!(def.heal || def.cures || def.reviveFrac);
+        let target = entry;
+        const tid = typeof msg.targetId === 'string' ? msg.targetId : null;
+        if (support && tid && tid !== playerId) {
+          const t = this.players.get(tid);
+          if (!t) break; // stale target id — ignore (no PP spent)
+          const dx = t.x - entry.x;
+          const dy = t.y - entry.y;
+          if (dx * dx + dy * dy > PSI_HEAL_RANGE * PSI_HEAL_RANGE) {
+            entry._ws.send(JSON.stringify({ type: 'notice', text: 'Target is too far away.' }));
+            break;
+          }
+          target = t;
+        }
+        // Revive PSI needs a DOWNED target; ordinary heal/cure can't be used on a
+        // downed ally (they need reviving first). Refuse without spending PP.
+        if (def.reviveFrac && !target.downed) {
+          entry._ws.send(JSON.stringify({ type: 'notice', text: 'No downed ally targeted.' }));
+          break;
+        }
+        if (!def.reviveFrac && support && target.downed) {
+          entry._ws.send(JSON.stringify({ type: 'notice', text: 'They need reviving first.' }));
+          break;
+        }
+
         entry.pp -= def.pp;
 
-        // Effect target for the projectile animation: the caster's own spot for a
-        // heal/self PSI; the struck enemy for an offense PSI (else it fizzles
-        // forward so the bolt still reads).
-        let tx = Math.round(entry.x);
-        let ty = Math.round(entry.y);
-        if (def.heal) {
-          const healed = Math.min(entry.maxHp, entry.hp + def.heal) - entry.hp;
-          entry.hp += healed;
+        // Effect target for the projectile animation: the support target's spot
+        // (self or ally) for heal/cure/revive; the struck enemy for offense PSI.
+        let tx = Math.round((support ? target : entry).x);
+        let ty = Math.round((support ? target : entry).y);
+        if (def.reviveFrac) {
+          // Revive the downed ally to a fraction of their max HP (γ half, Ω full).
+          this._reviveDowned(target, Math.ceil(target.maxHp * def.reviveFrac));
+        } else if (def.heal) {
+          const healed = Math.min(target.maxHp, target.hp + def.heal) - target.hp;
+          target.hp += healed;
           this.broadcastAll({
             type: 'player_hp',
-            id: playerId,
-            hp: entry.hp,
-            maxHp: entry.maxHp,
+            id: target.id,
+            hp: target.hp,
+            maxHp: target.maxHp,
             dmg: 0,
             heal: healed,
           });
         }
-        if (def.cures) {
-          // Healing PSI clears the caster's status conditions (paralysis, sleep,
-          // poison, …). Death/respawn already clears; this is the in-field cure.
-          status.clearAll(entry);
-          this._broadcastPlayerStatus(entry);
+        if (def.cures && !def.reviveFrac) {
+          // Healing PSI clears the target's status conditions (self or ally).
+          status.clearAll(target);
+          this._broadcastPlayerStatus(target);
         }
         if (def.damage || def.inflict) {
           // Server picks the target(s) — it owns enemy positions. A single-target

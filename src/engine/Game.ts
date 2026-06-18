@@ -61,8 +61,11 @@ import {
   sendOpenGift,
   sendMomFood,
   sendGiveUp,
+  sendUsePsi,
   JoinAuth,
 } from './Network';
+import { drawText, measureText } from './TextRenderer';
+import { FONT_ID } from './menu/layout';
 import { getToken, CharacterSummary } from './Auth';
 import { initNameplates } from './NamePlate';
 import { initLevelUpButton, setLevelUpPoints } from './LevelUpButton';
@@ -249,6 +252,10 @@ export class Game {
   // Epoch-ms the current give-up hold began (0 = not holding). The downed player
   // must hold for GIVE_UP_HOLD_MS to die; releasing early resets it.
   private giveUpHoldStart = 0;
+  // Active PSI target-selection (party-target PSI: Lifeup/Healing/revive). While
+  // set, the world is in "pick a target" mode (self/ally, or a downed ally for
+  // revive) instead of normal play. Null = not targeting.
+  private psiTargeting: { abilityId: string; kind: 'ally' | 'downed' } | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
@@ -471,6 +478,8 @@ export class Game {
       psiBlocked: () => this.player.statuses.includes('noPsi'),
       // Play a used item's animation on the local player (server networks it to others).
       itemUseFx: (id) => spawnItemFx(id, this.player.x, this.player.y),
+      // Party-target PSI: enter target mode (pick self or an ally), then cast.
+      beginPsiTarget: (abilityId) => this._beginPsiTarget(abilityId),
     });
     initChat(getKeySet());
     initDialogue(getKeySet());
@@ -1341,6 +1350,13 @@ export class Game {
     updateMenu();
     if (isMenuOpen()) return;
 
+    // PSI target-selection (party-target PSI): pick self/ally, then cast. Freezes
+    // movement/actions while choosing. (Menu was closed when targeting began.)
+    if (this.psiTargeting) {
+      this._updatePsiTargeting();
+      return;
+    }
+
     // Spending skill points freezes the world behind the pentagon.
     if (isLevelUpOpen()) return;
 
@@ -1369,7 +1385,7 @@ export class Game {
       return;
     }
 
-    // Downed (KO): can't act except "give up the ghost" (hold Space / touch ~2s).
+    // Downed (KO): can't act except "give up the ghost" (hold Down/Space/touch ~2s).
     // Movement, talk, attack and hotbar are all suppressed until revived or dead.
     if (this.player.downed) {
       this._updateGiveUp();
@@ -1470,12 +1486,15 @@ export class Game {
    * Mirrors EB's combined "Talk to"+"Check" command: a target with dialogue
    * speaks; empty space gives the classic Check fallback.
    */
-  // While downed: hold Space (desktop) or press-and-hold (touch/mouse) for
-  // GIVE_UP_HOLD_MS to give up the ghost (true death now). Releasing resets the
-  // hold. giveUpProgress (0..1) drives the on-screen hold meter.
+  // While downed: hold Down (Arrow/S), Space, or press-and-hold (touch/mouse) for
+  // GIVE_UP_HOLD_MS to give up the ghost (true death now → respawn at spawn).
+  // Movement is suppressed while downed, so Down is free to mean "give up" and
+  // matches the on-screen prompt. Releasing resets the hold; giveUpProgress
+  // (0..1) drives the on-screen hold meter.
   private _updateGiveUp(): void {
     const GIVE_UP_HOLD_MS = 2000;
-    const held = getKeySet().has('Space') || isPointerDown();
+    const k = getKeySet();
+    const held = k.has('ArrowDown') || k.has('KeyS') || k.has('Space') || isPointerDown();
     const now = Date.now();
     if (!held) {
       this.giveUpHoldStart = 0;
@@ -1490,6 +1509,127 @@ export class Game {
       this.giveUpHoldStart = 0;
       this.player.giveUpProgress = 0;
     }
+  }
+
+  // Healing γ/Ω revive a downed ally (need a DOWNED target); other party PSI
+  // (Lifeup/Healing α) heal/cure a living ally or yourself.
+  private static REVIVE_PSI = new Set(['healing_gamma', 'healing_omega']);
+
+  /** Enter PSI target-selection. Returns true (the MenuManager then suppresses
+   *  its own immediate cast and the world takes over picking). */
+  private _beginPsiTarget(abilityId: string): boolean {
+    this.psiTargeting = {
+      abilityId,
+      kind: Game.REVIVE_PSI.has(abilityId) ? 'downed' : 'ally',
+    };
+    return true;
+  }
+
+  /** Pick mode each frame: Esc cancels; the action key self-casts (ally PSI only);
+   *  a click resolves to the nearest valid target (self or ally) and casts. */
+  private _updatePsiTargeting(): void {
+    const t = this.psiTargeting!;
+    if (getKeySet().has('Escape')) {
+      this.psiTargeting = null;
+      return;
+    }
+    if (t.kind === 'ally' && isActionPressed()) {
+      sendUsePsi(t.abilityId); // no targetId = cast on self
+      this.psiTargeting = null;
+      return;
+    }
+    const click = consumePointerClick();
+    if (!click) return;
+    const wx = click.x + this.camera.x;
+    const wy = click.y + this.camera.y;
+    const picked = this._pickTargetAt(wx, wy, t.kind);
+    if (picked === 'self') {
+      sendUsePsi(t.abilityId);
+      this.psiTargeting = null;
+    } else if (picked) {
+      sendUsePsi(t.abilityId, picked);
+      this.psiTargeting = null;
+    }
+    // clicked empty space → stay in targeting mode
+  }
+
+  /** Nearest valid target to a world point: 'self', a remote player id, or null.
+   *  'ally' kind = self + living players; 'downed' kind = downed players only. */
+  private _pickTargetAt(wx: number, wy: number, kind: 'ally' | 'downed'): string | null {
+    const PICK = 24;
+    let best: string | null = null;
+    let bestD2 = PICK * PICK;
+    const test = (id: string | null, x: number, y: number) => {
+      const dx = x - wx;
+      const dy = y - 12 - wy; // bias up to the body center
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= bestD2) {
+        bestD2 = d2;
+        best = id ?? 'self';
+      }
+    };
+    if (kind === 'ally') test(null, this.player.x, this.player.y);
+    for (const [id, rp] of this.remotePlayers) {
+      if (kind === 'downed' ? !rp.downed : rp.downed) continue;
+      test(id, rp.x, rp.y);
+    }
+    return best;
+  }
+
+  /** Targeting overlay: rings on every valid target + a prompt line. Drawn in
+   *  logical screen coords (world − camera), matching the FX pass (gameplay zoom=1). */
+  private _renderPsiTargeting(ctx: CanvasRenderingContext2D): void {
+    const t = this.psiTargeting;
+    if (!t) return;
+    const color = t.kind === 'downed' ? '#ff7a7a' : '#7affa0';
+    const ring = (wx: number, wy: number) => {
+      const sx = Math.round(wx - this.camera.x);
+      const sy = Math.round(wy - this.camera.y) - 12;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 11, 0, Math.PI * 2);
+      ctx.stroke();
+    };
+    if (t.kind === 'ally') ring(this.player.x, this.player.y);
+    for (const [, rp] of this.remotePlayers) {
+      if (t.kind === 'downed' ? rp.downed : !rp.downed) ring(rp.x, rp.y);
+    }
+    const label =
+      t.kind === 'downed'
+        ? 'Click a downed ally   [Esc] cancel'
+        : 'Click an ally  ·  Z = self   [Esc] cancel';
+    const tw = Math.ceil(measureText(label, FONT_ID) * 0.5);
+    const x = Math.round((SCREEN_WIDTH - tw) / 2);
+    ctx.fillStyle = '#000a';
+    ctx.fillRect(x - 3, 2, tw + 6, 10);
+    ctx.save();
+    ctx.scale(0.5, 0.5);
+    drawText(ctx, label, x * 2, 6, FONT_ID, 1);
+    ctx.restore();
+  }
+
+  /** Clip the canvas to the current room's tiles (mirrors the renderer's world
+   *  clip) so overlays drawn after render() — damage numbers, FX, chat — don't
+   *  bleed in from a neighboring room behind the black shroud. Returns true if a
+   *  clip+save was pushed (caller must ctx.restore()). Gameplay (zoom 1) only. */
+  private _pushRoomClip(): boolean {
+    const room = this.camera.roomBounds;
+    if (!room || this.camera.zoom !== 1) return false;
+    const camX = Math.round(this.camera.x);
+    const camY = Math.round(this.camera.y);
+    const { startCol, startRow, endCol, endRow } = this.camera.getVisibleTileRange();
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.beginPath();
+    for (let row = startRow; row <= endRow; row++) {
+      for (let col = startCol; col <= endCol; col++) {
+        if (!room.tiles.has(row * MAP_WIDTH_TILES + col)) continue;
+        ctx.rect(col * TILE_SIZE - camX, row * TILE_SIZE - camY, TILE_SIZE, TILE_SIZE);
+      }
+    }
+    ctx.clip();
+    return true;
   }
 
   private tryTalk(): void {
@@ -1671,11 +1811,20 @@ export class Game {
       renderChat(this.ctx, this.camera, this.player, this.remotePlayers);
       this.ctx.restore();
     } else {
+      // Clip these world-anchored overlays (damage/heal numbers, PSI/item FX, chat
+      // bubbles) to the current room's tiles, exactly like the world pass — so
+      // action in a NEIGHBORING room packed next to this one stays hidden behind
+      // the black shroud instead of bleeding numbers/FX through it.
+      const clipped = this._pushRoomClip();
       renderPsiFx(this.ctx, this.camera);
       renderItemFx(this.ctx, this.camera);
       renderEmitters(this.ctx, this.camera);
       renderChat(this.ctx, this.camera, this.player, this.remotePlayers);
+      if (clipped) this.ctx.restore();
     }
+
+    // PSI target-selection overlay (rings on valid targets + prompt), gameplay only.
+    if (this.psiTargeting) this._renderPsiTargeting(this.ctx);
 
     // Undo the shake offset so the dialogue box, fade, and HUD don't jitter.
     if (shaking) {

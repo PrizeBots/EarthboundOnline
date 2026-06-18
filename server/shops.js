@@ -85,6 +85,10 @@ function loadShops(assetsDir) {
         dodge: ov.dodge | 0,
         attackSpeed: aspd,
         inflict,
+        // Ranged ("gun") weapons fire a forward shot up to `range` px instead of a
+        // 14px melee swing; 0/absent = melee. The server resolves the reach.
+        ranged: !!ov.ranged && slot === 'weapon',
+        range: num(ov.range, 0),
       };
     }
     goods[id] = {

@@ -88,6 +88,7 @@ check('join → welcome to self (id, roster, inventory, money)', () => {
 const bob = new FakeSocket();
 host.handleConnection(bob);
 bob.recv({ type: 'join', name: 'Bob', spriteGroupId: 2 });
+const bobId = bob.last('welcome').playerId;
 
 check('second join → first player gets player_join', () => {
   const pj = alice.last('player_join');
@@ -508,17 +509,23 @@ check('poison ticks HP down over time (DoT)', () => {
   assert(alice.ofType('player_hp').length > 0, 'a DoT tick broadcasts player_hp');
 });
 
-check('death clears every status and broadcasts an empty set', () => {
+check('a lethal hit DOWNS the player (KO), clearing statuses + broadcasting downed', () => {
   const p = host.players.get(aliceId);
   p.hp = 5;
   p.statuses = {};
   statusMod.applyStatus(p, statusMod.STATUS.PARALYSIS, Date.now());
   alice.clear();
-  host.damagePlayer(aliceId, 9999); // lethal
+  host.damagePlayer(aliceId, 9999); // lethal → downed (not instant respawn)
   const after = host.players.get(aliceId);
-  assert.strictEqual(Object.keys(after.statuses).length, 0, 'death wipes statuses');
+  assert.strictEqual(after.downed, true, 'lethal hit enters the downed/KO state');
+  assert.strictEqual(Object.keys(after.statuses).length, 0, 'KO wipes statuses');
   const ps = alice.last('player_status');
-  assert(ps && ps.statuses.length === 0, 'empty status set broadcast on death');
+  assert(ps && ps.statuses.length === 0, 'empty status set broadcast on KO');
+  assert(alice.last('player_downed'), 'broadcasts player_downed');
+  // Restore Alice to a clean ALIVE state for the PSI tests below.
+  after.downed = false;
+  after.downedUntil = 0;
+  after.hp = after.maxHp;
 });
 
 // ===================== 4d. PSI casting =====================
@@ -532,7 +539,7 @@ check('use_psi (heal) spends PP and broadcasts psi_cast at the caster', () => {
   p.pp = 7;
   alice.clear();
   alice.recv({ type: 'use_psi', psiId: 'lifeup' });
-  assert.strictEqual(host.players.get(aliceId).pp, 7 - 3, 'lifeup costs 3 PP');
+  assert.strictEqual(host.players.get(aliceId).pp, 7 - 5, 'lifeup costs 5 PP (canon)');
   const cast = alice.last('psi_cast');
   assert(cast && cast.id === 'lifeup_alpha', 'broadcasts the PsiAnim id to the caster too');
   assert.strictEqual(cast.tx, cast.x, 'self/heal PSI targets the caster spot');
@@ -586,6 +593,56 @@ check("Healing PSI clears the caster's status conditions", () => {
   );
   const ps = alice.last('player_status');
   assert(ps && ps.statuses.length === 0, 'broadcasts the cleared (empty) set');
+});
+
+// ===================== 4e. Downed / revive =====================
+
+check('a revive ITEM stands a downed ally back up (in range) + is consumed', () => {
+  const a = host.players.get(aliceId);
+  const b = host.players.get(bobId);
+  a.hp = a.maxHp;
+  a.x = b.x = 100;
+  a.y = b.y = 100; // co-located → within REVIVE_RANGE
+  host.damagePlayer(bobId, 9999); // Bob → downed
+  assert.strictEqual(b.downed, true, 'Bob is downed');
+  // Find a revive item id from the catalog (Horn of life = 130) and give it to Alice.
+  const reviveId = Object.keys(host.GOODS).find((id) => (host.GOODS[id].revive | 0) > 0);
+  assert(reviveId, 'a revive item exists in the catalog');
+  a.inventory.push(reviveId);
+  alice.clear();
+  alice.recv({ type: 'use_item', itemId: reviveId, targetId: bobId });
+  assert.strictEqual(host.players.get(bobId).downed, false, 'Bob revived (no longer downed)');
+  assert(host.players.get(bobId).hp > 0, 'Bob has HP after revive');
+  assert(!a.inventory.includes(reviveId), 'the revive item was consumed');
+});
+
+check('a revive item is REFUSED (not consumed) when no downed ally is in range', () => {
+  const a = host.players.get(aliceId);
+  const b = host.players.get(bobId);
+  a.hp = a.maxHp;
+  b.downed = false;
+  b.hp = b.maxHp; // nobody downed
+  const reviveId = Object.keys(host.GOODS).find((id) => (host.GOODS[id].revive | 0) > 0);
+  a.inventory.push(reviveId);
+  alice.clear();
+  alice.recv({ type: 'use_item', itemId: reviveId, targetId: bobId });
+  assert(a.inventory.includes(reviveId), 'item NOT consumed when target invalid');
+  assert(alice.last('notice'), 'player is told why');
+});
+
+check('revive PSI (Healing Ω) revives a downed ally to full HP', () => {
+  const a = host.players.get(aliceId);
+  const b = host.players.get(bobId);
+  a.hp = a.maxHp;
+  a.pp = 99;
+  a.x = b.x = 100;
+  a.y = b.y = 100;
+  host.damagePlayer(bobId, 9999); // Bob → downed
+  alice.clear();
+  alice.recv({ type: 'use_psi', psiId: 'healing_omega', targetId: bobId });
+  const after = host.players.get(bobId);
+  assert.strictEqual(after.downed, false, 'Bob revived by Healing Ω');
+  assert.strictEqual(after.hp, after.maxHp, 'Ω revives to full HP');
 });
 
 // ============================ 5. Leave ============================
