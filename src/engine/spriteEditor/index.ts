@@ -62,6 +62,16 @@ import { buildDom } from './dom';
 
 export type { SpriteEditorCallbacks };
 
+// When the dev editor SHELL owns this overlay it registers a "return to game"
+// hook here. F2 then exits all the way to the game (close overlay + exit shell)
+// instead of just closing the overlay back to the shell — independent of which
+// window keydown listener (shell's or ours) happens to fire first. Null when the
+// editor is opened standalone (e.g. from character select), where F2 just closes.
+let shellExit: (() => void) | null = null;
+export function setSpriteEditorShellExit(fn: (() => void) | null): void {
+  shellExit = fn;
+}
+
 export function isSpriteEditorOpen(): boolean {
   return S.open;
 }
@@ -294,7 +304,15 @@ function onKeyDown(e: KeyboardEvent): void {
     // shell inactive and open the editor shell right as we close.
     e.stopImmediatePropagation();
     if (typing) (document.activeElement as HTMLElement | null)?.blur();
-    cancelEditor();
+    // Shell-owned: F2 means "back to the game", so close the overlay AND exit the
+    // shell. Standalone: just close the overlay (cancelEditor → onCancel).
+    if (shellExit) {
+      const exit = shellExit;
+      closeSpriteEditor();
+      exit();
+    } else {
+      cancelEditor();
+    }
     return;
   }
   // While typing in a field (the sprite picker's search, the rename box), let

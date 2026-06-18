@@ -12,7 +12,11 @@ import { getSectorForTile } from '../engine/MapManager';
 import { getCollisionByteAt } from '../engine/Collision';
 import { isMusicMuted, setMusicMuted, setSfxMuted, stopAllSfx } from '../engine/MusicManager';
 import { setMuteButtonHidden } from '../engine/MuteButton';
-import { isSpriteEditorOpen, closeSpriteEditor } from '../engine/spriteEditor';
+import {
+  isSpriteEditorOpen,
+  closeSpriteEditor,
+  setSpriteEditorShellExit,
+} from '../engine/spriteEditor';
 import { getKeySet } from '../engine/Input';
 import { setDebugBoxes, debugBoxesOn } from '../engine/Renderer';
 import { CommandStack } from './CommandStack';
@@ -162,6 +166,9 @@ export class EditorShell {
 
     window.addEventListener('keydown', this.onKeyDown, true);
     window.addEventListener('keyup', this.onKeyUp, true);
+    // Let an open Sprite Editor overlay route F2 all the way back to the game
+    // (close overlay + exit the shell), not just back to the shell.
+    setSpriteEditorShellExit(() => this.exit());
     this.context.canvas.addEventListener('mousedown', this.onMouseDown);
     this.context.canvas.addEventListener('wheel', this.onWheel, { passive: false });
     window.addEventListener('mousemove', this.onMouseMove);
@@ -271,6 +278,7 @@ export class EditorShell {
     getKeySet().clear();
     this.heldKeys.clear();
 
+    setSpriteEditorShellExit(null); // shell no longer owns F2-to-game
     window.removeEventListener('keydown', this.onKeyDown, true);
     window.removeEventListener('keyup', this.onKeyUp, true);
     this.context.canvas.removeEventListener('mousedown', this.onMouseDown);

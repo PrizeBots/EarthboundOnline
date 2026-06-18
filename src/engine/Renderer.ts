@@ -320,12 +320,15 @@ function drawDownedVignette(
   ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
 }
 
-/** Bottom-center "hold to give up the ghost" prompt + fill meter (0..1). */
+/** Bottom-center "hold to give up the ghost" prompt + fill meter (0..1). Sits
+ *  ABOVE the bottom hotbar (16px tall, flush to the bottom edge — see
+ *  hotbarLayout) so the meter and label never overlap the quick-select slots. */
 function drawGiveUpPrompt(ctx: CanvasRenderingContext2D, progress: number): void {
   const w = 90;
   const h = 6;
+  const HOTBAR_CLEARANCE = 16 + 8; // hotbar box height + gap above it
   const x = Math.round((SCREEN_WIDTH - w) / 2);
-  const y = SCREEN_HEIGHT - 20;
+  const y = SCREEN_HEIGHT - HOTBAR_CLEARANCE - h;
   ctx.save();
   ctx.scale(0.5, 0.5);
   drawText(ctx, 'HOLD DOWN TO GIVE UP', x * 2, (y - 11) * 2 + 1, 1, 1);

@@ -2270,7 +2270,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     if (n.life === 'walk') {
       const nx = n.x + n.walkDx * n.speed;
       const ny = n.y + n.walkDy * n.speed;
-      const wr = (n.spawner && n.spawner.wanderRadius) || 256;
+      // wanderRadius 0 = STATIONARY (ambush mimics): any step exceeds 0 from home
+      // and is rejected, so the enemy holds its spawn until a player aggros it.
+      // Use != null (not ||) so 0 is honored; absent => the 256px roam default.
+      const wr = n.spawner && n.spawner.wanderRadius != null ? n.spawner.wanderRadius : 256;
       const stop =
         blocked(nx - COL_W / 2, ny + COL_OY, COL_W, COL_H) ||
         hitsPlayer(nx - COL_W / 2, ny + COL_OY, COL_W, COL_H, players) ||

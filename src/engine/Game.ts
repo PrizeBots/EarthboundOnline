@@ -118,6 +118,7 @@ import {
   openAtmMenu,
   applyDadReport,
 } from './MenuManager';
+import { renderXpBar } from './XpBar';
 import {
   initDialogue,
   openDialogue,
@@ -1860,7 +1861,10 @@ export class Game {
       isChatTyping() ||
       this.transitioning ||
       !!this.editor?.isActive();
-    if (!hudBlocked) renderHotbarOverlay(this.ctx);
+    if (!hudBlocked) {
+      renderHotbarOverlay(this.ctx);
+      renderXpBar(this.ctx); // top-middle progress to next level
+    }
 
     // Draw menu on top of game world (including during transitions)
     renderMenu(this.ctx);

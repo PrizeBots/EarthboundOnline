@@ -51,7 +51,7 @@ const DEFS = {
     element: 'paralysis',
     durationMs: 550,
     immuneMs: 1500,
-    text: 'became numb!',
+    text: 'Stunned!',
   },
   [STATUS.DIAMOND]: {
     blocksAction: true,
