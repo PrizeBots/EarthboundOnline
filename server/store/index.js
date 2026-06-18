@@ -68,8 +68,16 @@ const { MAX_CHARACTERS, DuplicateUsernameError, SlotsFullError } = require('./er
  */
 function createStore(opts = {}) {
   if (opts.filename) return new SqliteStore(opts.filename);
-  const url =
-    opts.connectionString || process.env.DATABASE_URL || process.env.SUPABASE_DB_URL || '';
+  // Strip ALL whitespace: a connection URI never contains any, but pasting one
+  // into a dashboard env field can wrap it with a stray newline (seen in prod —
+  // a line break landed mid-hostname and DNS failed). Removing whitespace makes
+  // the value robust to that. (Passwords with spaces must be %-encoded anyway.)
+  const url = (
+    opts.connectionString ||
+    process.env.DATABASE_URL ||
+    process.env.SUPABASE_DB_URL ||
+    ''
+  ).replace(/\s/g, '');
   if (url) {
     console.log('[store] using Supabase/Postgres backend');
     return new SupabaseStore({ connectionString: url });
