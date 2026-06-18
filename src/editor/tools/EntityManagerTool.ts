@@ -13,7 +13,7 @@ import {
   EntityStats,
   EntityDefs,
   EntityCol,
-  entityStatsFor,
+  DEFAULT_ENTITY_STATS,
   CombatPersonality,
   COMBAT_PERSONALITY_OPTIONS,
 } from '../../engine/EntityStats';
@@ -134,6 +134,10 @@ class EntityManagerTool implements EditorTool {
   private search = '';
   private enemyIds = new Set<number>(); // ROM enemy catalog (auto-categorize)
   private bossIds = new Set<number>();
+  // Canon ROM stats per sprite (hp/xp/level/damage) from enemies.json bySprite —
+  // the baseline the runtime applies UNDER authored overrides. Shown in the stat
+  // form so editing a real EB enemy starts from its canon values, not defaults.
+  private catalogStats: Record<string, Partial<EntityStats>> = {};
   private folderTiles = new Map<string, HTMLDivElement>();
   private toolbarEl: HTMLDivElement | null = null;
   private breadcrumbEl: HTMLDivElement | null = null;
@@ -221,16 +225,28 @@ class EntityManagerTool implements EditorTool {
       '/assets/sprites/colboxes.json'
     ).catch(() => ({}));
 
-    // ROM enemy catalog — drives auto-categorization (which sprites are enemies/bosses).
-    const cat = await loadJSON<{ bySprite?: Record<string, { boss?: boolean }> }>(
-      '/assets/map/enemies.json'
-    ).catch(() => null);
+    // ROM enemy catalog — drives auto-categorization (enemies/bosses) AND supplies
+    // the canon stat baseline (hp/xp/level/damage) the runtime applies under
+    // overrides, so the editor shows real EB values instead of generic defaults.
+    const cat = await loadJSON<{
+      bySprite?: Record<
+        string,
+        { boss?: boolean; hp?: number; xp?: number; level?: number; damage?: number }
+      >;
+    }>('/assets/map/enemies.json').catch(() => null);
     this.enemyIds.clear();
     this.bossIds.clear();
+    this.catalogStats = {};
     for (const [k, v] of Object.entries(cat?.bySprite ?? {})) {
       const idn = Number(k);
       this.enemyIds.add(idn);
       if (v?.boss) this.bossIds.add(idn);
+      const cs: Partial<EntityStats> = {};
+      if (typeof v?.hp === 'number') cs.hp = v.hp;
+      if (typeof v?.xp === 'number') cs.xp = v.xp;
+      if (typeof v?.level === 'number') cs.level = v.level;
+      if (typeof v?.damage === 'number') cs.damage = v.damage;
+      this.catalogStats[k] = cs;
     }
 
     // Folder layout (our authored desktop). First run: seed the base folders and
@@ -266,15 +282,27 @@ class EntityManagerTool implements EditorTool {
     return cfg;
   }
 
+  /** Stats shown/edited for a sprite: DEFAULT < canon ROM catalog < authored
+   *  overrides — the SAME precedence npcSim/NPCManager apply at runtime, so the
+   *  editor reflects what actually spawns (canon hp/xp/level/damage for real EB
+   *  enemies) instead of bare defaults. */
+  private statsFor(sprite: number): EntityStats {
+    return {
+      ...DEFAULT_ENTITY_STATS,
+      ...this.catalogStats[String(sprite)],
+      ...this.entities[String(sprite)],
+    };
+  }
+
   private setStat(sprite: number, key: keyof EntityStats, val: number): void {
-    const cur = entityStatsFor(this.entities, sprite);
+    const cur = this.statsFor(sprite);
     this.entities[String(sprite)] = { ...cur, [key]: val };
     this.shell?.markDirty('entities');
   }
 
   // Set (or clear, with '') the townsfolk combat personality for a sprite group.
   private setCombat(sprite: number, val: CombatPersonality | ''): void {
-    const next: EntityStats = { ...entityStatsFor(this.entities, sprite) };
+    const next: EntityStats = { ...this.statsFor(sprite) };
     if (val) next.combat = val;
     else delete next.combat;
     this.entities[String(sprite)] = next;
@@ -285,7 +313,7 @@ class EntityManagerTool implements EditorTool {
   // actor that roams, hunts foes (enemies + PKers), and plows them with one
   // heavy collide-attack (server tickVehicle). Stored on the per-entity stats.
   private setVehicle(sprite: number, on: boolean): void {
-    const next: EntityStats = { ...entityStatsFor(this.entities, sprite) };
+    const next: EntityStats = { ...this.statsFor(sprite) };
     if (on) next.vehicle = true;
     else delete next.vehicle;
     this.entities[String(sprite)] = next;
@@ -956,7 +984,7 @@ class EntityManagerTool implements EditorTool {
     this.headerEl.textContent = `${getSpriteName(this.sprite) ?? `#${this.sprite}`}  ·  entity #${this.sprite}`;
     if (this.nameInput) this.nameInput.value = getSpriteName(this.sprite) ?? '';
 
-    const stats = entityStatsFor(this.entities, this.sprite);
+    const stats = this.statsFor(this.sprite);
     for (const f of STAT_FIELDS) {
       const shown = f.scale ? stats[f.key] / f.scale : stats[f.key];
       const i = this.mkInput(this.formEl, f.key, f.label, (v) => {
@@ -1042,7 +1070,7 @@ class EntityManagerTool implements EditorTool {
 
   /** Set (or clear, with null) the manual box override for a sprite group. */
   private setCol(sprite: number, col: EntityCol | null): void {
-    const cur = entityStatsFor(this.entities, sprite);
+    const cur = this.statsFor(sprite);
     const next: EntityStats = { ...cur };
     if (col) next.col = col;
     else delete next.col;

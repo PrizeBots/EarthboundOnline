@@ -59,28 +59,37 @@ describe('public/overrides/enemy_spawns.json', () => {
     expect(result.success).toBe(true);
   });
 
-  // Sprite groups with a spawner but no authored entity stats yet — they run on
-  // DEFAULT_ENTITY_STATS until someone gives them real HP/level/etc. in the Entity
-  // Manager (which writes enemy_spawns.json `entities`). Authoring stats for one =
-  // remove it from here. The bulk below are editor-placed spawners pending stats.
-  const KNOWN_UNMAPPED = new Set([
-    101, 107, 195, 274, 276, 277, 278, 279, 280, 285, 286, 287, 288, 289, 290, 292, 294, 296, 297,
-    298, 300, 301, 302, 303, 304, 305, 306, 307, 308, 309, 311, 312, 313, 314, 315, 316, 318, 319,
-    320, 322, 323, 324, 325, 326, 327, 328, 329, 331, 332, 364, 386, 387, 388, 389, 390, 391, 392,
-    413, 415, 416, 417, 444, 461,
-  ]);
+  // Sprite groups with a spawner but NO stats anywhere — no canon entry in the ROM
+  // enemy catalog AND no authored override. They fall back to DEFAULT_ENTITY_STATS.
+  // 107 is an overworld sprite with no EarthBound enemy mapped to it. Map one to a
+  // real enemy (or author stats in the Entity Manager) = remove it from here.
+  const KNOWN_UNMAPPED = new Set([107]);
 
-  it('no spawner references an UNEXPECTED sprite that lacks entity stats', () => {
+  // Canon ROM stats live in the enemy catalog (enemies.json `bySprite`), keyed by
+  // overworld sprite id. The runtime applies them UNDER any override
+  // (DEFAULT < catalog < entities), so a catalog sprite is fully statted without an
+  // `entities` entry. Read defensively — the asset file may be absent in a build
+  // that doesn't commit public/assets.
+  const catalogSprites = (() => {
+    try {
+      const cat = readJson('public/assets/map/enemies.json') as {
+        bySprite?: Record<string, unknown>;
+      };
+      return new Set(Object.keys(cat.bySprite ?? {}).map(Number));
+    } catch {
+      return new Set<number>();
+    }
+  })();
+
+  it('every spawner sprite has stats (catalog or authored), else is whitelisted', () => {
     const parsed = EnemySpawnsSchema.parse(data);
-    const defined = new Set(Object.keys(parsed.entities).map(Number));
-    const missing = [
-      ...new Set(parsed.spawners.map((s) => s.sprite).filter((spr) => !defined.has(spr))),
-    ].filter((spr) => !KNOWN_UNMAPPED.has(spr));
-    // Fallback to defaults is legal, but an *unexpected* missing sprite usually
-    // means the stats were forgotten — that's the regression this guards.
+    const statted = new Set([...Object.keys(parsed.entities).map(Number), ...catalogSprites]);
+    const missing = [...new Set(parsed.spawners.map((s) => s.sprite))].filter(
+      (spr) => !statted.has(spr) && !KNOWN_UNMAPPED.has(spr)
+    );
     expect(
       missing,
-      `spawner sprites with no entity stats (not whitelisted): ${missing}`
+      `spawner sprites with no stats anywhere (catalog/entities/whitelist): ${missing}`
     ).toHaveLength(0);
   });
 });
