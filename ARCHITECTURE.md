@@ -430,31 +430,32 @@ The server's authoritative sim (`npcSim`) needs ROM-derived world data —
 `sectors.json`, `tiles.json`, `tileset_mapping.json`, per-tileset
 `collisions.json`, `npcs.json`, `enemies.json`, `enemy_spawns.json`,
 `doors.json`, `car_traffic.json`, `colboxes.json`, `gifts.json` — and the client
-(until in-browser ROM extraction lands) fetches all of `/assets/*` over HTTP. But
-that data is **never committed** (ROM-distribution policy, CLAUDE.md). So in
-production it lives on a **Render persistent disk** mounted over the in-repo
-`public/assets` path (`render.yaml`):
+(until in-browser ROM extraction lands) fetches all of `/assets/*` over HTTP.
 
-- Mounting at `<root>/public/assets` keeps the server's overrides resolution
-  intact (`assetsDir/../overrides` → the _committed_ `public/overrides`).
-- `server/index.js` reads the sim data from there AND serves it to the client at
-  `/assets` (`express.static(assetsDir)`).
-- **Resilience:** a fresh disk is empty. `npcSim` (and shops/gifts) degrade
-  instead of crashing — a missing core file makes `createNpcSim` return a
-  RELAY-ONLY stub (no NPCs/enemies/collision; multiplayer join/move/chat still
-  works). So the service boots green before the disk is populated.
+**Testing phase (now): assets are force-committed to git.** `public/assets` is
+gitignored but force-added (`git add -f`), so the deploy is self-contained — the
+vite build copies `public/` into `dist/` and `server/index.js` serves it (plus an
+explicit `/assets` static for the in-repo path the server reads). `rom_sources/`
+(the dev-only Source Assets browser) stays out. This intentionally relaxes the
+ROM-no-commit policy while private-testing (no public users yet).
 
-**Populate the disk once** (it starts empty) via Render SSH from your machine —
-your local `public/assets` is the source of truth:
+**At launch: stop committing, scrub history, switch to a disk.** Move the data to
+a **Render persistent disk** mounted over `public/assets` (a `disk:` block in
+`render.yaml` at `/opt/render/project/src/public/assets` — that path keeps the
+server's overrides resolution intact, `assetsDir/../overrides` → committed
+`public/overrides`). Populate it once via SSH (your local `public/assets` is the
+source of truth), then `git rm -r --cached public/assets` so it's no longer
+shipped in the bundle:
 
 ```
 rsync -avz --delete --exclude rom_sources/ \
   ./public/assets/ <srv-id>@ssh.<region>.render.com:/opt/render/project/src/public/assets/
 ```
 
-(`rom_sources/` is the dev-only Source Assets browser — skip it in prod.) Re-run
-after re-extracting from the ROM. The disk persists across deploys, so this is a
-one-time step until the data changes.
+**Resilience (both phases):** if the world data is absent, `npcSim` (and
+shops/gifts) degrade instead of crashing — a missing core file makes
+`createNpcSim` return a RELAY-ONLY stub (no NPCs/enemies/collision; multiplayer
+join/move/chat still works), so the service always boots green.
 `server/gameHost.test.js` (`npm test`) drives the class with fake sockets and
 asserts both the broadcast contract (join/move/chat/leave) and the
 server-authoritative economy rules (equip/use_item/buy/sell, incl. refusing to

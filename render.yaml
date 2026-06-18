@@ -7,13 +7,11 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-    # ROM-derived game data (sprites/atlases/map/collision/…) is NEVER committed
-    # to git (ROM-distribution policy, CLAUDE.md). It lives on this persistent
-    # disk, mounted over the in-repo public/assets path so the server reads it and
-    # Express serves it to the client (server/index.js). Populate it ONCE via SSH
-    # (see ARCHITECTURE.md "Production data"); until then the server runs
-    # relay-only (multiplayer works, no NPC/enemy/collision sim).
-    disk:
-      name: game-assets
-      mountPath: /opt/render/project/src/public/assets
-      sizeGB: 1
+    # TESTING PHASE: ROM-derived game data is force-committed to git (public/
+    # assets) so the deploy is self-contained — the vite build copies it into
+    # dist/ and the server reads it directly. This intentionally relaxes the
+    # ROM-no-commit policy while we're private-testing (no public users yet).
+    # AT LAUNCH: stop committing assets, scrub them from git history, and serve
+    # them from a persistent disk instead (a `disk:` block here mounted at
+    # /opt/render/project/src/public/assets) — see ARCHITECTURE.md "Production
+    # data". The server already degrades to relay-only if the data is absent.

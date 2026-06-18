@@ -1,0 +1,994 @@
+{
+  "version": 1,
+  "_note": "ROM-derived PSI catalog (names/tiers/learn-levels/PP/target). Effect + animation are authored on our side (psi_anim.json / overrides).",
+  "abilities": [
+    {
+      "id": "brainshock_alpha",
+      "name": "Brainshock",
+      "displayName": "Brainshock α",
+      "strength": "alpha",
+      "type": [
+        "assist"
+      ],
+      "pp": 10,
+      "target": "one",
+      "direction": "enemy",
+      "learn": {
+        "ness": 0,
+        "paula": 0,
+        "poo": 24
+      },
+      "usableOutside": "unusable",
+      "actionId": 58
+    },
+    {
+      "id": "brainshock_omega",
+      "name": "Brainshock",
+      "displayName": "Brainshock Ω",
+      "strength": "omega",
+      "type": [
+        "assist"
+      ],
+      "pp": 30,
+      "target": "all",
+      "direction": "enemy",
+      "learn": {
+        "ness": 0,
+        "paula": 0,
+        "poo": 44
+      },
+      "usableOutside": "unusable",
+      "actionId": 59
+    },
+    {
+      "id": "defense_down_alpha",
+      "name": "Defense down",
+      "displayName": "Defense down α",
+      "strength": "alpha",
+      "type": [
+        "assist"
+      ],
+      "pp": 6,
+      "target": "one",
+      "direction": "enemy",
+      "learn": {
+        "ness": 0,
+        "paula": 29,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 50
+    },
+    {
+      "id": "defense_down_omega",
+      "name": "Defense down",
+      "displayName": "Defense down Ω",
+      "strength": "omega",
+      "type": [
+        "assist"
+      ],
+      "pp": 18,
+      "target": "all",
+      "direction": "enemy",
+      "learn": {
+        "ness": 0,
+        "paula": 54,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 51
+    },
+    {
+      "id": "healing_alpha",
+      "name": "Healing",
+      "displayName": "Healing α",
+      "strength": "alpha",
+      "type": [
+        "recovery"
+      ],
+      "pp": 5,
+      "target": "one",
+      "direction": "party",
+      "learn": {
+        "ness": 10,
+        "paula": 0,
+        "poo": 1
+      },
+      "usableOutside": "usable",
+      "actionId": 36
+    },
+    {
+      "id": "healing_beta",
+      "name": "Healing",
+      "displayName": "Healing β",
+      "strength": "beta",
+      "type": [
+        "recovery"
+      ],
+      "pp": 8,
+      "target": "one",
+      "direction": "party",
+      "learn": {
+        "ness": 24,
+        "paula": 0,
+        "poo": 1
+      },
+      "usableOutside": "usable",
+      "actionId": 37
+    },
+    {
+      "id": "healing_gamma",
+      "name": "Healing",
+      "displayName": "Healing γ",
+      "strength": "gamma",
+      "type": [
+        "recovery"
+      ],
+      "pp": 20,
+      "target": "one",
+      "direction": "party",
+      "learn": {
+        "ness": 53,
+        "paula": 0,
+        "poo": 36
+      },
+      "usableOutside": "usable",
+      "actionId": 38
+    },
+    {
+      "id": "healing_omega",
+      "name": "Healing",
+      "displayName": "Healing Ω",
+      "strength": "omega",
+      "type": [
+        "recovery"
+      ],
+      "pp": 38,
+      "target": "one",
+      "direction": "party",
+      "learn": {
+        "ness": 0,
+        "paula": 0,
+        "poo": 52
+      },
+      "usableOutside": "usable",
+      "actionId": 39
+    },
+    {
+      "id": "hypnosis_alpha",
+      "name": "Hypnosis",
+      "displayName": "Hypnosis α",
+      "strength": "alpha",
+      "type": [
+        "assist"
+      ],
+      "pp": 6,
+      "target": "one",
+      "direction": "enemy",
+      "learn": {
+        "ness": 4,
+        "paula": 0,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 52
+    },
+    {
+      "id": "hypnosis_omega",
+      "name": "Hypnosis",
+      "displayName": "Hypnosis Ω",
+      "strength": "omega",
+      "type": [
+        "assist"
+      ],
+      "pp": 18,
+      "target": "all",
+      "direction": "enemy",
+      "learn": {
+        "ness": 27,
+        "paula": 0,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 53
+    },
+    {
+      "id": "lifeup_alpha",
+      "name": "Lifeup",
+      "displayName": "Lifeup α",
+      "strength": "alpha",
+      "type": [
+        "recovery"
+      ],
+      "pp": 5,
+      "target": "one",
+      "direction": "party",
+      "learn": {
+        "ness": 2,
+        "paula": 0,
+        "poo": 1
+      },
+      "usableOutside": "usable",
+      "actionId": 32
+    },
+    {
+      "id": "lifeup_beta",
+      "name": "Lifeup",
+      "displayName": "Lifeup β",
+      "strength": "beta",
+      "type": [
+        "recovery"
+      ],
+      "pp": 8,
+      "target": "one",
+      "direction": "party",
+      "learn": {
+        "ness": 20,
+        "paula": 0,
+        "poo": 1
+      },
+      "usableOutside": "usable",
+      "actionId": 33
+    },
+    {
+      "id": "lifeup_gamma",
+      "name": "Lifeup",
+      "displayName": "Lifeup γ",
+      "strength": "gamma",
+      "type": [
+        "recovery"
+      ],
+      "pp": 13,
+      "target": "one",
+      "direction": "party",
+      "learn": {
+        "ness": 39,
+        "paula": 0,
+        "poo": 46
+      },
+      "usableOutside": "usable",
+      "actionId": 34
+    },
+    {
+      "id": "lifeup_omega",
+      "name": "Lifeup",
+      "displayName": "Lifeup Ω",
+      "strength": "omega",
+      "type": [
+        "recovery"
+      ],
+      "pp": 24,
+      "target": "all",
+      "direction": "party",
+      "learn": {
+        "ness": 70,
+        "paula": 0,
+        "poo": 0
+      },
+      "usableOutside": "usable",
+      "actionId": 35
+    },
+    {
+      "id": "offense_up_alpha",
+      "name": "Offense up",
+      "displayName": "Offense up α",
+      "strength": "alpha",
+      "type": [
+        "assist"
+      ],
+      "pp": 10,
+      "target": "one",
+      "direction": "party",
+      "learn": {
+        "ness": 0,
+        "paula": 21,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 48
+    },
+    {
+      "id": "offense_up_omega",
+      "name": "Offense up",
+      "displayName": "Offense up Ω",
+      "strength": "omega",
+      "type": [
+        "assist"
+      ],
+      "pp": 30,
+      "target": "all",
+      "direction": "party",
+      "learn": {
+        "ness": 0,
+        "paula": 40,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 49
+    },
+    {
+      "id": "psi_fire_alpha",
+      "name": "PSI Fire",
+      "displayName": "PSI Fire α",
+      "strength": "alpha",
+      "type": [
+        "offense"
+      ],
+      "pp": 6,
+      "target": "row",
+      "direction": "enemy",
+      "learn": {
+        "ness": 0,
+        "paula": 3,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 14
+    },
+    {
+      "id": "psi_fire_beta",
+      "name": "PSI Fire",
+      "displayName": "PSI Fire β",
+      "strength": "beta",
+      "type": [
+        "offense"
+      ],
+      "pp": 12,
+      "target": "row",
+      "direction": "enemy",
+      "learn": {
+        "ness": 0,
+        "paula": 19,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 15
+    },
+    {
+      "id": "psi_fire_gamma",
+      "name": "PSI Fire",
+      "displayName": "PSI Fire γ",
+      "strength": "gamma",
+      "type": [
+        "offense"
+      ],
+      "pp": 20,
+      "target": "row",
+      "direction": "enemy",
+      "learn": {
+        "ness": 0,
+        "paula": 37,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 16
+    },
+    {
+      "id": "psi_fire_omega",
+      "name": "PSI Fire",
+      "displayName": "PSI Fire Ω",
+      "strength": "omega",
+      "type": [
+        "offense"
+      ],
+      "pp": 42,
+      "target": "row",
+      "direction": "enemy",
+      "learn": {
+        "ness": 0,
+        "paula": 64,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 17
+    },
+    {
+      "id": "psi_flash_alpha",
+      "name": "PSI Flash",
+      "displayName": "PSI Flash α",
+      "strength": "alpha",
+      "type": [
+        "offense"
+      ],
+      "pp": 8,
+      "target": "all",
+      "direction": "enemy",
+      "learn": {
+        "ness": 18,
+        "paula": 0,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 26
+    },
+    {
+      "id": "psi_flash_beta",
+      "name": "PSI Flash",
+      "displayName": "PSI Flash β",
+      "strength": "beta",
+      "type": [
+        "offense"
+      ],
+      "pp": 16,
+      "target": "all",
+      "direction": "enemy",
+      "learn": {
+        "ness": 38,
+        "paula": 0,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 27
+    },
+    {
+      "id": "psi_flash_gamma",
+      "name": "PSI Flash",
+      "displayName": "PSI Flash γ",
+      "strength": "gamma",
+      "type": [
+        "offense"
+      ],
+      "pp": 24,
+      "target": "all",
+      "direction": "enemy",
+      "learn": {
+        "ness": 61,
+        "paula": 0,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 28
+    },
+    {
+      "id": "psi_flash_omega",
+      "name": "PSI Flash",
+      "displayName": "PSI Flash Ω",
+      "strength": "omega",
+      "type": [
+        "offense"
+      ],
+      "pp": 32,
+      "target": "all",
+      "direction": "enemy",
+      "learn": {
+        "ness": 67,
+        "paula": 0,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 29
+    },
+    {
+      "id": "psi_freeze_alpha",
+      "name": "PSI Freeze",
+      "displayName": "PSI Freeze α",
+      "strength": "alpha",
+      "type": [
+        "offense"
+      ],
+      "pp": 4,
+      "target": "one",
+      "direction": "enemy",
+      "learn": {
+        "ness": 0,
+        "paula": 1,
+        "poo": 1
+      },
+      "usableOutside": "unusable",
+      "actionId": 18
+    },
+    {
+      "id": "psi_freeze_beta",
+      "name": "PSI Freeze",
+      "displayName": "PSI Freeze β",
+      "strength": "beta",
+      "type": [
+        "offense"
+      ],
+      "pp": 9,
+      "target": "one",
+      "direction": "enemy",
+      "learn": {
+        "ness": 0,
+        "paula": 11,
+        "poo": 1
+      },
+      "usableOutside": "unusable",
+      "actionId": 19
+    },
+    {
+      "id": "psi_freeze_gamma",
+      "name": "PSI Freeze",
+      "displayName": "PSI Freeze γ",
+      "strength": "gamma",
+      "type": [
+        "offense"
+      ],
+      "pp": 18,
+      "target": "one",
+      "direction": "enemy",
+      "learn": {
+        "ness": 0,
+        "paula": 31,
+        "poo": 33
+      },
+      "usableOutside": "unusable",
+      "actionId": 20
+    },
+    {
+      "id": "psi_freeze_omega",
+      "name": "PSI Freeze",
+      "displayName": "PSI Freeze Ω",
+      "strength": "omega",
+      "type": [
+        "offense"
+      ],
+      "pp": 28,
+      "target": "one",
+      "direction": "enemy",
+      "learn": {
+        "ness": 0,
+        "paula": 46,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 21
+    },
+    {
+      "id": "psi_magnet_alpha",
+      "name": "PSI Magnet",
+      "displayName": "PSI Magnet α",
+      "strength": "alpha",
+      "type": [
+        "recovery"
+      ],
+      "pp": 0,
+      "target": "one",
+      "direction": "enemy",
+      "learn": {
+        "ness": 0,
+        "paula": 15,
+        "poo": 21
+      },
+      "usableOutside": "unusable",
+      "actionId": 54
+    },
+    {
+      "id": "psi_magnet_omega",
+      "name": "PSI Magnet",
+      "displayName": "PSI Magnet Ω",
+      "strength": "omega",
+      "type": [
+        "recovery"
+      ],
+      "pp": 0,
+      "target": "all",
+      "direction": "enemy",
+      "learn": {
+        "ness": 0,
+        "paula": 24,
+        "poo": 27
+      },
+      "usableOutside": "unusable",
+      "actionId": 55
+    },
+    {
+      "id": "psi_shield_alpha",
+      "name": "PSI Shield",
+      "displayName": "PSI Shield α",
+      "strength": "alpha",
+      "type": [
+        "assist"
+      ],
+      "pp": 8,
+      "target": "one",
+      "direction": "party",
+      "learn": {
+        "ness": 0,
+        "paula": 6,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 44
+    },
+    {
+      "id": "psi_shield_beta",
+      "name": "PSI Shield",
+      "displayName": "PSI Shield β",
+      "strength": "beta",
+      "type": [
+        "assist"
+      ],
+      "pp": 14,
+      "target": "one",
+      "direction": "party",
+      "learn": {
+        "ness": 0,
+        "paula": 51,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 45
+    },
+    {
+      "id": "psi_shield_omega",
+      "name": "PSI Shield",
+      "displayName": "PSI Shield Ω",
+      "strength": "omega",
+      "type": [
+        "assist"
+      ],
+      "pp": 42,
+      "target": "all",
+      "direction": "party",
+      "learn": {
+        "ness": 0,
+        "paula": 60,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 47
+    },
+    {
+      "id": "psi_shield_sigma",
+      "name": "PSI Shield",
+      "displayName": "PSI Shield",
+      "strength": "sigma",
+      "type": [
+        "assist"
+      ],
+      "pp": 24,
+      "target": "all",
+      "direction": "party",
+      "learn": {
+        "ness": 0,
+        "paula": 27,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 46
+    },
+    {
+      "id": "psi_starstorm_alpha",
+      "name": "PSI Starstorm",
+      "displayName": "PSI Starstorm α",
+      "strength": "alpha",
+      "type": [
+        "offense"
+      ],
+      "pp": 24,
+      "target": "all",
+      "direction": "enemy",
+      "learn": {
+        "ness": 0,
+        "paula": 0,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 30
+    },
+    {
+      "id": "psi_starstorm_omega",
+      "name": "PSI Starstorm",
+      "displayName": "PSI Starstorm Ω",
+      "strength": "omega",
+      "type": [
+        "offense"
+      ],
+      "pp": 42,
+      "target": "all",
+      "direction": "enemy",
+      "learn": {
+        "ness": 0,
+        "paula": 0,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 31
+    },
+    {
+      "id": "psi_thunder_alpha",
+      "name": "PSI Thunder",
+      "displayName": "PSI Thunder α",
+      "strength": "alpha",
+      "type": [
+        "offense"
+      ],
+      "pp": 3,
+      "target": "all",
+      "direction": "enemy",
+      "learn": {
+        "ness": 0,
+        "paula": 8,
+        "poo": 1
+      },
+      "usableOutside": "unusable",
+      "actionId": 22
+    },
+    {
+      "id": "psi_thunder_beta",
+      "name": "PSI Thunder",
+      "displayName": "PSI Thunder β",
+      "strength": "beta",
+      "type": [
+        "offense"
+      ],
+      "pp": 7,
+      "target": "all",
+      "direction": "enemy",
+      "learn": {
+        "ness": 0,
+        "paula": 25,
+        "poo": 1
+      },
+      "usableOutside": "unusable",
+      "actionId": 23
+    },
+    {
+      "id": "psi_thunder_gamma",
+      "name": "PSI Thunder",
+      "displayName": "PSI Thunder γ",
+      "strength": "gamma",
+      "type": [
+        "offense"
+      ],
+      "pp": 16,
+      "target": "all",
+      "direction": "enemy",
+      "learn": {
+        "ness": 0,
+        "paula": 57,
+        "poo": 41
+      },
+      "usableOutside": "unusable",
+      "actionId": 24
+    },
+    {
+      "id": "psi_thunder_omega",
+      "name": "PSI Thunder",
+      "displayName": "PSI Thunder Ω",
+      "strength": "omega",
+      "type": [
+        "offense"
+      ],
+      "pp": 20,
+      "target": "all",
+      "direction": "enemy",
+      "learn": {
+        "ness": 0,
+        "paula": 0,
+        "poo": 55
+      },
+      "usableOutside": "unusable",
+      "actionId": 25
+    },
+    {
+      "id": "psi_alpha",
+      "name": "PSI(????)",
+      "displayName": "PSI(????) α",
+      "strength": "alpha",
+      "type": [
+        "offense"
+      ],
+      "pp": 10,
+      "target": "all",
+      "direction": "enemy",
+      "learn": {
+        "ness": 8,
+        "paula": 0,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 10
+    },
+    {
+      "id": "psi_beta",
+      "name": "PSI(????)",
+      "displayName": "PSI(????) β",
+      "strength": "beta",
+      "type": [
+        "offense"
+      ],
+      "pp": 14,
+      "target": "all",
+      "direction": "enemy",
+      "learn": {
+        "ness": 22,
+        "paula": 0,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 11
+    },
+    {
+      "id": "psi_gamma",
+      "name": "PSI(????)",
+      "displayName": "PSI(????) γ",
+      "strength": "gamma",
+      "type": [
+        "offense"
+      ],
+      "pp": 40,
+      "target": "all",
+      "direction": "enemy",
+      "learn": {
+        "ness": 49,
+        "paula": 0,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 12
+    },
+    {
+      "id": "psi_omega",
+      "name": "PSI(????)",
+      "displayName": "PSI(????) Ω",
+      "strength": "omega",
+      "type": [
+        "offense"
+      ],
+      "pp": 98,
+      "target": "all",
+      "direction": "enemy",
+      "learn": {
+        "ness": 75,
+        "paula": 0,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 13
+    },
+    {
+      "id": "paralysis_alpha",
+      "name": "Paralysis",
+      "displayName": "Paralysis α",
+      "strength": "alpha",
+      "type": [
+        "assist"
+      ],
+      "pp": 8,
+      "target": "one",
+      "direction": "enemy",
+      "learn": {
+        "ness": 14,
+        "paula": 0,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 56
+    },
+    {
+      "id": "paralysis_omega",
+      "name": "Paralysis",
+      "displayName": "Paralysis Ω",
+      "strength": "omega",
+      "type": [
+        "assist"
+      ],
+      "pp": 24,
+      "target": "all",
+      "direction": "enemy",
+      "learn": {
+        "ness": 29,
+        "paula": 0,
+        "poo": 0
+      },
+      "usableOutside": "unusable",
+      "actionId": 57
+    },
+    {
+      "id": "shield_alpha",
+      "name": "Shield",
+      "displayName": "Shield α",
+      "strength": "alpha",
+      "type": [
+        "assist"
+      ],
+      "pp": 6,
+      "target": "one",
+      "direction": "party",
+      "learn": {
+        "ness": 12,
+        "paula": 0,
+        "poo": 14
+      },
+      "usableOutside": "unusable",
+      "actionId": 40
+    },
+    {
+      "id": "shield_beta",
+      "name": "Shield",
+      "displayName": "Shield β",
+      "strength": "beta",
+      "type": [
+        "assist"
+      ],
+      "pp": 10,
+      "target": "one",
+      "direction": "party",
+      "learn": {
+        "ness": 34,
+        "paula": 0,
+        "poo": 16
+      },
+      "usableOutside": "unusable",
+      "actionId": 41
+    },
+    {
+      "id": "shield_omega",
+      "name": "Shield",
+      "displayName": "Shield Ω",
+      "strength": "omega",
+      "type": [
+        "assist"
+      ],
+      "pp": 30,
+      "target": "all",
+      "direction": "party",
+      "learn": {
+        "ness": 0,
+        "paula": 0,
+        "poo": 51
+      },
+      "usableOutside": "unusable",
+      "actionId": 43
+    },
+    {
+      "id": "shield_sigma",
+      "name": "Shield",
+      "displayName": "Shield",
+      "strength": "sigma",
+      "type": [
+        "assist"
+      ],
+      "pp": 18,
+      "target": "all",
+      "direction": "party",
+      "learn": {
+        "ness": 0,
+        "paula": 0,
+        "poo": 15
+      },
+      "usableOutside": "unusable",
+      "actionId": 42
+    },
+    {
+      "id": "teleport_alpha",
+      "name": "Teleport",
+      "displayName": "Teleport α",
+      "strength": "alpha",
+      "type": [
+        "other"
+      ],
+      "pp": 2,
+      "target": "all",
+      "direction": "party",
+      "learn": {
+        "ness": 0,
+        "paula": 0,
+        "poo": 17
+      },
+      "usableOutside": "other",
+      "actionId": 60
+    },
+    {
+      "id": "teleport_beta",
+      "name": "Teleport",
+      "displayName": "Teleport β",
+      "strength": "beta",
+      "type": [
+        "other"
+      ],
+      "pp": 8,
+      "target": "all",
+      "direction": "party",
+      "learn": {
+        "ness": 0,
+        "paula": 0,
+        "poo": 18
+      },
+      "usableOutside": "other",
+      "actionId": 61
+    }
+  ]
+}

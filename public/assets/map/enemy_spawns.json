@@ -1,0 +1,98 @@
+{
+  "_comment": "OUR OWN content (NOT ROM-derived) — safe to commit. Defines which sprite groups are hostile and the enemy spawners. Each spawner owns a fixed pool of enemy slots, appended after the extracted NPCs on BOTH client and server so wire ids stay aligned. Slots start inactive (hp 0 = hidden); the server activates them at the spawn point over time only while a player is within ACTIVE_RADIUS, they roam within wanderRadius of the spawn point, and on death they return to the pool to be re-activated. Anchors sit on Onett's connected outdoor street network (verified via tools/plan_shark_spawns.mjs flood fill) so roamers can actually reach the roads. Sprite 284 = Sharks gang. Changing this file needs a dev-server restart (npcSim reads it once at startup) and a client refresh.",
+  "enemySpriteGroups": [284],
+  "spawners": [
+    {
+      "name": "onett-arcade-sharks",
+      "_note": "The game building (arcade). Its door is at (1592,1684) but doorway tiles are solid (you can't stand on them) and the doorstep is collision-sealed from the road, so sharks spawn at the closest standable street cell in front of the door — verified via tools/plan_shark_spawns.mjs. Wide roam so the Sharks spill out of the arcade and run wild all over town.",
+      "sprite": 284,
+      "x": 1640,
+      "y": 1708,
+      "wanderRadius": 1400,
+      "poolSize": 12,
+      "maxActive": 7,
+      "spawnIntervalMs": 3000,
+      "respawnDelayMs": 8000,
+      "hp": 24,
+      "level": 4
+    },
+    {
+      "name": "onett-north-sharks",
+      "sprite": 284,
+      "x": 1424,
+      "y": 304,
+      "wanderRadius": 600,
+      "poolSize": 6,
+      "maxActive": 4,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "hp": 24,
+      "level": 4
+    },
+    {
+      "name": "onett-northeast-sharks",
+      "sprite": 284,
+      "x": 2784,
+      "y": 192,
+      "wanderRadius": 600,
+      "poolSize": 6,
+      "maxActive": 4,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "hp": 24,
+      "level": 4
+    },
+    {
+      "name": "onett-central-sharks",
+      "sprite": 284,
+      "x": 2144,
+      "y": 896,
+      "wanderRadius": 650,
+      "poolSize": 6,
+      "maxActive": 4,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "hp": 24,
+      "level": 4
+    },
+    {
+      "name": "onett-east-sharks",
+      "sprite": 284,
+      "x": 2848,
+      "y": 1504,
+      "wanderRadius": 600,
+      "poolSize": 6,
+      "maxActive": 4,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "hp": 24,
+      "level": 4
+    },
+    {
+      "name": "onett-west-sharks",
+      "sprite": 284,
+      "x": 304,
+      "y": 1872,
+      "wanderRadius": 600,
+      "poolSize": 6,
+      "maxActive": 4,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "hp": 24,
+      "level": 4
+    },
+    {
+      "name": "onett-south-sharks",
+      "sprite": 284,
+      "x": 1200,
+      "y": 3200,
+      "wanderRadius": 700,
+      "poolSize": 6,
+      "maxActive": 4,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "hp": 24,
+      "level": 4
+    }
+  ]
+}

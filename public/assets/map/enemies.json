@@ -1,0 +1,2822 @@
+{
+  "version": 1,
+  "_note": "ROM-derived enemy catalog (defaults). Merged UNDER enemy_spawns.json overrides.",
+  "bySprite": {
+    "101": {
+      "name": "Insane Cultist",
+      "configId": 1,
+      "hp": 94,
+      "xp": 353,
+      "level": 13,
+      "money": 33,
+      "damage": 19,
+      "offense": 19,
+      "defense": 25,
+      "romSpeed": 8,
+      "boss": true,
+      "vuln": {
+        "fire": 70,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 98,
+        "itemName": "PSI caramel",
+        "rate": 0.007812,
+        "raw": "1/128"
+      }
+    },
+    "306": {
+      "name": "Spinning Robo",
+      "configId": 51,
+      "hp": 113,
+      "xp": 297,
+      "level": 14,
+      "money": 21,
+      "damage": 21,
+      "offense": 21,
+      "defense": 22,
+      "romSpeed": 7,
+      "boss": false,
+      "vuln": {
+        "fire": 5,
+        "freeze": 100,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 250,
+        "itemName": "Meteornium",
+        "rate": 0.015625,
+        "raw": "2/128"
+      }
+    },
+    "280": {
+      "name": "Armored Frog",
+      "configId": 3,
+      "hp": 202,
+      "xp": 1566,
+      "level": 22,
+      "money": 77,
+      "damage": 37,
+      "offense": 37,
+      "defense": 108,
+      "romSpeed": 7,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 7,
+        "itemName": "Broken spray can",
+        "rate": 0.125,
+        "raw": "16/128"
+      }
+    },
+    "311": {
+      "name": "Bad Buffalo",
+      "configId": 4,
+      "hp": 341,
+      "xp": 4108,
+      "level": 34,
+      "money": 172,
+      "damage": 60,
+      "offense": 64,
+      "defense": 104,
+      "romSpeed": 11,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 100,
+        "hypnosis": 10
+      },
+      "drop": {
+        "item": 127,
+        "itemName": "Wet towel",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "316": {
+      "name": "Attack Slug",
+      "configId": 111,
+      "hp": 30,
+      "xp": 27,
+      "level": 5,
+      "money": 6,
+      "damage": 9,
+      "offense": 9,
+      "defense": 2,
+      "romSpeed": 1,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 70,
+        "paralysis": 100,
+        "hypnosis": 0
+      },
+      "drop": {
+        "item": 147,
+        "itemName": "Bomb",
+        "rate": 0.007812,
+        "raw": "1/128"
+      }
+    },
+    "291": {
+      "name": "Ramblin' Evil Mushroom",
+      "configId": 7,
+      "hp": 60,
+      "xp": 95,
+      "level": 7,
+      "money": 15,
+      "damage": 15,
+      "offense": 15,
+      "defense": 10,
+      "romSpeed": 5,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 0
+      },
+      "drop": {
+        "item": 118,
+        "itemName": "Ketchup packet",
+        "rate": 0.0625,
+        "raw": "8/128"
+      }
+    },
+    "317": {
+      "name": "Mobile Sprout",
+      "configId": 9,
+      "hp": 79,
+      "xp": 133,
+      "level": 10,
+      "money": 13,
+      "damage": 17,
+      "offense": 17,
+      "defense": 12,
+      "romSpeed": 6,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 70,
+        "paralysis": 100,
+        "hypnosis": 0
+      },
+      "drop": {
+        "item": 102,
+        "itemName": "Croissant",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "279": {
+      "name": "Enraged Fire Plug",
+      "configId": 11,
+      "hp": 309,
+      "xp": 4321,
+      "level": 32,
+      "money": 346,
+      "damage": 60,
+      "offense": 60,
+      "defense": 81,
+      "romSpeed": 14,
+      "boss": false,
+      "vuln": {
+        "fire": 5,
+        "freeze": 100,
+        "flash": 5,
+        "paralysis": 50,
+        "hypnosis": 0
+      },
+      "drop": {
+        "item": 159,
+        "itemName": "Sudden guts pill",
+        "rate": 0.007812,
+        "raw": "1/128"
+      }
+    },
+    "195": {
+      "name": "Worthless Protoplasm",
+      "configId": 139,
+      "hp": 38,
+      "xp": 17,
+      "level": 7,
+      "money": 11,
+      "damage": 11,
+      "offense": 11,
+      "defense": 21,
+      "romSpeed": 27,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 70,
+        "paralysis": 100,
+        "hypnosis": 0
+      },
+      "drop": {
+        "item": 88,
+        "itemName": "Cookie",
+        "rate": 0.25,
+        "raw": "32/128"
+      }
+    },
+    "325": {
+      "name": "Guardian Hieroglyph",
+      "configId": 15,
+      "hp": 470,
+      "xp": 13064,
+      "level": 48,
+      "money": 470,
+      "damage": 60,
+      "offense": 94,
+      "defense": 106,
+      "romSpeed": 20,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 40,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 100
+      },
+      "drop": {
+        "item": 156,
+        "itemName": "Pharaoh's curse",
+        "rate": 0.0625,
+        "raw": "8/128"
+      }
+    },
+    "320": {
+      "name": "Lethal Asp Hieroglyph",
+      "configId": 16,
+      "hp": 458,
+      "xp": 11321,
+      "level": 46,
+      "money": 625,
+      "damage": 60,
+      "offense": 89,
+      "defense": 94,
+      "romSpeed": 21,
+      "boss": false,
+      "vuln": {
+        "fire": 40,
+        "freeze": 100,
+        "flash": 70,
+        "paralysis": 100,
+        "hypnosis": 100
+      },
+      "drop": {
+        "item": 156,
+        "itemName": "Pharaoh's curse",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "276": {
+      "name": "Electro Swoosh",
+      "configId": 17,
+      "hp": 543,
+      "xp": 17075,
+      "level": 62,
+      "money": 791,
+      "damage": 60,
+      "offense": 140,
+      "defense": 156,
+      "romSpeed": 40,
+      "boss": false,
+      "vuln": {
+        "fire": 40,
+        "freeze": 70,
+        "flash": 100,
+        "paralysis": 50,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 159,
+        "itemName": "Sudden guts pill",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "324": {
+      "name": "Thunder Mite",
+      "configId": 31,
+      "hp": 293,
+      "xp": 10798,
+      "level": 43,
+      "money": 430,
+      "damage": 60,
+      "offense": 85,
+      "defense": 83,
+      "romSpeed": 20,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 5,
+        "paralysis": 50,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 110,
+        "itemName": "Bottle of water",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "293": {
+      "name": "Evil Mani-Mani",
+      "configId": 137,
+      "hp": 860,
+      "xp": 28139,
+      "level": 45,
+      "money": 1852,
+      "damage": 60,
+      "offense": 86,
+      "defense": 145,
+      "romSpeed": 15,
+      "boss": true,
+      "vuln": {
+        "fire": 70,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 0,
+        "hypnosis": 50
+      }
+    },
+    "391": {
+      "name": "Annoying Old Party Man",
+      "configId": 22,
+      "hp": 99,
+      "xp": 130,
+      "level": 13,
+      "money": 32,
+      "damage": 20,
+      "offense": 20,
+      "defense": 25,
+      "romSpeed": 6,
+      "boss": false,
+      "vuln": {
+        "fire": 70,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 108,
+        "itemName": "Protein drink",
+        "rate": 0.015625,
+        "raw": "2/128"
+      }
+    },
+    "388": {
+      "name": "Unassuming Local Guy",
+      "configId": 24,
+      "hp": 73,
+      "xp": 146,
+      "level": 9,
+      "money": 19,
+      "damage": 18,
+      "offense": 18,
+      "defense": 13,
+      "romSpeed": 5,
+      "boss": false,
+      "vuln": {
+        "fire": 70,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 154,
+        "itemName": "Toothbrush",
+        "rate": 0.125,
+        "raw": "16/128"
+      }
+    },
+    "389": {
+      "name": "New Age Retro Hippie",
+      "configId": 25,
+      "hp": 87,
+      "xp": 160,
+      "level": 11,
+      "money": 23,
+      "damage": 19,
+      "offense": 19,
+      "defense": 14,
+      "romSpeed": 5,
+      "boss": false,
+      "vuln": {
+        "fire": 70,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 140,
+        "itemName": "Ruler",
+        "rate": 0.0625,
+        "raw": "8/128"
+      }
+    },
+    "159": {
+      "name": "Mr. Carpainter",
+      "configId": 26,
+      "hp": 262,
+      "xp": 1412,
+      "level": 21,
+      "money": 195,
+      "damage": 33,
+      "offense": 33,
+      "defense": 45,
+      "romSpeed": 8,
+      "boss": true,
+      "vuln": {
+        "fire": 70,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 50
+      }
+    },
+    "333": {
+      "name": "Titanic Ant",
+      "configId": 37,
+      "hp": 235,
+      "xp": 685,
+      "level": 13,
+      "money": 150,
+      "damage": 19,
+      "offense": 19,
+      "defense": 23,
+      "romSpeed": 6,
+      "boss": true,
+      "vuln": {
+        "fire": 40,
+        "freeze": 40,
+        "flash": 40,
+        "paralysis": 50,
+        "hypnosis": 50
+      }
+    },
+    "331": {
+      "name": "Mighty Bear",
+      "configId": 28,
+      "hp": 167,
+      "xp": 609,
+      "level": 16,
+      "money": 49,
+      "damage": 29,
+      "offense": 29,
+      "defense": 31,
+      "romSpeed": 7,
+      "boss": false,
+      "vuln": {
+        "fire": 70,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 10,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 2,
+        "itemName": "Teddy bear",
+        "rate": 0.015625,
+        "raw": "2/128"
+      }
+    },
+    "285": {
+      "name": "Smelly Ghost",
+      "configId": 108,
+      "hp": 194,
+      "xp": 606,
+      "level": 21,
+      "money": 71,
+      "damage": 35,
+      "offense": 35,
+      "defense": 89,
+      "romSpeed": 10,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 40,
+        "flash": 100,
+        "paralysis": 100,
+        "hypnosis": 100
+      },
+      "drop": {
+        "item": 9,
+        "itemName": "Broken iron",
+        "rate": 0.0625,
+        "raw": "8/128"
+      }
+    },
+    "392": {
+      "name": "Cranky Lady",
+      "configId": 32,
+      "hp": 95,
+      "xp": 200,
+      "level": 8,
+      "money": 17,
+      "damage": 16,
+      "offense": 16,
+      "defense": 18,
+      "romSpeed": 6,
+      "boss": false,
+      "vuln": {
+        "fire": 70,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 155,
+        "itemName": "Handbag strap",
+        "rate": 0.015625,
+        "raw": "2/128"
+      }
+    },
+    "298": {
+      "name": "Wetnosaur",
+      "configId": 35,
+      "hp": 1030,
+      "xp": 33098,
+      "level": 59,
+      "money": 745,
+      "damage": 60,
+      "offense": 126,
+      "defense": 172,
+      "romSpeed": 17,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 10,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 245,
+        "itemName": "Luxury jerky",
+        "rate": 0.015625,
+        "raw": "2/128"
+      }
+    },
+    "312": {
+      "name": "Chomposaur",
+      "configId": 36,
+      "hp": 1288,
+      "xp": 44378,
+      "level": 62,
+      "money": 896,
+      "damage": 60,
+      "offense": 139,
+      "defense": 183,
+      "romSpeed": 17,
+      "boss": false,
+      "vuln": {
+        "fire": 5,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 10,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 33,
+        "itemName": "Magic fry pan",
+        "rate": 0.007812,
+        "raw": "1/128"
+      }
+    },
+    "313": {
+      "name": "Gigantic Ant",
+      "configId": 38,
+      "hp": 308,
+      "xp": 3980,
+      "level": 30,
+      "money": 304,
+      "damage": 54,
+      "offense": 54,
+      "defense": 112,
+      "romSpeed": 17,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 233,
+        "itemName": "Double burger",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "315": {
+      "name": "Slimy Little Pile",
+      "configId": 45,
+      "hp": 224,
+      "xp": 1978,
+      "level": 24,
+      "money": 124,
+      "damage": 42,
+      "offense": 42,
+      "defense": 61,
+      "romSpeed": 15,
+      "boss": true,
+      "vuln": {
+        "fire": 70,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 100,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 147,
+        "itemName": "Bomb",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "314": {
+      "name": "Violent Roach",
+      "configId": 59,
+      "hp": 209,
+      "xp": 1757,
+      "level": 18,
+      "money": 80,
+      "damage": 30,
+      "offense": 30,
+      "defense": 26,
+      "romSpeed": 35,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 70,
+        "paralysis": 100,
+        "hypnosis": 0
+      },
+      "drop": {
+        "item": 129,
+        "itemName": "Secret herb",
+        "rate": 0.007812,
+        "raw": "1/128"
+      }
+    },
+    "295": {
+      "name": "Kraken",
+      "configId": 49,
+      "hp": 1097,
+      "xp": 79267,
+      "level": 54,
+      "money": 3049,
+      "damage": 60,
+      "offense": 105,
+      "defense": 166,
+      "romSpeed": 21,
+      "boss": true,
+      "vuln": {
+        "fire": 40,
+        "freeze": 40,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 10
+      }
+    },
+    "386": {
+      "name": "Cop",
+      "configId": 54,
+      "hp": 75,
+      "xp": 86,
+      "level": 7,
+      "money": 18,
+      "damage": 15,
+      "offense": 15,
+      "defense": 18,
+      "romSpeed": 5,
+      "boss": true,
+      "vuln": {
+        "fire": 70,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 90,
+        "itemName": "Hamburger",
+        "rate": 0.125,
+        "raw": "16/128"
+      }
+    },
+    "283": {
+      "name": "Coil Snake",
+      "configId": 55,
+      "hp": 18,
+      "xp": 1,
+      "level": 1,
+      "money": 4,
+      "damage": 3,
+      "offense": 3,
+      "defense": 4,
+      "romSpeed": 2,
+      "boss": false,
+      "vuln": {
+        "fire": 70,
+        "freeze": 100,
+        "flash": 70,
+        "paralysis": 100,
+        "hypnosis": 100
+      },
+      "drop": {
+        "item": 88,
+        "itemName": "Cookie",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "274": {
+      "name": "Mr. Batty",
+      "configId": 57,
+      "hp": 86,
+      "xp": 304,
+      "level": 15,
+      "money": 30,
+      "damage": 25,
+      "offense": 25,
+      "defense": 5,
+      "romSpeed": 29,
+      "boss": false,
+      "vuln": {
+        "fire": 70,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 100,
+        "hypnosis": 0
+      },
+      "drop": {
+        "item": 123,
+        "itemName": "Jar of hot sauce",
+        "rate": 0.015625,
+        "raw": "2/128"
+      }
+    },
+    "309": {
+      "name": "Crazed Sign",
+      "configId": 61,
+      "hp": 295,
+      "xp": 3618,
+      "level": 34,
+      "money": 244,
+      "damage": 60,
+      "offense": 64,
+      "defense": 96,
+      "romSpeed": 17,
+      "boss": false,
+      "vuln": {
+        "fire": 40,
+        "freeze": 70,
+        "flash": 5,
+        "paralysis": 50,
+        "hypnosis": 100
+      },
+      "drop": {
+        "item": 145,
+        "itemName": "Big bottle rocket",
+        "rate": 0.015625,
+        "raw": "2/128"
+      }
+    },
+    "284": {
+      "name": "Skate Punk",
+      "configId": 64,
+      "hp": 31,
+      "xp": 12,
+      "level": 3,
+      "money": 17,
+      "damage": 7,
+      "offense": 7,
+      "defense": 8,
+      "romSpeed": 5,
+      "boss": false,
+      "vuln": {
+        "fire": 70,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 95,
+        "itemName": "Pizza",
+        "rate": 0.007812,
+        "raw": "1/128"
+      }
+    },
+    "319": {
+      "name": "Skelpion",
+      "configId": 65,
+      "hp": 137,
+      "xp": 1823,
+      "level": 24,
+      "money": 140,
+      "damage": 41,
+      "offense": 41,
+      "defense": 23,
+      "romSpeed": 37,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 100
+      },
+      "drop": {
+        "item": 112,
+        "itemName": "Vial of serum",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "303": {
+      "name": "Starman Junior",
+      "configId": 214,
+      "hp": 200,
+      "xp": 16,
+      "level": 6,
+      "money": 20,
+      "damage": 11,
+      "offense": 11,
+      "defense": 10,
+      "romSpeed": 1,
+      "boss": true,
+      "vuln": {
+        "fire": 5,
+        "freeze": 5,
+        "flash": 5,
+        "paralysis": 0,
+        "hypnosis": 10
+      }
+    },
+    "302": {
+      "name": "Smilin' Sphere",
+      "configId": 70,
+      "hp": 233,
+      "xp": 2218,
+      "level": 27,
+      "money": 191,
+      "damage": 50,
+      "offense": 50,
+      "defense": 65,
+      "romSpeed": 17,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 5,
+        "flash": 5,
+        "paralysis": 50,
+        "hypnosis": 100
+      },
+      "drop": {
+        "item": 250,
+        "itemName": "Meteornium",
+        "rate": 0.007812,
+        "raw": "1/128"
+      }
+    },
+    "322": {
+      "name": "Petrified Royal Guard",
+      "configId": 72,
+      "hp": 573,
+      "xp": 19163,
+      "level": 53,
+      "money": 628,
+      "damage": 60,
+      "offense": 106,
+      "defense": 173,
+      "romSpeed": 12,
+      "boss": false,
+      "vuln": {
+        "fire": 70,
+        "freeze": 40,
+        "flash": 70,
+        "paralysis": 100,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 159,
+        "itemName": "Sudden guts pill",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "308": {
+      "name": "Urban Zombie",
+      "configId": 76,
+      "hp": 171,
+      "xp": 700,
+      "level": 19,
+      "money": 58,
+      "damage": 31,
+      "offense": 31,
+      "defense": 24,
+      "romSpeed": 10,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 5,
+        "flash": 100,
+        "paralysis": 50,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 90,
+        "itemName": "Hamburger",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "305": {
+      "name": "Zombie Possessor",
+      "configId": 77,
+      "hp": 176,
+      "xp": 950,
+      "level": 17,
+      "money": 81,
+      "damage": 28,
+      "offense": 28,
+      "defense": 19,
+      "romSpeed": 30,
+      "boss": false,
+      "vuln": {
+        "fire": 5,
+        "freeze": 100,
+        "flash": 100,
+        "paralysis": 50,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 129,
+        "itemName": "Secret herb",
+        "rate": 0.015625,
+        "raw": "2/128"
+      }
+    },
+    "364": {
+      "name": "Zombie Dog",
+      "configId": 78,
+      "hp": 210,
+      "xp": 1354,
+      "level": 22,
+      "money": 54,
+      "damage": 39,
+      "offense": 39,
+      "defense": 51,
+      "romSpeed": 30,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 100,
+        "paralysis": 50,
+        "hypnosis": 100
+      },
+      "drop": {
+        "item": 144,
+        "itemName": "Bottle rocket",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "387": {
+      "name": "Crooked Cop",
+      "configId": 79,
+      "hp": 140,
+      "xp": 492,
+      "level": 13,
+      "money": 159,
+      "damage": 20,
+      "offense": 20,
+      "defense": 24,
+      "romSpeed": 15,
+      "boss": true,
+      "vuln": {
+        "fire": 70,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 91,
+        "itemName": "Boiled egg",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "297": {
+      "name": "Territorial Oak",
+      "configId": 81,
+      "hp": 145,
+      "xp": 356,
+      "level": 15,
+      "money": 29,
+      "damage": 26,
+      "offense": 26,
+      "defense": 30,
+      "romSpeed": 5,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 40,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 98,
+        "itemName": "PSI caramel",
+        "rate": 0.007812,
+        "raw": "1/128"
+      }
+    },
+    "287": {
+      "name": "Mad Duck",
+      "configId": 88,
+      "hp": 51,
+      "xp": 41,
+      "level": 8,
+      "money": 12,
+      "damage": 12,
+      "offense": 12,
+      "defense": 24,
+      "romSpeed": 30,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 10
+      },
+      "drop": {
+        "item": 92,
+        "itemName": "Fresh Egg",
+        "rate": 0.0625,
+        "raw": "8/128"
+      }
+    },
+    "326": {
+      "name": "Dali's Clock",
+      "configId": 89,
+      "hp": 296,
+      "xp": 2503,
+      "level": 34,
+      "money": 314,
+      "damage": 60,
+      "offense": 65,
+      "defense": 66,
+      "romSpeed": 4,
+      "boss": false,
+      "vuln": {
+        "fire": 70,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 0,
+        "hypnosis": 100
+      },
+      "drop": {
+        "item": 98,
+        "itemName": "PSI caramel",
+        "rate": 0.007812,
+        "raw": "1/128"
+      }
+    },
+    "330": {
+      "name": "Runaway Dog",
+      "configId": 121,
+      "hp": 21,
+      "xp": 4,
+      "level": 2,
+      "money": 3,
+      "damage": 4,
+      "offense": 4,
+      "defense": 5,
+      "romSpeed": 26,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 100,
+        "paralysis": 100,
+        "hypnosis": 100
+      },
+      "drop": {
+        "item": 103,
+        "itemName": "Bread roll",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "328": {
+      "name": "Master Belch",
+      "configId": 93,
+      "hp": 650,
+      "xp": 12509,
+      "level": 27,
+      "money": 664,
+      "damage": 50,
+      "offense": 50,
+      "defense": 88,
+      "romSpeed": 16,
+      "boss": true,
+      "vuln": {
+        "fire": 70,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 10,
+        "hypnosis": 100
+      }
+    },
+    "277": {
+      "name": "Mr. Molecule",
+      "configId": 138,
+      "hp": 280,
+      "xp": 8708,
+      "level": 56,
+      "money": 659,
+      "damage": 60,
+      "offense": 118,
+      "defense": 97,
+      "romSpeed": 18,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 40,
+        "paralysis": 100,
+        "hypnosis": 0
+      },
+      "drop": {
+        "item": 207,
+        "itemName": "Magic tart",
+        "rate": 0.015625,
+        "raw": "2/128"
+      }
+    },
+    "278": {
+      "name": "Foppy",
+      "configId": 98,
+      "hp": 120,
+      "xp": 1311,
+      "level": 16,
+      "money": 93,
+      "damage": 29,
+      "offense": 29,
+      "defense": 9,
+      "romSpeed": 1,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 70,
+        "paralysis": 100,
+        "hypnosis": 0
+      },
+      "drop": {
+        "item": 98,
+        "itemName": "PSI caramel",
+        "rate": 0.015625,
+        "raw": "2/128"
+      }
+    },
+    "301": {
+      "name": "Zap Eel",
+      "configId": 100,
+      "hp": 370,
+      "xp": 12170,
+      "level": 48,
+      "money": 611,
+      "damage": 60,
+      "offense": 97,
+      "defense": 93,
+      "romSpeed": 29,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 10
+      },
+      "drop": {
+        "item": 98,
+        "itemName": "PSI caramel",
+        "rate": 0.015625,
+        "raw": "2/128"
+      }
+    },
+    "296": {
+      "name": "Crested Booka",
+      "configId": 104,
+      "hp": 265,
+      "xp": 3011,
+      "level": 28,
+      "money": 130,
+      "damage": 53,
+      "offense": 53,
+      "defense": 73,
+      "romSpeed": 17,
+      "boss": false,
+      "vuln": {
+        "fire": 5,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 10,
+        "hypnosis": 100
+      },
+      "drop": {
+        "item": 93,
+        "itemName": "Picnic lunch",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "157": {
+      "name": "Everdred",
+      "configId": 110,
+      "hp": 182,
+      "xp": 986,
+      "level": 15,
+      "money": 171,
+      "damage": 25,
+      "offense": 25,
+      "defense": 35,
+      "romSpeed": 6,
+      "boss": true,
+      "vuln": {
+        "fire": 70,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 50
+      }
+    },
+    "416": {
+      "name": "Rowdy Mouse",
+      "configId": 113,
+      "hp": 36,
+      "xp": 34,
+      "level": 6,
+      "money": 9,
+      "damage": 7,
+      "offense": 7,
+      "defense": 20,
+      "romSpeed": 5,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 10
+      },
+      "drop": {
+        "item": 103,
+        "itemName": "Bread roll",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "286": {
+      "name": "Handsome Tom",
+      "configId": 117,
+      "hp": 133,
+      "xp": 520,
+      "level": 16,
+      "money": 45,
+      "damage": 27,
+      "offense": 27,
+      "defense": 25,
+      "romSpeed": 11,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 40,
+        "flash": 100,
+        "paralysis": 50,
+        "hypnosis": 0
+      },
+      "drop": {
+        "item": 120,
+        "itemName": "Tin of Cocoa",
+        "rate": 0.0625,
+        "raw": "8/128"
+      }
+    },
+    "288": {
+      "name": "Manly Fish",
+      "configId": 119,
+      "hp": 500,
+      "xp": 15826,
+      "level": 42,
+      "money": 624,
+      "damage": 60,
+      "offense": 83,
+      "defense": 114,
+      "romSpeed": 22,
+      "boss": false,
+      "vuln": {
+        "fire": 5,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 10
+      },
+      "drop": {
+        "item": 242,
+        "itemName": "Beef jerky",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "444": {
+      "name": "Trick or Trick Kid",
+      "configId": 122,
+      "hp": 142,
+      "xp": 570,
+      "level": 18,
+      "money": 47,
+      "damage": 30,
+      "offense": 30,
+      "defense": 37,
+      "romSpeed": 7,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 100,
+        "paralysis": 50,
+        "hypnosis": 100
+      },
+      "drop": {
+        "item": 147,
+        "itemName": "Bomb",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "329": {
+      "name": "Cave Boy",
+      "configId": 123,
+      "hp": 314,
+      "xp": 618,
+      "level": 11,
+      "money": 17,
+      "damage": 21,
+      "offense": 21,
+      "defense": 33,
+      "romSpeed": 79,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 5,
+        "flash": 70,
+        "paralysis": 0,
+        "hypnosis": 10
+      },
+      "drop": {
+        "item": 233,
+        "itemName": "Double burger",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "300": {
+      "name": "Abstract Art",
+      "configId": 124,
+      "hp": 301,
+      "xp": 4361,
+      "level": 35,
+      "money": 255,
+      "damage": 60,
+      "offense": 67,
+      "defense": 79,
+      "romSpeed": 19,
+      "boss": false,
+      "vuln": {
+        "fire": 70,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 100,
+        "hypnosis": 10
+      },
+      "drop": {
+        "item": 128,
+        "itemName": "Refreshing herb",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "307": {
+      "name": "Fierce Shattered Man",
+      "configId": 126,
+      "hp": 516,
+      "xp": 17423,
+      "level": 50,
+      "money": 577,
+      "damage": 60,
+      "offense": 101,
+      "defense": 116,
+      "romSpeed": 12,
+      "boss": false,
+      "vuln": {
+        "fire": 40,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 100,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 142,
+        "itemName": "Mummy wrap",
+        "rate": 0.5,
+        "raw": "64/128"
+      }
+    },
+    "327": {
+      "name": "Ego Orb",
+      "configId": 127,
+      "hp": 592,
+      "xp": 24180,
+      "level": 58,
+      "money": 836,
+      "damage": 60,
+      "offense": 125,
+      "defense": 140,
+      "romSpeed": 17,
+      "boss": false,
+      "vuln": {
+        "fire": 40,
+        "freeze": 100,
+        "flash": 40,
+        "paralysis": 0,
+        "hypnosis": 10
+      },
+      "drop": {
+        "item": 225,
+        "itemName": "Skip sandwich DX",
+        "rate": 0.0625,
+        "raw": "8/128"
+      }
+    },
+    "153": {
+      "name": "Frank",
+      "configId": 131,
+      "hp": 63,
+      "xp": 50,
+      "level": 6,
+      "money": 48,
+      "damage": 12,
+      "offense": 12,
+      "defense": 17,
+      "romSpeed": 7,
+      "boss": true,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 50
+      }
+    },
+    "304": {
+      "name": "Li'l UFO",
+      "configId": 150,
+      "hp": 82,
+      "xp": 223,
+      "level": 12,
+      "money": 14,
+      "damage": 18,
+      "offense": 18,
+      "defense": 17,
+      "romSpeed": 53,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 70,
+        "flash": 40,
+        "paralysis": 50,
+        "hypnosis": 0
+      },
+      "drop": {
+        "item": 224,
+        "itemName": "Skip sandwich",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "390": {
+      "name": "Tough Guy",
+      "configId": 135,
+      "hp": 342,
+      "xp": 9310,
+      "level": 37,
+      "money": 525,
+      "damage": 60,
+      "offense": 72,
+      "defense": 92,
+      "romSpeed": 18,
+      "boss": false,
+      "vuln": {
+        "fire": 70,
+        "freeze": 70,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 168,
+        "itemName": "Chick",
+        "rate": 0.25,
+        "raw": "32/128"
+      }
+    },
+    "289": {
+      "name": "Mad Taxi",
+      "configId": 136,
+      "hp": 253,
+      "xp": 2336,
+      "level": 28,
+      "money": 216,
+      "damage": 53,
+      "offense": 53,
+      "defense": 68,
+      "romSpeed": 38,
+      "boss": false,
+      "vuln": {
+        "fire": 40,
+        "freeze": 40,
+        "flash": 40,
+        "paralysis": 100,
+        "hypnosis": 10
+      },
+      "drop": {
+        "item": 137,
+        "itemName": "Xterminator spray",
+        "rate": 0.007812,
+        "raw": "1/128"
+      }
+    },
+    "310": {
+      "name": "Sentry Robot",
+      "configId": 140,
+      "hp": 372,
+      "xp": 5034,
+      "level": 39,
+      "money": 392,
+      "damage": 60,
+      "offense": 77,
+      "defense": 105,
+      "romSpeed": 17,
+      "boss": true,
+      "vuln": {
+        "fire": 40,
+        "freeze": 40,
+        "flash": 5,
+        "paralysis": 50,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 145,
+        "itemName": "Big bottle rocket",
+        "rate": 0.015625,
+        "raw": "2/128"
+      }
+    },
+    "44": {
+      "name": "Heavily Armed Pokey",
+      "configId": 141,
+      "hp": 1746,
+      "xp": 0,
+      "level": 72,
+      "money": 0,
+      "damage": 60,
+      "offense": 150,
+      "defense": 274,
+      "romSpeed": 51,
+      "boss": false,
+      "vuln": {
+        "fire": 40,
+        "freeze": 40,
+        "flash": 40,
+        "paralysis": 0,
+        "hypnosis": 50
+      }
+    },
+    "415": {
+      "name": "Mole Playing Rough",
+      "configId": 144,
+      "hp": 103,
+      "xp": 456,
+      "level": 14,
+      "money": 36,
+      "damage": 22,
+      "offense": 22,
+      "defense": 28,
+      "romSpeed": 9,
+      "boss": false,
+      "vuln": {
+        "fire": 70,
+        "freeze": 70,
+        "flash": 100,
+        "paralysis": 100,
+        "hypnosis": 10
+      },
+      "drop": {
+        "item": 102,
+        "itemName": "Croissant",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "294": {
+      "name": "Gruff Goat",
+      "configId": 145,
+      "hp": 45,
+      "xp": 20,
+      "level": 7,
+      "money": 9,
+      "damage": 8,
+      "offense": 8,
+      "defense": 23,
+      "romSpeed": 12,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 100
+      },
+      "drop": {
+        "item": 124,
+        "itemName": "Salt packet",
+        "rate": 0.125,
+        "raw": "16/128"
+      }
+    },
+    "275": {
+      "name": "Clumsy Robot",
+      "configId": 146,
+      "hp": 962,
+      "xp": 32378,
+      "level": 46,
+      "money": 2081,
+      "damage": 60,
+      "offense": 88,
+      "defense": 137,
+      "romSpeed": 83,
+      "boss": true,
+      "vuln": {
+        "fire": 40,
+        "freeze": 40,
+        "flash": 40,
+        "paralysis": 50,
+        "hypnosis": 10
+      }
+    },
+    "290": {
+      "name": "Demonic Petunia",
+      "configId": 148,
+      "hp": 478,
+      "xp": 15171,
+      "level": 50,
+      "money": 724,
+      "damage": 60,
+      "offense": 102,
+      "defense": 111,
+      "romSpeed": 26,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 5,
+        "flash": 70,
+        "paralysis": 0,
+        "hypnosis": 10
+      },
+      "drop": {
+        "item": 244,
+        "itemName": "Spicy jerky",
+        "rate": 0.015625,
+        "raw": "2/128"
+      }
+    },
+    "292": {
+      "name": "Ranboob",
+      "configId": 149,
+      "hp": 232,
+      "xp": 2486,
+      "level": 24,
+      "money": 158,
+      "damage": 41,
+      "offense": 41,
+      "defense": 63,
+      "romSpeed": 20,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 40,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 93,
+        "itemName": "Picnic lunch",
+        "rate": 0.015625,
+        "raw": "2/128"
+      }
+    },
+    "323": {
+      "name": "Noose Man",
+      "configId": 152,
+      "hp": 231,
+      "xp": 1990,
+      "level": 26,
+      "money": 220,
+      "damage": 47,
+      "offense": 47,
+      "defense": 52,
+      "romSpeed": 18,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 40,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 0
+      },
+      "drop": {
+        "item": 121,
+        "itemName": "Carton of cream",
+        "rate": 0.125,
+        "raw": "16/128"
+      }
+    },
+    "332": {
+      "name": "Plain Crocodile",
+      "configId": 154,
+      "hp": 234,
+      "xp": 1928,
+      "level": 24,
+      "money": 62,
+      "damage": 40,
+      "offense": 40,
+      "defense": 55,
+      "romSpeed": 10,
+      "boss": false,
+      "vuln": {
+        "fire": 40,
+        "freeze": 100,
+        "flash": 70,
+        "paralysis": 50,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 250,
+        "itemName": "Meteornium",
+        "rate": 0.007812,
+        "raw": "1/128"
+      }
+    },
+    "318": {
+      "name": "No Good Fly",
+      "configId": 157,
+      "hp": 100,
+      "xp": 415,
+      "level": 15,
+      "money": 26,
+      "damage": 23,
+      "offense": 23,
+      "defense": 13,
+      "romSpeed": 10,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 70,
+        "paralysis": 100,
+        "hypnosis": 0
+      },
+      "drop": {
+        "item": 91,
+        "itemName": "Boiled egg",
+        "rate": 0.03125,
+        "raw": "4/128"
+      }
+    },
+    "282": {
+      "name": "Spiteful Crow",
+      "configId": 159,
+      "hp": 24,
+      "xp": 3,
+      "level": 27,
+      "money": 5,
+      "damage": 5,
+      "offense": 5,
+      "defense": 3,
+      "romSpeed": 77,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 100,
+        "paralysis": 100,
+        "hypnosis": 50
+      },
+      "drop": {
+        "item": 88,
+        "itemName": "Cookie",
+        "rate": 1.0,
+        "raw": "128/128"
+      }
+    },
+    "417": {
+      "name": "Criminal Caterpillar",
+      "configId": 223,
+      "hp": 250,
+      "xp": 30384,
+      "level": 23,
+      "money": 0,
+      "damage": 37,
+      "offense": 37,
+      "defense": 16,
+      "romSpeed": 134,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 100,
+        "paralysis": 100,
+        "hypnosis": 100
+      }
+    },
+    "413": {
+      "name": "Magic Butterfly",
+      "configId": 225,
+      "hp": 16,
+      "xp": 1,
+      "level": 0,
+      "money": 0,
+      "damage": 2,
+      "offense": 2,
+      "defense": 2,
+      "romSpeed": 25,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 100,
+        "paralysis": 100,
+        "hypnosis": 100
+      }
+    },
+    "461": {
+      "name": "Master Criminal Worm",
+      "configId": 227,
+      "hp": 377,
+      "xp": 82570,
+      "level": 37,
+      "money": 0,
+      "damage": 60,
+      "offense": 73,
+      "defense": 40,
+      "romSpeed": 136,
+      "boss": false,
+      "vuln": {
+        "fire": 100,
+        "freeze": 100,
+        "flash": 100,
+        "paralysis": 100,
+        "hypnosis": 100
+      }
+    }
+  },
+  "spriteVariants": {
+    "101": [
+      {
+        "configId": 170,
+        "name": "Insane Cultist",
+        "level": 13,
+        "hp": 94
+      }
+    ],
+    "306": [
+      {
+        "configId": 52,
+        "name": "Whirling Robo",
+        "level": 39,
+        "hp": 374
+      },
+      {
+        "configId": 106,
+        "name": "Lesser Mook",
+        "level": 39,
+        "hp": 401
+      },
+      {
+        "configId": 62,
+        "name": "Wooly Shambler",
+        "level": 40,
+        "hp": 391
+      },
+      {
+        "configId": 2,
+        "name": "Dept. Store Spook",
+        "level": 42,
+        "hp": 610
+      },
+      {
+        "configId": 171,
+        "name": "Dept. Store Spook",
+        "level": 42,
+        "hp": 610
+      },
+      {
+        "configId": 84,
+        "name": "Marauder Octobot",
+        "level": 49,
+        "hp": 482
+      },
+      {
+        "configId": 107,
+        "name": "Mook Senior",
+        "level": 54,
+        "hp": 501
+      },
+      {
+        "configId": 53,
+        "name": "Hyper Spinning Robo",
+        "level": 56,
+        "hp": 553
+      },
+      {
+        "configId": 13,
+        "name": "Atomic Power Robot",
+        "level": 56,
+        "hp": 594
+      },
+      {
+        "configId": 85,
+        "name": "Military Octobot",
+        "level": 61,
+        "hp": 604
+      },
+      {
+        "configId": 224,
+        "name": "Evil Eye",
+        "level": 63,
+        "hp": 720
+      },
+      {
+        "configId": 14,
+        "name": "Nuclear Reactor Robot",
+        "level": 64,
+        "hp": 798
+      },
+      {
+        "configId": 63,
+        "name": "Wild 'n Wooly Shambler",
+        "level": 65,
+        "hp": 722
+      },
+      {
+        "configId": 74,
+        "name": "Starman Deluxe",
+        "level": 65,
+        "hp": 1400
+      },
+      {
+        "configId": 187,
+        "name": "Starman Deluxe",
+        "level": 65,
+        "hp": 1400
+      },
+      {
+        "configId": 86,
+        "name": "Mechanical Octobot",
+        "level": 66,
+        "hp": 768
+      },
+      {
+        "configId": 69,
+        "name": "Ghost of Starman",
+        "level": 68,
+        "hp": 750
+      },
+      {
+        "configId": 186,
+        "name": "Ghost of Starman",
+        "level": 68,
+        "hp": 750
+      },
+      {
+        "configId": 103,
+        "name": "Squatter Demon",
+        "level": 69,
+        "hp": 774
+      },
+      {
+        "configId": 198,
+        "name": "Squatter Demon",
+        "level": 69,
+        "hp": 774
+      },
+      {
+        "configId": 87,
+        "name": "Ultimate Octobot",
+        "level": 70,
+        "hp": 792
+      },
+      {
+        "configId": 50,
+        "name": "Bionic Kraken",
+        "level": 70,
+        "hp": 900
+      },
+      {
+        "configId": 183,
+        "name": "Bionic Kraken",
+        "level": 70,
+        "hp": 900
+      },
+      {
+        "configId": 75,
+        "name": "Final Starman",
+        "level": 71,
+        "hp": 840
+      },
+      {
+        "configId": 188,
+        "name": "Final Starman",
+        "level": 71,
+        "hp": 840
+      },
+      {
+        "configId": 34,
+        "name": "Giygas",
+        "level": 73,
+        "hp": 3600
+      }
+    ],
+    "316": [
+      {
+        "configId": 5,
+        "name": "Black Antoid",
+        "level": 7,
+        "hp": 34
+      },
+      {
+        "configId": 209,
+        "name": "Black Antoid",
+        "level": 7,
+        "hp": 34
+      },
+      {
+        "configId": 6,
+        "name": "Red Antoid",
+        "level": 20,
+        "hp": 112
+      },
+      {
+        "configId": 112,
+        "name": "Pit Bull Slug",
+        "level": 39,
+        "hp": 217
+      }
+    ],
+    "291": [
+      {
+        "configId": 210,
+        "name": "Struttin' Evil Mushroom",
+        "level": 7,
+        "hp": 60
+      },
+      {
+        "configId": 8,
+        "name": "Struttin' Evil Mushroom",
+        "level": 17,
+        "hp": 157
+      }
+    ],
+    "317": [
+      {
+        "configId": 10,
+        "name": "Tough Mobile Sprout",
+        "level": 21,
+        "hp": 179
+      }
+    ],
+    "279": [
+      {
+        "configId": 153,
+        "name": "Robo-pump",
+        "level": 36,
+        "hp": 431
+      },
+      {
+        "configId": 206,
+        "name": "Robo-pump",
+        "level": 36,
+        "hp": 431
+      },
+      {
+        "configId": 20,
+        "name": "Evil Elemental",
+        "level": 57,
+        "hp": 564
+      },
+      {
+        "configId": 142,
+        "name": "Psychic Psycho",
+        "level": 58,
+        "hp": 591
+      },
+      {
+        "configId": 147,
+        "name": "Soul Consuming Flame",
+        "level": 59,
+        "hp": 602
+      },
+      {
+        "configId": 143,
+        "name": "Major Psychic Psycho",
+        "level": 65,
+        "hp": 618
+      }
+    ],
+    "195": [
+      {
+        "configId": 43,
+        "name": "Scalding Coffee Cup",
+        "level": 30,
+        "hp": 190
+      },
+      {
+        "configId": 12,
+        "name": "Mystical Record",
+        "level": 33,
+        "hp": 263
+      },
+      {
+        "configId": 91,
+        "name": "Musica",
+        "level": 35,
+        "hp": 292
+      },
+      {
+        "configId": 44,
+        "name": "Loaded Dice",
+        "level": 59,
+        "hp": 307
+      },
+      {
+        "configId": 195,
+        "name": "Loaded Dice",
+        "level": 59,
+        "hp": 307
+      }
+    ],
+    "324": [
+      {
+        "configId": 96,
+        "name": "Kiss of Death",
+        "level": 46,
+        "hp": 333
+      },
+      {
+        "configId": 101,
+        "name": "Tangoo",
+        "level": 48,
+        "hp": 371
+      },
+      {
+        "configId": 196,
+        "name": "Tangoo",
+        "level": 48,
+        "hp": 371
+      },
+      {
+        "configId": 18,
+        "name": "Conducting Menace",
+        "level": 52,
+        "hp": 445
+      },
+      {
+        "configId": 19,
+        "name": "Conducting Spirit",
+        "level": 59,
+        "hp": 587
+      }
+    ],
+    "293": [
+      {
+        "configId": 203,
+        "name": "Evil Mani-Mani",
+        "level": 45,
+        "hp": 860
+      },
+      {
+        "configId": 21,
+        "name": "|'s Nightmare",
+        "level": 71,
+        "hp": 1654
+      },
+      {
+        "configId": 172,
+        "name": "|'s Nightmare",
+        "level": 71,
+        "hp": 1654
+      }
+    ],
+    "391": [
+      {
+        "configId": 23,
+        "name": "Annoying Reveler",
+        "level": 31,
+        "hp": 288
+      }
+    ],
+    "159": [
+      {
+        "configId": 173,
+        "name": "Mr. Carpainter",
+        "level": 21,
+        "hp": 262
+      }
+    ],
+    "333": [
+      {
+        "configId": 176,
+        "name": "Titanic Ant",
+        "level": 13,
+        "hp": 235
+      },
+      {
+        "configId": 41,
+        "name": "Mondo Mole",
+        "level": 23,
+        "hp": 498
+      },
+      {
+        "configId": 180,
+        "name": "Mondo Mole",
+        "level": 23,
+        "hp": 498
+      },
+      {
+        "configId": 90,
+        "name": "Trillionage Sprout",
+        "level": 29,
+        "hp": 1048
+      },
+      {
+        "configId": 191,
+        "name": "Trillionage Sprout",
+        "level": 29,
+        "hp": 1048
+      },
+      {
+        "configId": 42,
+        "name": "Guardian Digger",
+        "level": 32,
+        "hp": 386
+      },
+      {
+        "configId": 181,
+        "name": "Guardian Digger",
+        "level": 32,
+        "hp": 386
+      },
+      {
+        "configId": 40,
+        "name": "Plague Rat of Doom",
+        "level": 47,
+        "hp": 1827
+      },
+      {
+        "configId": 179,
+        "name": "Plague Rat of Doom",
+        "level": 47,
+        "hp": 1827
+      },
+      {
+        "configId": 39,
+        "name": "Shrooom!",
+        "level": 48,
+        "hp": 1700
+      },
+      {
+        "configId": 178,
+        "name": "Shrooom!",
+        "level": 48,
+        "hp": 1700
+      },
+      {
+        "configId": 128,
+        "name": "Thunder and Storm",
+        "level": 56,
+        "hp": 2065
+      },
+      {
+        "configId": 201,
+        "name": "Thunder and Storm",
+        "level": 56,
+        "hp": 2065
+      },
+      {
+        "configId": 116,
+        "name": "Electro Specter",
+        "level": 67,
+        "hp": 3092
+      },
+      {
+        "configId": 200,
+        "name": "Electro Specter",
+        "level": 67,
+        "hp": 3092
+      },
+      {
+        "configId": 27,
+        "name": "Carbon Dog",
+        "level": 70,
+        "hp": 1672
+      },
+      {
+        "configId": 174,
+        "name": "Carbon Dog",
+        "level": 70,
+        "hp": 1672
+      },
+      {
+        "configId": 83,
+        "name": "Diamond Dog",
+        "level": 70,
+        "hp": 3344
+      },
+      {
+        "configId": 190,
+        "name": "Diamond Dog",
+        "level": 70,
+        "hp": 3344
+      }
+    ],
+    "331": [
+      {
+        "configId": 29,
+        "name": "Mighty Bear Seven",
+        "level": 42,
+        "hp": 367
+      }
+    ],
+    "285": [
+      {
+        "configId": 30,
+        "name": "Putrid Moldyman",
+        "level": 21,
+        "hp": 203
+      },
+      {
+        "configId": 109,
+        "name": "Stinky Ghost",
+        "level": 46,
+        "hp": 444
+      }
+    ],
+    "392": [
+      {
+        "configId": 33,
+        "name": "Extra Cranky Lady",
+        "level": 27,
+        "hp": 277
+      }
+    ],
+    "298": [
+      {
+        "configId": 175,
+        "name": "Chomposaur",
+        "level": 62,
+        "hp": 1288
+      }
+    ],
+    "313": [
+      {
+        "configId": 177,
+        "name": "Gigantic Ant",
+        "level": 30,
+        "hp": 308
+      }
+    ],
+    "315": [
+      {
+        "configId": 226,
+        "name": "Mini Barf",
+        "level": 26,
+        "hp": 616
+      },
+      {
+        "configId": 46,
+        "name": "Even Slimier Little Pile",
+        "level": 49,
+        "hp": 326
+      }
+    ],
+    "314": [
+      {
+        "configId": 47,
+        "name": "Arachnid!",
+        "level": 32,
+        "hp": 216
+      },
+      {
+        "configId": 60,
+        "name": "Filthy Attack Roach",
+        "level": 42,
+        "hp": 399
+      },
+      {
+        "configId": 48,
+        "name": "Arachnid!!!",
+        "level": 45,
+        "hp": 344
+      }
+    ],
+    "295": [
+      {
+        "configId": 182,
+        "name": "Kraken",
+        "level": 54,
+        "hp": 1097
+      }
+    ],
+    "283": [
+      {
+        "configId": 56,
+        "name": "Thirsty Coil Snake",
+        "level": 28,
+        "hp": 270
+      }
+    ],
+    "274": [
+      {
+        "configId": 58,
+        "name": "Elder Batty",
+        "level": 35,
+        "hp": 294
+      }
+    ],
+    "284": [
+      {
+        "configId": 129,
+        "name": "Yes Man Junior",
+        "level": 4,
+        "hp": 33
+      },
+      {
+        "configId": 134,
+        "name": "Pogo Punk",
+        "level": 4,
+        "hp": 35
+      }
+    ],
+    "319": [
+      {
+        "configId": 66,
+        "name": "Dread Skelpion",
+        "level": 41,
+        "hp": 214
+      }
+    ],
+    "303": [
+      {
+        "configId": 67,
+        "name": "Starman",
+        "level": 55,
+        "hp": 545
+      },
+      {
+        "configId": 184,
+        "name": "Starman",
+        "level": 55,
+        "hp": 545
+      },
+      {
+        "configId": 68,
+        "name": "Starman Super",
+        "level": 56,
+        "hp": 568
+      },
+      {
+        "configId": 185,
+        "name": "Starman Super",
+        "level": 56,
+        "hp": 568
+      }
+    ],
+    "302": [
+      {
+        "configId": 71,
+        "name": "Uncontrollable Sphere",
+        "level": 56,
+        "hp": 577
+      }
+    ],
+    "322": [
+      {
+        "configId": 73,
+        "name": "Guardian General",
+        "level": 55,
+        "hp": 831
+      },
+      {
+        "configId": 208,
+        "name": "Guardian General",
+        "level": 55,
+        "hp": 831
+      }
+    ],
+    "308": [
+      {
+        "configId": 189,
+        "name": "Urban Zombie",
+        "level": 19,
+        "hp": 171
+      },
+      {
+        "configId": 222,
+        "name": "Farm Zombie",
+        "level": 19,
+        "hp": 171
+      }
+    ],
+    "387": [
+      {
+        "configId": 228,
+        "name": "Captain Strong",
+        "level": 13,
+        "hp": 140
+      },
+      {
+        "configId": 80,
+        "name": "Over Zealous Cop",
+        "level": 36,
+        "hp": 325
+      }
+    ],
+    "297": [
+      {
+        "configId": 82,
+        "name": "Hostile Elder Oak",
+        "level": 59,
+        "hp": 609
+      }
+    ],
+    "330": [
+      {
+        "configId": 92,
+        "name": "Desert Wolf",
+        "level": 30,
+        "hp": 247
+      },
+      {
+        "configId": 211,
+        "name": "Runaway Dog",
+        "level": 73,
+        "hp": 21
+      }
+    ],
+    "328": [
+      {
+        "configId": 169,
+        "name": "Master Belch",
+        "level": 27,
+        "hp": 650
+      },
+      {
+        "configId": 192,
+        "name": "Master Belch",
+        "level": 27,
+        "hp": 650
+      },
+      {
+        "configId": 94,
+        "name": "Big Pile of Puke",
+        "level": 57,
+        "hp": 631
+      },
+      {
+        "configId": 193,
+        "name": "Big Pile of Puke",
+        "level": 59,
+        "hp": 609
+      },
+      {
+        "configId": 95,
+        "name": "Master Barf",
+        "level": 60,
+        "hp": 1319
+      },
+      {
+        "configId": 194,
+        "name": "Master Barf",
+        "level": 60,
+        "hp": 1319
+      }
+    ],
+    "277": [
+      {
+        "configId": 115,
+        "name": "Care Free Bomb",
+        "level": 60,
+        "hp": 504
+      },
+      {
+        "configId": 97,
+        "name": "French Kiss of Death",
+        "level": 70,
+        "hp": 588
+      }
+    ],
+    "278": [
+      {
+        "configId": 207,
+        "name": "Foppy",
+        "level": 16,
+        "hp": 120
+      },
+      {
+        "configId": 99,
+        "name": "Fobby",
+        "level": 48,
+        "hp": 240
+      }
+    ],
+    "296": [
+      {
+        "configId": 105,
+        "name": "Great Crested Booka",
+        "level": 49,
+        "hp": 452
+      }
+    ],
+    "157": [
+      {
+        "configId": 199,
+        "name": "Everdred",
+        "level": 15,
+        "hp": 182
+      }
+    ],
+    "416": [
+      {
+        "configId": 114,
+        "name": "Deadly Mouse",
+        "level": 38,
+        "hp": 416
+      }
+    ],
+    "286": [
+      {
+        "configId": 118,
+        "name": "Smilin' Sam",
+        "level": 20,
+        "hp": 161
+      }
+    ],
+    "288": [
+      {
+        "configId": 120,
+        "name": "Manly Fish's Brother",
+        "level": 56,
+        "hp": 526
+      }
+    ],
+    "329": [
+      {
+        "configId": 212,
+        "name": "Cave Boy",
+        "level": 11,
+        "hp": 314
+      }
+    ],
+    "307": [
+      {
+        "configId": 125,
+        "name": "Shattered Man",
+        "level": 51,
+        "hp": 694
+      }
+    ],
+    "304": [
+      {
+        "configId": 132,
+        "name": "Cute Li'l UFO",
+        "level": 27,
+        "hp": 162
+      },
+      {
+        "configId": 133,
+        "name": "Beautiful UFO",
+        "level": 44,
+        "hp": 339
+      },
+      {
+        "configId": 151,
+        "name": "High-class UFO",
+        "level": 47,
+        "hp": 433
+      }
+    ],
+    "44": [
+      {
+        "configId": 204,
+        "name": "Heavily Armed Pokey",
+        "level": 72,
+        "hp": 1746
+      },
+      {
+        "configId": 217,
+        "name": "Heavily Armed Pokey",
+        "level": 72,
+        "hp": 1746
+      },
+      {
+        "configId": 216,
+        "name": "Heavily Armed Pokey",
+        "level": 80,
+        "hp": 2000
+      }
+    ],
+    "275": [
+      {
+        "configId": 205,
+        "name": "Clumsy Robot",
+        "level": 46,
+        "hp": 962
+      },
+      {
+        "configId": 230,
+        "name": "Clumsy Robot",
+        "level": 46,
+        "hp": 962
+      }
+    ],
+    "332": [
+      {
+        "configId": 155,
+        "name": "Strong Crocodile",
+        "level": 43,
+        "hp": 417
+      },
+      {
+        "configId": 156,
+        "name": "Hard Crocodile",
+        "level": 55,
+        "hp": 522
+      }
+    ],
+    "318": [
+      {
+        "configId": 158,
+        "name": "Mostly Bad Fly",
+        "level": 19,
+        "hp": 141
+      }
+    ]
+  }
+}
