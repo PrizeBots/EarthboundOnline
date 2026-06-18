@@ -137,6 +137,7 @@ import {
   updateEmitters,
   renderEmitters,
   spawnDamageNumber,
+  spawnOwnDamageNumber,
   spawnHealNumber,
   spawnXpNumber,
   spawnLevelUp,
@@ -563,7 +564,7 @@ export class Game {
             this.player.hp = hp;
             this.player.maxHp = maxHp;
             if (dmg > 0) {
-              spawnDamageNumber(this.player.x, this.player.y, dmg);
+              spawnOwnDamageNumber(this.player.x, this.player.y, dmg); // red — only we see our own
               this.player.hurt(); // flinch pose; broadcast to others via sendPosition
               // Impact juice: YOU got hit — flash, freeze, and a heavier shake
               // (taking a hit should feel weightier than landing one).

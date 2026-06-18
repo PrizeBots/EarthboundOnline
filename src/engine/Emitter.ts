@@ -30,6 +30,7 @@ const BURST_HOLD = 0.55; // fraction of life fully opaque before the climax fade
 const LEVELUP_SCALE = 1.5; // LEVEL UP! renders bigger than other popups
 
 const DAMAGE_COLOR = '#ffffff';
+const OWN_DAMAGE_COLOR = '#ff3b3b'; // red — the LOCAL player's OWN damage only
 const HEAL_COLOR = '#5cff5c';
 const XP_COLOR = '#7fd0ff'; // cyan, matches the EB "you won the battle" EXP text
 const LEVELUP_COLOR = '#ffd23d'; // gold
@@ -71,6 +72,13 @@ function now(): number {
 /** Pop a white damage number off an entity at world (x, y = feet). */
 export function spawnDamageNumber(x: number, y: number, amount: number): void {
   spawn(String(Math.round(amount)), x, y, DAMAGE_COLOR);
+}
+
+/** Pop a RED damage number for the LOCAL player getting hit. Each client renders
+ *  its own popups, so only that player sees their own damage in red; everyone
+ *  else's hits stay white (spawnDamageNumber). */
+export function spawnOwnDamageNumber(x: number, y: number, amount: number): void {
+  spawn(String(Math.round(amount)), x, y, OWN_DAMAGE_COLOR);
 }
 
 /** Pop a green heal number off an entity at world (x, y = feet). */
