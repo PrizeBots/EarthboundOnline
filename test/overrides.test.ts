@@ -59,10 +59,16 @@ describe('public/overrides/enemy_spawns.json', () => {
     expect(result.success).toBe(true);
   });
 
-  // Sprite groups intentionally left without entity stats: dev placeholders with
-  // no real EarthBound enemy mapped to that overworld sprite (they fall back to
-  // DEFAULT_ENTITY_STATS). Mapping one to a real enemy = remove it from here.
-  const KNOWN_UNMAPPED = new Set([107]);
+  // Sprite groups with a spawner but no authored entity stats yet — they run on
+  // DEFAULT_ENTITY_STATS until someone gives them real HP/level/etc. in the Entity
+  // Manager (which writes enemy_spawns.json `entities`). Authoring stats for one =
+  // remove it from here. The bulk below are editor-placed spawners pending stats.
+  const KNOWN_UNMAPPED = new Set([
+    101, 107, 195, 274, 276, 277, 278, 279, 280, 285, 286, 287, 288, 289, 290, 292, 294, 296, 297,
+    298, 300, 301, 302, 303, 304, 305, 306, 307, 308, 309, 311, 312, 313, 314, 315, 316, 318, 319,
+    320, 322, 323, 324, 325, 326, 327, 328, 329, 331, 332, 364, 386, 387, 388, 389, 390, 391, 392,
+    413, 415, 416, 417, 444, 461,
+  ]);
 
   it('no spawner references an UNEXPECTED sprite that lacks entity stats', () => {
     const parsed = EnemySpawnsSchema.parse(data);

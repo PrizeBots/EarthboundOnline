@@ -1,7 +1,7 @@
 import { EditorTool, EditorShellApi } from '../types';
 import { saveOverride, loadOverride } from '../saveOverride';
 import { registerSaveHandler } from '../registry';
-import { flagDefs, setFlagRegistry, FlagDef, FlagScope } from '../../engine/FlagRegistry';
+import { flagDefs, setFlagRegistry, FlagDef } from '../../engine/FlagRegistry';
 import { getTriggers, setTriggers, Trigger } from '../../engine/FlagTriggers';
 import { hasFlag, setFlag, clearFlag, resetFlags, onFlagsChanged } from '../../engine/PlayerFlags';
 import { GameEventType } from '../../engine/EventBus';
