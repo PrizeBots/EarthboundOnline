@@ -10,6 +10,7 @@
     331,
     317,
     101,
+    195,
     274,
     276,
     277,
@@ -46,6 +47,7 @@
     318,
     319,
     320,
+    322,
     323,
     324,
     325,
@@ -223,7 +225,7 @@
       "sprite": 284,
       "x": 2577,
       "y": 589,
-      "wanderRadius": 300,
+      "wanderRadius": 200,
       "poolSize": 7,
       "maxActive": 4,
       "spawnIntervalMs": 3500,
@@ -319,7 +321,7 @@
       "sprite": 283,
       "x": 1926,
       "y": 977,
-      "wanderRadius": 100,
+      "wanderRadius": 140,
       "poolSize": 6,
       "maxActive": 3,
       "spawnIntervalMs": 11000,
@@ -519,7 +521,7 @@
       "enabled": true
     },
     {
-      "name": "rom-worthless-protoplasm",
+      "name": "trap-present-mimic",
       "sprite": 195,
       "x": 4384,
       "y": 288,
@@ -528,7 +530,7 @@
       "maxActive": 1,
       "spawnIntervalMs": 3500,
       "respawnDelayMs": 9000,
-      "enabled": false
+      "enabled": true
     },
     {
       "name": "rom-mr--batty",
@@ -963,7 +965,7 @@
       "enabled": true
     },
     {
-      "name": "rom-petrified-royal-guard",
+      "name": "trap-jar-mimic",
       "sprite": 322,
       "x": 892,
       "y": 3740,
@@ -972,7 +974,7 @@
       "maxActive": 1,
       "spawnIntervalMs": 3500,
       "respawnDelayMs": 9000,
-      "enabled": false
+      "enabled": true
     },
     {
       "name": "rom-noose-man",
