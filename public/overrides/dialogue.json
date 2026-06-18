@@ -1,6 +1,7 @@
 {
   "version": 1,
   "edits": {
+    "14": ["Hello, $name. Your Ness's friend?", "You're welcome to stay as long as you'd like!"],
     "900003": ["Hey, do you smell that?", "I just farted."],
     "900004": ["Can I help you, sir?"],
     "900005": ["Scram, we're busy!"],

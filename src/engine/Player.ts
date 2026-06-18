@@ -74,6 +74,17 @@ export class Player extends Entity {
   private frozenUntil = 0;
   // Active status-condition ids (server-synced) — drives the HP-bar pips.
   statuses: string[] = [];
+  // Active timed stat buffs (owner-only, server-synced) — drives the buff HUD.
+  // `expiresAt` is a LOCAL epoch-ms deadline so the HUD counts down every frame
+  // without per-second server traffic (server resends only on change).
+  buffs: { stat: string; amount: number; expiresAt: number }[] = [];
+  // KO/downed state (server-synced). While downed the player lays rotated 90°,
+  // can't act, sees a countdown + closing vignette, and can "give up the ghost"
+  // by holding (giveUpProgress 0..1). downedTotalMs drives the vignette ramp.
+  downed = false;
+  downedUntil = 0;
+  downedTotalMs = 0;
+  giveUpProgress = 0;
 
   constructor() {
     // Spawn position/facing come from src/spawn.json (Onett default), so the

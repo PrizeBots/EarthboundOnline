@@ -9,7 +9,9 @@ import { dialogueTool } from './DialogueTool';
 
 // Traffic Editor (EDITOR_TOOLS.md). Place vehicles and draw each one's waypoint
 // route; the server drives the car along it (server/npcSim.js), facing its
-// travel direction, stopping for any entity in the way (no damage). Saves the
+// travel direction. A car plows foes (enemies + PKers) it runs over for its
+// `damage`, nudges friendlies out of the lane, and is itself attackable (PK
+// rules) with `hp` HP — destroyed cars respawn at the route start. Saves the
 // WHOLE file to the overrides layer (public/overrides/car_traffic.json — OUR
 // authored content, no ROM base), preferred over the committed default by both
 // NPCManager (client) and npcSim (server). One car per vehicle.
@@ -28,6 +30,10 @@ const VEHICLE_SPRITES: { id: number; name: string }[] = [
 ];
 const DEFAULT_SPRITE = VEHICLE_SPRITES[0].id; // Car
 const WP_PICK = 9; // world-px pick radius for a waypoint dot
+// Combat defaults — KEEP IN SYNC with npcSim VEHICLE_HP / VEHICLE_DAMAGE so an
+// unauthored car behaves the same whether or not the editor wrote these fields.
+const VEHICLE_DEFAULT_HP = 80;
+const VEHICLE_DEFAULT_DAMAGE = 14;
 
 let idCounter = 0;
 
@@ -144,6 +150,8 @@ class TrafficEditorTool implements EditorTool {
       speed: v.speed ?? 1,
       loop: v.loop !== false,
       enabled: v.enabled !== false,
+      hp: v.hp ?? VEHICLE_DEFAULT_HP,
+      damage: v.damage ?? VEHICLE_DEFAULT_DAMAGE,
       waypoints: Array.isArray(v.waypoints)
         ? v.waypoints.map(([x, y]) => [x, y] as [number, number])
         : [],
@@ -171,6 +179,8 @@ class TrafficEditorTool implements EditorTool {
           speed: v.speed,
           loop: v.loop,
           enabled: v.enabled,
+          hp: v.hp ?? VEHICLE_DEFAULT_HP,
+          damage: v.damage ?? VEHICLE_DEFAULT_DAMAGE,
           waypoints: v.waypoints.map(
             ([x, y]) => [Math.round(x), Math.round(y)] as [number, number]
           ),
@@ -205,6 +215,8 @@ class TrafficEditorTool implements EditorTool {
         speed: 1,
         loop: true,
         enabled: true,
+        hp: VEHICLE_DEFAULT_HP,
+        damage: VEHICLE_DEFAULT_DAMAGE,
         waypoints: [[Math.round(p.x), Math.round(p.y)]],
       };
       this.vehicles.push(v);
@@ -618,6 +630,26 @@ class TrafficEditorTool implements EditorTool {
       }
     });
     speedIn.value = String(v.speed);
+
+    // HP — the car is attackable (PK rules); this is its max health.
+    const hpIn = this.mkInput(form, 'hp', 'HP', (val) => {
+      const n = parseInt(val, 10);
+      if (!Number.isNaN(n)) {
+        v.hp = Math.max(1, n);
+        this.shell?.markDirty('traffic');
+      }
+    });
+    hpIn.value = String(v.hp ?? VEHICLE_DEFAULT_HP);
+
+    // damage — what the car deals to a foe (enemy / PKer) it plows.
+    const dmgIn = this.mkInput(form, 'damage', 'damage', (val) => {
+      const n = parseInt(val, 10);
+      if (!Number.isNaN(n)) {
+        v.damage = Math.max(0, n);
+        this.shell?.markDirty('traffic');
+      }
+    });
+    dmgIn.value = String(v.damage ?? VEHICLE_DEFAULT_DAMAGE);
 
     // loop + enabled toggles
     const loopRow = this.mkRow(form, 'loop');

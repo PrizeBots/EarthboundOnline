@@ -1,6 +1,18 @@
 import { EditorTool, EditorShellApi } from '../types';
 import { FolderDesktop, FolderDesktopStore, FolderDesktopFolder } from '../FolderDesktop';
-import { loadJSON } from '../../engine/AssetLoader';
+import { loadJSON, loadImage } from '../../engine/AssetLoader';
+import { addCustomSprite, customSpritesDoc } from '../../engine/CustomSprites';
+import { getNameOverrides } from '../../engine/SpriteNames';
+import {
+  addCustomItem,
+  customItemsDoc,
+  itemSpritesDoc,
+  itemPixelsFromImage,
+  setItemSpriteData,
+} from '../../engine/Items';
+import { saveOverride } from '../saveOverride';
+import { entityManagerTool } from './EntityManagerTool';
+import { itemManagerTool } from './ItemManagerTool';
 
 // Source Assets — a VIEW-ONLY browser of every graphic CoilSnake decompiled from
 // the ROM, including art we never imported into the game (battle sprites, battle
@@ -161,7 +173,7 @@ class SourceAssetsTool implements EditorTool {
     hint.style.cssText = 'color:#9fb8cc;font-size:11px;line-height:1.5;';
     hint.textContent =
       `${this.index.assets.length} ROM graphics in ${this.index.categories.length} categories. ` +
-      'View-only — find art worth importing, then we build the cut/import tooling.';
+      'Pick one, then create a new entity or item from it below.';
     this.panel.appendChild(hint);
 
     this.detailEl = document.createElement('div');
@@ -203,6 +215,102 @@ class SourceAssetsTool implements EditorTool {
       'font:11px monospace;padding:2px 7px;cursor:pointer;border-radius:3px;background:#1d2530;color:#cde;border:1px solid #3a4a5a;align-self:flex-start;';
     open.onclick = () => window.open(`${BASE}${a.file}`, '_blank');
     this.detailEl.appendChild(open);
+
+    // Create-from-asset actions. Each opens a small inline name form; OK mints
+    // the item/entity using this sprite and hands off to its manager tool.
+    const actions = document.createElement('div');
+    actions.style.cssText =
+      'display:flex;flex-direction:column;gap:6px;border-top:1px solid #2a3540;padding-top:8px;margin-top:2px;';
+    const head = document.createElement('div');
+    head.textContent = 'CREATE FROM THIS ASSET';
+    head.style.cssText = 'color:#4ec9b0;font-size:11px;letter-spacing:0.5px;';
+    actions.appendChild(head);
+    this.mkBtn('➕ New Entity from this', () => this.openCreateForm(a, 'entity', actions), actions);
+    this.mkBtn('➕ New Item from this', () => this.openCreateForm(a, 'item', actions), actions);
+    this.detailEl.appendChild(actions);
+  }
+
+  /** A small accent button (matches the panel chrome). */
+  private mkBtn(label: string, fn: () => void, parent: HTMLElement): HTMLButtonElement {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.style.cssText =
+      'font:11px monospace;padding:4px 8px;cursor:pointer;border-radius:3px;text-align:left;' +
+      'background:#11302b;color:#4ec9b0;border:1px solid #2f6f63;';
+    b.onclick = fn;
+    parent.appendChild(b);
+    return b;
+  }
+
+  /** Inline name form (replaces the action buttons until OK/Cancel). For items
+   *  the kind defaults to a consumable — set the slot/stats later in the Item
+   *  Manager, exactly like any other item. */
+  private openCreateForm(a: RomAsset, kind: 'entity' | 'item', host: HTMLDivElement): void {
+    host.innerHTML = '';
+    const head = document.createElement('div');
+    head.textContent = kind === 'entity' ? 'NEW ENTITY' : 'NEW ITEM';
+    head.style.cssText = 'color:#4ec9b0;font-size:11px;letter-spacing:0.5px;';
+    host.appendChild(head);
+
+    const input = document.createElement('input');
+    // Seed the name from the asset filename (sans extension), title-ish.
+    const base = (a.file.split('/').pop() ?? a.id).replace(/\.png$/i, '');
+    input.value = base;
+    input.placeholder = 'name';
+    input.style.cssText =
+      'font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:3px 6px;';
+    host.appendChild(input);
+
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;';
+    const ok = this.mkBtn(
+      'OK',
+      () => {
+        const name = input.value.trim() || base;
+        ok.disabled = true;
+        ok.textContent = 'Creating…';
+        void (kind === 'entity' ? this.createEntity(a, name) : this.createItem(a, name)).catch(
+          (e) => {
+            this.shell?.toast(`Create failed: ${e}`, true);
+            this.refreshDetail();
+          }
+        );
+      },
+      row
+    );
+    this.mkBtn('Cancel', () => this.refreshDetail(), row);
+    host.appendChild(row);
+    input.focus();
+    input.select();
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') ok.click();
+      else if (e.key === 'Escape') this.refreshDetail();
+    };
+  }
+
+  /** Mint a standalone custom entity sprite group from this asset, persist it,
+   *  and open the Entity Manager focused on it (editable like any other). */
+  private async createEntity(a: RomAsset, name: string): Promise<void> {
+    const id = await addCustomSprite(name, a.file);
+    await saveOverride('custom_sprites.json', customSpritesDoc());
+    await saveOverride('names.json', getNameOverrides()); // persist the display name
+    this.shell?.toast(`Created entity "${name}" → sprite #${id}`);
+    entityManagerTool.requestEntity(id);
+    this.shell?.openTool('entity-manager');
+  }
+
+  /** Mint a custom item, quantize this asset into its 16×16 held art, persist
+   *  both files, and open the Item Manager focused on it. */
+  private async createItem(a: RomAsset, name: string): Promise<void> {
+    const id = addCustomItem(name);
+    const img = await loadImage(`${BASE}${a.file}`);
+    const pixels = itemPixelsFromImage(img, a.w, a.h);
+    setItemSpriteData(id, { pixels, frames: [pixels], grip: { x: 8, y: 14 } });
+    await saveOverride('custom_items.json', customItemsDoc());
+    await saveOverride('item_sprites.json', itemSpritesDoc());
+    this.shell?.toast(`Created item "${name}" (${id})`);
+    itemManagerTool.requestItem(id);
+    this.shell?.openTool('item-manager');
   }
 }
 

@@ -4,7 +4,7 @@
     284, 283, 282, 226, 330, 291, 331, 317, 101, 195, 274, 276, 277, 278, 279, 280, 285, 286, 287,
     288, 289, 290, 292, 294, 296, 297, 298, 300, 301, 302, 303, 304, 305, 306, 307, 308, 309, 311,
     312, 313, 314, 315, 316, 318, 319, 320, 322, 323, 324, 325, 326, 327, 328, 329, 332, 364, 386,
-    387, 388, 389, 390, 391, 392, 413, 415, 416, 417, 444, 461
+    387, 388, 389, 390, 391, 392, 413, 415, 416, 417, 444, 461, 100000
   ],
   "entities": {
     "74": {
@@ -16,6 +16,18 @@
       "speed": 0.7,
       "detectRange": 220,
       "attackRange": 24
+    },
+    "153": {
+      "hp": 580,
+      "xp": 600,
+      "level": 23,
+      "damage": 22,
+      "attackCooldownMs": 700,
+      "speed": 0.7,
+      "detectRange": 220,
+      "attackRange": 24,
+      "crit": 5,
+      "dodge": 8
     },
     "226": {
       "hp": 3,
@@ -102,6 +114,19 @@
       "money": 3,
       "attackCooldownMs": 700,
       "speed": 0.7
+    },
+    "100000": {
+      "hp": 24,
+      "xp": 5,
+      "level": 4,
+      "damage": 7,
+      "attackCooldownMs": 700,
+      "speed": 0.7,
+      "detectRange": 220,
+      "attackRange": 24,
+      "crit": 4,
+      "dodge": 4,
+      "combat": "brave"
     }
   },
   "spawners": [
@@ -276,13 +301,13 @@
     {
       "name": "spawner-16",
       "sprite": 282,
-      "x": 1205,
-      "y": 1530,
+      "x": 1125,
+      "y": 1522,
       "wanderRadius": 100,
       "poolSize": 32,
       "maxActive": 20,
-      "spawnIntervalMs": 25000,
-      "respawnDelayMs": 25000,
+      "spawnIntervalMs": 5000,
+      "respawnDelayMs": 30000,
       "enabled": true
     },
     {
@@ -1145,6 +1170,18 @@
       "wanderRadius": 200,
       "poolSize": 4,
       "maxActive": 1,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-89",
+      "sprite": 100000,
+      "x": 2663,
+      "y": 8626,
+      "wanderRadius": 100,
+      "poolSize": 7,
+      "maxActive": 4,
       "spawnIntervalMs": 3500,
       "respawnDelayMs": 9000,
       "enabled": true

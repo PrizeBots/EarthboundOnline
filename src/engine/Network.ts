@@ -146,7 +146,25 @@ type NetworkCallback = {
    * name (empty → the client uses a generic fallback). Drives her dialogue.
    */
   onMomFood?: (healed: number, readyInMs: number, food: string) => void;
+  /**
+   * The LOCAL player's active timed stat buffs changed (owner-only; drives the
+   * buff HUD). Each entry's `ms` is REMAINING time (the client turns it into a
+   * local deadline, so it stays correct across clock skew). Empty = no buffs.
+   */
+  onPlayerBuffs?: (buffs: BuffPayload[]) => void;
+  /** A player was KO'd (downed). `ms` = the revive window length; the client lays
+   *  them out, counts down, and (for the owner) draws the closing vignette. */
+  onPlayerDowned?: (id: string, ms: number) => void;
+  /** A downed player was revived (by an ally) — stand them back up. */
+  onPlayerRevived?: (id: string) => void;
 };
+
+/** One active timed stat buff the server reports (server/buffs.js). */
+export interface BuffPayload {
+  stat: string;
+  amount: number;
+  ms: number; // remaining duration in ms at send time
+}
 
 /** Progression block the server pushes (field names match StatusModal). */
 export interface PlayerStatsPayload {
@@ -168,10 +186,14 @@ export interface PlayerStatsPayload {
 
 let ws: WebSocket | null = null;
 let callbacks: NetworkCallback | null = null;
-// Editor mode toggled before the socket finished connecting (F2 straight from
-// char select). Stashed here and flushed in onopen so the server still pulls
-// our avatar out of the world sim. null = nothing pending.
-let pendingEditorMode: boolean | null = null;
+// Desired editor-mode state, kept as persistent module state (not a one-shot).
+// The server only knows we're in the editor via a message, and it forgets on a
+// fresh `welcome` (every entry defaults editor:false). So we MUST re-assert this
+// on every (re)open — F2-from-char-select connect races AND, crucially, any
+// reconnect (server restart on save, network blip, idle timeout). Without the
+// re-send the reconnected avatar becomes a live target mid-edit and enemies
+// start hitting it again. Flushed in onopen.
+let editorModeActive = false;
 
 // --- Auto-reconnect state ---
 // The args from the last connect() call, replayed to re-join after a dropped
@@ -241,10 +263,12 @@ function openSocket() {
           : { type: 'join', spriteGroupId, name, appearance }
       )
     );
-    // Flush an editor toggle that fired while the socket was still connecting.
-    if (pendingEditorMode !== null) {
-      ws!.send(JSON.stringify({ type: 'editor', on: pendingEditorMode }));
-      pendingEditorMode = null;
+    // Re-assert editor mode on every (re)open: the server forgets it on each
+    // fresh welcome, so a reconnect mid-edit would otherwise make our avatar a
+    // live, damageable target again. Only send `true` — a fresh join already
+    // defaults to false server-side.
+    if (editorModeActive) {
+      ws!.send(JSON.stringify({ type: 'editor', on: true }));
     }
   };
 
@@ -362,6 +386,15 @@ function openSocket() {
       case 'player_pk':
         callbacks?.onPlayerPk?.(msg.id, !!msg.pk, msg.lockMs ?? 0);
         break;
+      case 'player_buffs':
+        callbacks?.onPlayerBuffs?.(Array.isArray(msg.buffs) ? msg.buffs : []);
+        break;
+      case 'player_downed':
+        callbacks?.onPlayerDowned?.(msg.id, typeof msg.ms === 'number' ? msg.ms : 0);
+        break;
+      case 'player_revived':
+        callbacks?.onPlayerRevived?.(msg.id);
+        break;
       case 'drop_spawn':
         if (msg.drop) callbacks?.onDropSpawn?.(msg.drop);
         break;
@@ -472,12 +505,12 @@ export function sendWarpState(warping: boolean) {
  * death can respawn-yank our free camera. No-op in production (editor never loads).
  */
 export function sendEditorMode(on: boolean) {
+  // Remember the desired state so onopen can re-assert it across reconnects.
+  editorModeActive = on;
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'editor', on }));
-  } else {
-    // Socket still connecting (F2 from char select) — flush in onopen.
-    pendingEditorMode = on;
   }
+  // If the socket is still connecting / reconnecting, onopen reads editorModeActive.
 }
 
 /** Request a melee swing; the server resolves the hit against enemies. */
@@ -502,10 +535,19 @@ export function sendHotbar(hotbar: (string | null)[]) {
   }
 }
 
-/** Ask the server to use a Goods item; it validates ownership and resolves it. */
-export function sendUseItem(itemId: string) {
+/** Ask the server to use a Goods item; it validates ownership and resolves it.
+ *  `targetId` aims a revive item at a specific downed ally (else the server uses
+ *  the nearest downed ally in range). */
+export function sendUseItem(itemId: string, targetId?: string) {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'use_item', itemId }));
+    ws.send(JSON.stringify({ type: 'use_item', itemId, ...(targetId ? { targetId } : {}) }));
+  }
+}
+
+/** Give up the ghost during the downed window → true death now (server-gated). */
+export function sendGiveUp() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'give_up' }));
   }
 }
 

@@ -12,6 +12,7 @@ import {
   isToggleBoxesPressed,
   getKeySet,
   consumePointerClick,
+  isPointerDown,
   flushKeys,
 } from './Input';
 import { loadMapData, getSector, getDrawTilesetId } from './MapManager';
@@ -59,6 +60,7 @@ import {
   sendSetPk,
   sendOpenGift,
   sendMomFood,
+  sendGiveUp,
   JoinAuth,
 } from './Network';
 import { getToken, CharacterSummary } from './Auth';
@@ -66,6 +68,7 @@ import { initNameplates } from './NamePlate';
 import { initLevelUpButton, setLevelUpPoints } from './LevelUpButton';
 import { openLevelUp, isLevelUpOpen } from './LevelUpModal';
 import { loadNameOverrides, getSpriteName } from './SpriteNames';
+import { loadCustomSprites } from './CustomSprites';
 import { loadSongNameOverrides } from './SongNames';
 import { setStatus } from './StatusModal';
 import { pushRemoteSnapshot, dropRemoteBuffer, interpolateRemotePlayer } from './RemoteInterp';
@@ -243,6 +246,9 @@ export class Game {
   // action-blocking status (paralysis/sleep/diamond) lands, cleared on its
   // server-side wear-off/cure. While active, field actions are suppressed.
   private statusLockUntil = 0;
+  // Epoch-ms the current give-up hold began (0 = not holding). The downed player
+  // must hold for GIVE_UP_HOLD_MS to die; releasing early resets it.
+  private giveUpHoldStart = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
@@ -267,6 +273,11 @@ export class Game {
       loadFont(4), // small 8px battle font (speech bubbles)
       loadWindowStyle(0),
     ]);
+
+    // Standalone custom entity sprites minted from ROM source art (Source Assets
+    // tool). After name overrides so each group's authored name is in place;
+    // registers the art so these entities draw like any other sprite group.
+    await loadCustomSprites();
 
     // Set up character select input. initInput here (idempotent) attaches the
     // pointer listeners NOW so clicks work on the character-select screen, not
@@ -693,6 +704,40 @@ export class Game {
             if (rp) rp.statuses = statuses;
           }
         },
+        onPlayerBuffs: (list) => {
+          // Owner-only: turn each remaining-ms into a local deadline for the HUD.
+          const now = Date.now();
+          this.player.buffs = list.map((b) => ({
+            stat: b.stat,
+            amount: b.amount,
+            expiresAt: now + b.ms,
+          }));
+        },
+        onPlayerDowned: (id, ms) => {
+          const until = Date.now() + ms;
+          if (id === this.localPlayerId) {
+            this.player.downed = true;
+            this.player.downedUntil = until;
+            this.player.downedTotalMs = ms;
+            this.player.giveUpProgress = 0;
+            this.player.moving = false;
+          } else {
+            const rp = this.remotePlayers.get(id);
+            if (rp) {
+              rp.downed = true;
+              rp.downedUntil = until;
+            }
+          }
+        },
+        onPlayerRevived: (id) => {
+          if (id === this.localPlayerId) {
+            this.player.downed = false;
+            this.player.giveUpProgress = 0;
+          } else {
+            const rp = this.remotePlayers.get(id);
+            if (rp) rp.downed = false;
+          }
+        },
         onPsiCast: (id, _casterId, x, y, tx, ty) => {
           // Server-driven (everyone incl. the caster): play the effect, flying
           // caster (x,y) → target (tx,ty) for projectile-delivery PSI.
@@ -710,6 +755,9 @@ export class Game {
             this.player.direction = dir;
             this.player.moving = false;
             this.player.frame = 0;
+            // True death resolved the KO — clear the downed/vignette state.
+            this.player.downed = false;
+            this.player.giveUpProgress = 0;
             // While editing (dev), the free camera owns the view — don't yank it
             // back to the avatar. The server shouldn't respawn us at all in editor
             // mode (we're pulled from the sim); this guards a late in-flight hit.
@@ -722,6 +770,7 @@ export class Game {
             if (rp) {
               rp.x = x;
               rp.y = y;
+              rp.downed = false; // true death respawn clears the laying pose
             }
             dropRemoteBuffer(id); // snap across the map, don't glide
           }
@@ -1320,6 +1369,13 @@ export class Game {
       return;
     }
 
+    // Downed (KO): can't act except "give up the ghost" (hold Space / touch ~2s).
+    // Movement, talk, attack and hotbar are all suppressed until revived or dead.
+    if (this.player.downed) {
+      this._updateGiveUp();
+      return;
+    }
+
     // E = Talk to / Check whatever is in front of the player.
     if (isTalkPressed()) {
       this.tryTalk();
@@ -1414,6 +1470,28 @@ export class Game {
    * Mirrors EB's combined "Talk to"+"Check" command: a target with dialogue
    * speaks; empty space gives the classic Check fallback.
    */
+  // While downed: hold Space (desktop) or press-and-hold (touch/mouse) for
+  // GIVE_UP_HOLD_MS to give up the ghost (true death now). Releasing resets the
+  // hold. giveUpProgress (0..1) drives the on-screen hold meter.
+  private _updateGiveUp(): void {
+    const GIVE_UP_HOLD_MS = 2000;
+    const held = getKeySet().has('Space') || isPointerDown();
+    const now = Date.now();
+    if (!held) {
+      this.giveUpHoldStart = 0;
+      this.player.giveUpProgress = 0;
+      return;
+    }
+    if (this.giveUpHoldStart === 0) this.giveUpHoldStart = now;
+    const dur = now - this.giveUpHoldStart;
+    this.player.giveUpProgress = Math.min(1, dur / GIVE_UP_HOLD_MS);
+    if (dur >= GIVE_UP_HOLD_MS) {
+      sendGiveUp();
+      this.giveUpHoldStart = 0;
+      this.player.giveUpProgress = 0;
+    }
+  }
+
   private tryTalk(): void {
     // Reach is measured along the facing direction, not as a radius around a
     // single probe point. A shop clerk's anchor sits a full counter-depth

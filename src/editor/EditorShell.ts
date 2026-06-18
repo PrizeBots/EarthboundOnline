@@ -717,11 +717,19 @@ export class EditorShell {
     const typing = focused === 'INPUT' || focused === 'SELECT' || focused === 'TEXTAREA';
 
     // F2 exits editor mode back to the game from ANYWHERE — including the Sprite
-    // Editor overlay, which otherwise owns the keyboard (its own listener never
-    // gets a chance to exit). Handle it BEFORE the sprite-editor bail below;
-    // close that overlay first, then exit the shell.
-    if (e.key === 'F2' && !typing) {
+    // Editor overlay (which otherwise owns the keyboard) and tool panels with a
+    // focused <input> (managers, search boxes). F2 is a function key, never a
+    // text character, so it must exit even while `typing`; blur the field first
+    // so the game doesn't keep receiving its keystrokes. Handle it BEFORE the
+    // sprite-editor bail below; close that overlay first, then exit the shell.
+    if (e.key === 'F2') {
       e.preventDefault();
+      // Stop here: exit() flips active=false and drops our listener, so if this
+      // same event reached the bubble-phase entry listener (index.ts) it would
+      // see !isActive() and immediately re-enter — a one-frame exit/re-enter
+      // flicker instead of an exit.
+      e.stopImmediatePropagation();
+      if (typing) (document.activeElement as HTMLElement | null)?.blur();
       if (isSpriteEditorOpen()) closeSpriteEditor();
       this.exit();
       return;

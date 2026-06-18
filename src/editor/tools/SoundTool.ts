@@ -43,7 +43,10 @@ import { registerSaveHandler } from '../registry';
 // aligned to the native music unit.
 const SECTOR_W = SECTOR_TILES_X * TILE_SIZE; // 256 (8 tiles * 32px)
 const SECTOR_H = SECTOR_TILES_Y * TILE_SIZE; // 128 (4 tiles * 32px)
-const MIN_SIZE = SECTOR_W; // ignore accidental micro-drags
+// Only reject accidental click/micro-drags. A real drag is snapped up to at
+// least one sector (snapArea), so a small gap walled in by other areas can
+// still be filled — no need to drag a box bigger than the space allows.
+const MIN_DRAG = TILE_SIZE;
 
 interface MusicFile {
   version?: number;
@@ -258,16 +261,17 @@ class SoundTool implements EditorTool {
       this.drawing = false;
       this.placing = false;
       const rect = this.normRect(this.ax, this.ay, p.x, p.y);
-      if (rect.w >= MIN_SIZE && rect.h >= MIN_SIZE) {
+      if (rect.w >= MIN_DRAG && rect.h >= MIN_DRAG) {
         const defSong = this.sel?.song ?? listSongs()[0]?.song ?? 0;
         const a: MusicArea = { name: this.nextName(), song: defSong, ...rect };
+        this.snapArea(a); // align + clamp to the sector grid (≥ 1 sector when snap is on)
         this.areas.push(a);
         this.sel = a;
         this.shell?.markDirty('music');
         this.refreshList();
         this.rebuildForm();
       } else {
-        this.shell?.toast('Area too small — drag a bigger box', true);
+        this.shell?.toast('Area too small — drag a box', true);
       }
       return;
     }

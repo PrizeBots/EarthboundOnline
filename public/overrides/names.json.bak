@@ -8,14 +8,18 @@
     "44": "Pokey",
     "45": "Picky",
     "46": "Bubble Monkey",
+    "48": "Business Pokey",
     "52": "Grandpa",
     "53": "Grandma",
     "123": "Kid in Blue",
     "223": "Apple",
     "282": "Spiteful Crow",
+    "283": "Coil Snake",
     "291": "Ramblin Mushroom",
-    "330": "Stray Dog",
+    "303": "Starman",
+    "330": "Runaway Dog",
     "388": "Zombie Guy",
-    "415": "Rowdy Mouse"
+    "415": "Rowdy Mouse",
+    "100000": "Black Antoid"
   }
 }

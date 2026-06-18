@@ -27,6 +27,7 @@ import {
 import { S } from './state';
 import { commitItemEdit, persistItem } from './itemEditor';
 import { commitPsiEdit, persistPsi } from './psiEditor';
+import { commitEntityEdit, persistEntity, recolorEntityPalette } from './entityEditor';
 import { PSI_W, PSI_H } from '../PsiAnim';
 import { requestAutosave } from './autosave';
 
@@ -65,20 +66,35 @@ export function activeBuffer(): {
   if (S.editMode === 'psi') {
     return { canvas: S.psiCanvas!, ctx: S.psiCtx!, undo: S.psiUndo, w: PSI_W, h: PSI_H };
   }
+  if (S.editMode === 'entity') {
+    return {
+      canvas: S.entityCanvas!,
+      ctx: S.entityCtx!,
+      undo: S.entityUndo,
+      w: S.entityW,
+      h: S.entityH,
+    };
+  }
   return { canvas: S.itemCanvas!, ctx: S.itemCtx!, undo: S.itemUndo, w: ITEM_W, h: ITEM_H };
+}
+
+/** True for the modes whose colors come from the EXTRACTED image palette
+ *  (S.palette): the cast sheet and custom entities. Item/PSI use ITEM_PALETTE. */
+function usesImagePalette(): boolean {
+  return S.editMode === 'char' || S.editMode === 'entity';
 }
 
 /** CSS color for a palette index in the active mode, or null for transparent. */
 export function colorFor(i: number): string | null {
   if (i === 0) return null;
-  if (S.editMode !== 'char') return ITEM_PALETTE[i] || null; // item + psi share the palette
+  if (!usesImagePalette()) return ITEM_PALETTE[i] || null; // item + psi share the palette
   const c = S.palette[i];
   return c ? `rgb(${c[0]},${c[1]},${c[2]})` : null;
 }
 
 /** Nearest palette index to an RGB color in the active mode (for eyedrop). */
 function nearestActiveIndex(r: number, g: number, b: number): number {
-  if (S.editMode === 'char') return nearestPaletteIndex(r, g, b);
+  if (usesImagePalette()) return nearestPaletteIndex(r, g, b);
   let best = 1;
   let bestDist = Infinity;
   for (let i = 1; i < itemPaletteRGB.length; i++) {
@@ -349,12 +365,14 @@ export function undo(): void {
 export function persistActive(): void {
   if (S.editMode === 'item') persistItem();
   else if (S.editMode === 'psi') persistPsi();
+  else if (S.editMode === 'entity') persistEntity();
 }
 
-/** Re-commit the active buffer to its live preview (item or PSI). */
+/** Re-commit the active buffer to its live preview (item / PSI / entity). */
 function commitActive(): void {
   if (S.editMode === 'item') commitItemEdit();
   else if (S.editMode === 'psi') commitPsiEdit();
+  else if (S.editMode === 'entity') commitEntityEdit();
 }
 
 /** Human label for a sheet cell (selection is always a canonical strip cell). */
@@ -384,7 +402,7 @@ function opRegion(): PixelRect {
 /** Current paint color as RGBA bytes (alpha 0 for the transparent clear index). */
 function fillRGBA(): [number, number, number, number] {
   if (S.colorIndex === 0) return [0, 0, 0, 0];
-  if (S.editMode !== 'char') {
+  if (!usesImagePalette()) {
     const hex = ITEM_PALETTE[S.colorIndex];
     if (!hex) return [0, 0, 0, 0];
     const [r, g, b] = parseHexColor(hex);
@@ -656,7 +674,10 @@ export function renderSwatches(): void {
   if (!S.paletteGrid) return;
   S.paletteGrid.innerHTML = '';
   S.swatchEls = [];
-  const count = S.editMode !== 'char' ? ITEM_PALETTE.length : S.palette.length;
+  const count = usesImagePalette() ? S.palette.length : ITEM_PALETTE.length;
+  // In entity mode a swatch is also a recolor target: double-click opens an RGB
+  // picker; the whole palette entry swaps (every pixel using it repaints).
+  const editable = S.editMode === 'entity';
   for (let i = 0; i < count; i++) {
     const sw = document.createElement('div');
     sw.style.cssText =
@@ -668,9 +689,22 @@ export function renderSwatches(): void {
       sw.title = '0: transparent';
     } else {
       sw.style.background = color;
-      sw.title = `${i}: ${color}`;
+      sw.title = editable ? `${i}: ${color} — double-click to recolor` : `${i}: ${color}`;
     }
     sw.onclick = () => setColor(i);
+    if (editable && i > 0) {
+      sw.ondblclick = () => {
+        const inp = document.createElement('input');
+        inp.type = 'color';
+        const [r, g, b] = S.palette[i] ?? [0, 0, 0];
+        inp.value = `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+        inp.style.cssText = 'position:fixed;left:-9999px;';
+        document.body.appendChild(inp);
+        inp.oninput = () => recolorEntityPalette(i, inp.value);
+        inp.onchange = () => inp.remove();
+        inp.click();
+      };
+    }
     S.swatchEls.push(sw);
     S.paletteGrid.appendChild(sw);
   }

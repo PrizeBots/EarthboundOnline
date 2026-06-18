@@ -37,6 +37,11 @@ interface ItemOverride {
   offense?: number;
   defense?: number;
   cost?: number;
+  heal?: number;
+  healPp?: number;
+  cure?: string[]; // status ids cleared on use
+  buffs?: { stat: string; amount: number; durationMs: number }[]; // timed stat boosts
+  revive?: number; // HP restored when it auto-saves the holder from a killing blow
 }
 
 interface ItemDef {
@@ -158,6 +163,37 @@ export function itemDefense(id: string): number {
  *  placeholder/default while you author a slot/offense override. */
 export function itemBaseEquip(id: string): EquipProps | null {
   return data.items[id]?.equip ?? null;
+}
+
+/** Base HP a consumable restores BEFORE overrides. EarthBound's item-effect
+ *  table isn't decoded, so the base is 0 for everything — every real heal value
+ *  lives in the override layer (equip_stats.json) and the Item Manager. Exposed
+ *  so the manager shows the true base (not a misleading hardcoded 0). */
+export function itemBaseHeal(_id: string): number {
+  return 0;
+}
+
+/** Effective HP this item restores on use (override-aware). 0 = no-op on use.
+ *  The server (server/shops.js) resolves the SAME value from the SAME file. */
+export function itemHeal(id: string): number {
+  return numOv(overrides[id]?.heal, itemBaseHeal(id));
+}
+
+/** Base PP a consumable restores BEFORE overrides — 0 (effects aren't decoded);
+ *  authored PP-recovery values live in the override layer / Item Manager. */
+export function itemBaseHealPp(_id: string): number {
+  return 0;
+}
+
+/** Effective PP this item restores on use (override-aware). 0 = no PP recovery. */
+export function itemHealPp(id: string): number {
+  return numOv(overrides[id]?.healPp, itemBaseHealPp(id));
+}
+
+/** Base auto-revive HP before overrides — 0 (no item revives by default; authored
+ *  in the Item Manager). Exposed so the editor shows a true base, not a guess. */
+export function itemBaseRevive(_id: string): number {
+  return 0;
 }
 
 /** Characters who may equip/use this item, e.g. ['ness']. Override wins when set. */

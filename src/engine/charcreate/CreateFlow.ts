@@ -496,6 +496,39 @@ function injectStyles(): void {
   @media (prefers-reduced-motion: reduce) {
     .eb-cc-flag, .eb-cc-missing { animation: none; }
   }
+
+  /* --- Fit at scale 1 (crisp — no transform blur) on as many devices as possible.
+     The pentagon is an SVG, so shrinking it costs ZERO sharpness; it absorbs most
+     of the height budget. fitToViewport's transform scale is only a last resort
+     for screens too small even after this. Roomy desktop look is left untouched;
+     these only kick in on short/narrow viewports. --- */
+  .eb-cc-pane .eb-radar { width: 300px; }   /* explicit cap (intrinsic SVG is 300) */
+
+  /* Shorter viewports (laptops, the original cut-off case): tighten + shrink the
+     pentagon so the whole creator clears the fold without scaling. */
+  @media (max-height: 860px) {
+    .eb-cc-content { gap: 10px; }
+    .eb-cc-pane, .eb-cc-actions { gap: 6px; }
+    .eb-cc-section { margin-top: 4px; }
+    .eb-cc-pane.eb-win, .eb-cc-actions.eb-win { padding: 9px 12px; }
+    .eb-cc-pane .eb-radar { width: 240px; }
+    .eb-cc-name { padding: 7px; font-size: 14px; }
+    .eb-da-attrs { gap: 4px 22px; padding: 8px 4px 2px; }
+  }
+  @media (max-height: 700px) {
+    .eb-cc-content { gap: 8px; }
+    .eb-cc-pane .eb-radar { width: 196px; }
+    .eb-cc-heading { margin-bottom: 0; }
+    .eb-cc-sprites { gap: 8px; }
+  }
+
+  /* Phones / narrow: one column, tighter windows, smaller pentagon. */
+  @media (max-width: 760px) {
+    .eb-cc-panes { gap: 10px; }
+    .eb-cc-pane, .eb-cc-actions { width: min(360px, 100%); }
+    .eb-cc-pane.eb-win, .eb-cc-actions.eb-win { padding: 9px 11px; }
+    .eb-cc-pane .eb-radar { width: 220px; }
+  }
   `;
   const style = document.createElement('style');
   style.id = 'eb-cc-styles';

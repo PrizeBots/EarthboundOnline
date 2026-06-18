@@ -13,6 +13,7 @@
 // DOM is built in ./dom; mutable state is centralized in ./state.
 import { setMuteButtonHidden } from '../MuteButton';
 import { nextHeldItem, getItemName } from '../Items';
+import { CUSTOM_GROUP_BASE } from '../SpriteManager';
 import { DEFAULT_GROUP, EditMode, SpriteEditorCallbacks } from './constants';
 import { S } from './state';
 import { flashSaved, postOverride, setSaveStatus } from './saveChannel';
@@ -52,6 +53,7 @@ import {
   highlightItemTabs,
   drawItemPreview,
 } from './itemEditor';
+import { loadEntityIntoBuffer, commitEntityEdit, persistEntity } from './entityEditor';
 import { updateWalker, drawTestPane, finishTestPointer } from './testWalker';
 import { buildPsiBuffer, rebuildPsiPicker, loadPsiIntoBuffer, drawPsiPreview } from './psiEditor';
 import { loadPsiCatalog, listPsi } from '../PsiCatalog';
@@ -90,18 +92,18 @@ export async function openSpriteEditor(callbacks: SpriteEditorCallbacks = {}): P
   buildPsiBuffer(); // seed the PSI frame buffers (Lifeup / first ability)
 
   buildDom();
-  // Entity Manager handoff: open Character mode on the handed-off sprite group
-  // (loadGroupIntoEditor syncs the char picker). Else the default cast member.
-  const startGroup =
-    callbacks.focusChar != null && Number.isInteger(callbacks.focusChar)
-      ? callbacks.focusChar
-      : DEFAULT_GROUP;
-  await loadGroupIntoEditor(startGroup);
+  // Always seed a valid cast sheet first so Character mode is ready to switch to.
+  await loadGroupIntoEditor(DEFAULT_GROUP);
   // Item Manager handoff: jump straight into Item mode on the chosen item.
   if (callbacks.focusItem) {
     setEditMode('item');
     loadItemIntoBuffer(callbacks.focusItem);
     S.itemPicker?.setValue(callbacks.focusItem);
+  } else if (callbacks.focusChar != null && Number.isInteger(callbacks.focusChar)) {
+    // Entity Manager handoff: a custom group → Entity mode (paintable); a ROM
+    // cast/vehicle group → Character mode.
+    if (callbacks.focusChar >= CUSTOM_GROUP_BASE) await selectEntity(callbacks.focusChar);
+    else await loadGroupIntoEditor(callbacks.focusChar);
   }
   window.addEventListener('keydown', onKeyDown, true);
   window.addEventListener('keyup', onKeyUp, true);
@@ -140,6 +142,12 @@ export function closeSpriteEditor(): void {
   S.psiFrameCtxs = [];
   S.psiCanvas = null;
   S.psiCtx = null;
+  S.entityCanvas = null;
+  S.entityCtx = null;
+  S.entityUndo = [];
+  S.entityRow = null;
+  S.entityNote = null;
+  S.entityScaleInput = null;
   S.charNote = null;
   S.nameInput = null;
   S.copyNote = null;
@@ -160,6 +168,14 @@ function cancelEditor(): void {
   cb?.();
 }
 
+/** Enter Entity mode on a custom sprite group (Source Assets import): load its
+ *  frame into the paint buffer, then switch mode. Used by the character picker
+ *  (custom ids) and the Entity Manager handoff. */
+export async function selectEntity(id: number): Promise<void> {
+  await loadEntityIntoBuffer(id);
+  setEditMode('entity');
+}
+
 export function setEditMode(m: EditMode): void {
   for (const [key, btn] of S.modeButtons) {
     btn.style.borderColor = key === m ? '#9af' : '#444';
@@ -170,6 +186,7 @@ export function setEditMode(m: EditMode): void {
   clearSelection(); // char cells, item buffers, and PSI frames differ in geometry
   if (S.itemRow) S.itemRow.style.display = m === 'item' ? 'flex' : 'none';
   if (S.psiRow) S.psiRow.style.display = m === 'psi' ? 'flex' : 'none';
+  if (S.entityRow) S.entityRow.style.display = m === 'entity' ? 'flex' : 'none';
   if (m === 'item') {
     S.colorIndex = 1;
     S.itemTab = tabForItem(S.itemEditId); // open on the tab holding the current item
@@ -181,9 +198,16 @@ export function setEditMode(m: EditMode): void {
     S.walkerItem = null;
     rebuildPsiPicker();
     if (S.psiEditId) loadPsiIntoBuffer(S.psiEditId);
-  } else {
+  } else if (m === 'char') {
     S.walkerItem = null;
+    // Returning to Character mode while the selection is a custom entity (or the
+    // cast sheet was torn down) would paint the wrong surface — reload a real cast
+    // group so Character mode always has a 16×24 sheet.
+    if (S.groupId >= CUSTOM_GROUP_BASE || !S.sheet) void loadGroupIntoEditor(DEFAULT_GROUP);
     if (S.itemNote) S.itemNote.textContent = 'Item: none (G cycles)';
+  } else {
+    // entity mode: the buffer + palette were set by loadEntityIntoBuffer already.
+    S.walkerItem = null;
   }
   renderSwatches();
   S.dirty = true;
@@ -223,6 +247,13 @@ function persistGroup(quiet: boolean): void {
       if (S.itemNote) S.itemNote.textContent = label;
       flashSaved(`💾 ${label}`);
     }
+    return;
+  }
+  if (S.editMode === 'entity') {
+    commitEntityEdit();
+    persistEntity();
+    setSaveStatus('saved');
+    if (!quiet) flashSaved('💾 Entity sprite saved');
     return;
   }
   if (!sheetReady()) return;

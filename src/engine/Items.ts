@@ -228,6 +228,44 @@ export function canvasToItemPixels(canvas: HTMLCanvasElement): string[] {
   return rows;
 }
 
+/**
+ * Quantize an arbitrary source image into a 16x16 ITEM_PALETTE grid — fit
+ * (aspect-preserving) and centered. Lets the Source Assets tool turn any ROM
+ * graphic into held-item art that renders through the normal item pipeline.
+ * NOTE: the result is re-quantized to OUR own 16-color item palette, so it is
+ * transformed art, not a verbatim ROM rip.
+ */
+export function itemPixelsFromImage(img: CanvasImageSource, iw: number, ih: number): string[] {
+  const c = document.createElement('canvas');
+  c.width = ITEM_W;
+  c.height = ITEM_H;
+  const ctx = c.getContext('2d')!;
+  ctx.imageSmoothingEnabled = false;
+  const scale = Math.min(ITEM_W / iw, ITEM_H / ih);
+  const w = Math.max(1, Math.round(iw * scale));
+  const h = Math.max(1, Math.round(ih * scale));
+  ctx.drawImage(
+    img,
+    0,
+    0,
+    iw,
+    ih,
+    Math.floor((ITEM_W - w) / 2),
+    Math.floor((ITEM_H - h) / 2),
+    w,
+    h
+  );
+  return canvasToItemPixels(c);
+}
+
+/** Serialize every in-memory item sprite back to the item_sprites.json shape
+ *  (for save-after-mint: load at boot → add one → write the whole map back). */
+export function itemSpritesDoc(): Record<string, ItemSpriteData> {
+  const out: Record<string, ItemSpriteData> = {};
+  for (const [id, d] of itemSprites) out[id] = d;
+  return out;
+}
+
 const ITEM_PAL_RGB: [number, number, number][] = ITEM_PALETTE.map((hex) => {
   if (!hex) return [0, 0, 0];
   return [

@@ -33,11 +33,13 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 CCS_DIR = ROOT / "eb_project" / "ccscript"
 
-PARTY_NAMES = {1: "Ness", 2: "Paula", 3: "Jeff", 4: "Poo"}
+# The lead member (Ness in the ROM) is the local player in our MMO, so its name
+# codes emit the runtime token "$name" (DialogueManager substitutes it per-player).
+PARTY_NAMES = {1: "$name", 2: "Paula", 3: "Jeff", 4: "Poo"}
 
 # {stat(N)} character-record fields that print text: the four party member
 # names live 22 apart (8/30/52/74); 7 is the player's bank balance.
-STAT_TEXT = {7: "0", 8: "Ness", 30: "Paula", 52: "Jeff", 74: "Poo"}
+STAT_TEXT = {7: "0", 8: "$name", 30: "Paula", 52: "Jeff", 74: "Poo"}
 
 MAX_PAGES = 12
 MAX_BLOCKS = 64  # jump-following safety net
@@ -168,7 +170,7 @@ class _Decoder:
             self.last_result = bool(m) and int(m.group()) in self.set_flags
         elif name == "name":
             m = re.search(r"\d+", args or "")
-            self.buf += PARTY_NAMES.get(int(m.group()) if m else 0, "Ness")
+            self.buf += PARTY_NAMES.get(int(m.group()) if m else 0, "$name")
         elif name == "itemname":
             m = re.search(r"\d+", args or "")
             self.buf += _item_names.get(int(m.group()) if m else -1, "something")

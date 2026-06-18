@@ -77,6 +77,7 @@ import {
 } from './pixelCanvas';
 import { itemStripCells, applyImportedItemImage } from './itemEditor';
 import { psiStripCells } from './psiEditor';
+import { entityStripCells } from './entityEditor';
 
 // ---------------------------------------------------------------------------
 // Cast roster + per-character loading
@@ -571,7 +572,7 @@ function drawFramesGrid(cells: StripCell[], cols: number): void {
   ctx.font = '9px monospace';
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'center';
-  const selectable = S.editMode !== 'char'; // item + psi frames are clickable to edit
+  const selectable = S.editMode === 'item' || S.editMode === 'psi'; // clickable frame selectors
   const editFrame = S.editMode === 'psi' ? S.psiEditFrame : S.itemEditFrame;
   cells.forEach((cell, i) => {
     const cx = GAP + (i % cols) * (cw + GAP);
@@ -630,6 +631,10 @@ export function drawStrip(): void {
   if (S.editMode === 'psi') {
     const cells = psiStripCells();
     drawFramesGrid(cells, Math.min(cells.length, 6)); // flipbook, wraps after 6 across
+    return;
+  }
+  if (S.editMode === 'entity') {
+    drawFramesGrid(entityStripCells(), 1); // the single entity frame
     return;
   }
   if (S.viewOnly) {
@@ -772,7 +777,31 @@ export function onSheetUp(): void {
   S.dirty = true;
 }
 
+/** SHEET panel in entity mode: a zoomed preview of the single entity frame (the
+ *  cast 12-wide sheet doesn't apply — entities are one image, not a pose sheet). */
+function drawEntitySheetPanel(): void {
+  const cv = S.sheetCanvas;
+  if (!cv || !S.entityCanvas) return;
+  const target = 192; // fit the frame into ~192px, integer zoom
+  const z = Math.max(1, Math.floor(Math.min(target / S.entityW, target / S.entityH)));
+  const w = S.entityW * z;
+  const h = S.entityH * z;
+  if (cv.width !== w || cv.height !== h) {
+    cv.width = w;
+    cv.height = h;
+  }
+  const ctx = cv.getContext('2d')!;
+  ctx.imageSmoothingEnabled = false;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  fillChecker(ctx, 0, 0, w, h);
+  ctx.drawImage(S.entityCanvas, 0, 0, S.entityW, S.entityH, 0, 0, w, h);
+}
+
 export function drawSheetPanel(): void {
+  if (S.editMode === 'entity') {
+    drawEntitySheetPanel();
+    return;
+  }
   if (!S.sheetCanvas || !S.sheet) return;
   const sc = SHEET_PANEL_SCALE;
   // Body is the 12-wide layout; widen only if a custom frame grew the sheet past

@@ -67,10 +67,12 @@ export const UNDO_LIMIT = 64;
 
 export type Tool = 'pencil' | 'eraser' | 'eyedrop' | 'fill' | 'select' | 'move' | 'rotate' | 'skew';
 // The editor edits the 16x24 character sheet ('char'), a 16x16 held-item buffer
-// ('item'), or a 48x48 PSI effect frame ('psi'). Item and PSI share the engine's
-// "buffer surface" path (see pixelCanvas.activeBuffer); only dims + the persist
-// target differ.
-export type EditMode = 'char' | 'item' | 'psi';
+// ('item'), a 48x48 PSI effect frame ('psi'), or a custom entity's single frame
+// ('entity' — variable size, Source Assets imports). Item/PSI/entity all share the
+// engine's "buffer surface" path (see pixelCanvas.activeBuffer); only dims, the
+// palette source, and the persist target differ. 'entity' uses the extracted
+// image palette (S.palette) like 'char'; item/psi use the fixed ITEM_PALETTE.
+export type EditMode = 'char' | 'item' | 'psi' | 'entity';
 
 // A pixel-rect selection within the active target (region-local coords). When
 // set, fill / transforms / copy act on it; otherwise they act on the whole frame.

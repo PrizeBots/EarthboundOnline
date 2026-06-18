@@ -87,6 +87,72 @@ Detailed status lives in **EDITOR_TOOLS.md**.
 - [ ] NPC Sprite Animator (authored attack/hurt/diagonal bands per enemy group, gated on combat)
 - [ ] Phase-1 pipeline hardening: push `extract_npcs` / `apply_map_changes` / doors / dialogue generators to ~99% before deepening matching editors
 
+## Live Ops: observe + live-edit the prod world from the editor — DESIGN PARKED (2026-06-18)
+
+> Goal (maintainer ask): from the localhost editor, **toggle between the local-dev
+> server and the live prod server**, observe the running prod world, AND make
+> changes (start with enemy spawners) that take effect in **real time for all
+> connected prod players**. Not needed right now — parked with the design so it can
+> be picked up cleanly.
+>
+> Context gathered while scoping: WS URL is same-origin only (`Network.ts:229`,
+> `openSocket()`); ALL account/save HTTP goes through one `fetch` in `Auth.ts:65`
+> (`/api/*`); assets/overrides/world-docs load locally and should STAY local. The
+> editor is dev-only (F2 / `__eb.admin`), localStorage is the persistence idiom
+> (mirror `MuteButton.ts` / `Auth.ts`). Prod URL is NOT in the repo — supply it
+> (Render hostname, e.g. `https://earthbound-online.onrender.com`). The `world_docs`
+> Supabase table already exists and is the natural home for live-editable content.
+
+### Phase 0 — Observe toggle (small, no security weight)
+
+- [ ] Editor HUD toggle (mirror the **Reload** toggle pattern, `EditorShell.ts:997`)
+      switching the active backend **dev ↔ prod**, stored in localStorage, applied
+      on a page reload (cleanest — boot-time `connect()` re-reads it).
+- [ ] Central "active server" module (`serverTarget.ts`): `apiBase()` + `wsUrl()`.
+      `Network.openSocket` uses `wsUrl()`; `Auth.api()` prefixes **auth/character**
+      calls (NOT world-docs, NOT assets) with `apiBase()`.
+- [ ] **Per-server session token** namespacing (`eb_session` vs `eb_session_prod`)
+      so the dev and prod logins coexist instead of clobbering each other.
+- [ ] **Localhost-only CORS allow** on the prod server's `/api/*` (so the dev page
+      can call prod auth). WS already cross-connects (no CORS). Gate to `localhost`
+      origins only — zero effect on real prod users.
+- [ ] You join prod as one of YOUR prod characters; you see players near you
+      (area-of-interest), with editor overlays on top.
+
+### Phase 1 — Live spawners (the vertical slice; HAS security weight)
+
+- [ ] **Admin identity on prod — DECISION PENDING.** Today there is NO admin layer
+      (editor is only localhost-gated). Options weighed: (A) **username allowlist via
+      env `ADMIN_USERNAMES`** on Render — recommended for v1, no migration, tied to a
+      real account; (B) `accounts.is_admin` column (migration, scales to roles);
+      (C) shared `ADMIN_KEY` env secret (simplest, but not identity-bound — least
+      recommended). **Pick A/B/C before building Phase 1.**
+- [ ] Live-editable spawn content in **Supabase** (extend `world_docs`, e.g. an
+      `enemy_spawns` doc) that the prod server reads at boot AND can mutate at
+      runtime — instead of the baked-in deployed override file.
+- [ ] **Admin write API on prod** behind a `requireAdmin` gate:
+      `POST /api/admin/spawner`, `DELETE /api/admin/spawner/:id` → validate → persist
+      to Supabase → apply to the live sim. (Same localhost CORS allow.)
+- [ ] **Runtime apply + broadcast**: GameHost/npcSim methods to add/remove a spawner
+      live, spawn the enemy now, and push it to every connected client (reuse the
+      existing enemy-spawn broadcast — clients already render server-driven enemies,
+      so little/no client change).
+- [ ] Editor's **EnemySpawnerTool**: when toggled to prod, send edits to the prod
+      admin API instead of `/__editor/save`. Local mode unchanged.
+
+### Phase 2 — Generalize
+
+- [ ] Same admin-write + live-apply pattern for NPCs, items, dialogue, Places.
+- [ ] Proper roles/audit log; revoke path; rate-limit admin endpoints.
+
+### Security notes (do not skip at build time)
+
+- A compromised admin = whoever can rewrite the live world. Keep the admin set
+  tiny, validate every payload server-side, never trust client-sent geometry.
+- Admin endpoints: auth-gated + localhost-CORS only + input-validated + logged.
+- Editor content WRITES stay local in dev mode; prod writes ONLY via the admin API
+  (never re-enable the loopback `editorApi` on the deploy server).
+
 ## Pre-Launch: User-Supplied ROM Architecture (PokeMMO model — REQUIRED before going live)
 
 Goal: we distribute zero ROM-derived data; every player supplies their own

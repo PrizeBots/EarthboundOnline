@@ -6,6 +6,9 @@ import {
   sellPrice,
   itemBaseEquip,
   itemUsers,
+  itemBaseHeal,
+  itemBaseHealPp,
+  itemBaseRevive,
   ItemSlot,
 } from '../../engine/Shop';
 import {
@@ -53,10 +56,24 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: 'homesick', label: 'Homesick' },
 ];
 
+/** Stats a consumable buff may boost — KEEP IN SYNC with server/buffs.js
+ *  BUFF_STATS (only the combat-affecting ones are offered here). */
+const BUFF_STAT_OPTIONS: { value: string; label: string }[] = [
+  { value: 'offense', label: 'Offense' },
+  { value: 'defense', label: 'Defense' },
+  { value: 'speed', label: 'Speed (dodge)' },
+];
+
 /** One status proc a weapon carries. */
 interface InflictEntry {
   type: string;
   chance: number;
+}
+/** One timed stat boost a consumable grants (server/buffs.js). */
+interface BuffEntry {
+  stat: string;
+  amount: number;
+  durationMs: number;
 }
 /** Per-item authoring overrides (overrides/equip_stats.json). Every field is
  *  optional and layers over the ROM item table on BOTH the server (shops.js) and
@@ -73,6 +90,10 @@ interface ItemOverride {
   attackSpeed?: number;
   cost?: number;
   heal?: number;
+  healPp?: number;
+  cure?: string[];
+  buffs?: BuffEntry[];
+  revive?: number;
   inflict?: InflictEntry[];
 }
 
@@ -111,6 +132,7 @@ class ItemManagerTool implements EditorTool {
 
   private shell: EditorShellApi | null = null;
   private itemId = '';
+  private pendingItem: string | null = null; // cross-tool handoff target (Source Assets mint)
   private panel: HTMLDivElement | null = null;
   private detailsEl: HTMLDivElement | null = null;
   private statsEl: HTMLDivElement | null = null;
@@ -123,6 +145,12 @@ class ItemManagerTool implements EditorTool {
     registerSaveHandler('item-folders', () => saveItemFolders());
     registerSaveHandler('item-stats', () => this.saveStats());
     void this.loadAndBuild();
+  }
+
+  /** Cross-tool handoff (Source Assets "New Item"): open focused on `id`. The
+   *  item must already be saved to disk — loadAndBuild reloads from there. */
+  requestItem(id: string): void {
+    this.pendingItem = id;
   }
 
   deactivate(): void {
@@ -175,6 +203,24 @@ class ItemManagerTool implements EditorTool {
     this.shell?.markDirty('item-stats');
   }
 
+  /** Set/clear the list of statuses this consumable cures on use. */
+  private setCure(id: string, list: string[]): void {
+    const ov = this.ovOf(id);
+    if (list.length) ov.cure = list;
+    else delete ov.cure;
+    if (!Object.keys(ov).length) delete this.overrides[id];
+    this.shell?.markDirty('item-stats');
+  }
+
+  /** Set/clear the list of timed stat buffs this consumable grants on use. */
+  private setBuffs(id: string, list: BuffEntry[]): void {
+    const ov = this.ovOf(id);
+    if (list.length) ov.buffs = list;
+    else delete ov.buffs;
+    if (!Object.keys(ov).length) delete this.overrides[id];
+    this.shell?.markDirty('item-stats');
+  }
+
   /** Override the display name (empty string clears it → revert to ROM name). */
   private setName(id: string, name: string): void {
     const ov = this.ovOf(id);
@@ -220,7 +266,10 @@ class ItemManagerTool implements EditorTool {
     await loadCustomItems(); // admin-minted items
     await loadItemFolders(); // the category desktop layout (seeds on first run)
     this.overrides = (await loadOverride<Record<string, ItemOverride>>('equip_stats.json')) ?? {};
-    if (!this.itemId) this.itemId = allItemIds()[0] ?? allItems()[0]?.id ?? '';
+    if (this.pendingItem) {
+      this.itemId = this.pendingItem;
+      this.pendingItem = null;
+    } else if (!this.itemId) this.itemId = allItemIds()[0] ?? allItems()[0]?.id ?? '';
     this.buildPanel();
     this.buildDesktop();
     this.desktop?.open(); // big center gallery, open by default (like Entity Manager)
@@ -404,9 +453,26 @@ class ItemManagerTool implements EditorTool {
       this.mkNumRow('dodge %', ov.dodge, 0, 0, 100, false, (v) => this.setOv(id, 'dodge', v));
       if (slot === 'weapon') this.buildInflictEditor(id, ov);
     } else {
-      // Consumables: heal amount (HP restored on use). Base heal is server-side
-      // (a few known items), so the placeholder can't show it — leave blank.
-      this.mkNumRow('heal HP', ov.heal, 0, 0, undefined, false, (v) => this.setOv(id, 'heal', v));
+      // Consumables: heal amount (HP restored on use). Base is 0 (effects aren't
+      // decoded); authored heals live in equip_stats.json — same file the server
+      // reads, so what you set here is exactly what the item heals in-game.
+      this.mkNumRow('heal HP', ov.heal, itemBaseHeal(id), 0, undefined, false, (v) =>
+        this.setOv(id, 'heal', v)
+      );
+      this.mkNumRow('heal PP', ov.healPp, itemBaseHealPp(id), 0, undefined, false, (v) =>
+        this.setOv(id, 'healPp', v)
+      );
+      // Revive: used on a DOWNED ally (click them or stand close), restoring this
+      // much HP. Big value = full revive (clamped to their max). 0 = not a revive.
+      this.mkNumRow('revive HP', ov.revive, itemBaseRevive(id), 0, undefined, false, (v) =>
+        this.setOv(id, 'revive', v)
+      );
+      const revNote = document.createElement('div');
+      revNote.textContent = 'revive: use on a downed ally (click/near). Big = full HP.';
+      revNote.style.cssText = 'color:#667;font-size:10px;margin-left:62px;';
+      this.statsEl.appendChild(revNote);
+      this.buildCureEditor(id, ov);
+      this.buildBuffEditor(id, ov);
       const note = document.createElement('div');
       note.textContent = 'Set "kind" to a gear slot above to author offense/defense/crit/inflict.';
       note.style.cssText = 'color:#667;font-size:10px;line-height:1.4;';
@@ -457,7 +523,11 @@ class ItemManagerTool implements EditorTool {
     };
     row.appendChild(i);
     const rev = document.createElement('span');
-    rev.textContent = cur === undefined ? '(base)' : '•';
+    // Show the real base number when un-overridden (so you always see the true
+    // current value), or a • dot when this item carries an explicit override.
+    rev.textContent = cur === undefined ? `(base ${base})` : '•';
+    rev.title =
+      cur === undefined ? 'using base value' : 'overridden — clear the field to revert to base';
     rev.style.cssText = `color:${cur === undefined ? '#667' : '#d8a23a'};font-size:10px;`;
     row.appendChild(rev);
     this.statsEl!.appendChild(row);
@@ -650,6 +720,173 @@ class ItemManagerTool implements EditorTool {
     hint.textContent = 'Chance is scaled by the target’s resistance to that status.';
     hint.style.cssText = 'color:#667;font-size:10px;line-height:1.4;';
     wrap.appendChild(hint);
+    this.statsEl!.appendChild(wrap);
+  }
+
+  /** Checkboxes for the statuses a consumable cures on use (none = cures nothing).
+   *  Reuses STATUS_OPTIONS so it stays in lockstep with the inflict catalog. */
+  private buildCureEditor(id: string, ov: ItemOverride): void {
+    const wrap = document.createElement('div');
+    wrap.style.cssText =
+      'display:flex;flex-direction:column;gap:4px;border-top:1px solid #2a3540;padding-top:6px;';
+    const head = document.createElement('div');
+    head.textContent = 'CURES STATUS (on use)';
+    head.style.cssText = 'color:#9fb8cc;font-size:11px;';
+    wrap.appendChild(head);
+
+    const set = new Set(ov.cure ?? []);
+    const commit = () =>
+      this.setCure(
+        id,
+        STATUS_OPTIONS.filter((o) => set.has(o.value)).map((o) => o.value)
+      );
+
+    const boxes = document.createElement('div');
+    boxes.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px 12px;margin-left:8px;';
+    for (const o of STATUS_OPTIONS) {
+      const lab = document.createElement('label');
+      lab.style.cssText = 'display:flex;align-items:center;gap:3px;color:#cde;cursor:pointer;';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = set.has(o.value);
+      cb.onchange = () => {
+        if (cb.checked) set.add(o.value);
+        else set.delete(o.value);
+        commit();
+      };
+      lab.appendChild(cb);
+      lab.appendChild(document.createTextNode(o.label));
+      boxes.appendChild(lab);
+    }
+    wrap.appendChild(boxes);
+
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;margin-left:8px;';
+    this.mkBtn(
+      'All',
+      () => {
+        STATUS_OPTIONS.forEach((o) => set.add(o.value));
+        commit();
+        this.refreshStats();
+      },
+      row
+    );
+    this.mkBtn(
+      'None',
+      () => {
+        set.clear();
+        commit();
+        this.refreshStats();
+      },
+      row
+    );
+    wrap.appendChild(row);
+    this.statsEl!.appendChild(wrap);
+  }
+
+  /** Rows of {stat, amount, duration} for the timed buffs a consumable grants.
+   *  No rows → the item grants no buffs. Mirrors the inflict editor's shape. */
+  private buildBuffEditor(id: string, ov: ItemOverride): void {
+    const wrap = document.createElement('div');
+    wrap.style.cssText =
+      'display:flex;flex-direction:column;gap:4px;border-top:1px solid #2a3540;padding-top:6px;';
+    const head = document.createElement('div');
+    head.textContent = 'STAT BUFFS (on use)';
+    head.style.cssText = 'color:#9fb8cc;font-size:11px;';
+    wrap.appendChild(head);
+
+    const list = (ov.buffs ?? []).map((e) => ({ ...e }));
+    const rowsEl = document.createElement('div');
+    rowsEl.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
+    wrap.appendChild(rowsEl);
+
+    const commit = () => this.setBuffs(id, list);
+
+    const renderRows = () => {
+      rowsEl.innerHTML = '';
+      list.forEach((entry, idx) => {
+        const r = document.createElement('div');
+        r.style.cssText = 'display:flex;align-items:center;gap:4px;';
+        const sel = document.createElement('select');
+        sel.style.cssText =
+          'flex:1;min-width:0;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
+        for (const o of BUFF_STAT_OPTIONS) {
+          const opt = document.createElement('option');
+          opt.value = o.value;
+          opt.textContent = o.label;
+          if (o.value === entry.stat) opt.selected = true;
+          sel.appendChild(opt);
+        }
+        sel.onchange = () => {
+          entry.stat = sel.value;
+          commit();
+        };
+        r.appendChild(sel);
+
+        const amt = document.createElement('input');
+        amt.type = 'number';
+        amt.value = String(entry.amount);
+        amt.title = 'stat bonus (+/-)';
+        amt.style.cssText =
+          'width:48px;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
+        amt.onchange = () => {
+          let n = parseInt(amt.value, 10);
+          if (Number.isNaN(n)) n = 0;
+          entry.amount = n;
+          amt.value = String(n);
+          commit();
+        };
+        r.appendChild(amt);
+
+        const dur = document.createElement('input');
+        dur.type = 'number';
+        dur.value = String(Math.round(entry.durationMs / 1000));
+        dur.title = 'duration (seconds)';
+        dur.style.cssText =
+          'width:48px;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
+        dur.onchange = () => {
+          let n = parseInt(dur.value, 10);
+          if (Number.isNaN(n) || n < 1) n = 1;
+          entry.durationMs = n * 1000;
+          dur.value = String(n);
+          commit();
+        };
+        r.appendChild(dur);
+        const durLbl = document.createElement('span');
+        durLbl.textContent = 's';
+        durLbl.style.cssText = 'color:#9fb8cc;';
+        r.appendChild(durLbl);
+
+        const del = document.createElement('button');
+        del.textContent = '🗑';
+        del.style.cssText =
+          'font:11px monospace;padding:1px 6px;cursor:pointer;border-radius:3px;background:#1d2530;color:#cde;border:1px solid #3a4a5a;';
+        del.onclick = () => {
+          list.splice(idx, 1);
+          commit();
+          renderRows();
+        };
+        r.appendChild(del);
+        rowsEl.appendChild(r);
+      });
+      if (!list.length) {
+        const none = document.createElement('div');
+        none.textContent = 'none → grants no buffs';
+        none.style.cssText = 'color:#667;font-size:10px;';
+        rowsEl.appendChild(none);
+      }
+    };
+    renderRows();
+
+    this.mkBtn(
+      '+ Add buff',
+      () => {
+        list.push({ stat: 'offense', amount: 10, durationMs: 60000 });
+        commit();
+        renderRows();
+      },
+      wrap
+    );
     this.statsEl!.appendChild(wrap);
   }
 

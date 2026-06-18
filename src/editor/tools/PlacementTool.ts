@@ -5,6 +5,7 @@ import {
   getSpriteGroupMeta,
   listSpriteGroupIds,
 } from '../../engine/SpriteManager';
+import { customSpriteGroupIds } from '../../engine/CustomSprites';
 import { createSpritePicker, drawSpriteGroupThumb, SpritePicker } from '../../engine/SpritePicker';
 import { getSpriteName, setSpriteNameOverride } from '../../engine/SpriteNames';
 import {
@@ -1167,7 +1168,8 @@ class PlacementTool implements EditorTool {
     const spriteRow = this.mkRow(form, 'sprite');
     spriteRow.style.alignItems = 'stretch';
     this.spritePicker = createSpritePicker({
-      sections: [{ values: listSpriteGroupIds().map(String) }],
+      // ROM sprite groups + standalone custom entities (Source Assets imports).
+      sections: [{ values: [...listSpriteGroupIds(), ...customSpriteGroupIds()].map(String) }],
       initial: String(this.selNpc?.sprite ?? 1),
       labelFor: (v) => `${v} ${getSpriteName(Number(v)) ?? ''}`.trim(),
       drawThumb: drawSpriteGroupThumb,

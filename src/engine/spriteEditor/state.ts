@@ -99,6 +99,19 @@ export const S = {
   // Per-cell hit boxes of the FRAMES strip (set by drawFramesGrid).
   stripCellRects: [] as { x: number; y: number; w: number; h: number }[],
 
+  // --- Custom-entity-editing mode (single variable-size frame; Source Assets) ---
+  // One paint buffer sized to the entity's frame (w×h). Palette is extracted from
+  // the art into S.palette. Persists to overrides/custom_sprites.json (png layer).
+  entityEditId: 0, // the custom sprite-group id being edited (>= CUSTOM_GROUP_BASE)
+  entityCanvas: null as HTMLCanvasElement | null,
+  entityCtx: null as CanvasRenderingContext2D | null,
+  entityUndo: [] as ImageData[],
+  entityW: 16,
+  entityH: 16,
+  entityRow: null as HTMLDivElement | null, // the entity UI (scale control + note)
+  entityNote: null as HTMLDivElement | null,
+  entityScaleInput: null as HTMLInputElement | null,
+
   // --- PSI-animation-editing mode (48x48 frames, variable count) ---
   psiEditId: '' as string, // active PSI ability id (from psi.json)
   psiDelivery: 'target' as 'caster' | 'target' | 'projectile',

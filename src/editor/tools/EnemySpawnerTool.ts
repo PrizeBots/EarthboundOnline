@@ -2,6 +2,7 @@ import { EditorTool, EditorShellApi, WorldPoint } from '../types';
 import { Camera } from '../../engine/Camera';
 import { Direction } from '../../types';
 import { drawSprite, loadSpriteGroup, listSpriteGroupIds } from '../../engine/SpriteManager';
+import { customSpriteGroupIds } from '../../engine/CustomSprites';
 import { getSpriteName } from '../../engine/SpriteNames';
 import { createSpritePicker, drawSpriteGroupThumb, SpritePicker } from '../../engine/SpritePicker';
 import { checkCollision } from '../../engine/Collision';
@@ -638,7 +639,8 @@ class EnemySpawnerTool implements EditorTool {
     );
     spriteRow.style.alignItems = 'stretch'; // let the dropdown fill the row width
     this.spritePicker = createSpritePicker({
-      sections: [{ values: listSpriteGroupIds().map(String) }],
+      // ROM sprite groups + standalone custom entities (Source Assets imports).
+      sections: [{ values: [...listSpriteGroupIds(), ...customSpriteGroupIds()].map(String) }],
       initial: String(s.sprite),
       labelFor: (v) => `${v} ${getSpriteName(Number(v)) ?? ''}`.trim(),
       drawThumb: drawSpriteGroupThumb,

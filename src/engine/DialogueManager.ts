@@ -16,6 +16,7 @@ import { drawWindow } from './WindowRenderer';
 import { drawText } from './TextRenderer';
 import { wrapText } from './ChatManager';
 import { consumePointerClick } from './Input';
+import { getStatus } from './StatusModal';
 import { SCREEN_WIDTH, SCREEN_HEIGHT } from '../types';
 
 const FONT = 0; // regular EB dialogue font
@@ -45,9 +46,19 @@ export function isDialogueOpen(): boolean {
   return open;
 }
 
+/**
+ * Expand dialogue tokens before display. `$name` → the local player's name
+ * (the EB equivalent of the ROM's {stat(8)} lead-member code). Case-sensitive,
+ * word-boundary-safe so "$names" stays literal. Add more tokens here as needed.
+ */
+function substituteVars(pages: string[]): string[] {
+  const playerName = getStatus().name || 'you';
+  return pages.map((p) => p.replace(/\$name\b/g, playerName));
+}
+
 export function openDialogue(pages: string[]): void {
   boxes = [];
-  for (const page of pages) {
+  for (const page of substituteVars(pages)) {
     const lines: string[] = [];
     for (const para of page.split('\n')) lines.push(...wrapText(para, INNER_W, FONT));
     for (let i = 0; i < lines.length; i += LINES_PER_BOX) {

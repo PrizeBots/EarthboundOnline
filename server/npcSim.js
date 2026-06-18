@@ -1132,6 +1132,11 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     let id = startId;
     for (const v of activeVehicles(carCfg)) {
       const [sx, sy] = v.waypoints[0];
+      // A traffic car is a full combatant like an Entity Manager vehicle: it has
+      // HP (so it can be attacked — PK rules, see handleAttack) and a collide
+      // damage it deals when it plows a foe (tickCar → plow). Authored per-vehicle
+      // in the Traffic Editor; falls back to the same defaults the EM flag uses.
+      const hp = v.hp > 0 ? v.hp : VEHICLE_HP;
       out.push(
         baseActor({
           id: id++,
@@ -1151,6 +1156,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           speed: v.speed || 1,
           carW: v.w || 40,
           carH: v.h || 28,
+          hp,
+          maxHp: hp,
+          damage: v.damage != null ? v.damage : VEHICLE_DAMAGE,
         })
       );
     }
@@ -1164,6 +1172,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // Everything that ticks/broadcasts (townsfolk + enemies + cars); enemies subset.
   let actors = npcs.filter((n) => n.kind === 'person' || n.isEnemy || n.kind === 'car');
   let enemies = npcs.filter((n) => n.isEnemy);
+  // Vehicles (traffic cars + Entity Manager `vehicle` flag) — the attackable,
+  // plowing actors. handleAttack damages these in addition to enemies, gated by
+  // canHurt (PK rules). KEEP IN SYNC with the actors/enemies rebuilds below.
+  let vehicles = npcs.filter((n) => n.kind === 'car' || n.isVehicle);
 
   // Hot-reload placements when extraction rewrites npcs.json — otherwise the
   // sim keeps broadcasting STALE home positions and clients see NPCs snap
@@ -1239,6 +1251,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     }
     actors = npcs.filter((n) => n.kind === 'person' || n.isEnemy || n.kind === 'car');
     enemies = npcs.filter((n) => n.isEnemy);
+    vehicles = npcs.filter((n) => n.kind === 'car' || n.isVehicle);
     console.log(
       `[npcSim] reloaded ${NPCS_FILE} (${actors.length} actors, ${enemies.length} enemies)`
     );
@@ -1263,6 +1276,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     for (const n of npcs) if (n.kind === 'person' || n.isEnemy) n.dirty = true;
     actors = npcs.filter((n) => n.kind === 'person' || n.isEnemy || n.kind === 'car');
     enemies = npcs.filter((n) => n.isEnemy);
+    vehicles = npcs.filter((n) => n.kind === 'car' || n.isVehicle);
     console.log(
       `[npcSim] reloaded enemy spawners (${enemies.length} enemies, ${SPAWNERS.length} spawners)`
     );
@@ -1279,6 +1293,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     for (const n of carPool) n.dirty = true;
     actors = npcs.filter((n) => n.kind === 'person' || n.isEnemy || n.kind === 'car');
     enemies = npcs.filter((n) => n.isEnemy);
+    vehicles = npcs.filter((n) => n.kind === 'car' || n.isVehicle);
     console.log(`[npcSim] reloaded traffic (${carPool.length} cars)`);
   }
 
@@ -1362,22 +1377,6 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     return [3, 6, 0, 5, 2, 4, 1, 7][oct];
   }
 
-  // True if a car's body box at (nx,ny) overlaps any player or other live actor.
-  // Cars yield to everything: when blocked they wait in place until it clears.
-  function carBlocked(c, nx, ny, players) {
-    const [bx, by, bw, bh] = actorBox(c, nx, ny);
-    for (const p of players) {
-      if (p.editor) continue; // cars drive through the parked editor avatar
-      if (aabb(bx, by, bw, bh, p.x - COL_W / 2, p.y + COL_OY, COL_W, COL_H)) return true;
-    }
-    for (const o of actors) {
-      if (o === c || o.dead || o.kind === 'deleted') continue;
-      const [ox, oy, ow, oh] = actorBox(o, o.x, o.y);
-      if (aabb(bx, by, bw, bh, ox, oy, ow, oh)) return true;
-    }
-    return false;
-  }
-
   // Next waypoint index for a car: looping routes wrap; one-shot routes
   // ping-pong (reverse at the ends) so the car never teleports back to start.
   function nextWp(c) {
@@ -1395,8 +1394,14 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   }
 
   // Drive a car toward its current waypoint; advance when reached. Faces the
-  // travel direction. If an entity is in the way, wait (don't advance).
-  function tickCar(c, players) {
+  // travel direction. A car follows its HAND-AUTHORED route and is NOT wall-
+  // blocked (routes are drawn on the streets; the author guarantees they're
+  // drivable, and the body box is large enough that a wall check would falsely
+  // stall it on tile edges). It plows whatever it runs over — foes (enemies +
+  // PKers) take the collide-hit + scatter knockback, friendlies are nudged out
+  // of the lane (no damage) — instead of yielding. Looping vs ping-pong is
+  // resolved by nextWp.
+  function tickCar(c, players, now) {
     const wps = c.waypoints;
     if (!wps || wps.length < 2) return;
     let tgt = wps[c.wpIndex];
@@ -1421,13 +1426,13 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       c.dirty = true;
     }
     const step = Math.min(c.speed, dist);
-    const nx = c.x + ux * step;
-    const ny = c.y + uy * step;
-    if (carBlocked(c, nx, ny, players)) return; // entity ahead — wait
-    c.x = nx;
-    c.y = ny;
+    const travelX = ux * step;
+    const travelY = uy * step;
+    c.x += travelX;
+    c.y += travelY;
     c.dirty = true;
     stepAnimation(c); // cycle the 2 drive frames while actually moving
+    plow(c, travelX, travelY, players, now);
     if (Math.hypot(tgt[0] - c.x, tgt[1] - c.y) < 0.5) c.wpIndex = nextWp(c);
   }
 
@@ -2390,6 +2395,27 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     }
   }
 
+  // Destroyed traffic cars respawn at their route start after a delay, then drive
+  // the loop again — same lifecycle as a downed townsperson (reviveNpcs), but a
+  // car restarts at waypoint 0 heading to waypoint 1. Entity Manager vehicles are
+  // kind 'person' and revive via reviveNpcs already.
+  function reviveCars(now) {
+    for (const n of vehicles) {
+      if (n.kind !== 'car' || !n.dead || now < n.respawnAt) continue;
+      n.x = n.homeX;
+      n.y = n.homeY;
+      n.dir = n.homeDir;
+      n.frame = 0;
+      n.pose = 'walk';
+      n.wpIndex = 1; // heading toward the second waypoint again
+      n.step = 1;
+      n.hp = n.maxHp;
+      n.dead = false;
+      n.dirty = true;
+      n.hpDirty = true;
+    }
+  }
+
   // Apply `dmg` to a live actor WE own (enemy or townsperson): flinch, broadcast
   // HP, and on death hide + schedule the right revival. Enemies award the killer
   // their EXP (players only — killerPlayerId is null for NPC-dealt kills);
@@ -2622,6 +2648,43 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         });
     }
 
+    // Vehicles (traffic cars + Entity Manager `vehicle` flag) are attackable too,
+    // under the SAME PK rules (canHurt): a PKer can wreck any vehicle, a non-PKer
+    // only a PK-flagged one. The whole body box is the hurtbox so a swing anywhere
+    // on the car connects (its foot box would be tiny for a big sprite). Vehicles
+    // don't dodge and carry no status proc; death/respawn run through applyDamage's
+    // shared non-enemy path (→ reviveCars for cars, reviveNpcs for EM vehicles).
+    for (const n of vehicles) {
+      if (n.dead || n.hp <= 0) continue;
+      if (!canHurt(attacker, n)) continue; // PK rules decide if this lands
+      const [vbx, vby, vbw, vbh] = actorBox(n, n.x, n.y);
+      if (!aabb(hx, hy, hw, hh, vbx, vby, vbw, vbh)) continue;
+      if (wallBetween(x, y, n.x, n.y)) continue; // no reaching through a wall
+      const res = resolveMelee(critChance, 0, base, rng);
+      if (res.miss) {
+        if (broadcastCb)
+          broadcastCb({
+            type: 'combat',
+            evt: 'miss',
+            x: n.x,
+            y: n.y,
+            byPlayer: playerId,
+            targetPlayer: null,
+          });
+        continue;
+      }
+      applyDamage(n, res.dmg, now, playerId, { x, y, inflict: [] });
+      if (res.crit && broadcastCb)
+        broadcastCb({
+          type: 'combat',
+          evt: 'crit',
+          x: n.x,
+          y: n.y,
+          byPlayer: playerId,
+          targetPlayer: null,
+        });
+    }
+
     // PvP: the SAME swing also lands on other players the PK rules allow (PK
     // players hurt anyone; anyone hurts a PKer). Player HP lives on the host, so
     // a connecting hit is applied via onPlayerHitCb (→ GameHost.damagePlayer).
@@ -2696,6 +2759,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         const now = Date.now();
         reviveStatics(now);
         reviveNpcs(now);
+        reviveCars(now);
         if (players.length === 0) return;
         updateSpawners(now, players);
         // Detect door warps: a player whose reported position jumped > WARP_DELTA
@@ -2779,7 +2843,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             continue;
           }
           if (near) {
-            if (n.kind === 'car') tickCar(n, players);
+            if (n.kind === 'car') tickCar(n, players, now);
             else if (n.roam) tickEnemy(n, players, now, onEnemyHit, recentWarps);
             else if (n.isVehicle) tickVehicle(n, players, now);
             else tickNpc(n, players, now);
@@ -2880,14 +2944,15 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
 
     /**
      * HP rows for new clients: every enemy (incl. hp 0 = dead/hidden), plus any
-     * townsperson that's currently damaged or downed (hp < maxHp) so a late
-     * joiner sees their health bar / hidden-while-dead state. Full-HP townsfolk
-     * are omitted — the client defaults them to full anyway.
+     * townsperson OR traffic car that's currently damaged or downed (hp < maxHp)
+     * so a late joiner sees their health bar / hidden-while-dead state. Full-HP
+     * townsfolk/cars are omitted — the client defaults them to full anyway.
      */
     hpSnapshot() {
       const out = enemies.map((n) => [n.id, n.hp, n.maxHp]);
       for (const n of actors) {
-        if (n.kind === 'person' && n.hp < n.maxHp) out.push([n.id, n.hp, n.maxHp]);
+        if ((n.kind === 'person' || n.kind === 'car') && n.hp < n.maxHp)
+          out.push([n.id, n.hp, n.maxHp]);
       }
       return out;
     },

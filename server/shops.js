@@ -14,15 +14,10 @@ const fs = require('fs');
 const path = require('path');
 
 // HP a consumable restores when used. EarthBound encodes item effects in a way
-// we don't fully decode yet, so only the few we know heal; the rest are still
-// buyable/sellable, they just don't do anything when "used" (use_item no-ops).
-// Cookie (88) keeps the legacy value so the starter item behaves as before.
-const HEAL_BY_ID = {
-  88: 6, // Cookie
-  89: 10, // Bag of fries
-  90: 50, // Hamburger
-};
-
+// we don't decode yet, so the BASE heal is 0 for everything — the heals we know
+// (Cookie/fries/burger, etc.) live in the authored override layer
+// (overrides/equip_stats.json), fully visible + editable in the Item Manager.
+// Items with no heal are still buyable/sellable; they just no-op on use.
 function loadShops(assetsDir) {
   let data = { items: {}, stores: {}, npcShops: {} };
   try {
@@ -95,7 +90,17 @@ function loadShops(assetsDir) {
     goods[id] = {
       name: typeof ov.name === 'string' && ov.name.trim() ? ov.name : it.name,
       cost: num(ov.cost, it.cost | 0),
-      heal: num(ov.heal, HEAL_BY_ID[id] || 0),
+      heal: num(ov.heal, 0),
+      healPp: num(ov.healPp, 0),
+      // Consumable effects beyond raw HP/PP, all authored in the Item Manager and
+      // applied by gameHost on use (cure/buffs) or on lethal damage (revive):
+      //  cure  — status ids this item clears on use (e.g. ["poison","cold"]).
+      //  buffs — timed stat boosts ([{stat, amount, durationMs}]); see buffs.js.
+      //  revive — HP an auto-revive restores when it saves you from a killing
+      //           blow (0 = not a revive item). Sanitized at the use-site.
+      cure: Array.isArray(ov.cure) ? ov.cure : null,
+      buffs: Array.isArray(ov.buffs) ? ov.buffs : null,
+      revive: num(ov.revive, 0),
       users: Array.isArray(ov.users) ? ov.users : it.users || [],
       equip,
     };

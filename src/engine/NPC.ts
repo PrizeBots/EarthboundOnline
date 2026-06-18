@@ -108,10 +108,11 @@ export class NPC extends Entity {
   /**
    * No HP left — hidden + non-solid. Enemies: killed or an inactive spawner
    * slot. People: a townsperson an enemy downed (revives at home server-side).
-   * Props/cars have no HP and never report dead.
+   * Cars: a destroyed vehicle (revives at its route start server-side). Props
+   * carry no HP and never report dead.
    */
   get dead(): boolean {
-    return (this.kind === 'enemy' || this.kind === 'person') && this.hp <= 0;
+    return (this.kind === 'enemy' || this.kind === 'person' || this.kind === 'car') && this.hp <= 0;
   }
 
   update(): void {

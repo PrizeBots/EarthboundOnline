@@ -21,6 +21,7 @@ const { createNpcSim } = require('./npcSim');
 const { loadShops } = require('./shops');
 const { sanitizeAlloc, deriveCombatStats, STAT_KEYS, defaultAlloc } = require('./charStats');
 const status = require('./status'); // EB status-condition engine (shared with npcSim)
+const buffs = require('./buffs'); // temporary timed stat boosts (consumables / future PSI)
 
 const POSES = ['walk', 'climb', 'attack', 'hurt'];
 const MAX_SLOTS = 14; // EarthBound's Goods menu holds 14 items per character
@@ -43,6 +44,12 @@ const HOTBAR_PSI_TAG = 'psi:';
 const BAG_FULL_NOTICE_MS = 2500; // min gap between "bag full" popups (anti-spam)
 const STARTING_MONEY = 1000; // every player joins with $1000
 const DEATH_CASH_PCT = 0.5; // fraction of ON-HAND cash dropped on death (bank is safe)
+// KO/downed window: HP→0 lays the player out for this long instead of dying. During
+// it, allies can revive them; the cash-drop penalty is DEFERRED to true death, so a
+// revived player loses nothing. Elapsing it (or "giving up the ghost") = true death.
+const DOWNED_MS = 30000;
+// How close (px) an ally must be to a downed friend to revive them (item or PSI).
+const REVIVE_RANGE = 44;
 const EQUIP_SLOTS = ['weapon', 'body', 'arms', 'other'];
 // Skill points granted per level-up (banked until spent on the pentagon) and the
 // per-stat cap a spend can raise an allocation to. Both server-authoritative.
@@ -241,8 +248,12 @@ function levelUp(p) {
   p.pp = p.ppMax;
 }
 
-// StatusModal-shaped payload (field names match PlayerStats: hpMax/ppMax).
+// StatusModal-shaped payload (field names match PlayerStats: hpMax/ppMax). The
+// combat stats are EFFECTIVE values — base progression + any active timed buffs
+// (buffs.js) — so the status screen and combat agree on what the player has now.
 function statsPayload(p) {
+  const now = Date.now();
+  const bb = (stat) => buffs.buffBonus(p, stat, now);
   return {
     level: p.level,
     hp: p.hp,
@@ -251,13 +262,13 @@ function statsPayload(p) {
     ppMax: p.ppMax,
     exp: p.exp,
     expToNext: p.expToNext,
-    offense: p.offense,
-    defense: p.defense,
-    speed: p.speed,
-    guts: p.guts,
-    vitality: p.vitality,
-    iq: p.iq,
-    luck: p.luck,
+    offense: p.offense + bb('offense'),
+    defense: p.defense + bb('defense'),
+    speed: p.speed + bb('speed'),
+    guts: p.guts + bb('guts'),
+    vitality: p.vitality + bb('vitality'),
+    iq: p.iq + bb('iq'),
+    luck: p.luck + bb('luck'),
   };
 }
 
@@ -386,7 +397,8 @@ class GameHost {
           hp: p.hp,
           editor: !!p.editor,
           // Speed-derived chance to dodge a swing (enemy OR PvP; npcSim resolves it).
-          dodge: dodgeChanceFromSpeed(p.speed),
+          // Speed buffs (e.g. Skip sandwich) raise the effective dodge while active.
+          dodge: dodgeChanceFromSpeed(p.speed + buffs.buffBonus(p, 'speed', Date.now())),
           // PK flag, so npcSim's canHurt can gate PvP (and NPC aggro on PKers).
           pk: !!p.pk,
         })),
@@ -434,8 +446,25 @@ class GameHost {
   _tickPlayerStatuses() {
     const now = Date.now();
     for (const [id, p] of this.players) {
-      if (p.editor || p.hp <= 0 || !p.statuses) continue;
-      if (Object.keys(p.statuses).length === 0) continue;
+      // Downed players: tick the KO window; when it elapses they truly die.
+      if (p.downed) {
+        if (now >= p.downedUntil) this._trueDeath(id);
+        continue;
+      }
+      if (p.editor || p.hp <= 0) continue;
+      // Expire timed stat buffs; when one wears off, re-push stats so the client's
+      // status screen drops the bonus back down (effective offense/defense/speed).
+      if (p.buffs && p.buffs.length && buffs.tickBuffs(p, now).changed) {
+        this.broadcastAll({
+          type: 'player_stats',
+          id,
+          stats: statsPayload(p),
+          leveled: false,
+          gained: 0,
+        });
+        this._sendPlayerBuffs(p); // a buff wore off — refresh the owner's HUD
+      }
+      if (!p.statuses || Object.keys(p.statuses).length === 0) continue;
       const r = status.tickStatuses(p, now);
       for (const d of r.dot) {
         this.damagePlayer(id, Math.max(1, Math.floor(p.maxHp * d.pct)), null, null);
@@ -460,6 +489,21 @@ class GameHost {
       id: p.id,
       statuses: status.activeStatuses(p, Date.now()),
     });
+  }
+
+  /** Send a player their active timed buffs (owner-only — it drives their personal
+   *  buff HUD). Each entry carries REMAINING ms (not an absolute time) so the
+   *  client counts down locally regardless of clock skew, the same trick as the PK
+   *  lock. Call whenever the buff set changes (apply / expire / death / revive). */
+  _sendPlayerBuffs(p) {
+    if (!p || !p._ws) return;
+    const now = Date.now();
+    const list = buffs.activeBuffs(p, now).map((b) => ({
+      stat: b.stat,
+      amount: b.amount,
+      ms: Math.max(0, b.until - now),
+    }));
+    p._ws.send(JSON.stringify({ type: 'player_buffs', buffs: list }));
   }
 
   // Close any connection silent longer than IDLE_TIMEOUT_MS. Closing triggers the
@@ -806,9 +850,14 @@ class GameHost {
     // Shielded mid door-transition: the player is a frozen ghost at the doorway
     // and can't move or defend, so enemy swings whiff (see player.warping).
     if (p.warping && Date.now() < p.warpUntil) return;
-    // Defense softens incoming hits (stat defense + equipped armor); always at
-    // least 1 so leveling/gear never makes a player untouchable.
-    const eff = Math.max(1, dmg - Math.floor(((p.defense || 0) + (p.armorDefense || 0)) / 2));
+    // Defense softens incoming hits (stat defense + equipped armor + any active
+    // defense buff); always at least 1 so leveling/gear never makes a player
+    // untouchable.
+    const defBuff = buffs.buffBonus(p, 'defense', Date.now());
+    const eff = Math.max(
+      1,
+      dmg - Math.floor(((p.defense || 0) + (p.armorDefense || 0) + defBuff) / 2)
+    );
     p.hp = Math.max(0, p.hp - eff);
     this.broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: eff });
     if (p.hp > 0) this._applyHitStatuses(p, inflict); // break sleep + roll any inflicts
@@ -822,29 +871,98 @@ class GameHost {
       p.y = knock.y;
       this.broadcastAll({ type: 'player_push', id: playerId, x: p.x, y: p.y });
     }
-    if (p.hp <= 0) {
-      // Death penalty: drop half your ON-HAND cash where you fell as a first-touch
-      // money pickup (anyone can grab it); your bank balance is untouched. Strong
-      // nudge to bank your earnings. Spawn it before the respawn teleport moves p.
-      const dropped = Math.floor((p.money | 0) * DEATH_CASH_PCT);
-      if (dropped > 0) {
-        p.money -= dropped;
-        p._ws.send(JSON.stringify({ type: 'money', money: p.money }));
-        this.npcSim.spawnMoneyDrop(p.x, p.y, dropped);
-        this._saveCharacter(playerId);
-      }
-      p.hp = p.maxHp;
-      p.x = this.SPAWN.x;
-      p.y = this.SPAWN.y;
-      p.direction = this.SPAWN.dir || 0;
-      p.frame = 0;
-      p.pose = 'walk';
-      status.clearAll(p); // death wipes every status condition
-      this.npcSim.noteRespawn(playerId); // exempt this teleport from enemy door-warp follow
-      this.broadcastAll({ type: 'player_respawn', id: playerId, x: p.x, y: p.y, dir: p.direction });
-      this.broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: 0 });
-      this._broadcastPlayerStatus(p); // clear the client's status icons/lock
+    // Killing blow → enter the downed/KO state (30s) instead of dying outright.
+    // Drops + respawn are deferred to true death so a revive loses nothing.
+    if (p.hp <= 0 && !p.downed) this._enterDowned(playerId, p);
+  }
+
+  /** HP hit 0 → lay the player out (KO) for DOWNED_MS instead of dying. Clears
+   *  DoT/buffs (they're unconscious) and tells everyone: remotes draw the laying
+   *  pose, the owner gets the countdown + closing vignette. The cash-drop penalty
+   *  is DEFERRED to _trueDeath, so an ally revive within the window costs nothing. */
+  _enterDowned(playerId, p) {
+    p.hp = 0;
+    p.downed = true;
+    p.downedUntil = Date.now() + DOWNED_MS;
+    p.pose = 'walk';
+    p.frame = 0;
+    status.clearAll(p);
+    buffs.clearBuffs(p);
+    this._broadcastPlayerStatus(p);
+    this._sendPlayerBuffs(p);
+    this.broadcastAll({ type: 'player_downed', id: playerId, ms: DOWNED_MS });
+  }
+
+  /** Resolve a downed player into TRUE death: apply the cash-drop penalty, then
+   *  full-heal + respawn at the spawn point. Fired when the 30s window elapses or
+   *  the player gives up the ghost. No-op if they're not (still) downed. */
+  _trueDeath(playerId) {
+    const p = this.players.get(playerId);
+    if (!p || !p.downed) return;
+    p.downed = false;
+    p.downedUntil = 0;
+    // Death penalty: drop half on-hand cash where they fell (bank is safe), as a
+    // first-touch pickup. Spawn it before the respawn teleport moves p.
+    const dropped = Math.floor((p.money | 0) * DEATH_CASH_PCT);
+    if (dropped > 0) {
+      p.money -= dropped;
+      if (p._ws) p._ws.send(JSON.stringify({ type: 'money', money: p.money }));
+      this.npcSim.spawnMoneyDrop(p.x, p.y, dropped);
     }
+    p.hp = p.maxHp;
+    p.x = this.SPAWN.x;
+    p.y = this.SPAWN.y;
+    p.direction = this.SPAWN.dir || 0;
+    p.frame = 0;
+    p.pose = 'walk';
+    status.clearAll(p);
+    buffs.clearBuffs(p);
+    this._sendPlayerBuffs(p);
+    this.npcSim.noteRespawn(playerId); // exempt this teleport from enemy door-warp follow
+    this.broadcastAll({ type: 'player_respawn', id: playerId, x: p.x, y: p.y, dir: p.direction });
+    this.broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: 0 });
+    this._broadcastPlayerStatus(p);
+    this._saveCharacter(playerId);
+  }
+
+  /** Revive a downed player IN PLACE to `hp` HP (clamped ≥1). Cancels the KO; every
+   *  client stands them back up (player_revived) and the owner's vignette lifts. */
+  _reviveDowned(p, hp) {
+    if (!p || !p.downed) return;
+    p.downed = false;
+    p.downedUntil = 0;
+    p.hp = Math.min(p.maxHp, Math.max(1, hp | 0));
+    p.pose = 'walk';
+    p.frame = 0;
+    this.broadcastAll({ type: 'player_revived', id: p.id, x: Math.round(p.x), y: Math.round(p.y) });
+    this.broadcastAll({
+      type: 'player_hp',
+      id: p.id,
+      hp: p.hp,
+      maxHp: p.maxHp,
+      dmg: 0,
+      heal: p.hp,
+    });
+    this._broadcastPlayerStatus(p);
+    this._saveCharacter(p.id);
+  }
+
+  /** Find the downed player nearest to (x,y) within REVIVE_RANGE, or null. Used to
+   *  resolve a proximity revive (and to validate a clicked target's range). */
+  _nearestDownedWithin(x, y, range = REVIVE_RANGE) {
+    let best = null;
+    let bestD2 = range * range;
+    for (const q of this.players.values()) {
+      if (!q.downed) continue;
+      const dx = q.x - x;
+      const dy = q.y - y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= bestD2) {
+        bestD2 = d2;
+        best = q;
+      }
+    }
+    return best;
   }
 
   // Apply a landed hit's status side-effects to a player: any "breaks on hit"
@@ -1256,7 +1374,9 @@ class GameHost {
           entry.y,
           msg.dir | 0,
           playerId,
-          entry.offense + (entry.weaponOffense || 0),
+          entry.offense +
+            (entry.weaponOffense || 0) +
+            buffs.buffBonus(entry, 'offense', Date.now()),
           entry.pk,
           critChanceFromLuck(entry.luck),
           entry.attackSpeed || 1,
@@ -1357,14 +1477,81 @@ class GameHost {
         // Equippable gear is NOT a consumable — "using" a weapon/armor must
         // never destroy it. It's equipped via the 'equip' path instead.
         if (def.equip) break;
-        // A heal item that can't restore anything (HP and/or PP already full)
-        // would just be consumed for nothing. Refuse + say so (EarthBound does the
-        // same) so a hotbar press at full bars isn't a silent dud that wastes it.
+        // Revive items (Horn of life / Secret herb / Cup of Lifenoodles) act on a
+        // DOWNED ally, never the user (a downed player can't act). Resolve the
+        // target: an explicit clicked targetId (must be downed AND within range),
+        // else the nearest downed ally in range. No valid target → refuse WITHOUT
+        // consuming, so a misclick or out-of-range press never wastes the item.
+        if (def.revive > 0) {
+          let target = null;
+          const tid = typeof msg.targetId === 'string' ? msg.targetId : null;
+          if (tid) {
+            const t = this.players.get(tid);
+            if (t && t.downed) {
+              const dx = t.x - entry.x;
+              const dy = t.y - entry.y;
+              if (dx * dx + dy * dy <= REVIVE_RANGE * REVIVE_RANGE) target = t;
+            }
+          } else {
+            target = this._nearestDownedWithin(entry.x, entry.y);
+          }
+          if (!target) {
+            entry._ws.send(
+              JSON.stringify({ type: 'notice', text: 'No downed ally in range to revive.' })
+            );
+            break;
+          }
+          this._reviveDowned(target, def.revive);
+          entry.inventory.splice(slot, 1);
+          entry._ws.send(
+            JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) })
+          );
+          entry._ws.send(
+            JSON.stringify({ type: 'notice', text: `You revived ${target.name} with ${def.name}!` })
+          );
+          this.broadcastExcept(
+            {
+              type: 'item_use',
+              id: playerId,
+              item: itemId,
+              x: Math.round(entry.x),
+              y: Math.round(entry.y),
+            },
+            playerId
+          );
+          this._saveCharacter(playerId);
+          break;
+        }
+        // What this item can actually DO for the player right now. A consumable
+        // whose every effect is a no-op (bars full, nothing to cure) would just be
+        // wasted, so we refuse + say so (EarthBound does the same) rather than
+        // silently eat a hotbar press.
+        const now = Date.now();
         const canHp = def.heal && entry.hp < entry.maxHp;
         const canPp = def.healPp && entry.pp < entry.ppMax;
-        if ((def.heal || def.healPp) && !canHp && !canPp) {
-          const full = def.heal && def.healPp ? 'HP and PP are' : def.healPp ? 'PP is' : 'HP is';
-          entry._ws.send(JSON.stringify({ type: 'notice', text: `Your ${full} already full.` }));
+        // Statuses this item lists that the player currently has (the cure targets).
+        const curable = Array.isArray(def.cure)
+          ? def.cure.filter((t) => status.defOf(t) && status.hasStatus(entry, t, now))
+          : [];
+        // Valid timed stat buffs this item grants (buffs always "do something").
+        const buffList = Array.isArray(def.buffs)
+          ? def.buffs.filter(
+              (b) => b && buffs.BUFF_STATS.has(b.stat) && b.durationMs > 0 && Math.round(b.amount)
+            )
+          : [];
+        const hasEffect =
+          def.heal || def.healPp || (Array.isArray(def.cure) && def.cure.length) || buffList.length;
+        const useful = canHp || canPp || curable.length || buffList.length;
+        if (hasEffect && !useful) {
+          // Tailor the message to the dud: full bars vs nothing to cure.
+          let text = 'It would have no effect right now.';
+          if ((def.heal || def.healPp) && !buffList.length && !(def.cure && def.cure.length)) {
+            const full = def.heal && def.healPp ? 'HP and PP are' : def.healPp ? 'PP is' : 'HP is';
+            text = `Your ${full} already full.`;
+          } else if (def.cure && def.cure.length && !def.heal && !def.healPp && !buffList.length) {
+            text = "You don't have anything to cure.";
+          }
+          entry._ws.send(JSON.stringify({ type: 'notice', text }));
           break;
         }
 
@@ -1387,6 +1574,19 @@ class GameHost {
         // to the cap; player_stats pushes the new pp so the caster's bar redraws.
         if (canPp) {
           entry.pp = Math.min(entry.ppMax, entry.pp + def.healPp);
+        }
+        // Status-cure foods clear the listed conditions the player currently has;
+        // re-broadcast the active set so the client drops the icons + input lock.
+        if (curable.length) {
+          for (const t of curable) status.clearStatus(entry, t);
+          this._broadcastPlayerStatus(entry);
+        }
+        // Timed stat buffs (Skip/Luck sandwich, etc.). applyBuff records each onto
+        // entry.buffs; the per-tick upkeep expires them (see _tickPlayerStatuses).
+        for (const b of buffList) buffs.applyBuff(entry, b.stat, b.amount, b.durationMs, now);
+        // PP refill and/or a new buff changed the effective stats — push once so the
+        // status screen + PSI bar redraw.
+        if (canPp || buffList.length) {
           this.broadcastAll({
             type: 'player_stats',
             id: playerId,
@@ -1395,6 +1595,8 @@ class GameHost {
             gained: 0,
           });
         }
+        // Refresh the owner's buff HUD with the new active set + timers.
+        if (buffList.length) this._sendPlayerBuffs(entry);
 
         entry.inventory.splice(slot, 1);
         entry._ws.send(
@@ -1598,6 +1800,14 @@ class GameHost {
         if (!text) break;
         // Broadcast to everyone else; the sender shows its own bubble locally.
         this.broadcastExcept({ type: 'chat', id: playerId, text }, playerId);
+        break;
+      }
+
+      case 'give_up': {
+        // "Give up the ghost" during the downed window → resolve to true death now
+        // (the client gates this behind a 2s hold so it's deliberate).
+        const p = this.players.get(playerId);
+        if (p && p.downed) this._trueDeath(playerId);
         break;
       }
 

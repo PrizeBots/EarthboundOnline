@@ -154,6 +154,10 @@ export interface Vehicle {
   loop: boolean;
   enabled: boolean;
   waypoints: [number, number][];
+  /** Max HP — a car is attackable (PK rules). Omitted → server VEHICLE_HP. */
+  hp?: number;
+  /** Collide damage dealt to a foe the car plows. Omitted → server VEHICLE_DAMAGE. */
+  damage?: number;
   /** textId keying npc_text.json — a vehicle can be talkable like any NPC. */
   t?: number | null;
 }
@@ -161,6 +165,9 @@ export interface CarTraffic {
   version: number;
   vehicles?: Vehicle[];
 }
+
+/** Default max HP for a traffic car with no authored hp — mirrors npcSim VEHICLE_HP. */
+const VEHICLE_DEFAULT_HP = 80;
 
 /** Vehicles that produce a live car slot — KEEP IN SYNC with npcSim.js. */
 function activeVehicles(cfg: CarTraffic | null): Vehicle[] {
@@ -326,8 +333,12 @@ export async function loadNPCs(): Promise<void> {
   for (const v of activeVehicles(carOv ?? carBase)) {
     const [sx, sy] = v.waypoints[0];
     // A vehicle is an NPC that drives — and may also be talkable (carries a
-    // textId), e.g. EB's parked cars with a line of dialogue.
+    // textId), e.g. EB's parked cars with a line of dialogue. A car is also a
+    // combatant: it carries HP (so its bar has a denominator; the server is
+    // authoritative and sends npc_hp deltas) and is attackable under PK rules.
     const car = new NPC(sx, sy, v.sprite, Direction.S, 'car', v.t ?? null);
+    const maxHp = v.hp && v.hp > 0 ? v.hp : VEHICLE_DEFAULT_HP;
+    car.applyHp(maxHp, maxHp);
     npcsById[id++] = car;
     cars.push(car);
   }
@@ -521,7 +532,7 @@ export function applyNpcUpdates(rows: NpcUpdate[]): void {
     // server happily chases/door-warps it onto us and lands real hits — the
     // "invisible attacker after a door" bug. Revive it provisionally; the next
     // `npc_hp` delta corrects the bar.
-    if (npc.kind === 'enemy' && npc.dead) npc.applyHp(npc.maxHp, npc.maxHp);
+    if ((npc.kind === 'enemy' || npc.kind === 'car') && npc.dead) npc.applyHp(npc.maxHp, npc.maxHp);
     const pose = POSES[poseCode ?? 0] ?? 'walk';
     const key = String(id);
     // Buffer the snapshot for smooth interpolation (see interpolateNpcs). The
@@ -685,7 +696,7 @@ export function getNpcsInRect(minX: number, minY: number, maxX: number, maxY: nu
     result.push(npc);
   }
   for (const npc of cars) {
-    if (!inRect(npc)) continue;
+    if (npc.dead || !inRect(npc)) continue;
     ensureSheet(npc);
     result.push(npc);
   }
@@ -722,6 +733,7 @@ export function getNearbyNPCs(px: number, py: number): NPC[] {
     result.push(npc);
   }
   for (const npc of cars) {
+    if (npc.dead) continue; // destroyed — hidden until it respawns at its route start
     if (Math.abs(npc.x - px) > reach || Math.abs(npc.y - py) > reach) continue;
     ensureSheet(npc);
     result.push(npc);

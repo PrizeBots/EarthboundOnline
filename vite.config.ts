@@ -28,6 +28,7 @@ const OVERRIDE_ALLOW = new Set([
   'music.json',
   'item_sprites.json',
   'custom_items.json',
+  'custom_sprites.json', // Source Assets — standalone custom entity sprite groups (id/name/src refs, no pixels)
   'rooms.json',
   'stamps.json', // Room Builder sampler — reusable tile-stamp library (pure arrangement indices)
   'custom_tiles.json', // Room Builder pixel editor — author-drawn 8x8 RGBA tiles for custom rooms

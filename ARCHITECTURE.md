@@ -48,8 +48,35 @@ Dev aid (not part of the game build): `tools/copy_rom_sources.py` stages EVERY
 graphic CoilSnake decompiled (eb_project/**/\*.png — battle sprites, battle BGs,
 swirls, title/logos, town maps, cutscene anims, plus the imported sprite groups)
 into the gitignored `public/assets/rom_sources/` with an `index.json`, so the
-editor's **Source Assets\*\* tool can browse the full ROM art set (view-only) to
-spot art worth importing. `eb_project/` isn't served, hence the copy.
+editor's **Source Assets\*\* tool can browse the full ROM art set. `eb_project/`
+isn't served, hence the copy.
+
+**Create-from-asset.** Source Assets isn't just a browser: selecting an asset
+exposes "New Entity / New Item from this". _Entity_ mints a **standalone custom
+sprite group** (`src/engine/CustomSprites.ts`) — id ≥ `CUSTOM_GROUP_BASE`, wrapping
+the graphic as a static all-directions sheet — and persists ONLY metadata
+(id/name/`src` path, never pixels) to `overrides/custom_sprites.json`, re-loading
+the art from `rom_sources/` at boot (`loadCustomSprites`, after name overrides).
+It then opens the **Entity Manager** focused on the new sprite, editable like any
+ROM group. _Item_ mints a custom item (`addCustomItem`), quantizes the graphic into
+the 16×16 `ITEM_PALETTE` held art (`itemPixelsFromImage`), writes
+`custom_items.json` + `item_sprites.json`, and opens the **Item Manager**. Both
+respect the ROM-distribution rule: entity art is a by-reference pointer into the
+player's own extraction; item art is re-quantized to our own non-ROM palette.
+
+**Editing a custom entity (Sprite Editor `entity` mode).** Custom entities are
+paintable in the Sprite Editor — a 4th `EditMode` ('char'/'item'/'psi'/'entity')
+modeled on the item editor: one variable-size paint buffer through the shared
+`pixelCanvas` engine (pencil/fill/select/move/rotate/flip + undo). The palette is
+EXTRACTED from the art into `S.palette` (stays paletted = SNES-honest); double-click
+a swatch to recolor the whole palette entry (a palette swap). A **Scale %** control
+resizes the frame (nearest-neighbour), changing the entity's dimensions. Editing
+promotes the entity from a ROM-source reference to an authored **`png` pixel layer**
+on its `custom_sprites.json` entry (`registerFromCanvas` re-registers live,
+`setCustomSpritePng` + save persists); once a `png` layer exists it IS the art (our
+own hand-painted pixels), so the entity no longer depends on the ROM source. Reached
+via the Sprite Editor's CHARACTER dropdown ("Custom entities" section) or Entity
+Manager's "Edit sprite →" (`openSpriteEditor({focusChar})`).
 
 The event-flag state for the open world lives in `src/world_flags.json` — the
 single source of truth shared by `apply_map_changes.py`, `extract_npcs.py`,
@@ -290,7 +317,7 @@ msg) to make our avatar a **non-participant anchor**: it stays in `getPlayers()`
 (carrying an `editor` flag) so the world keeps living around the parked character
 exactly as before — area-of-interest activation and spawners still use it — but
 npcSim skips it for **targeting** (`aggroTarget`), **collision**
-(`hitsPlayer`/`carBlocked`), and **door-warp tracking**, and `damagePlayer`
+(`hitsPlayer`/`plow`), and **door-warp tracking**, and `damagePlayer`
 no-ops for it. So enemies ignore the avatar entirely and can't kill it; without
 this a death's `player_respawn` would yank the free camera back across the map.
 `onPlayerRespawn` also skips the self camera-follow while the editor is active
@@ -568,9 +595,23 @@ is scaled by the target's per-element vulnerability (`entityVuln` for actors,
 and rolled immunity-gated (`tryStatus` / `_applyHitStatuses`). `normalizeInflict`
 sanitizes all authored specs; unauthored weapon/bare hands → baseline paralysis.
 Action-blocking statuses freeze actor AI and lock the local player's input.
+**Consumable effects.** Beyond raw `heal` (HP), a consumable's `equip_stats.json`
+entry can carry: `healPp` (restore PP), `cure` (status ids cleared on use, e.g.
+`["poison","cold"]`), `buffs` (timed stat boosts `[{stat, amount, durationMs}]`),
+and `revive` (HP an **auto-revive** restores). `server/buffs.js` is the buff engine
+(mirrors status.js: flat additive `{stat, amount, until}` on `holder.buffs`, summed
+at each use-site — attack offense, incoming-damage defense, dodge-from-speed — and
+pruned each tick; `statsPayload` reports EFFECTIVE base+buff so the status screen
+agrees). `use_item` applies heal/healPp/cure/buffs and refuses an all-no-op use
+(full bars, nothing to cure). `revive` is NOT a use effect — since death is instant
+respawn (no downed state), a carried revive item is consumed automatically on a
+killing blow (`_tryReviveOnDeath`), restoring HP at the spot instead of dying.
+Heroes-only ally-target revive would need a downed/targeting state (backlog).
+
 `overrides/equip_stats.json` is the **per-item mod layer** edited in the **Item
 Manager** — name, kind (`slot`, incl. `'none'`=consumable), users,
-offense/defense/crit/dodge/attackSpeed/cost/heal + the inflict list. It is
+offense/defense/crit/dodge/attackSpeed/cost/heal/healPp/cure/buffs/revive + the
+inflict list. It is
 layered over the ROM item table on BOTH sides (ROM data untouched): `server/shops.js`
 applies every field (combat + the catalog-facing name/cost/kind/users) and `src/engine/Shop.ts`
 applies the catalog-facing fields client-side, so client and server agree on what
@@ -615,7 +656,11 @@ the perpendicular toward the victim's _side_ plus jitter, so foes fly _out of th
 lane_ (`VEHICLE_KB_MULT` force) instead of straight back, per-victim
 cooldown-gated. Friendlies (townsfolk + peaceful players) take **no damage**, only
 a minimal `VEHICLE_FRIENDLY_KB` nudge aside (players via the new damage-free
-`onPlayerShove` host callback) so the plow never stalls.
+`onPlayerShove` host callback) so the plow never stalls. EM vehicles and traffic
+cars (above) share one attackable-target path: `handleAttack` loops a maintained
+`vehicles` list (`kind === 'car' || isVehicle`) under the same PK rules as enemies,
+so a PKer can destroy either, and both revive on a timer (`reviveNpcs` for the
+`person`-kind EM vehicle, `reviveCars` for traffic cars).
 
 **Pursuit into buildings & regroup.** Each enemy runs a small `mode` machine:
 `patrol` (wander) → `chase` (has a target) → `return` (lost it). Player movement
@@ -673,22 +718,29 @@ rule cover it.
 
 Car is a fourth NPC kind. `car_traffic.json` (OUR content — committed default in
 `public/assets/map/`, editor override in `public/overrides/`) lists vehicles,
-each with a sprite group, speed, loop flag, and a hand-authored **waypoint
-route**. Client (`NPCManager`) and server (`npcSim`) build the same car **pool**
-appended _after_ the enemy pool (one slot per active vehicle — `enabled` with
-≥2 waypoints — in file order) so wire ids stay aligned. The server drives each
-car along its route (`tickCar`/`dir8`), facing its travel direction, and
-broadcasts position over the existing `npc_update` channel; cars carry no HP and
-aren't attackable. A **vehicle is an NPC that drives**, so it can also be
-**talkable**: a vehicle may carry a `t` (textId), and `NPCManager` spawns the car
-NPC with it — `Game.tryTalk`/`getNpcDialogue` work on any NPC with a textId, so a
-car speaks like EB's parked cars. Author its line via the Traffic Editor's
-**Dialogue** button (same handoff as the Placement Editor's). Cars are solid to
-**everything**: a car waits in place when a
-player or any actor overlaps its body box (`carBlocked`), `hitsActor`/`blockedByNPC`
-make cars solid for other actors and the local player. Routes are authored in the
-**Traffic Editor** (`src/editor/tools/TrafficEditorTool.ts`). No road data exists
-in the ROM, so routes are entirely hand-placed on the streets.
+each with a sprite group, speed, loop flag, **`hp`**, **`damage`**, and a
+hand-authored **waypoint route**. Client (`NPCManager`) and server (`npcSim`)
+build the same car **pool** appended _after_ the enemy pool (one slot per active
+vehicle — `enabled` with ≥2 waypoints — in file order) so wire ids stay aligned.
+The server drives each car along its route (`tickCar`/`dir8`), facing its travel
+direction, and broadcasts position over the existing `npc_update` channel. A car
+is a **full combatant** like an Entity Manager `vehicle` (below), but it follows
+its **hand-authored route and is NOT wall-blocked** (routes are drawn on drivable
+streets; a wall check would falsely stall the large body box on tile edges). As it
+drives, `plow()` resolves whoever its body box overlaps — foes (enemies + PKers,
+gated by `canHurt`) take its `damage` + scatter knockback, friendlies are nudged
+out of the lane. It **is itself attackable** (`handleAttack`
+loops the `vehicles` list under the same PK rules — only PKers can wreck a car),
+carries `hp`/`maxHp` broadcast on the `npc_hp` channel (HP bar + damage numbers on
+the client), and on death respawns at its route start (`reviveCars`). A **vehicle
+is an NPC that drives**, so it can also be **talkable**: a vehicle may carry a `t`
+(textId), and `NPCManager` spawns the car NPC with it — `Game.tryTalk`/
+`getNpcDialogue` work on any NPC with a textId, so a car speaks like EB's parked
+cars. Author its line via the Traffic Editor's **Dialogue** button (same handoff
+as the Placement Editor's). Cars are solid to actors/the local player via
+`hitsActor`/`blockedByNPC` (full per-direction body box). Routes, HP, and damage
+are authored in the **Traffic Editor** (`src/editor/tools/TrafficEditorTool.ts`).
+No road data exists in the ROM, so routes are entirely hand-placed on the streets.
 
 **Entity collision boxes.** A car's footprint differs by facing and the sprite
 cell is transparent-padded, so a car collides by the **exact per-direction box**
@@ -778,6 +830,11 @@ text-engine bytecode the way the game would:
 - `{stat(N)}` prints character-record text: N = 8/30/52/74 are the four party
   member names (records are 22 apart), 7 is the bank balance. `{name(N)}` and
   `{itemname(N)}` expand from the party list / item table.
+- The lead member (Ness in the ROM — `{stat(8)}` / `{name(1)}`) is the local
+  player in our MMO, so those codes extract to the literal token `$name`.
+  `DialogueManager.openDialogue()` substitutes `$name` → the talking player's
+  character name at display time, so the same line reads correctly for everyone.
+  Authors can also type `$name` directly in hand-written dialogue.
 - `<` and `>` are EB's double-quote glyphs → mapped to ASCII `"` (the engine's
   TextRenderer is a 128-cell ASCII grid that silently skips other codepoints).
 - Yes/No menus `[19 02]` and computed jumps `[09 ..]` end the decode — the

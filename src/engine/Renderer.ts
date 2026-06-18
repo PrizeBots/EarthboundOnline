@@ -10,6 +10,7 @@ import { drawHeldItem, isItemBehind } from './Items';
 import { renderDrops } from './DropManager';
 import { getSpritePriority, getPromotedMinitiles } from './Collision';
 import { getStatus } from './StatusModal';
+import { drawText, measureText } from './TextRenderer';
 import {
   Pose,
   Direction,
@@ -233,6 +234,107 @@ function drawStatusPips(
   }
 }
 
+// Buff HUD: per-stat label + color for the local player's active timed buffs.
+// KEEP IN SYNC with server/buffs.js BUFF_STATS.
+const BUFF_META: Record<string, { label: string; color: string }> = {
+  offense: { label: 'ATK', color: '#ff7a7a' },
+  defense: { label: 'DEF', color: '#7aa6ff' },
+  speed: { label: 'SPD', color: '#7affa0' },
+  guts: { label: 'GUT', color: '#ffd27a' },
+  vitality: { label: 'VIT', color: '#ff9ed2' },
+  iq: { label: 'IQ', color: '#c79cff' },
+  luck: { label: 'LCK', color: '#9cf0ff' },
+};
+
+/** Screen-space buff HUD (top-left): one chip per active local buff —
+ *  a colored bar, "STAT +N", and a live seconds countdown. Drawn in logical
+ *  256x224 coords (after the world pass), text at half scale to match nameplates. */
+function drawBuffHud(
+  ctx: CanvasRenderingContext2D,
+  buffs: { stat: string; amount: number; expiresAt: number }[] | undefined,
+  now: number
+): void {
+  if (!buffs || !buffs.length) return;
+  let rowI = 0;
+  for (const b of buffs) {
+    const remain = b.expiresAt - now;
+    if (remain <= 0) continue; // expired locally; server resend will prune it
+    const meta = BUFF_META[b.stat] ?? { label: b.stat.slice(0, 3).toUpperCase(), color: '#dddddd' };
+    const sign = b.amount >= 0 ? '+' : '';
+    const text = `${meta.label} ${sign}${b.amount}  ${Math.ceil(remain / 1000)}s`;
+    const tw = Math.ceil(measureText(text, 1) * 0.5);
+    const y = 4 + rowI * 11;
+    const w = tw + 9;
+    ctx.fillStyle = '#0d1016d9'; // dark chip backing
+    ctx.fillRect(3, y, w, 9);
+    ctx.fillStyle = meta.color; // colored stat bar on the left edge
+    ctx.fillRect(3, y, 2, 9);
+    ctx.save();
+    ctx.scale(0.5, 0.5); // draw the 16px font at 8px to match the nameplates
+    drawText(ctx, text, 14, y * 2 + 1, 1, 1);
+    ctx.restore();
+    rowI++;
+  }
+}
+
+/** Seconds-remaining counter floated just above a downed body (player or ally). */
+function drawDownedCountdown(
+  ctx: CanvasRenderingContext2D,
+  centerX: number,
+  feetY: number,
+  spriteGroupId: number,
+  downedUntil: number,
+  now: number
+): void {
+  const remain = Math.max(0, Math.ceil((downedUntil - now) / 1000));
+  const spriteH = getSpriteGroupMeta(spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
+  const text = `${remain}`;
+  const tw = measureText(text, 1) * 0.5;
+  const x = Math.round(centerX - tw / 2);
+  const y = Math.round(feetY - spriteH - 7);
+  ctx.fillStyle = '#101018cc';
+  ctx.fillRect(x - 2, y - 1, Math.ceil(tw) + 4, 10);
+  ctx.save();
+  ctx.scale(0.5, 0.5);
+  drawText(ctx, text, x * 2, y * 2 + 1, 1, 1);
+  ctx.restore();
+}
+
+/** Owner-only "dying" vignette: a transparent hole centered on the player over a
+ *  black tint. As t goes 0→1 (full window → death) the hole shrinks toward the
+ *  player and the tint deepens to solid black. Drawn screen-space (logical). */
+function drawDownedVignette(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  t: number
+): void {
+  const holeR = 130 - 124 * t; // 130px wide → 6px tight on the player
+  const tint = 0.3 + 0.7 * t; // → fully black at the end
+  const inner = Math.max(1, holeR * 0.45);
+  const g = ctx.createRadialGradient(cx, cy, inner, cx, cy, Math.max(inner + 1, holeR));
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, `rgba(0,0,0,${tint.toFixed(3)})`);
+  ctx.fillStyle = g; // beyond holeR the gradient extends its last stop = full tint
+  ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+}
+
+/** Bottom-center "hold to give up the ghost" prompt + fill meter (0..1). */
+function drawGiveUpPrompt(ctx: CanvasRenderingContext2D, progress: number): void {
+  const w = 90;
+  const h = 6;
+  const x = Math.round((SCREEN_WIDTH - w) / 2);
+  const y = SCREEN_HEIGHT - 20;
+  ctx.save();
+  ctx.scale(0.5, 0.5);
+  drawText(ctx, 'HOLD TO GIVE UP', x * 2, (y - 11) * 2 + 1, 1, 1);
+  ctx.restore();
+  ctx.fillStyle = '#222';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = '#d8443a';
+  ctx.fillRect(x, y, Math.round(w * Math.max(0, Math.min(1, progress))), h);
+}
+
 export class Renderer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -421,8 +523,21 @@ export class Renderer {
       sx: number,
       sy: number,
       part: SpritePart,
-      flash: boolean
+      flash: boolean,
+      downed = false
     ) => {
+      // Downed = KO'd: rotate the whole sprite 90° around its mid so it lays on
+      // its back. Each FG-priority part rotates around the SAME pivot, so the
+      // slices still compose into one coherent rotated body.
+      if (downed) {
+        const h = getSpriteGroupMeta(groupId)?.height ?? DEFAULT_SPRITE_H;
+        const px = sx;
+        const py = sy - h / 2;
+        this.ctx.save();
+        this.ctx.translate(px, py);
+        this.ctx.rotate(Math.PI / 2);
+        this.ctx.translate(-px, -py);
+      }
       const itemHere = itemId !== null && part !== 'upper';
       if (itemHere && isItemBehind(direction)) {
         drawHeldItem(this.ctx, itemId!, direction, frame, pose, sx, sy);
@@ -431,6 +546,7 @@ export class Renderer {
       if (itemHere && !isItemBehind(direction)) {
         drawHeldItem(this.ctx, itemId!, direction, frame, pose, sx, sy);
       }
+      if (downed) this.ctx.restore();
     };
 
     const playerSx = Math.round(player.x) - camX;
@@ -448,9 +564,22 @@ export class Renderer {
           playerSx,
           playerSy,
           part,
-          player.flashUntil > now
+          player.flashUntil > now,
+          player.downed
         ),
       () => {
+        // Downed: show the revive countdown over the body instead of bars.
+        if (player.downed) {
+          drawDownedCountdown(
+            this.ctx,
+            playerSx,
+            playerSy,
+            player.spriteGroupId,
+            player.downedUntil,
+            now
+          );
+          return;
+        }
         // Your own bar: HP + a PSI bar beneath it (PP from the authoritative
         // stats mirror). Only you see the PSI bar; the nameplate sits above it.
         const s = getStatus();
@@ -496,9 +625,22 @@ export class Renderer {
             rpScreenX,
             rpScreenY,
             part,
-            (rp.flashUntil ?? 0) > now
+            (rp.flashUntil ?? 0) > now,
+            !!rp.downed
           ),
         () => {
+          // Downed ally: show their revive countdown so others know to hurry.
+          if (rp.downed) {
+            drawDownedCountdown(
+              this.ctx,
+              rpScreenX,
+              rpScreenY,
+              rp.spriteGroupId,
+              rp.downedUntil ?? now,
+              now
+            );
+            return;
+          }
           // Other players: an HP bar (no PSI — that's private) with their
           // name + level above it, so everyone can read who's who and how strong.
           const ratio = rp.maxHp ? Math.max(0, Math.min(1, (rp.hp ?? rp.maxHp) / rp.maxHp)) : 1;
@@ -523,10 +665,10 @@ export class Renderer {
       const nScreenY = Math.round(npc.y) - camY;
       if (nScreenX < -32 || nScreenX > vw + 32) continue;
       if (nScreenY < -48 || nScreenY > vh + 48) continue;
-      // Props are scenery — only people/enemies carry health bars, and a bar is
-      // hidden at full HP (shown to everyone only once it drops below 100%).
+      // Props are scenery — only people/enemies/cars carry health bars, and a bar
+      // is hidden at full HP (shown to everyone only once it drops below 100%).
       // Status pips show even at full HP (a paralyzed but undamaged enemy).
-      const combatant = npc.kind === 'person' || npc.kind === 'enemy';
+      const combatant = npc.kind === 'person' || npc.kind === 'enemy' || npc.kind === 'car';
       const showBar = combatant && npc.healthRatio < 1;
       const showPips = combatant && npc.statuses.length > 0;
       const drawBar =
@@ -706,6 +848,20 @@ export class Renderer {
     }
 
     this.ctx.restore(); // zoom scale
+
+    // Local player's buff HUD — screen-space (logical coords), after the world.
+    drawBuffHud(this.ctx, player.buffs, now);
+
+    // Downed: closing vignette + give-up prompt (owner only), over everything.
+    if (player.downed) {
+      const h = getSpriteGroupMeta(player.spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
+      const cx = Math.round(player.x) - camX;
+      const cy = Math.round(player.y) - camY - h / 2;
+      const total = player.downedTotalMs || 30000;
+      const t = 1 - Math.max(0, Math.min(1, (player.downedUntil - now) / total));
+      drawDownedVignette(this.ctx, cx, cy, t);
+      drawGiveUpPrompt(this.ctx, player.giveUpProgress);
+    }
   }
 
   /** Draw entity hurtboxes (cyan) + the player's attack hitbox (red) when set. */

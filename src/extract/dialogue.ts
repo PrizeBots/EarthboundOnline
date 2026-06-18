@@ -24,9 +24,17 @@ const MAX_BLOCKS = 64;
 // is a null-terminated run of `byte-0x30` characters.
 const COMPRESSED_TEXT_PTRS = 0x8cded;
 
-const PARTY_NAMES: Record<number, string> = { 1: 'Ness', 2: 'Paula', 3: 'Jeff', 4: 'Poo' };
+// The lead member (Ness in the ROM) is the local player in our MMO, so its name
+// codes emit the runtime token `$name` (DialogueManager substitutes it per-player).
+const PARTY_NAMES: Record<number, string> = { 1: '$name', 2: 'Paula', 3: 'Jeff', 4: 'Poo' };
 // {stat(N)} fields that print text: party names live 22 apart (8/30/52/74); 7 = bank balance.
-const STAT_TEXT: Record<number, string> = { 7: '0', 8: 'Ness', 30: 'Paula', 52: 'Jeff', 74: 'Poo' };
+const STAT_TEXT: Record<number, string> = {
+  7: '0',
+  8: '$name',
+  30: 'Paula',
+  52: 'Jeff',
+  74: 'Poo',
+};
 
 export type DialogueContext = {
   setFlags: Set<number>;
@@ -158,7 +166,7 @@ class Decoder {
     if (sub === 0x01) {
       this.buf += STAT_TEXT[arg] ?? ''; // {stat(arg)} — record text (party names/bank)
     } else if (sub === 0x02) {
-      this.buf += PARTY_NAMES[arg] ?? 'Ness'; // {name(arg)} — party member name
+      this.buf += PARTY_NAMES[arg] ?? '$name'; // {name(arg)} — party member name
     } else if (sub === 0x05) {
       this.buf += this.ctx.itemNames?.[arg] ?? 'something'; // {itemname(arg)}
     }

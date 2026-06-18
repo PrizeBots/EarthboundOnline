@@ -3,6 +3,9 @@
 // panel. Wires each control to the handlers in the concern modules.
 import { createSpritePicker, drawSpriteGroupThumb } from '../SpritePicker';
 import { getSpriteName } from '../SpriteNames';
+import { CUSTOM_GROUP_BASE } from '../SpriteManager';
+import { customSpriteGroupIds } from '../CustomSprites';
+import { scaleEntity } from './entityEditor';
 import { ITEM_W, ITEM_H } from '../Items';
 import {
   FRAME_W,
@@ -66,7 +69,7 @@ import {
 } from './psiEditor';
 import { PSI_DELIVERIES, PsiDelivery } from '../PsiAnim';
 import { onTestDown, onTestMove } from './testWalker';
-import { setEditMode } from './index';
+import { setEditMode, selectEntity } from './index';
 
 export function buildDom(): void {
   S.overlay = document.createElement('div');
@@ -278,15 +281,27 @@ function buildToolPanel(): HTMLDivElement {
 
   // Custom dropdown whose trigger AND every row render the real sprite (a native
   // <option> can't). Cast first, then the view-only vehicle groups.
+  // Custom entities (Source Assets imports) open in paintable Entity mode (single
+  // variable-size frame). Listed here so they're searchable from the same dropdown.
+  const customIds = customSpriteGroupIds();
   S.charPicker = createSpritePicker({
     sections: [
       { values: S.roster.map(String) },
       { label: 'Vehicles (view only)', values: VEHICLE_GROUPS.map((v) => String(v.id)) },
+      ...(customIds.length
+        ? [{ label: 'Custom entities (editable)', values: customIds.map(String) }]
+        : []),
     ],
     initial: String(S.groupId),
     labelFor: (v) => `${v} ${getSpriteName(Number(v)) ?? vehicleName(Number(v)) ?? ''}`.trim(),
     drawThumb: drawSpriteGroupThumb,
-    onSelect: (v) => void loadGroupIntoEditor(Number(v)),
+    // A custom entity (Source Assets import) opens in paintable Entity mode; a ROM
+    // cast/vehicle group opens in Character mode.
+    onSelect: (v) => {
+      const id = Number(v);
+      if (id >= CUSTOM_GROUP_BASE) void selectEntity(id);
+      else void loadGroupIntoEditor(id);
+    },
   });
   div.appendChild(S.charPicker.el);
 
@@ -446,6 +461,52 @@ function buildToolPanel(): HTMLDivElement {
   div.appendChild(S.psiRow);
   rebuildPsiPicker();
 
+  // Entity UI (entity mode only): scale-by-% control + a note. Shown when a custom
+  // entity (Source Assets import) is selected in the CHARACTER dropdown. The
+  // palette is extracted from the art; double-click a swatch to recolor it.
+  S.entityRow = document.createElement('div');
+  S.entityRow.style.cssText = 'display:none;flex-direction:column;gap:5px;';
+  S.entityNote = document.createElement('div');
+  S.entityNote.style.cssText = 'color:#9fd;font-size:10px;min-height:12px;';
+  S.entityRow.appendChild(S.entityNote);
+  const scaleRow = document.createElement('div');
+  scaleRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
+  const scaleLbl = document.createElement('span');
+  scaleLbl.textContent = 'Scale';
+  scaleLbl.style.cssText = 'color:#9ab;font-size:11px;';
+  scaleRow.appendChild(scaleLbl);
+  S.entityScaleInput = document.createElement('input');
+  S.entityScaleInput.type = 'number';
+  S.entityScaleInput.value = '100';
+  S.entityScaleInput.min = '1';
+  S.entityScaleInput.max = '400';
+  S.entityScaleInput.title = 'Resize the sprite by this percent (nearest-neighbour)';
+  S.entityScaleInput.style.cssText =
+    'width:60px;font:11px monospace;padding:3px;background:#2a2a3a;color:#ddd;border:1px solid #444;border-radius:3px;';
+  S.entityScaleInput.onkeydown = (e) => e.stopPropagation(); // don't trigger editor hotkeys
+  scaleRow.appendChild(S.entityScaleInput);
+  const pct = document.createElement('span');
+  pct.textContent = '%';
+  pct.style.cssText = 'color:#9ab;font-size:11px;';
+  scaleRow.appendChild(pct);
+  const scaleBtn = document.createElement('button');
+  scaleBtn.textContent = 'Apply';
+  scaleBtn.style.cssText =
+    'font:11px monospace;padding:4px 10px;background:#23304a;color:#bcd;border:1px solid #456;border-radius:3px;cursor:pointer;';
+  scaleBtn.onclick = () => {
+    const p = parseFloat(S.entityScaleInput!.value);
+    if (Number.isFinite(p) && p > 0) scaleEntity(p);
+    S.entityScaleInput!.value = '100'; // percent is relative to the now-current size
+  };
+  scaleRow.appendChild(scaleBtn);
+  S.entityRow.appendChild(scaleRow);
+  const entityHint = document.createElement('div');
+  entityHint.textContent =
+    'Paint with the tools below · double-click a swatch to recolor · auto-saves';
+  entityHint.style.cssText = 'color:#9ab;font-size:10px;line-height:1.4;';
+  S.entityRow.appendChild(entityHint);
+  div.appendChild(S.entityRow);
+
   const tools: [Tool, string][] = [
     ['pencil', '1/Q ✏ Pencil'],
     ['eraser', '2/E ▭ Eraser'],
@@ -550,6 +611,7 @@ function buildStripPanel(): HTMLDivElement {
       if (i >= 0) (S.editMode === 'psi' ? setPsiEditFrame : setItemEditFrame)(i);
       return;
     }
+    if (S.editMode === 'entity') return; // single frame — nothing to select
     if (S.viewOnly) return; // read-only vehicle grid: nothing to select
     const dr = Math.floor(y / STRIP_FRAME_H);
     const displayRow = allDisplayRows()[dr];

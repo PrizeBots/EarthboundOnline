@@ -84,6 +84,10 @@ export interface RemotePlayer {
   statuses?: string[];
   /** Epoch-ms until which this player blinks white from a hit (see Juice.FLASH_MS). */
   flashUntil?: number;
+  /** KO/downed: drawn laying (rotated 90°). Server-synced via player_downed. */
+  downed?: boolean;
+  /** Epoch-ms the downed window ends (for the over-head countdown). */
+  downedUntil?: number;
 }
 
 export enum Direction {

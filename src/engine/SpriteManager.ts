@@ -382,6 +382,19 @@ export function getSourceSheet(
   };
 }
 
+/** Allocate the next free custom sprite-group id (>= CUSTOM_GROUP_BASE). Used by
+ *  subsystems that mint standalone custom groups (CustomSprites) so every minter
+ *  shares one monotonic counter and never collides with creator/recolor groups. */
+export function nextCustomGroupId(): number {
+  return nextCustomId++;
+}
+
+/** Keep the custom-id counter above an id we just loaded from disk, so a fresh
+ *  mint never reuses a persisted group's id. Call when re-registering saved groups. */
+export function reserveCustomGroupId(id: number): void {
+  if (id >= nextCustomId) nextCustomId = id + 1;
+}
+
 /** Register a runtime-built sprite sheet (sprite editor output / previews). */
 export function registerCustomSprite(
   groupId: number,

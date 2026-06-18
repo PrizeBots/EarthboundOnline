@@ -28,6 +28,15 @@
       "worldX": 8176,
       "worldY": 112
     },
+    "1424,500": {
+      "destX": 2752,
+      "destY": 8608,
+      "destDir": 3,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 1424,
+      "worldY": 504
+    },
     "7224,396": {
       "destX": 2016,
       "destY": 1712,
@@ -166,8 +175,8 @@
       "worldY": 856
     },
     "7672,1004": {
-      "destX": 7984,
-      "destY": 1104,
+      "destX": 7992,
+      "destY": 1112,
       "destDir": 2,
       "style": 7,
       "sfx": "door-open",
@@ -239,7 +248,7 @@
     },
     "7976,1108": {
       "destX": 7648,
-      "destY": 1000,
+      "destY": 1016,
       "destDir": 3,
       "style": 7,
       "sfx": "door-open",
