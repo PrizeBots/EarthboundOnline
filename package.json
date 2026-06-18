@@ -7,7 +7,7 @@
     "build": "vite build",
     "start": "node server/index.js",
     "typecheck": "tsc --noEmit",
-    "check:server": "node --check server/gameHost.js && node --check server/npcSim.js && node --check server/shops.js && node --check server/index.js && node --check server/authApi.js && node --check server/charStats.js && node --check server/persistence.test.js && node --check server/store/SqliteStore.js && node --check server/store/index.js && node --check server/store/errors.js",
+    "check:server": "node --check server/gameHost.js && node --check server/npcSim.js && node --check server/shops.js && node --check server/index.js && node --check server/authApi.js && node --check server/charStats.js && node --check server/persistence.test.js && node --check server/store/SqliteStore.js && node --check server/store/SupabaseStore.js && node --check server/store/index.js && node --check server/store/errors.js",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
@@ -60,6 +60,7 @@
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.11.1",
     "express": "^5.2.1",
+    "pg": "^8.13.1",
     "ws": "^8.19.0",
     "zod": "^4.4.3"
   }

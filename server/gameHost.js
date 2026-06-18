@@ -275,6 +275,11 @@ class GameHost {
     // Persistence handles for signed-in characters: playerId -> {characterId,alloc}.
     // Held OUT of the player record so the DB id never rides along in a broadcast.
     this.saves = new Map();
+    // Per-character save serialization: characterId -> tail Promise of its write
+    // chain. The store may be async (Supabase), so back-to-back saves of the SAME
+    // character are queued to land in order — a later snapshot can never be
+    // overwritten by an earlier one that resolved late. See _persistCharacterSave.
+    this._saveChains = new Map();
     // Per-player quest/progress flags (PlayerFlags): playerId -> Set<number>.
     // Kept OUT of the player record too — flags are PRIVATE, never broadcast to
     // other clients. Persisted in the character save for signed-in players;
@@ -578,10 +583,10 @@ class GameHost {
   // or not owned by the session's account. Combat stats are RE-DERIVED from the
   // saved alloc (never trusted as raw numbers); inventory/equip are re-validated
   // against the live catalog.
-  _loadCharacterInit(token, characterId) {
-    const session = this.store.getSession(token, Date.now());
+  async _loadCharacterInit(token, characterId) {
+    const session = await this.store.getSession(token, Date.now());
     if (!session) return null;
-    const character = this.store.getCharacter(Number(characterId));
+    const character = await this.store.getCharacter(Number(characterId));
     if (!character || character.accountId !== session.accountId) return null;
 
     const save = character.save && typeof character.save === 'object' ? character.save : {};
@@ -696,37 +701,57 @@ class GameHost {
     if (!handle || !p || !this.store) return;
     this._tickPkLock(p); // bank the in-game time served so the saved lock is current
     const prog = this.points.get(playerId);
-    try {
-      this.store.updateCharacterSave(
-        handle.characterId,
-        {
-          alloc: prog ? prog.alloc : handle.alloc,
-          level: p.level,
-          exp: p.exp,
-          unspentPoints: prog ? prog.unspentPoints || 0 : 0,
-          inventory: [...p.inventory],
-          money: p.money,
-          bank: p.bank,
-          earnedSinceCall: p.earnedSinceCall | 0,
-          spentSinceCall: p.spentSinceCall | 0,
-          equipped: { ...p.equipped },
-          hotbar: Array.isArray(p.hotbar) ? [...p.hotbar] : new Array(HOTBAR_SLOTS).fill(null),
-          x: p.x,
-          y: p.y,
-          direction: p.direction,
-          flags: [...(this.flags.get(playerId) || [])],
-          pk: !!p.pk,
-          pkLockMs: p.pkLockMs || 0,
-          // Preserve the EB naming flavor + advance mom's food cooldown.
-          favoriteThing: p.favoriteThing || '',
-          favoriteFood: p.favoriteFood || '',
-          momFoodReadyAt: p.momFoodReadyAt || 0,
-        },
-        Date.now()
-      );
-    } catch (e) {
-      console.error('[save] failed for character', handle.characterId, e);
-    }
+    // Snapshot ALL state synchronously — the caller may delete the player right
+    // after (disconnect), and the actual write is deferred/queued below.
+    const save = {
+      alloc: prog ? prog.alloc : handle.alloc,
+      level: p.level,
+      exp: p.exp,
+      unspentPoints: prog ? prog.unspentPoints || 0 : 0,
+      inventory: [...p.inventory],
+      money: p.money,
+      bank: p.bank,
+      earnedSinceCall: p.earnedSinceCall | 0,
+      spentSinceCall: p.spentSinceCall | 0,
+      equipped: { ...p.equipped },
+      hotbar: Array.isArray(p.hotbar) ? [...p.hotbar] : new Array(HOTBAR_SLOTS).fill(null),
+      x: p.x,
+      y: p.y,
+      direction: p.direction,
+      flags: [...(this.flags.get(playerId) || [])],
+      pk: !!p.pk,
+      pkLockMs: p.pkLockMs || 0,
+      // Preserve the EB naming flavor + advance mom's food cooldown.
+      favoriteThing: p.favoriteThing || '',
+      favoriteFood: p.favoriteFood || '',
+      momFoodReadyAt: p.momFoodReadyAt || 0,
+    };
+    return this._persistCharacterSave(handle.characterId, save);
+  }
+
+  // Queue a character's save behind any in-flight save for the SAME character, so
+  // writes land in submission order even with an async store. Errors are caught
+  // (a failed save must never crash the host or break the chain). Returns the
+  // tail promise so flushSaves()/tests can await durability.
+  _persistCharacterSave(characterId, save) {
+    const prev = this._saveChains.get(characterId) || Promise.resolve();
+    const next = prev
+      .catch(() => {}) // a prior failure must not poison later saves
+      .then(() => this.store.updateCharacterSave(characterId, save, Date.now()))
+      .catch((e) => console.error('[save] failed for character', characterId, e));
+    this._saveChains.set(characterId, next);
+    // Drop the chain entry once it's the settled tail, so the map doesn't grow.
+    next.finally(() => {
+      if (this._saveChains.get(characterId) === next) this._saveChains.delete(characterId);
+    });
+    return next;
+  }
+
+  // Await every outstanding character save. Call before process exit (SIGTERM)
+  // so a disconnect/level-up write isn't dropped mid-flight; tests use it to read
+  // a save back deterministically.
+  async flushSaves() {
+    await Promise.allSettled([...this._saveChains.values()]);
   }
 
   // Send a message to a single player's socket (private state like skill points).
@@ -963,7 +988,12 @@ class GameHost {
       // Mark the connection alive for the idle-disconnect sweep (any message).
       const entry = this.players.get(playerId);
       if (entry) entry.lastSeen = Date.now();
-      this._handleMessage(playerId, ws, msg);
+      // _handleMessage is async (the join path awaits the store). It's
+      // fire-and-forget for real sockets; the returned promise (rejection logged,
+      // never thrown) lets tests await a message that touches the store.
+      return Promise.resolve(this._handleMessage(playerId, ws, msg)).catch((e) =>
+        console.error('[msg] handler failed', e)
+      );
     });
 
     ws.on('close', () => {
@@ -977,7 +1007,7 @@ class GameHost {
     });
   }
 
-  _handleMessage(playerId, ws, msg) {
+  async _handleMessage(playerId, ws, msg) {
     const { GOODS } = this;
     switch (msg.type) {
       case 'join': {
@@ -987,7 +1017,7 @@ class GameHost {
         // rather than silently falling back to a fresh player.
         let init;
         if (this.store && msg.sessionToken && msg.characterId != null) {
-          init = this._loadCharacterInit(msg.sessionToken, msg.characterId);
+          init = await this._loadCharacterInit(msg.sessionToken, msg.characterId);
           if (!init) {
             ws.send(JSON.stringify({ type: 'join_error', error: 'invalid session or character' }));
             break;
@@ -1327,18 +1357,21 @@ class GameHost {
         // Equippable gear is NOT a consumable — "using" a weapon/armor must
         // never destroy it. It's equipped via the 'equip' path instead.
         if (def.equip) break;
-        // A pure-heal item at full HP heals 0 and would just be consumed, which
-        // reads as "nothing happened". Refuse + say so (EarthBound does the same)
-        // so a hotbar press at full HP isn't a silent dud that wastes the item.
-        if (def.heal && entry.hp >= entry.maxHp) {
-          entry._ws.send(JSON.stringify({ type: 'notice', text: 'Your HP is already full.' }));
+        // A heal item that can't restore anything (HP and/or PP already full)
+        // would just be consumed for nothing. Refuse + say so (EarthBound does the
+        // same) so a hotbar press at full bars isn't a silent dud that wastes it.
+        const canHp = def.heal && entry.hp < entry.maxHp;
+        const canPp = def.healPp && entry.pp < entry.ppMax;
+        if ((def.heal || def.healPp) && !canHp && !canPp) {
+          const full = def.heal && def.healPp ? 'HP and PP are' : def.healPp ? 'PP is' : 'HP is';
+          entry._ws.send(JSON.stringify({ type: 'notice', text: `Your ${full} already full.` }));
           break;
         }
 
         // Cookie (and any future `heal` good) restores HP up to the cap;
         // broadcast so every client redraws the bar, tagging `heal` so the
         // owner's client pops a green number.
-        if (def.heal) {
+        if (canHp) {
           const healed = Math.min(entry.maxHp, entry.hp + def.heal) - entry.hp;
           entry.hp += healed;
           this.broadcastAll({
@@ -1348,6 +1381,18 @@ class GameHost {
             maxHp: entry.maxHp,
             dmg: 0,
             heal: healed,
+          });
+        }
+        // PP-restoring consumables (e.g. PSI-recovery foods) refill the PP bar up
+        // to the cap; player_stats pushes the new pp so the caster's bar redraws.
+        if (canPp) {
+          entry.pp = Math.min(entry.ppMax, entry.pp + def.healPp);
+          this.broadcastAll({
+            type: 'player_stats',
+            id: playerId,
+            stats: statsPayload(entry),
+            leveled: false,
+            gained: 0,
           });
         }
 

@@ -46,21 +46,41 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 const { SqliteStore } = require('./SqliteStore');
+const { SupabaseStore } = require('./SupabaseStore');
 const { MAX_CHARACTERS, DuplicateUsernameError, SlotsFullError } = require('./errors');
 
 /**
  * Build the persistence store. The ONE place that picks a backend.
+ *
+ * Selection (first match wins):
+ *   1. opts.filename given        -> SqliteStore(filename)   (tests / explicit dev)
+ *   2. a Postgres URL in the env  -> SupabaseStore(url)      (production)
+ *   3. otherwise                  -> SqliteStore()           (local dev, data/eb.db)
+ *
+ * The Postgres URL comes from DATABASE_URL or SUPABASE_DB_URL (set in the deploy
+ * env / Supabase dashboard). SupabaseStore is async; SqliteStore is sync — both
+ * satisfy the same contract because every caller `await`s the store (a no-op on
+ * a synchronous return).
+ *
  * @param {object} [opts]
- * @param {string} [opts.filename] sqlite path, or ':memory:'. Defaults to data/eb.db.
+ * @param {string} [opts.filename] sqlite path, or ':memory:'. Forces SQLite.
+ * @param {string} [opts.connectionString] Postgres URL. Forces Supabase.
  */
 function createStore(opts = {}) {
-  // At launch, swap this line for `new SupabaseStore(...)`.
+  if (opts.filename) return new SqliteStore(opts.filename);
+  const url =
+    opts.connectionString || process.env.DATABASE_URL || process.env.SUPABASE_DB_URL || '';
+  if (url) {
+    console.log('[store] using Supabase/Postgres backend');
+    return new SupabaseStore({ connectionString: url });
+  }
   return new SqliteStore(opts.filename);
 }
 
 module.exports = {
   createStore,
   SqliteStore,
+  SupabaseStore,
   MAX_CHARACTERS,
   DuplicateUsernameError,
   SlotsFullError,

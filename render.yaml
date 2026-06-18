@@ -7,6 +7,13 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Supabase/Postgres connection string for accounts/sessions/saves. Set in
+      # the Render dashboard (sync:false = not committed). When present the server
+      # uses Supabase; when absent it falls back to local SQLite. See
+      # SUPABASE_SETUP.md. Without a persistent disk, SQLite saves are lost on
+      # redeploy — Supabase is what makes prod logins durable.
+      - key: DATABASE_URL
+        sync: false
     # TESTING PHASE: ROM-derived game data is force-committed to git (public/
     # assets) so the deploy is self-contained — the vite build copies it into
     # dist/ and the server reads it directly. This intentionally relaxes the

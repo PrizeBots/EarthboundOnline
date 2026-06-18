@@ -49,3 +49,23 @@ server.listen(PORT, () => {
   console.log(`EarthBound Online server running on http://localhost:${PORT}`);
   console.log(`WebSocket server ready on ws://localhost:${PORT}`);
 });
+
+// Graceful shutdown: flush any in-flight character saves before exiting so a
+// disconnect/level-up write isn't dropped when the platform redeploys (SIGTERM).
+let shuttingDown = false;
+const shutdown = async (sig) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] ${sig} — flushing saves`);
+  try {
+    await host.flushSaves();
+    if (store.close) await store.close();
+  } catch (e) {
+    console.error('[shutdown] flush failed', e);
+  }
+  server.close(() => process.exit(0));
+  // Don't hang forever on lingering sockets.
+  setTimeout(() => process.exit(0), 5000).unref();
+};
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

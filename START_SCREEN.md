@@ -106,6 +106,17 @@ equipment, so we wire writes:
    `this.flags` map ↔ `save.flags`, mirrored from the client `PlayerFlags` sink.)
 6. ✅ Document the Supabase migration seam. (See "Migration to Supabase" below.)
 
+## Migration to Supabase — ✅ BUILT (2026-06-17)
+
+`SupabaseStore` (`server/store/SupabaseStore.js`) is implemented and wired.
+`createStore` now auto-selects the backend by env: a Postgres URL
+(`DATABASE_URL` / `SUPABASE_DB_URL`) → Supabase, else SQLite. The store contract
+went async-for-real: `authApi.js` handlers, `GameHost._loadCharacterInit` (join),
+and `GameHost._saveCharacter` (now a per-character serialized write queue, flushed
+on `SIGTERM`) all `await` the store. Schema lives in `supabase/migrations/`.
+**Operator steps to go live: `SUPABASE_SETUP.md`.** The section below is the
+original design notes, kept for reference.
+
 ## Migration to Supabase (at MVP launch) — the seam, documented
 
 Everything above the persistence layer (auth API, character API, `GameHost`'s

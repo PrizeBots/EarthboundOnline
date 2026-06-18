@@ -76,14 +76,19 @@ function createAuthApi(store, { now = () => Date.now(), editorApi = false } = {}
     return m ? m[1] : null;
   };
 
-  // Gate: resolve the bearer token to a live session, else 401.
-  const requireAuth = (req, res, next) => {
-    const token = bearer(req);
-    const session = token ? store.getSession(token, now()) : null;
-    if (!session) return res.status(401).json({ error: 'not signed in' });
-    req.accountId = session.accountId;
-    req.token = token;
-    next();
+  // Gate: resolve the bearer token to a live session, else 401. Async because the
+  // store may be (Supabase). A rejection here is forwarded to the error handler.
+  const requireAuth = async (req, res, next) => {
+    try {
+      const token = bearer(req);
+      const session = token ? await store.getSession(token, now()) : null;
+      if (!session) return res.status(401).json({ error: 'not signed in' });
+      req.accountId = session.accountId;
+      req.token = token;
+      next();
+    } catch (e) {
+      next(e);
+    }
   };
 
   // Gate: loopback only. The editor routes are dev-localhost; this refuses any
@@ -110,9 +115,9 @@ function createAuthApi(store, { now = () => Date.now(), editorApi = false } = {}
     try {
       const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
       const t = now();
-      const account = store.createAccount({ username, passwordHash, now: t });
+      const account = await store.createAccount({ username, passwordHash, now: t });
       const token = newToken();
-      store.createSession({ token, accountId: account.id, now: t, ttlMs: SESSION_TTL_MS });
+      await store.createSession({ token, accountId: account.id, now: t, ttlMs: SESSION_TTL_MS });
       res.status(201).json({ token, account: publicAccount(account) });
     } catch (e) {
       if (e instanceof DuplicateUsernameError) {
@@ -124,7 +129,8 @@ function createAuthApi(store, { now = () => Date.now(), editorApi = false } = {}
 
   api.post('/api/login', async (req, res) => {
     const { username, password } = req.body || {};
-    const account = typeof username === 'string' ? store.getAccountByUsername(username) : null;
+    const account =
+      typeof username === 'string' ? await store.getAccountByUsername(username) : null;
     // Always run a compare so a missing account and a wrong password take a
     // similar amount of time (don't leak which usernames exist via timing).
     const decoy = '$2a$10$0000000000000000000000000000000000000000000000000000a';
@@ -135,33 +141,34 @@ function createAuthApi(store, { now = () => Date.now(), editorApi = false } = {}
     if (!ok) return res.status(401).json({ error: 'wrong username or password' });
     const t = now();
     const token = newToken();
-    store.createSession({ token, accountId: account.id, now: t, ttlMs: SESSION_TTL_MS });
+    await store.createSession({ token, accountId: account.id, now: t, ttlMs: SESSION_TTL_MS });
     res.json({ token, account: publicAccount(account) });
   });
 
-  api.post('/api/logout', (req, res) => {
+  api.post('/api/logout', async (req, res) => {
     const token = bearer(req);
-    if (token) store.deleteSession(token);
+    if (token) await store.deleteSession(token);
     res.json({ ok: true });
   });
 
   // Who am I? Lets the client validate a stored token on boot (TITLE screen).
-  api.get('/api/me', requireAuth, (req, res) => {
-    const account = store.getAccountById(req.accountId);
+  api.get('/api/me', requireAuth, async (req, res) => {
+    const account = await store.getAccountById(req.accountId);
     if (!account) return res.status(401).json({ error: 'not signed in' });
     res.json({ account: publicAccount(account) });
   });
 
   // ------------------------------ characters ------------------------------
 
-  api.get('/api/characters', requireAuth, (req, res) => {
+  api.get('/api/characters', requireAuth, async (req, res) => {
+    const characters = await store.listCharacters(req.accountId);
     res.json({
-      characters: store.listCharacters(req.accountId).map(publicCharacter),
+      characters: characters.map(publicCharacter),
       max: MAX_CHARACTERS,
     });
   });
 
-  api.post('/api/characters', requireAuth, (req, res) => {
+  api.post('/api/characters', requireAuth, async (req, res) => {
     const { name, spriteGroupId, appearance, alloc, favoriteThing, favoriteFood } = req.body || {};
     if (typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ error: 'name required' });
@@ -184,7 +191,7 @@ function createAuthApi(store, { now = () => Date.now(), editorApi = false } = {}
     try {
       // Canonical starting save: build + level/exp + the EB favorites. The game
       // host fills in starting inventory/money/spawn on first join (it owns that).
-      const character = store.createCharacter({
+      const character = await store.createCharacter({
         accountId: req.accountId,
         name: name.trim().slice(0, NAME_MAX),
         spriteGroupId,
@@ -207,14 +214,14 @@ function createAuthApi(store, { now = () => Date.now(), editorApi = false } = {}
     }
   });
 
-  api.delete('/api/characters/:id', requireAuth, (req, res) => {
+  api.delete('/api/characters/:id', requireAuth, async (req, res) => {
     const id = Number(req.params.id);
-    const character = Number.isInteger(id) ? store.getCharacter(id) : null;
+    const character = Number.isInteger(id) ? await store.getCharacter(id) : null;
     // 404 (not 403) when it isn't yours — don't reveal that another account's id exists.
     if (!character || character.accountId !== req.accountId) {
       return res.status(404).json({ error: 'character not found' });
     }
-    store.deleteCharacter(id);
+    await store.deleteCharacter(id);
     res.json({ ok: true });
   });
 
@@ -224,20 +231,20 @@ function createAuthApi(store, { now = () => Date.now(), editorApi = false } = {}
   // server, never on the deploy server. Loopback-gated as a second guard, so the
   // editing surface simply does not exist in production.
   if (editorApi) {
-    api.get('/api/world/:name', requireLoopback, (req, res) => {
+    api.get('/api/world/:name', requireLoopback, async (req, res) => {
       const name = req.params.name;
       if (!WORLD_DOC_ALLOW.has(name))
         return res.status(404).json({ error: `unknown world doc '${name}'` });
-      res.json({ name, data: store.getWorldDoc(name) });
+      res.json({ name, data: await store.getWorldDoc(name) });
     });
 
-    api.put('/api/world/:name', requireLoopback, (req, res) => {
+    api.put('/api/world/:name', requireLoopback, async (req, res) => {
       const name = req.params.name;
       if (!WORLD_DOC_ALLOW.has(name))
         return res.status(404).json({ error: `unknown world doc '${name}'` });
       const data = req.body && req.body.data;
       if (data === undefined) return res.status(400).json({ error: 'missing data' });
-      const r = store.putWorldDoc(name, data, now());
+      const r = await store.putWorldDoc(name, data, now());
       res.json({ ok: true, updatedAt: r.updatedAt });
     });
   }
