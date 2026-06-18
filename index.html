@@ -18,10 +18,78 @@
       image-rendering: pixelated;
       image-rendering: crisp-edges;
     }
+
+    /* Boot screen — painted from static HTML the instant the page parses (before
+       any JS/assets), so the first thing you see is the title + a load bar, not a
+       black screen. JS drives #boot-bar and removes #boot when the game is ready.
+       Pure text/CSS (no ROM-derived art). Swap #boot-title's text for an <img>
+       (your own logo) to use a real title image. */
+    #boot {
+      position: fixed; inset: 0; z-index: 9999;
+      display: flex; align-items: center; justify-content: center;
+      background: radial-gradient(circle at 50% 32%, #1c1238 0%, #0a0612 68%, #000 100%);
+      color: #fff; font-family: 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif;
+      transition: opacity 0.45s ease;
+    }
+    #boot-inner { text-align: center; width: min(82vw, 460px); }
+    #boot-title {
+      font-weight: 800; letter-spacing: 0.12em; line-height: 1.04;
+      font-size: clamp(30px, 7.5vw, 58px);
+      color: #ffd84a; text-shadow: 0 2px 0 #c2410c, 0 5px 18px rgba(0, 0, 0, 0.6);
+    }
+    #boot-title span {
+      display: block; color: #6ad7ff; font-size: 0.46em;
+      letter-spacing: 0.38em; margin-top: 0.35em; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+    }
+    #boot-barwrap {
+      margin: 30px auto 12px; height: 12px; width: 100%;
+      background: rgba(255, 255, 255, 0.12); border-radius: 999px; overflow: hidden;
+      box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.55);
+    }
+    #boot-bar {
+      height: 100%; width: 0%;
+      background: linear-gradient(90deg, #ffd84a, #ff8a3d);
+      border-radius: 999px; transition: width 0.25s ease;
+    }
+    #boot-label { font-size: 13px; letter-spacing: 0.1em; color: #b9a9d6; }
   </style>
 </head>
 <body>
   <canvas id="game"></canvas>
+
+  <!-- Instant boot screen (see #boot CSS above). Shown until main.ts finishes
+       loading, then faded out by window.__boot.done(). -->
+  <div id="boot">
+    <div id="boot-inner">
+      <div id="boot-title">EARTHBOUND<span>ONLINE</span></div>
+      <div id="boot-barwrap"><div id="boot-bar"></div></div>
+      <div id="boot-label">Loading&hellip;</div>
+    </div>
+  </div>
+  <script>
+    // Minimal boot-screen API, defined BEFORE the module script so main.ts can
+    // drive it. set(frac) advances the bar (monotonic); done() fades it away.
+    window.__boot = (function () {
+      var el = document.getElementById('boot');
+      var bar = document.getElementById('boot-bar');
+      var label = document.getElementById('boot-label');
+      var cur = 0;
+      return {
+        set: function (frac, text) {
+          frac = Math.max(cur, Math.min(1, frac || 0)); // never go backwards
+          cur = frac;
+          if (bar) bar.style.width = (frac * 100).toFixed(1) + '%';
+          if (text && label) label.textContent = text;
+        },
+        done: function () {
+          if (!el) return;
+          if (bar) bar.style.width = '100%';
+          el.style.opacity = '0';
+          setTimeout(function () { if (el) el.style.display = 'none'; }, 480);
+        },
+      };
+    })();
+  </script>
   <script>
     // SPC engine memory initializer data (3KB) embedded inline to avoid XHR fetch issues
     var __spcMemData = (function() {
