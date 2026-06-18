@@ -507,6 +507,24 @@
       "worldX": 8152,
       "worldY": 2904
     },
+    "1224,3204": {
+      "destX": 1112,
+      "destY": 5936,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 1208,
+      "worldY": 3184
+    },
+    "1240,3204": {
+      "destX": 1120,
+      "destY": 5968,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 1224,
+      "worldY": 3184
+    },
     "4344,3404": {
       "destX": 4024,
       "destY": 7616,
@@ -565,6 +583,15 @@
       "sfx": "door-open",
       "worldX": 6864,
       "worldY": 5864
+    },
+    "1120,5932": {
+      "destX": 1216,
+      "destY": 3192,
+      "destDir": 1,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 1120,
+      "worldY": 5936
     },
     "6776,5964": {
       "destX": 6696,
@@ -926,24 +953,6 @@
       "sfx": "door-open"
     },
     {
-      "worldX": 2144,
-      "worldY": 1416,
-      "destX": 136,
-      "destY": 10456,
-      "destDir": 0,
-      "style": 1,
-      "sfx": "door-open"
-    },
-    {
-      "worldX": 152,
-      "worldY": 10456,
-      "destX": 2144,
-      "destY": 1432,
-      "destDir": 0,
-      "style": 1,
-      "sfx": "door-open"
-    },
-    {
       "worldX": 7528,
       "worldY": 1248,
       "destX": 4008,
@@ -980,10 +989,10 @@
       "sfx": "door-open"
     },
     {
-      "worldX": 152,
-      "worldY": 10456,
-      "destX": 152,
-      "destY": 10488,
+      "worldX": 1240,
+      "worldY": 3184,
+      "destX": 1120,
+      "destY": 5968,
       "destDir": 0,
       "style": 1,
       "sfx": "door-open"

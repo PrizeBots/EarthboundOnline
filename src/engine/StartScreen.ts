@@ -107,6 +107,10 @@ function render(): void {
   // The creator spreads its panes across the screen, so it needs a wider column
   // than the 420px form screens. Toggled off whenever we leave the create screen.
   panel.classList.toggle('eb-ss-panel--wide', screen === 'create');
+  // The creator fits itself to the viewport (CreateFlow.fitToViewport scales it),
+  // so it must NEVER scroll — lock the page. Other screens keep auto-scroll for
+  // tiny viewports.
+  root?.classList.toggle('eb-ss-root--fixed', screen === 'create');
   if (screen === 'create') {
     // The create flow owns the whole panel (it has its own Back button).
     panel.appendChild(closeButton());
@@ -407,6 +411,8 @@ function injectStyles(): void {
     font-family: 'Courier New', monospace;
     -webkit-font-smoothing: none;
   }
+  /* Create screen: one page, never scrolls — the creator scales to fit instead. */
+  .eb-ss-root--fixed { overflow: hidden; }
   /* Not a modal card — a centered content column ON the full page. */
   .eb-ss-panel {
     position: relative;
@@ -417,8 +423,11 @@ function injectStyles(): void {
     color: #fff;
     display: flex; flex-direction: column; gap: 12px;
   }
-  /* Character creator: a wide column so its EB panes can sit side by side. */
-  .eb-ss-panel--wide { width: min(1100px, calc(100vw - 32px)); }
+  /* Character creator: a wide column so its EB panes can sit side by side. TOP-
+     aligned (margin:0 auto, not auto) because it scales itself to fit the
+     viewport — the content is anchored to the top and clipped-free, while the
+     unscaled layout box's empty tail below is hidden by .eb-ss-root--fixed. */
+  .eb-ss-panel--wide { width: min(1100px, calc(100vw - 32px)); margin: 0 auto; }
   /* Title block: a little breathing room between the EB-font canvases. */
   .eb-ss-panel > .eb-label { margin: 2px 0; }
   .eb-ss-tabs { display: flex; gap: 8px; margin-bottom: 4px; }

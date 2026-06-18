@@ -633,9 +633,17 @@ player to spawn, indistinguishable from a door warp, so the host calls
 `npcSim.noteRespawn(id)` to exempt that one jump. On losing the target the enemy
 switches to `return`: it retraces its `warpStack` (warping back out at each
 recorded door) then walks to its spawn point to regroup; a wedged retrace gives
-up after `RETURN_GIVEUP_MS` and snaps home. Returning enemies keep ticking even
-with no player nearby (the off-station branch in the tick loop) so they don't
-freeze out of position. Pool/static respawns reset `mode/targetId/warpStack`.
+up after `RETURN_GIVEUP_MS` and snaps home. If an **outdoor** enemy (its spawn
+sector isn't `indoor`) ever finds itself standing in an interior with no chase
+path to retrace — lured into a building and then orphaned — it can't wander (its
+leash is pinned to a home across the warp), so `tickReturn` walks it to the
+nearest **homeward door** (`exitDoorToward`: a door whose stored destination,
+kept by `loadDoorTriggers`, lands closer to home and ideally outdoors) and warps
+it through on contact, repeating for nested interiors until it emerges and walks
+home. The same indoor check also flips a stuck `patrol` enemy back to `return`.
+Returning enemies keep ticking even with no player nearby (the off-station branch
+in the tick loop) so they don't freeze out of position. Pool/static respawns
+reset `mode/targetId/warpStack`.
 
 **Pose animation.** EB has no overworld combat art, so `SpriteManager`
 (`loadSpriteGroup`) gives EVERY group a 13-row pose sheet — the ROM walk rows

@@ -128,6 +128,12 @@ class EnemySpawnerTool implements EditorTool {
   private formEl: HTMLDivElement | null = null;
   private fields = new Map<string, HTMLInputElement>();
   private spritePicker: SpritePicker | null = null;
+  // Spawner-list organization (the list grows large once ROM placements are
+  // imported): a free-text filter (name or #sprite) + a state filter, with a
+  // result count. Sorted by name so same-enemy spawners group together.
+  private listSearch = '';
+  private listFilter: 'all' | 'on' | 'off' | 'bad' = 'all';
+  private countEl: HTMLSpanElement | null = null;
 
   activate(shell: EditorShellApi): void {
     this.shell = shell;
@@ -458,9 +464,47 @@ class EnemySpawnerTool implements EditorTool {
     // shell (registered 'enemies' handler), debounced and flushed on exit.
     this.panel.appendChild(actions);
 
+    // Filter row: free-text search + a state dropdown + a result count. Keeps the
+    // list usable once dozens/hundreds of ROM-imported spawners are present.
+    const filterRow = document.createElement('div');
+    filterRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
+    const search = document.createElement('input');
+    search.placeholder = 'filter name / #sprite…';
+    search.style.cssText =
+      'flex:1;min-width:0;font:11px monospace;background:#0c1014;color:#cde;' +
+      'border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
+    search.oninput = () => {
+      this.listSearch = search.value.trim().toLowerCase();
+      this.refreshList();
+    };
+    filterRow.appendChild(search);
+    const sel = document.createElement('select');
+    sel.style.cssText =
+      'font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 3px;';
+    for (const [v, label] of [
+      ['all', 'All'],
+      ['on', 'Enabled'],
+      ['off', 'Disabled'],
+      ['bad', '⚠ Issues'],
+    ] as [typeof this.listFilter, string][]) {
+      const o = document.createElement('option');
+      o.value = v;
+      o.textContent = label;
+      sel.appendChild(o);
+    }
+    sel.onchange = () => {
+      this.listFilter = sel.value as typeof this.listFilter;
+      this.refreshList();
+    };
+    filterRow.appendChild(sel);
+    this.countEl = document.createElement('span');
+    this.countEl.style.cssText = 'color:#7a8aa0;font-size:10px;white-space:nowrap;';
+    filterRow.appendChild(this.countEl);
+    this.panel.appendChild(filterRow);
+
     this.listEl = document.createElement('div');
     this.listEl.style.cssText =
-      'display:flex;flex-direction:column;gap:2px;max-height:150px;overflow:auto;' +
+      'display:flex;flex-direction:column;gap:2px;max-height:240px;overflow:auto;' +
       'border-top:1px solid #2a3540;border-bottom:1px solid #2a3540;padding:4px 0;';
     this.panel.appendChild(this.listEl);
 
@@ -476,6 +520,11 @@ class EnemySpawnerTool implements EditorTool {
     this.shell!.panelHost.appendChild(this.panel);
   }
 
+  /** True if a spawner is geometrically invalid (in a wall / not enough room). */
+  private isBad(s: Spawner): boolean {
+    return !!s.solid || (s.reach ?? 0) < SEALED_MIN_CELLS;
+  }
+
   private refreshList(): void {
     if (!this.listEl) return;
     this.listEl.innerHTML = '';
@@ -484,11 +533,31 @@ class EnemySpawnerTool implements EditorTool {
       e.textContent = 'No spawners yet.';
       e.style.cssText = 'color:#667;';
       this.listEl.appendChild(e);
+      if (this.countEl) this.countEl.textContent = '';
       return;
     }
-    for (const s of this.spawners) {
+    // Filter (search + state), then sort by name so same-enemy spawners group.
+    const q = this.listSearch;
+    const shown = this.spawners
+      .filter((s) => {
+        if (this.listFilter === 'on' && !s.enabled) return false;
+        if (this.listFilter === 'off' && s.enabled) return false;
+        if (this.listFilter === 'bad' && !this.isBad(s)) return false;
+        if (!q) return true;
+        return `${s.name} #${s.sprite}`.toLowerCase().includes(q);
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+    if (this.countEl) this.countEl.textContent = `${shown.length}/${this.spawners.length}`;
+    if (shown.length === 0) {
+      const e = document.createElement('div');
+      e.textContent = 'No matches.';
+      e.style.cssText = 'color:#667;';
+      this.listEl.appendChild(e);
+      return;
+    }
+    for (const s of shown) {
       const row = document.createElement('div');
-      const bad = s.solid || (s.reach ?? 0) < SEALED_MIN_CELLS;
+      const bad = this.isBad(s);
       const on = s === this.sel;
       row.style.cssText =
         'display:flex;align-items:center;gap:6px;padding:2px 4px;cursor:pointer;border-radius:3px;' +

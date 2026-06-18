@@ -54,12 +54,19 @@ export async function mountCreateFlow(
   // background — this is a procedural recreation; tune colors in injectStyles.)
   outer.appendChild(el('div', 'eb-cc-bg'));
 
+  // Everything except the fixed background lives in `content`, which is the
+  // element we scale to fit the viewport. (Scaling `outer` would make the
+  // fixed-position bg resolve against the transformed ancestor and shrink it —
+  // so the bg stays an untransformed child of `outer` and only `content` scales.)
+  const content = el('div', 'eb-cc-content');
+  outer.appendChild(content);
+
   // Title banner, then a few separate EarthBound menu windows ("panes") laid out
   // across the checkerboard (they wrap to a column on narrow screens). Actions
   // get their own pane at the bottom.
-  outer.appendChild(heading('CREATE CHARACTER'));
+  content.appendChild(heading('CREATE CHARACTER'));
   const panes = el('div', 'eb-cc-panes');
-  outer.appendChild(panes);
+  content.appendChild(panes);
 
   // --- LEFT COLUMN: one pane stacking Choose a Character → Tweak Colors →
   // Name Your Character. Colors reveal once a sprite is picked. ---
@@ -108,21 +115,24 @@ export async function mountCreateFlow(
   name.maxLength = NAME_MAX;
   name.spellcheck = false;
   name.addEventListener('input', refreshCreate);
-  idPane.appendChild(labeled('NAME', name));
+  const nameField = labeled('NAME', name);
+  idPane.appendChild(nameField);
   const favThing = document.createElement('input');
   favThing.className = 'eb-cc-name';
   favThing.placeholder = 'e.g. baseball';
   favThing.maxLength = FAV_MAX;
   favThing.spellcheck = false;
   favThing.addEventListener('input', refreshCreate);
-  idPane.appendChild(labeled('FAVORITE THING', favThing));
+  const favThingField = labeled('FAVORITE THING', favThing);
+  idPane.appendChild(favThingField);
   const favFood = document.createElement('input');
   favFood.className = 'eb-cc-name';
   favFood.placeholder = 'e.g. steak';
   favFood.maxLength = FAV_MAX;
   favFood.spellcheck = false;
   favFood.addEventListener('input', refreshCreate);
-  idPane.appendChild(labeled('FAVORITE FOOD', favFood));
+  const favFoodField = labeled('FAVORITE FOOD', favFood);
+  idPane.appendChild(favFoodField);
 
   // --- Pane: stats. The pentagon PLUS the SAME derived-stat preview the in-game
   // level-up modal shows (createDerivedAttrs), so you see what the pentagon does
@@ -167,18 +177,59 @@ export async function mountCreateFlow(
 
   // --- Pane: actions ---
   const actions = ebWindow('eb-cc-actions');
-  outer.appendChild(actions);
+  content.appendChild(actions);
   const err = el('div', 'eb-ss-error');
   actions.appendChild(err);
   const create = ebButton('Create', () => void doCreate(), 2);
   create.style.justifyContent = 'center';
   actions.appendChild(create);
-  const back = ebButton('< Back', () => opts.onCancel(), 2);
+  const back = ebButton(
+    '< Back',
+    () => {
+      teardown();
+      opts.onCancel();
+    },
+    2
+  );
   back.style.justifyContent = 'center';
   actions.appendChild(back);
 
   setPoints(pointsLeft);
   refreshCreate();
+
+  // --- Fit the whole creator to the viewport: ONE page, no scroll, any device.
+  // Like the game canvas, we only ever scale DOWN, so the tallest element (the
+  // stat pentagon) is never clipped on short laptops. The page itself is locked
+  // from scrolling (.eb-ss-root--fixed, set by StartScreen). Pointer math in the
+  // radar normalizes by getBoundingClientRect width, so the CSS scale doesn't
+  // break dragging. Padding mirrors .eb-ss-root (24px vertical, 16px horizontal).
+  const ROOT_PAD_X = 32;
+  const ROOT_PAD_Y = 48;
+  content.style.transformOrigin = 'top center';
+  function fitToViewport(): void {
+    if (!content.isConnected) return teardown(); // screen torn down — stop refitting
+    content.style.transform = 'none'; // measure the natural (unscaled) layout box
+    const cw = content.offsetWidth;
+    const ch = content.offsetHeight;
+    if (!cw || !ch) return;
+    const s = Math.min(
+      1,
+      (window.innerWidth - ROOT_PAD_X) / cw,
+      (window.innerHeight - ROOT_PAD_Y) / ch
+    );
+    if (s < 1) content.style.transform = `scale(${s})`;
+  }
+  const onResize = (): void => fitToViewport();
+  window.addEventListener('resize', onResize);
+  // Content height changes as the Colors section reveals or rows update — refit
+  // whenever the layout box resizes (transform changes don't retrigger this).
+  const ro = new ResizeObserver(() => fitToViewport());
+  ro.observe(content);
+  fitToViewport();
+  function teardown(): void {
+    window.removeEventListener('resize', onResize);
+    ro.disconnect();
+  }
 
   async function selectSprite(id: number, btn: HTMLButtonElement): Promise<void> {
     chosenSprite = id;
@@ -232,17 +283,54 @@ export async function mountCreateFlow(
     );
   }
 
+  // The Create button stays CLICKABLE even when incomplete — so a click can point
+  // out exactly what's still missing (collectMissing/flagMissing) instead of just
+  // being an inert greyed-out button. Any edit clears the nags (refreshCreate).
   function refreshCreate(): void {
-    const ok =
-      !!name.value.trim() &&
-      !!favThing.value.trim() &&
-      !!favFood.value.trim() &&
-      chosenSprite != null &&
-      pointsLeft === 0;
-    create.disabled = !ok;
+    clearFlags();
+  }
+
+  /** Everything still missing for a valid character, each with the element to
+   *  point an "over here!" nag at and the message to show. Order = top→bottom. */
+  function collectMissing(): { el: HTMLElement; msg: string }[] {
+    const miss: { el: HTMLElement; msg: string }[] = [];
+    if (chosenSprite == null) miss.push({ el: tiles, msg: 'Hey! Pick a character!' });
+    if (!name.value.trim()) miss.push({ el: nameField, msg: 'Hey! You forgot me!' });
+    if (!favThing.value.trim()) miss.push({ el: favThingField, msg: 'This one too!' });
+    if (!favFood.value.trim()) miss.push({ el: favFoodField, msg: 'And me!' });
+    if (pointsLeft !== 0)
+      miss.push({
+        el: pointsReadout,
+        msg: `Spend your ${pointsLeft} point${pointsLeft === 1 ? '' : 's'}!`,
+      });
+    return miss;
+  }
+
+  /** Remove every active "over here!" nag + highlight. */
+  function clearFlags(): void {
+    outer.querySelectorAll('.eb-cc-flag').forEach((n) => n.remove());
+    outer.querySelectorAll('.eb-cc-missing').forEach((n) => n.classList.remove('eb-cc-missing'));
+  }
+
+  /** Point a wiggling bubble at `target` and shake/outline it in red. */
+  function flagMissing(target: HTMLElement, msg: string): void {
+    target.classList.add('eb-cc-missing');
+    target.style.position = 'relative';
+    const bubble = el('div', 'eb-cc-flag');
+    bubble.textContent = `👈 ${msg}`;
+    target.appendChild(bubble);
   }
 
   async function doCreate(): Promise<void> {
+    // Validate first: if anything's missing, nag the player at each spot and stop
+    // (don't submit). This is what makes a click on an "incomplete" form useful.
+    const missing = collectMissing();
+    if (missing.length > 0) {
+      clearFlags();
+      for (const m of missing) flagMissing(m.el, m.msg);
+      missing[0].el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      return;
+    }
     if (chosenSprite == null || !recolorer || !alloc) return;
     err.textContent = '';
     create.disabled = true; // (label is an EB-font canvas; don't overwrite it)
@@ -255,6 +343,7 @@ export async function mountCreateFlow(
         favoriteThing: favThing.value.trim(),
         favoriteFood: favFood.value.trim(),
       });
+      teardown();
       opts.onCreated(character);
     } catch (e) {
       err.textContent = e instanceof ApiError ? e.message : 'Could not create character.';
@@ -290,7 +379,13 @@ function labeled(label: string, input: HTMLElement): HTMLElement {
 function injectStyles(): void {
   if (document.getElementById('eb-cc-styles')) return;
   const css = `
-  .eb-cc { display: flex; flex-direction: column; align-items: center; gap: 14px; position: relative; }
+  .eb-cc { position: relative; width: 100%; }
+  /* The scaled content column (fitToViewport scales THIS, not .eb-cc, so the
+     fixed checkerboard bg stays full-viewport). Anchored top-center. */
+  .eb-cc-content {
+    display: flex; flex-direction: column; align-items: center; gap: 14px;
+    position: relative; width: 100%;
+  }
   /* A few separate EB menu windows on the checkerboard. They flow in a row and
      wrap to a column on narrow screens; the hidden Colors pane just collapses. */
   .eb-cc-panes {
@@ -365,6 +460,42 @@ function injectStyles(): void {
     paint-order: stroke; stroke: #0a0a12; stroke-width: 3.5px; stroke-linejoin: round;
   }
   .eb-cc-points { display: flex; justify-content: center; }
+  /* "Hey! Over here! You forgot me!" — a wiggling yellow callout the Create button
+     pins to each still-missing field, plus a red shake/outline on the field. */
+  .eb-cc-missing {
+    border-radius: 7px;
+    box-shadow: 0 0 0 2px #ff5a5a, 0 0 12px rgba(255,90,90,0.6);
+    animation: eb-cc-shake 0.45s ease-in-out;
+  }
+  .eb-cc-missing .eb-cc-name { border-color: #ff5a5a; }
+  .eb-cc-flag {
+    position: absolute; left: 100%; top: 50%; z-index: 60; pointer-events: none;
+    white-space: nowrap; margin-left: 10px; transform: translateY(-50%);
+    background: #f8e85a; color: #1a1430;
+    border: 2px solid #1a1430; box-shadow: 2px 2px 0 rgba(0,0,0,0.45);
+    border-radius: 9px; padding: 5px 10px;
+    font: bold 12px 'Courier New', monospace; letter-spacing: 0.3px;
+    animation: eb-cc-flag-wiggle 0.7s ease-in-out infinite;
+  }
+  /* little triangle pointing left, back toward the field */
+  .eb-cc-flag::before {
+    content: ''; position: absolute; right: 100%; top: 50%; transform: translateY(-50%);
+    border: 7px solid transparent; border-right-color: #1a1430;
+  }
+  @keyframes eb-cc-flag-wiggle {
+    0%, 100% { margin-left: 10px; }
+    50%      { margin-left: 17px; }
+  }
+  @keyframes eb-cc-shake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-5px); }
+    40% { transform: translateX(5px); }
+    60% { transform: translateX(-4px); }
+    80% { transform: translateX(4px); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .eb-cc-flag, .eb-cc-missing { animation: none; }
+  }
   `;
   const style = document.createElement('style');
   style.id = 'eb-cc-styles';

@@ -490,10 +490,17 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         if (zone && !o) continue; // zone door with no authored link
         const wx = o && o.worldX != null ? o.worldX : baseX;
         const wy = o && o.worldY != null ? o.worldY : baseY;
-        out.push({ x: wx, y: wy + DOOR_FOOT_OFFSET });
+        // Keep the DESTINATION too (override wins, mirroring DoorManager). Lets a
+        // regrouping enemy that got lured into a building walk out the door under
+        // its own power — see exitDoorToward — instead of waiting to retrace a
+        // chase path it may not have (warpStack).
+        const destX = o ? o.destX : destPx;
+        const destY = o ? o.destY : destPy;
+        out.push({ x: wx, y: wy + DOOR_FOOT_OFFSET, destX, destY });
       }
     });
-    for (const a of additions) out.push({ x: a.worldX, y: a.worldY + DOOR_FOOT_OFFSET });
+    for (const a of additions)
+      out.push({ x: a.worldX, y: a.worldY + DOOR_FOOT_OFFSET, destX: a.destX, destY: a.destY });
     doorTriggers = out;
     console.log(`[npcSim] loaded ${out.length} door triggers`);
   }
@@ -512,6 +519,40 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       const d = Math.hypot(t.x - x, t.y - y);
       if (d <= bestD) {
         bestD = d;
+        best = t;
+      }
+    }
+    return best;
+  }
+
+  // True if (x,y) sits in an interior (indoor/dungeon) sector — the same flag
+  // buildNpcs stamps an actor's `indoor` from. Used to tell when an enemy is
+  // currently standing inside a room, vs out in the door-stitched overworld.
+  function sectorIndoorAt(x, y) {
+    const s = sectorForTile(Math.floor(x / TILE), Math.floor(y / TILE));
+    return !!(s && s.indoor);
+  }
+
+  // Pick the door an enemy `n` should walk out of to head home: a real door
+  // whose far side lands CLOSER to home than the enemy stands now (so we never
+  // pick the door we came in through), preferring exits that empty into the
+  // outdoors and, among those, the nearest doorway to actually walk to. Null if
+  // nothing leads homeward (caller then just walks home / times out). The door's
+  // stored destination (loadDoorTriggers) is what makes this possible without a
+  // recorded chase path.
+  function exitDoorToward(n) {
+    const homeD = Math.hypot(n.x - n.homeX, n.y - n.homeY);
+    let best = null;
+    let bestScore = Infinity;
+    for (const t of doorTriggers) {
+      if (t.destX == null) continue;
+      const destHomeD = Math.hypot(t.destX - n.homeX, t.destY - n.homeY);
+      if (destHomeD >= homeD) continue; // doesn't take us nearer home — skip
+      const indoorDest = sectorIndoorAt(t.destX, t.destY) ? 1 : 0;
+      // Outdoor-landing doors first; then the nearest doorway we can walk to.
+      const score = indoorDest * 1e6 + Math.hypot(n.x - t.x, n.y - t.y);
+      if (score < bestScore) {
+        bestScore = score;
         best = t;
       }
     }
@@ -1058,7 +1099,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             homeY: sp.y,
             dir: 1,
             homeDir: 1,
-            indoor: false,
+            // Whether this enemy LIVES indoors (its spawn sector). Outdoor enemies
+            // that get lured into a building use this to know they must leave.
+            indoor: !!(sectorForTile(Math.floor(sp.x / TILE), Math.floor(sp.y / TILE)) || {})
+              .indoor,
             isEnemy: true,
             pk: true, // pooled enemies are PK
             roam: true,
@@ -2000,6 +2044,31 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       moveToward(n, top.inX, top.inY, n.chaseSpeed, players, Infinity);
       return true;
     }
+    // No chase path to retrace, but we're an outdoor enemy still standing inside
+    // a room (lured in, then lost the target): walk to the nearest homeward door
+    // and warp through it — never teleport across the room. After warping we'll
+    // be outside and fall through to the straight walk-home below next tick.
+    if (!n.indoor && sectorIndoorAt(n.x, n.y)) {
+      const door = exitDoorToward(n);
+      if (door) {
+        if (Math.hypot(n.x - door.x, n.y - door.y) <= DOOR_TRIGGER_REACH) {
+          const spot = findFreeNear(door.destX, door.destY, n, players) || {
+            x: door.destX,
+            y: door.destY,
+          };
+          n.x = spot.x;
+          n.y = spot.y;
+          n.dir = n.homeDir;
+          n.dirty = true;
+          return true; // emerged outside — keep returning from here next tick
+        }
+        n.dir = faceDir(door.x - n.x, door.y - n.y);
+        moveToward(n, door.x, door.y, n.chaseSpeed, players, Infinity);
+        return true;
+      }
+      // No door leads homeward (shouldn't happen) — fall through; the
+      // RETURN_GIVEUP_MS snap above is the backstop.
+    }
     if (Math.hypot(n.x - n.homeX, n.y - n.homeY) <= RETURN_ARRIVE) return false;
     n.dir = faceDir(n.homeX - n.x, n.homeY - n.y);
     moveToward(n, n.homeX, n.homeY, n.speed, players, Infinity);
@@ -2163,6 +2232,15 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       n.mode = 'return';
       n.returnSince = now;
       n.targetId = null;
+    }
+
+    // Stuck inside a room with no one to chase: an outdoor-spawned enemy (home in
+    // the overworld) that got lured into a building can't wander (its leash is
+    // pinned to a home that's now across a warp), so it would idle in the room
+    // forever. Send it home — tickReturn walks it out the nearest door.
+    if (n.mode === 'patrol' && !n.indoor && sectorIndoorAt(n.x, n.y)) {
+      n.mode = 'return';
+      n.returnSince = now;
     }
 
     if (n.mode === 'return') {
