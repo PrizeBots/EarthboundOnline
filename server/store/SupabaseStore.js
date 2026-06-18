@@ -64,6 +64,19 @@ const SCHEMA_SQL = `
     data       jsonb  NOT NULL,
     updated_at bigint NOT NULL
   );
+
+  -- Human-readable mirrors of the epoch-ms columns, for the Supabase table view
+  -- (the app still reads/writes the bigint columns — these are derived, not
+  -- written). Generated + STORED so they always track their source column.
+  ALTER TABLE accounts
+    ADD COLUMN IF NOT EXISTS created_at_ts timestamptz
+    GENERATED ALWAYS AS (to_timestamp(created_at / 1000.0)) STORED;
+  ALTER TABLE characters
+    ADD COLUMN IF NOT EXISTS created_at_ts timestamptz
+    GENERATED ALWAYS AS (to_timestamp(created_at / 1000.0)) STORED;
+  ALTER TABLE characters
+    ADD COLUMN IF NOT EXISTS updated_at_ts timestamptz
+    GENERATED ALWAYS AS (to_timestamp(updated_at / 1000.0)) STORED;
 `;
 
 class SupabaseStore {
