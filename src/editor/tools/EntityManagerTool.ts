@@ -6,6 +6,7 @@ import {
   drawSprite,
 } from '../../engine/SpriteManager';
 import { getSpriteName, setSpriteNameOverride } from '../../engine/SpriteNames';
+import { customSpriteGroupIds } from '../../engine/CustomSprites';
 import { createSpritePicker, drawSpriteGroupThumb, SpritePicker } from '../../engine/SpritePicker';
 import { loadNPCs } from '../../engine/NPCManager';
 import {
@@ -20,6 +21,7 @@ import { loadJSON } from '../../engine/AssetLoader';
 import { Direction } from '../../types';
 import { saveOverride, loadOverride } from '../saveOverride';
 import { registerSaveHandler } from '../registry';
+import { openSpriteEditor } from '../../engine/spriteEditor';
 
 // Entity Manager — the single home for per-entity combat stats (HP, level, XP,
 // damage, attack rate, speed), keyed by sprite group. Enemy Spawners reference
@@ -344,6 +346,12 @@ class EntityManagerTool implements EditorTool {
     return this.folders.find((f) => f.id === id)?.name ?? id;
   }
 
+  /** Every entity id shown in this tool: the ROM sprite groups plus standalone
+   *  custom groups minted from source art (Source Assets → New Entity). */
+  private allIds(): number[] {
+    return [...listSpriteGroupIds(), ...customSpriteGroupIds()];
+  }
+
   private markFoldersDirty(): void {
     this.shell?.markDirty('entity-folders');
   }
@@ -361,7 +369,7 @@ class EntityManagerTool implements EditorTool {
     ensure('vehicles', 'Vehicles');
     ensure('objects', 'Objects');
     ensure('custom', 'Custom');
-    for (const id of listSpriteGroupIds()) {
+    for (const id of this.allIds()) {
       if (this.folderOf(id)) continue; // already placed somewhere real
       const target = this.categoryFor(id);
       if (target) this.assign[String(id)] = target;
@@ -526,7 +534,7 @@ class EntityManagerTool implements EditorTool {
     this.folderTiles.clear();
     if (this.search) {
       // Flat global search: every matching entity, folders ignored.
-      for (const id of listSpriteGroupIds()) {
+      for (const id of this.allIds()) {
         const name = (getSpriteName(id) ?? '').toLowerCase();
         if (name.includes(this.search) || String(id).includes(this.search))
           this.browserGrid.appendChild(this.makeEntityCell(id));
@@ -535,7 +543,7 @@ class EntityManagerTool implements EditorTool {
       // Folders that live here, then the entities filed here.
       for (const f of this.folders.filter((f) => f.parent === this.cwd))
         this.browserGrid.appendChild(this.makeFolderTile(f));
-      for (const id of listSpriteGroupIds())
+      for (const id of this.allIds())
         if (this.folderOf(id) === this.cwd) this.browserGrid.appendChild(this.makeEntityCell(id));
     }
     this.highlightBrowser();
@@ -612,7 +620,7 @@ class EntityManagerTool implements EditorTool {
     icon.style.cssText =
       'width:94px;height:94px;display:flex;align-items:center;justify-content:center;' +
       'font-size:52px;line-height:1;flex:none;background:#0c1014;border-radius:4px;pointer-events:none;';
-    const nEnt = listSpriteGroupIds().filter((id) => this.folderOf(id) === f.id).length;
+    const nEnt = this.allIds().filter((id) => this.folderOf(id) === f.id).length;
     const nSub = this.folders.filter((x) => x.parent === f.id).length;
     const lbl = document.createElement('div');
     lbl.textContent = `${f.name} (${nEnt + nSub})`;
@@ -873,8 +881,8 @@ class EntityManagerTool implements EditorTool {
     title.style.cssText = 'color:#b06de8;font-weight:bold;letter-spacing:1px;';
     this.panel.appendChild(title);
 
-    // Entity picker — every sprite group, each row drawing the real sprite.
-    const ids = listSpriteGroupIds();
+    // Entity picker — every sprite group (ROM + custom), each row drawing the real sprite.
+    const ids = this.allIds();
     this.picker = createSpritePicker({
       sections: [{ values: ids.map(String) }],
       initial: String(this.sprite || ids[0] || 1),
@@ -886,6 +894,18 @@ class EntityManagerTool implements EditorTool {
 
     // Toggle for the large center-panel entity desktop (folders + drag-organize).
     this.mkBtn('🖥 Open entity desktop (center)', () => this.toggleBrowser(), this.panel);
+
+    // Hand off to the Sprite Editor on the selected entity's sprite group (same
+    // shortcut the Item Manager has for held-item art). Opens in Character mode.
+    const editSprite = document.createElement('button');
+    editSprite.textContent = '✎ Edit sprite in Sprite Editor →';
+    editSprite.style.cssText =
+      'font:11px monospace;padding:3px 8px;cursor:pointer;border-radius:3px;' +
+      'background:#3a2e10;color:#d8a23a;border:1px solid #d8a23a;';
+    editSprite.onclick = () => {
+      if (this.sprite) void openSpriteEditor({ focusChar: this.sprite });
+    };
+    this.panel.appendChild(editSprite);
 
     // Rename the selected entity — writes the shared sprite-name override (same
     // mechanism as the Sprite/Placement editors). Save-all persists names.json.

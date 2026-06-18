@@ -90,7 +90,13 @@ export async function openSpriteEditor(callbacks: SpriteEditorCallbacks = {}): P
   buildPsiBuffer(); // seed the PSI frame buffers (Lifeup / first ability)
 
   buildDom();
-  await loadGroupIntoEditor(DEFAULT_GROUP);
+  // Entity Manager handoff: open Character mode on the handed-off sprite group
+  // (loadGroupIntoEditor syncs the char picker). Else the default cast member.
+  const startGroup =
+    callbacks.focusChar != null && Number.isInteger(callbacks.focusChar)
+      ? callbacks.focusChar
+      : DEFAULT_GROUP;
+  await loadGroupIntoEditor(startGroup);
   // Item Manager handoff: jump straight into Item mode on the chosen item.
   if (callbacks.focusItem) {
     setEditMode('item');
@@ -244,10 +250,25 @@ function persistGroup(quiet: boolean): void {
 // ---------------------------------------------------------------------------
 
 function onKeyDown(e: KeyboardEvent): void {
+  // F2 closes the editor from ANYWHERE — even with a field focused. It's a
+  // function key (never a text character), so we don't let the typing bail
+  // below swallow it; blur the field first so its keystrokes stop. When the
+  // shell owns this editor it intercepts F2 before us and tears us down too;
+  // this branch only matters when the editor is opened standalone (char select).
+  const tag = document.activeElement?.tagName;
+  const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+  if (e.key === 'F2') {
+    e.preventDefault();
+    // Don't let this bubble to the entry listener (index.ts) — it would see the
+    // shell inactive and open the editor shell right as we close.
+    e.stopImmediatePropagation();
+    if (typing) (document.activeElement as HTMLElement | null)?.blur();
+    cancelEditor();
+    return;
+  }
   // While typing in a field (the sprite picker's search, the rename box), let
   // the key reach the input — don't steal it for WASD/tool hotkeys.
-  const tag = document.activeElement?.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (typing) return;
   e.stopPropagation();
   const k = e.key.toLowerCase();
   if (k === 'escape') {
