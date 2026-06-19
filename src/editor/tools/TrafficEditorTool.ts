@@ -29,6 +29,17 @@ const VEHICLE_SPRITES: { id: number; name: string }[] = [
   { id: 254, name: 'Bulldozer' },
 ];
 const DEFAULT_SPRITE = VEHICLE_SPRITES[0].id; // Car
+// Facing options for a parked car's `dir` (Direction enum order: S,N,W,E,…).
+const DIR_OPTIONS: [string, Direction][] = [
+  ['South ↓', Direction.S],
+  ['North ↑', Direction.N],
+  ['West ←', Direction.W],
+  ['East →', Direction.E],
+  ['NW ↖', Direction.NW],
+  ['NE ↗', Direction.NE],
+  ['SW ↙', Direction.SW],
+  ['SE ↘', Direction.SE],
+];
 const WP_PICK = 9; // world-px pick radius for a waypoint dot
 // Combat defaults — KEEP IN SYNC with npcSim VEHICLE_HP / VEHICLE_DAMAGE so an
 // unauthored car behaves the same whether or not the editor wrote these fields.
@@ -152,6 +163,7 @@ class TrafficEditorTool implements EditorTool {
       enabled: v.enabled !== false,
       hp: v.hp ?? VEHICLE_DEFAULT_HP,
       damage: v.damage ?? VEHICLE_DEFAULT_DAMAGE,
+      dir: v.dir ?? Direction.S,
       waypoints: Array.isArray(v.waypoints)
         ? v.waypoints.map(([x, y]) => [x, y] as [number, number])
         : [],
@@ -181,6 +193,7 @@ class TrafficEditorTool implements EditorTool {
           enabled: v.enabled,
           hp: v.hp ?? VEHICLE_DEFAULT_HP,
           damage: v.damage ?? VEHICLE_DEFAULT_DAMAGE,
+          dir: v.dir ?? Direction.S, // facing for a parked car (1 waypoint)
           waypoints: v.waypoints.map(
             ([x, y]) => [Math.round(x), Math.round(y)] as [number, number]
           ),
@@ -217,6 +230,7 @@ class TrafficEditorTool implements EditorTool {
         enabled: true,
         hp: VEHICLE_DEFAULT_HP,
         damage: VEHICLE_DEFAULT_DAMAGE,
+        dir: Direction.S,
         waypoints: [[Math.round(p.x), Math.round(p.y)]],
       };
       this.vehicles.push(v);
@@ -227,7 +241,9 @@ class TrafficEditorTool implements EditorTool {
       this.shell?.markDirty('traffic');
       this.refreshList();
       this.rebuildForm();
-      this.shell?.toast('Click to add waypoints; toggle "Add waypoints" off when done');
+      this.shell?.toast(
+        'Click to add waypoints (it drives the route). Add none and it stays PARKED — set its facing in the form.'
+      );
       return true;
     }
     // Grab an existing waypoint (any vehicle) to select + drag it.
@@ -416,7 +432,9 @@ class TrafficEditorTool implements EditorTool {
       const sx = wps[0][0] - camX;
       const sy = wps[0][1] - camY;
       const face =
-        wps.length >= 2 ? dir8(wps[1][0] - wps[0][0], wps[1][1] - wps[0][1]) : Direction.S;
+        wps.length >= 2
+          ? dir8(wps[1][0] - wps[0][0], wps[1][1] - wps[0][1])
+          : ((v.dir ?? Direction.S) as Direction);
       ctx.globalAlpha = v.enabled ? 0.6 : 0.3;
       drawSprite(ctx, v.sprite, face, 0, sx, sy);
       ctx.globalAlpha = 1;
@@ -439,7 +457,7 @@ class TrafficEditorTool implements EditorTool {
       ctx.font = '8px monospace';
       ctx.textAlign = 'center';
       ctx.fillStyle = base;
-      ctx.fillText(`${v.name} (${wps.length}wp)`, sx, sy - 14);
+      ctx.fillText(`${v.name} (${wps.length >= 2 ? `${wps.length}wp` : 'parked'})`, sx, sy - 14);
       ctx.textAlign = 'left';
     }
 
@@ -541,9 +559,10 @@ class TrafficEditorTool implements EditorTool {
         (sel ? 'background:#16301f;' : '');
       const dot = document.createElement('span');
       dot.textContent = '●';
-      dot.style.color = !v.enabled ? '#667' : v.waypoints.length >= 2 ? '#6ad08a' : '#e8a33d';
+      dot.style.color = !v.enabled ? '#667' : v.waypoints.length >= 2 ? '#6ad08a' : '#6aa0d0';
       const label = document.createElement('span');
-      label.textContent = `${v.name}  (#${v.sprite}, ${v.waypoints.length}wp)`;
+      const tag = v.waypoints.length >= 2 ? `${v.waypoints.length}wp` : 'parked';
+      label.textContent = `${v.name}  (#${v.sprite}, ${tag})`;
       label.style.cssText =
         'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' +
         (v.enabled ? '' : 'color:#778;');
@@ -681,13 +700,37 @@ class TrafficEditorTool implements EditorTool {
     };
     enRow.appendChild(en);
 
+    // Facing — only meaningful for a PARKED car (1 waypoint); a driving car faces
+    // its route. Shown always so a parked car can be aimed; hidden visual weight
+    // when it has a route.
+    const parked = v.waypoints.length < 2;
+    const dirRow = this.mkRow(form, 'facing');
+    const dirSel = document.createElement('select');
+    dirSel.style.cssText =
+      'flex:1;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;' +
+      'border-radius:3px;padding:2px;' +
+      (parked ? '' : 'opacity:0.5;');
+    for (const [label, d] of DIR_OPTIONS) {
+      const op = document.createElement('option');
+      op.value = String(d);
+      op.textContent = label;
+      dirSel.appendChild(op);
+    }
+    dirSel.value = String(v.dir ?? Direction.S);
+    dirSel.title = parked ? 'Which way the parked car faces' : 'Driving cars face their route';
+    dirSel.onchange = () => {
+      v.dir = parseInt(dirSel.value, 10);
+      this.shell?.markDirty('traffic');
+      this.drawThumb();
+    };
+    dirRow.appendChild(dirSel);
+
     const status = document.createElement('div');
     status.style.cssText = 'font-size:10px;color:#8ab;';
-    status.textContent =
-      v.waypoints.length >= 2
-        ? `✓ ${v.waypoints.length} waypoints`
-        : '⚠ add at least 2 waypoints to drive';
-    if (v.waypoints.length < 2) status.style.color = '#e8a33d';
+    status.textContent = parked
+      ? `● parked (1 waypoint) — add waypoints to make it drive`
+      : `✓ ${v.waypoints.length} waypoints — drives the route`;
+    if (parked) status.style.color = '#6aa0d0';
     form.appendChild(status);
 
     // A vehicle is an NPC that drives — it can also be talkable. Author/edit its
@@ -748,7 +791,9 @@ class TrafficEditorTool implements EditorTool {
         .catch(() => {});
       return;
     }
-    drawSprite(c, this.sel.sprite, Direction.E, 0, this.thumb.width / 2, this.thumb.height - 6);
+    const face =
+      this.sel.waypoints.length < 2 ? ((this.sel.dir ?? Direction.S) as Direction) : Direction.E;
+    drawSprite(c, this.sel.sprite, face, 0, this.thumb.width / 2, this.thumb.height - 6);
   }
 
   // --- small DOM helpers ---------------------------------------------------------------

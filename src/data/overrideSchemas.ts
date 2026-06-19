@@ -25,7 +25,6 @@ export const EntityStatsSchema = z
     damage: z.number().nonnegative().optional(),
     attackCooldownMs: z.number().positive().optional(),
     speed: z.number().optional(),
-    detectRange: z.number().optional(),
     attackRange: z.number().optional(),
     // Crit/dodge as percent points (0..100); server rolls them /100.
     crit: z.number().min(0).max(100).optional(),
@@ -68,6 +67,8 @@ export const SpawnerSchema = z
     x: z.number(),
     y: z.number(),
     wanderRadius: z.number().nonnegative(),
+    detectRange: z.number().positive().optional(), // px aggro radius (per-spawner)
+    giveUpRange: z.number().positive().optional(), // px locked-on chase break-off
     poolSize: z.number().int().positive(),
     maxActive: z.number().int().nonnegative(),
     spawnIntervalMs: z.number().positive(),

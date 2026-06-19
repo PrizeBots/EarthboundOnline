@@ -157,7 +157,25 @@ type NetworkCallback = {
   onPlayerDowned?: (id: string, ms: number) => void;
   /** A downed player was revived (by an ally) — stand them back up. */
   onPlayerRevived?: (id: string) => void;
+  /** Public state of arming/in-progress events (trigger circle + countdown/timer),
+   *  broadcast ~10Hz. Drives the world-space circle + the "event in progress" timer. */
+  onEventState?: (events: EventStateWire[]) => void;
+  /** The LOCAL player was warped by an event — into the room (`eventId` set) or back
+   *  out (`eventId` null). Does a door-style fade to (x,y) facing `dir`. */
+  onEventWarp?: (x: number, y: number, dir: Direction, eventId: string | null) => void;
 };
+
+/** Per-event UI state the server broadcasts (server/eventRuntime.js). */
+export interface EventStateWire {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  radius: number;
+  phase: 'arming' | 'active';
+  countdownMs?: number; // arming: ms left before the warp-in
+  timerMs?: number; // active: ms left on the event timer
+}
 
 /** One active timed stat buff the server reports (server/buffs.js). */
 export interface BuffPayload {
@@ -380,6 +398,12 @@ function openSocket() {
       case 'player_respawn':
         callbacks?.onPlayerRespawn(msg.id, msg.x, msg.y, (msg.dir ?? 0) as Direction);
         break;
+      case 'event_state':
+        callbacks?.onEventState?.(Array.isArray(msg.events) ? msg.events : []);
+        break;
+      case 'event_warp':
+        callbacks?.onEventWarp?.(msg.x, msg.y, (msg.dir ?? 0) as Direction, msg.eventId ?? null);
+        break;
       case 'player_stats':
         callbacks?.onPlayerStats(msg.id, msg.stats, !!msg.leveled, msg.gained ?? 0);
         break;
@@ -496,6 +520,17 @@ export function sendDadCall() {
 export function sendWarpState(warping: boolean) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'warp', warping }));
+  }
+}
+
+/**
+ * Report finishing a conversation with an NPC (its dialogue textId), so the
+ * server can arm a dialogue-start event (EVENT_MANAGER.md). Sent after every
+ * dialogue close; the server ignores it unless an event matches the NPC.
+ */
+export function sendEventTalk(npcTextId: number) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'event_talk', npcTextId }));
   }
 }
 

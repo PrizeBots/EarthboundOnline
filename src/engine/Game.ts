@@ -26,6 +26,7 @@ import {
   applyNpcHp,
   applyNpcStatus,
   applyNpcEquip,
+  applyGiftFlagStates,
   noteLocalAttack,
   getNpcDialogue,
   interpolateNpcs,
@@ -62,7 +63,9 @@ import {
   sendMomFood,
   sendGiveUp,
   sendUsePsi,
+  sendEventTalk,
   JoinAuth,
+  EventStateWire,
 } from './Network';
 import { drawText, measureText } from './TextRenderer';
 import { FONT_ID } from './menu/layout';
@@ -158,6 +161,7 @@ import { initPsiFx, updatePsiFx, renderPsiFx, spawnPsiFx } from './PsiFx';
 import { updateItemFx, renderItemFx, spawnItemFx } from './ItemFx';
 import { setDrops, addDrop, removeDrop } from './DropManager';
 import { playEventSfx, loadSfxEvents } from './SfxEvents';
+import { loadCombatJuice } from './CombatJuice';
 import { setGoods } from './Inventory';
 import { setMoney, setBank } from './Wallet';
 import {
@@ -234,6 +238,10 @@ export class Game {
   private pendingDoor: DoorData | null = null;
   private waitingForSectors = false;
   private doorSuppressed = false;
+  // Event runtime (EVENT_MANAGER.md): latest broadcast event UI state + the id of
+  // the event the LOCAL player is currently inside (null when not in one).
+  private eventStates: EventStateWire[] = [];
+  private myEventId: string | null = null;
   // Door prefetch: the destination's visible sectors, loaded at fade START so the
   // fade hides the load instead of stalling on a black screen after it.
   private destLoad: Promise<void> | null = null;
@@ -276,6 +284,7 @@ export class Game {
       loadMusicMap(),
       loadMusicAreas(), // authored music regions (overrides/music.json)
       loadSfxEvents(), // authored event→sfx assignments (overrides/sfx_events.json)
+      loadCombatJuice(), // authored combat-number feel (overrides/combat_juice.json)
       loadFont(0), // regular EB dialogue font (chat input, command menu)
       loadFont(1), // Mr. Saturn font (backlogged chat option)
       loadFont(4), // small 8px battle font (speech bubbles)
@@ -511,6 +520,9 @@ export class Game {
           hydrateFlags(ids);
           const defaults = getPlayerDefaultFlags();
           if (defaults.length) seedDefaults(defaults);
+          // Gifts were tagged at boot, before these flags existed — re-apply so
+          // presents opened in a prior session load showing the OPEN frame.
+          applyGiftFlagStates();
         },
         onPlayerPk: (id, pk, lockMs) => {
           // Server-authoritative PK state → red nameplate + PvP eligibility. The
@@ -784,6 +796,24 @@ export class Game {
             }
             dropRemoteBuffer(id); // snap across the map, don't glide
           }
+        },
+        onEventState: (events) => {
+          this.eventStates = events;
+        },
+        onEventWarp: (x, y, dir, eventId) => {
+          // Server-driven warp into/out of an event room — reuse the door fade.
+          this.myEventId = eventId;
+          this.startTransition({
+            destX: x,
+            destY: y,
+            destDir: this._dirToDoorIdx(dir),
+            sfx: 'door-open',
+            worldX: 0,
+            worldY: 0,
+            type: 'door',
+            style: 0,
+            key: '',
+          } as DoorData);
         },
         onPlayerStats: (id, stats, leveled, gained) => {
           if (id !== this.localPlayerId) {
@@ -1114,9 +1144,6 @@ export class Game {
   }
 
   private startTransition(door: DoorData) {
-    console.log(
-      `Door: (${door.worldX},${door.worldY}) -> (${door.destX},${door.destY}) player:(${Math.round(this.player.x)},${Math.round(this.player.y)})`
-    );
     this.transitioning = true;
     this.transitionAlpha = 0;
     this.pendingDoor = door;
@@ -1372,6 +1399,9 @@ export class Game {
         if (done?.textId != null) {
           const tid = Number(done.textId);
           emitGameEvent({ type: 'dialogue:done', text: tid, npc: tid });
+          // Report the talk so the server can arm a dialogue-start event (no-op
+          // unless an event is bound to this NPC and we're in its circle).
+          sendEventTalk(tid);
         }
         this.talkingNpc = null;
       }
@@ -1688,21 +1718,18 @@ export class Game {
       // A telephone opens the contact menu (Dad saves, Mom eases homesickness)
       // — takes priority over the phone's check text.
       if (target.isPhone) {
-        console.log('Talk: telephone -> phone menu');
         openPhoneMenu();
         return;
       }
       // An ATM opens the bank menu (withdraw/deposit) — kill money lives in the
       // bank; withdraw to get spendable cash.
       if (target.isAtm) {
-        console.log('Talk: ATM -> bank menu');
         openAtmMenu();
         return;
       }
       // Ness's mom cooks your favorite food: ask the server (it owns the heal +
       // cooldown) and render her line from the response (onMomFood).
       if (target.isMom) {
-        console.log('Talk: Ness’s mom -> mom_food');
         sendMomFood();
         this.talkingNpc = target;
         this.faceTalkingNpc();
@@ -1713,7 +1740,6 @@ export class Game {
       // flips a present to its open frame). Already-opened → nothing to do.
       if (target.isGift) {
         if (target.placementKey && !giftOpened(target)) {
-          console.log(`Talk: container -> open_gift ${target.placementKey}`);
           sendOpenGift(target.placementKey);
         }
         return;
@@ -1721,7 +1747,6 @@ export class Game {
       // A shop clerk opens its store; anyone else talks (or gives the Check
       // fallback if they have nothing to say).
       if (target.shopStore !== null) {
-        console.log(`Talk: shop clerk -> store ${target.shopStore}`);
         openShop(target.shopStore);
         return;
       }
@@ -1737,7 +1762,6 @@ export class Game {
       this.talkingNpc = target;
       this.faceTalkingNpc();
     } else {
-      console.log('Talk: nothing in reach');
       openDialogue(['There was no problem here.']);
       this.talkingNpc = null;
     }
@@ -1761,6 +1785,106 @@ export class Game {
         : dy < 0
           ? Direction.N
           : Direction.S;
+  }
+
+  // Direction enum (S,N,W,E,…) -> the door system's destDir index ([S,N,E,W]).
+  // Diagonals fall back to facing south. Used to drive an event warp through the
+  // door-transition machinery.
+  private _dirToDoorIdx(d: Direction): number {
+    switch (d) {
+      case Direction.N:
+        return 1;
+      case Direction.E:
+        return 2;
+      case Direction.W:
+        return 3;
+      default:
+        return 0; // S + diagonals
+    }
+  }
+
+  private _fmtTime(ms: number): string {
+    const s = Math.max(0, Math.ceil(ms / 1000));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }
+
+  // Draw a label with a dark outline so it reads over any tiles.
+  private _eventLabel(
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    x: number,
+    y: number,
+    color: string
+  ): void {
+    ctx.font = '8px monospace';
+    ctx.textAlign = 'center';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+    ctx.strokeText(text, x, y);
+    ctx.fillStyle = color;
+    ctx.fillText(text, x, y);
+    ctx.lineWidth = 1;
+    ctx.textAlign = 'left';
+  }
+
+  // Event UI: the world-anchored trigger circle + countdown (arming), the
+  // left-behind "in progress" timer (active), and — if the local player is in an
+  // event — a screen-anchored event-timer HUD. Fed by the server's event_state.
+  private drawEventOverlays(ctx: CanvasRenderingContext2D): void {
+    if (this.eventStates.length) {
+      const camX = Math.round(this.camera.x);
+      const camY = Math.round(this.camera.y);
+      for (const ev of this.eventStates) {
+        const sx = ev.x - camX;
+        const sy = ev.y - camY;
+        const margin = ev.radius + 48;
+        if (
+          sx < -margin ||
+          sx > SCREEN_WIDTH + margin ||
+          sy < -margin ||
+          sy > SCREEN_HEIGHT + margin
+        )
+          continue; // off-screen (e.g. you're in the event room)
+        if (ev.phase === 'arming') {
+          ctx.strokeStyle = 'rgba(176,124,255,0.9)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(sx, sy, ev.radius, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.lineWidth = 1;
+          this._eventLabel(
+            ctx,
+            String(Math.ceil((ev.countdownMs ?? 0) / 1000)),
+            sx,
+            sy - ev.radius - 4,
+            '#e6d8ff'
+          );
+        } else {
+          // Active: the "event in progress" marker bystanders see at the trigger.
+          this._eventLabel(ctx, ev.name, sx, sy - 12, '#b07cff');
+          this._eventLabel(ctx, this._fmtTime(ev.timerMs ?? 0), sx, sy - 3, '#e6d8ff');
+        }
+      }
+    }
+
+    // Local player's event-timer HUD (screen-anchored, top-center) while inside.
+    if (this.myEventId) {
+      const mine = this.eventStates.find((e) => e.id === this.myEventId && e.phase === 'active');
+      if (mine) {
+        ctx.font = 'bold 12px monospace';
+        ctx.textAlign = 'center';
+        const label = `${mine.name}  ${this._fmtTime(mine.timerMs ?? 0)}`;
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+        ctx.strokeText(label, SCREEN_WIDTH / 2, 14);
+        ctx.fillStyle = '#c9b0ff';
+        ctx.fillText(label, SCREEN_WIDTH / 2, 14);
+        ctx.lineWidth = 1;
+        ctx.textAlign = 'left';
+      } else {
+        this.myEventId = null; // event ended (or we were ejected) — clear the HUD
+      }
+    }
   }
 
   private render() {
@@ -1832,6 +1956,10 @@ export class Game {
       this.camera.x -= shake.x;
       this.camera.y -= shake.y;
     }
+
+    // Event overlays (trigger circle + countdown, the "in progress" timer, and
+    // the local player's event-timer HUD). Below the fade so warps cover them.
+    if (!this.editor?.isActive()) this.drawEventOverlays(this.ctx);
 
     // NPC dialogue window, above bubbles but below the fade and menu.
     renderDialogue(this.ctx);

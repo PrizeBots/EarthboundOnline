@@ -2,25 +2,6 @@
   "version": 1,
   "vehicles": [
     {
-      "id": "v_mqd8q73n0",
-      "name": "car-1",
-      "sprite": 206,
-      "w": 48,
-      "h": 32,
-      "speed": 1,
-      "loop": true,
-      "enabled": true,
-      "hp": 80,
-      "damage": 14,
-      "waypoints": [
-        [1225, 1180],
-        [1533, 1161],
-        [1235, 1478],
-        [2282, 1481],
-        [2577, 1178]
-      ]
-    },
-    {
       "id": "v_npc_16_1199_0",
       "name": "taxi-1",
       "sprite": 206,
@@ -31,6 +12,7 @@
       "enabled": true,
       "hp": 80,
       "damage": 14,
+      "dir": 0,
       "waypoints": [
         [4128, 160],
         [4320, 160]
@@ -47,6 +29,7 @@
       "enabled": true,
       "hp": 80,
       "damage": 14,
+      "dir": 0,
       "waypoints": [
         [2120, 1176],
         [1928, 1176]
@@ -63,6 +46,7 @@
       "enabled": true,
       "hp": 80,
       "damage": 14,
+      "dir": 0,
       "waypoints": [
         [1992, 1504],
         [2184, 1504]
@@ -79,9 +63,16 @@
       "enabled": true,
       "hp": 80,
       "damage": 14,
+      "dir": 0,
       "waypoints": [
-        [1912, 1776],
-        [1720, 1776]
+        [2081, 1769],
+        [1261, 1768],
+        [1520, 1499],
+        [1794, 1498],
+        [2112, 1166],
+        [2579, 1175],
+        [2321, 1480],
+        [2362, 1484]
       ]
     },
     {
@@ -95,6 +86,7 @@
       "enabled": true,
       "hp": 80,
       "damage": 14,
+      "dir": 0,
       "waypoints": [
         [4376, 2800],
         [4568, 2800]
@@ -111,6 +103,7 @@
       "enabled": true,
       "hp": 80,
       "damage": 14,
+      "dir": 0,
       "waypoints": [
         [5232, 2712],
         [5232, 2904]
@@ -127,6 +120,7 @@
       "enabled": true,
       "hp": 80,
       "damage": 14,
+      "dir": 0,
       "waypoints": [
         [1272, 6592],
         [1464, 6592]
@@ -143,6 +137,7 @@
       "enabled": true,
       "hp": 80,
       "damage": 14,
+      "dir": 0,
       "waypoints": [
         [1896, 6576],
         [2088, 6576]
@@ -159,6 +154,7 @@
       "enabled": true,
       "hp": 80,
       "damage": 14,
+      "dir": 0,
       "waypoints": [
         [2304, 6432],
         [2304, 6624]
@@ -175,6 +171,7 @@
       "enabled": true,
       "hp": 80,
       "damage": 14,
+      "dir": 0,
       "waypoints": [
         [3616, 9608],
         [3616, 9800]
@@ -191,6 +188,7 @@
       "enabled": true,
       "hp": 80,
       "damage": 14,
+      "dir": 0,
       "waypoints": [
         [1880, 9912],
         [1880, 10104]
@@ -207,6 +205,7 @@
       "enabled": true,
       "hp": 80,
       "damage": 14,
+      "dir": 0,
       "waypoints": [
         [1856, 10008],
         [2048, 10008]
@@ -223,6 +222,7 @@
       "enabled": true,
       "hp": 80,
       "damage": 14,
+      "dir": 0,
       "waypoints": [
         [1912, 9952],
         [1912, 10144]
@@ -239,6 +239,7 @@
       "enabled": true,
       "hp": 80,
       "damage": 14,
+      "dir": 0,
       "waypoints": [
         [2000, 9952],
         [2000, 10144]
@@ -255,6 +256,7 @@
       "enabled": true,
       "hp": 80,
       "damage": 14,
+      "dir": 0,
       "waypoints": [
         [5128, 2704],
         [5128, 2896]
@@ -272,6 +274,7 @@
       "enabled": true,
       "hp": 80,
       "damage": 14,
+      "dir": 0,
       "waypoints": [
         [1504, 6368],
         [1696, 6368]
@@ -289,6 +292,7 @@
       "enabled": true,
       "hp": 80,
       "damage": 14,
+      "dir": 0,
       "waypoints": [
         [1800, 9912],
         [1800, 10104]
@@ -306,6 +310,7 @@
       "enabled": true,
       "hp": 80,
       "damage": 14,
+      "dir": 0,
       "waypoints": [
         [1220, 1497],
         [1527, 1164],

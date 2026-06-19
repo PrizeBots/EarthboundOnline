@@ -354,6 +354,24 @@
       "worldX": 1152,
       "worldY": 1688
     },
+    "1584,1684": {
+      "destX": 7816,
+      "destY": 688,
+      "destDir": 0,
+      "style": 4,
+      "sfx": "door-open",
+      "worldX": 1576,
+      "worldY": 1672
+    },
+    "1600,1684": {
+      "destX": 7816,
+      "destY": 688,
+      "destDir": 0,
+      "style": 4,
+      "sfx": "door-open",
+      "worldX": 1592,
+      "worldY": 1672
+    },
     "7352,1644": {
       "destX": 7888,
       "destY": 2528,

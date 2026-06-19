@@ -16,6 +16,14 @@
       "sprite": 195,
       "romFlag": 1001,
       "item": null
+    },
+    {
+      "k": "gift+3",
+      "x": 8040,
+      "y": 1505,
+      "sprite": 195,
+      "romFlag": 1002,
+      "item": null
     }
   ]
 }

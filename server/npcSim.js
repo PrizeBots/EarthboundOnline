@@ -115,12 +115,12 @@ function knockDist(dmg) {
 // For now level is just tracked; aggro is unconditional: any enemy chases and
 // hits the nearest living player it can see.
 const DEFAULT_ENEMY_LEVEL = 4;
-const DETECT_RANGE = 220; // px — default aggro radius; per-entity `detectRange` (Entity Manager) overrides it
+const DETECT_RANGE = 220; // px — default aggro radius; per-SPAWNER `detectRange` (Enemy Spawner tool) overrides it
 // Once an enemy has LOCKED ON it does not give up at the detect radius — it
 // pursues relentlessly (no home-distance leash) until the target gets this far
 // away (or the enemy dies), then it turns back and paths home. Hysteresis:
-// acquire at detectRange, drop only past this larger give-up distance. Per-entity
-// `giveUpRange` (Entity Manager) overrides it; never smaller than detectRange.
+// acquire at detectRange, drop only past this larger give-up distance. Per-SPAWNER
+// `giveUpRange` (Enemy Spawner tool) overrides it; never smaller than detectRange.
 const GIVE_UP_RANGE = 560; // px — chase breaks off when the target exceeds this
 const ATTACK_RANGE = 24; // px — enemy must be this close to land a hit
 const ENEMY_CHASE_SPEED = 1.6; // px/frame while pursuing (player is 2.0) — fast enough to be a real threat, slow enough to outrun
@@ -205,9 +205,7 @@ const ENEMY_AGGRO_MEMORY_MS = 4000;
 // (forward + sideways variance) that plows foes out of the way; friendlies take
 // no damage but are nudged minimally aside so the plow never stalls. Vehicle
 // movement is wall-only (it drives THROUGH the crowd), which is what sells it.
-const VEHICLE_SPEED = 1.5; // px/tick cruising (townsfolk wander 0.5; enemy chase 1.6)
 const VEHICLE_DAMAGE = 14; // HP per collide (heavy — the whole point of a car)
-const VEHICLE_DETECT = 280; // px — spots and bears down on foes from far off
 const VEHICLE_HIT_COOLDOWN_MS = 450; // min ms between collide-hits on the same victim
 const VEHICLE_KB_MULT = 2.6; // plow knockback force vs a normal same-damage hit
 const VEHICLE_KB_VARIANCE = 0.9; // ±rad (~50°) random spread so a pack scatters
@@ -525,6 +523,28 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     return best;
   }
 
+  // True if a DOORWAY sits between (x0,y0) and (x1,y1) — i.e. they're on opposite
+  // sides of a room boundary whose gap has no solid wall (so wallBetween misses
+  // it). Combat treats this like a wall: an enemy must come THROUGH the door
+  // (where it's visible in your room) rather than reach across the seam — which
+  // the client's room crop hides, reading as an "invisible attacker". Sampled on
+  // the segment INTERIOR so merely standing on a door doesn't count; the radius
+  // is tight so a same-room fight beside a door still lands.
+  const DOOR_BARRIER_R = 16;
+  function doorBetween(x0, y0, x1, y1) {
+    if (!doorTriggers.length) return false;
+    for (const t of [0.35, 0.5, 0.65]) {
+      const sx = x0 + (x1 - x0) * t;
+      const sy = y0 + (y1 - y0) * t;
+      for (const d of doorTriggers) {
+        if (Math.abs(d.x - sx) <= DOOR_BARRIER_R && Math.abs(d.y - sy) <= DOOR_BARRIER_R) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   // True if (x,y) sits in an interior (indoor/dungeon) sector — the same flag
   // buildNpcs stamps an actor's `indoor` from. Used to tell when an enemy is
   // currently standing inside a room, vs out in the door-stitched overworld.
@@ -705,8 +725,11 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     }
   }
   function activeVehicles(cfg) {
+    // >=1 waypoint: a single point is a PARKED car (spawns, sits, attackable);
+    // 2+ waypoints drive the route. tickCar no-ops a <2-waypoint car, so a parked
+    // car just holds its spot + authored facing. KEEP IN SYNC with NPCManager.
     return ((cfg && cfg.vehicles) || []).filter(
-      (v) => v.enabled !== false && Array.isArray(v.waypoints) && v.waypoints.length >= 2
+      (v) => v.enabled !== false && Array.isArray(v.waypoints) && v.waypoints.length >= 1
     );
   }
   let carCfg = loadCarCfg();
@@ -820,7 +843,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // what lands near them. Vehicles/cars never carry (special behaviour).
   const ACTOR_CARRY_CAP = 2; // max ground items an enemy/townsperson holds at once
   function canCarry(n) {
-    return !n.dead && (n.isEnemy || (n.kind === 'person' && !n.isVehicle));
+    return !n.dead && (n.isEnemy || n.kind === 'person');
   }
 
   // Offer each unclaimed item drop to the first eligible actor within reach.
@@ -947,7 +970,6 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         isEnemy: false,
         pk: false, // PK flag (see canHurt). Enemies set true in build*; people false.
         roam: false,
-        isVehicle: false, // vehicle behaviour (tickVehicle): hunt + plow. Set in build*.
         lastVehicleHit: 0, // ms this actor was last struck by a vehicle (per-victim cd)
         hp: 0,
         maxHp: 0,
@@ -959,6 +981,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         speed: ENEMY_SPEED,
         chaseSpeed: ENEMY_CHASE_SPEED,
         detectRange: DETECT_RANGE, // px the player must be within to aggro this enemy
+        giveUpRange: GIVE_UP_RANGE, // px a locked-on chase breaks off past
         attackRange: ATTACK_RANGE, // px the enemy must be within to land a hit
         dead: false,
         hpDirty: false,
@@ -1020,29 +1043,15 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         });
       }
       const enemy = isEnemyPlacement(r);
-      // A vehicle (Entity Manager flag) is a friendly NPC with its own behaviour.
-      // It's NOT an enemy; it rides on the 'person' kind so it has HP, a health
-      // bar, and lives in the actor list — see tickVehicle.
-      const vehicle = !enemy && !!entityStat(r.sprite, 'vehicle', false);
-      const person = !enemy && (r.kind === 'person' || vehicle); // props/deleted carry no HP
+      const person = !enemy && r.kind === 'person'; // props/deleted carry no HP
       // Enemy stats come from the merged per-entity table (ROM catalog overlaid
       // by authored entities), keyed by sprite — same source the spawner pool
       // uses, so a placed enemy and a spawned one of the same sprite match.
-      const hp = enemy
-        ? entityStat(r.sprite, 'hp', STATIC_ENEMY_HP)
-        : vehicle
-          ? entityStat(r.sprite, 'hp', VEHICLE_HP)
-          : person
-            ? NPC_HP
-            : 0;
-      const speed = enemy
-        ? entityStat(r.sprite, 'speed', ENEMY_SPEED)
-        : vehicle
-          ? entityStat(r.sprite, 'speed', VEHICLE_SPEED)
-          : ENEMY_SPEED;
+      const hp = enemy ? entityStat(r.sprite, 'hp', STATIC_ENEMY_HP) : person ? NPC_HP : 0;
+      const speed = enemy ? entityStat(r.sprite, 'speed', ENEMY_SPEED) : ENEMY_SPEED;
       return baseActor({
         id,
-        kind: enemy ? 'enemy' : vehicle ? 'person' : r.kind,
+        kind: enemy ? 'enemy' : r.kind,
         sprite: r.sprite,
         x: r.x,
         y: r.y,
@@ -1057,26 +1066,18 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         // ones — `roam` is the tick dispatch flag that routes to tickEnemy
         // (full enemy AI) rather than tickNpc (townsfolk self-defense).
         roam: enemy,
-        isVehicle: vehicle,
         hp,
         maxHp: hp,
         level: enemy ? entityStat(r.sprite, 'level', DEFAULT_ENEMY_LEVEL) : 1,
         xp: enemy ? entityStat(r.sprite, 'xp', DEFAULT_ENEMY_XP) : 0,
-        damage: enemy
-          ? entityStat(r.sprite, 'damage', ENEMY_DAMAGE)
-          : vehicle
-            ? entityStat(r.sprite, 'damage', VEHICLE_DAMAGE)
-            : ENEMY_DAMAGE,
+        damage: enemy ? entityStat(r.sprite, 'damage', ENEMY_DAMAGE) : ENEMY_DAMAGE,
         attackCooldown: enemy
           ? entityStat(r.sprite, 'attackCooldownMs', ENEMY_ATTACK_COOLDOWN_MS)
           : ENEMY_ATTACK_COOLDOWN_MS,
         speed,
         chaseSpeed: speed * CHASE_RATIO,
-        detectRange: enemy
-          ? entityStat(r.sprite, 'detectRange', DETECT_RANGE)
-          : vehicle
-            ? entityStat(r.sprite, 'detectRange', VEHICLE_DETECT)
-            : DETECT_RANGE,
+        // Aggro/chase ranges are per-SPAWNER (see buildPool); placement enemies
+        // have no spawner, so they take the global defaults (set in baseActor).
         attackRange: enemy ? entityStat(r.sprite, 'attackRange', ATTACK_RANGE) : ATTACK_RANGE,
       });
     });
@@ -1126,7 +1127,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             attackCooldown: spawnerStat(sp, 'attackCooldownMs', ENEMY_ATTACK_COOLDOWN_MS),
             speed,
             chaseSpeed: speed * CHASE_RATIO,
-            detectRange: spawnerStat(sp, 'detectRange', DETECT_RANGE),
+            // Per-SPAWNER aggro/chase: read straight off the spawner (NOT via
+            // spawnerStat) so two spawners of the same sprite stay independent.
+            detectRange: sp.detectRange != null ? sp.detectRange : DETECT_RANGE,
+            giveUpRange: sp.giveUpRange != null ? sp.giveUpRange : GIVE_UP_RANGE,
             attackRange: spawnerStat(sp, 'attackRange', ATTACK_RANGE),
             dead: true, // inactive until the spawner wakes it
             spawner: sp,
@@ -1139,7 +1143,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
 
   // Traffic cars: one actor per active vehicle, appended AFTER the enemy pool
   // (file order) so wire ids match the client. Each starts at its first
-  // waypoint and drives the route from there; w/h are the collision box.
+  // waypoint; with 2+ waypoints it drives the route, with 1 it stays PARKED at
+  // its authored facing (v.dir). w/h are the collision box.
   function buildCarPool(startId) {
     const out = [];
     let id = startId;
@@ -1159,8 +1164,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           y: sy,
           homeX: sx,
           homeY: sy,
-          dir: 0,
-          homeDir: 0,
+          dir: v.dir || 0, // parked cars hold this facing; driving cars re-face per segment
+          homeDir: v.dir || 0,
           indoor: false,
           waypoints: v.waypoints,
           wpIndex: 1, // heading toward the second waypoint
@@ -1185,10 +1190,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // Everything that ticks/broadcasts (townsfolk + enemies + cars); enemies subset.
   let actors = npcs.filter((n) => n.kind === 'person' || n.isEnemy || n.kind === 'car');
   let enemies = npcs.filter((n) => n.isEnemy);
-  // Vehicles (traffic cars + Entity Manager `vehicle` flag) — the attackable,
-  // plowing actors. handleAttack damages these in addition to enemies, gated by
-  // canHurt (PK rules). KEEP IN SYNC with the actors/enemies rebuilds below.
-  let vehicles = npcs.filter((n) => n.kind === 'car' || n.isVehicle);
+  // Vehicles (traffic cars — parked or routed) — the attackable, plowing actors.
+  // handleAttack damages these in addition to enemies, gated by canHurt (PK
+  // rules). KEEP IN SYNC with the actors/enemies rebuilds below.
+  let vehicles = npcs.filter((n) => n.kind === 'car');
 
   // Hot-reload placements when extraction rewrites npcs.json — otherwise the
   // sim keeps broadcasting STALE home positions and clients see NPCs snap
@@ -1246,7 +1251,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           : ENEMY_ATTACK_COOLDOWN_MS;
         n.speed = speed;
         n.chaseSpeed = speed * CHASE_RATIO;
-        n.detectRange = enemy ? entityStat(r.sprite, 'detectRange', DETECT_RANGE) : DETECT_RANGE;
+        // Aggro/chase ranges are per-SPAWNER (see buildPool); placement enemies
+        // have no spawner, so they take the global defaults.
+        n.detectRange = DETECT_RANGE;
+        n.giveUpRange = GIVE_UP_RANGE;
         n.attackRange = enemy ? entityStat(r.sprite, 'attackRange', ATTACK_RANGE) : ATTACK_RANGE;
         n.dead = false;
         n.dirty = n.kind === 'person' || enemy;
@@ -1264,7 +1272,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     }
     actors = npcs.filter((n) => n.kind === 'person' || n.isEnemy || n.kind === 'car');
     enemies = npcs.filter((n) => n.isEnemy);
-    vehicles = npcs.filter((n) => n.kind === 'car' || n.isVehicle);
+    vehicles = npcs.filter((n) => n.kind === 'car');
     console.log(
       `[npcSim] reloaded ${NPCS_FILE} (${actors.length} actors, ${enemies.length} enemies)`
     );
@@ -1289,7 +1297,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     for (const n of npcs) if (n.kind === 'person' || n.isEnemy) n.dirty = true;
     actors = npcs.filter((n) => n.kind === 'person' || n.isEnemy || n.kind === 'car');
     enemies = npcs.filter((n) => n.isEnemy);
-    vehicles = npcs.filter((n) => n.kind === 'car' || n.isVehicle);
+    vehicles = npcs.filter((n) => n.kind === 'car');
     console.log(
       `[npcSim] reloaded enemy spawners (${enemies.length} enemies, ${SPAWNERS.length} spawners)`
     );
@@ -1306,7 +1314,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     for (const n of carPool) n.dirty = true;
     actors = npcs.filter((n) => n.kind === 'person' || n.isEnemy || n.kind === 'car');
     enemies = npcs.filter((n) => n.isEnemy);
-    vehicles = npcs.filter((n) => n.kind === 'car' || n.isVehicle);
+    vehicles = npcs.filter((n) => n.kind === 'car');
     console.log(`[npcSim] reloaded traffic (${carPool.length} cars)`);
   }
 
@@ -1533,9 +1541,6 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       if (foe.isPlayer) {
         // Swing at a PK player: HP lives on the host, so apply it there. Flat
         // NPC_DAMAGE (no crit/dodge) — townsfolk are a deliberate PK deterrent.
-        console.log(
-          `[HITDBG] TOWNSPERSON hit player ${e.id}: npc id=${n.id} sprite=${n.sprite} at (${Math.round(n.x)},${Math.round(n.y)}) -> player at (${Math.round(e.x)},${Math.round(e.y)}) dist=${Math.round(dist)} (player must be PK)`
-        );
         if (onPlayerHitCb)
           onPlayerHitCb(e.id, dmg, null, knockbackPlayerSpot(e.x, e.y, n.x, n.y, dmg));
       } else {
@@ -1751,51 +1756,6 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       }
   }
 
-  // One tick of a vehicle: bear down on the nearest foe (enemy/PKer) if one is in
-  // range, else cruise on a wandering heading. Movement is WALL-ONLY — the car
-  // drives straight through the crowd (plow() resolves who it runs over), which
-  // is what makes the plow read. Never leashed to home; doesn't flinch.
-  function tickVehicle(n, players, now) {
-    let hx;
-    let hy;
-    const foe = n.hp > 0 ? nearestFoeTo(n, n.detectRange || VEHICLE_DETECT, players) : null;
-    if (foe) {
-      hx = foe.enemy.x - n.x;
-      hy = foe.enemy.y - n.y;
-      n.life = 'idle';
-    } else {
-      if (n.life !== 'drive' || --n.timer <= 0) {
-        const c = CARDINALS[rand(0, CARDINALS.length - 1)];
-        n.walkDx = c.dx;
-        n.walkDy = c.dy;
-        n.life = 'drive';
-        n.timer = rand(40, 120);
-      }
-      hx = n.walkDx;
-      hy = n.walkDy;
-    }
-    const len = Math.hypot(hx, hy) || 1;
-    const ux = hx / len;
-    const uy = hy / len;
-    const sp = n.speed || VEHICLE_SPEED;
-    const nx = n.x + ux * sp;
-    const ny = n.y + uy * sp;
-    const [bx, by, bw, bh] = actorBox(n, nx, ny);
-    if (blocked(bx, by, bw, bh)) {
-      n.timer = 0; // walled in — repick a heading next tick
-      plow(n, ux, uy, players, now); // still shove whatever we're pressed against
-      return;
-    }
-    const travelX = nx - n.x;
-    const travelY = ny - n.y;
-    n.x = nx;
-    n.y = ny;
-    n.dir = faceDir(ux, uy);
-    n.dirty = true;
-    stepAnimation(n);
-    plow(n, travelX, travelY, players, now);
-  }
-
   // --- Enemy behaviour & combat ---
 
   // Cardinal Direction (src/types.ts) facing the vector (dx,dy), dominant axis.
@@ -1813,7 +1773,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     // Hysteresis: a fresh enemy acquires inside detectRange, but one already
     // chasing holds the lock until the target passes the larger give-up distance
     // — it doesn't quit the moment the player steps a pixel past detect.
-    const detect = n.detectRange || DETECT_RANGE; // per-entity aggro radius (Entity Manager)
+    const detect = n.detectRange || DETECT_RANGE; // per-spawner aggro radius (Enemy Spawner tool)
     const range = n.mode === 'chase' ? Math.max(n.giveUpRange || GIVE_UP_RANGE, detect) : detect;
     let target = null;
     let best = range;
@@ -2176,11 +2136,14 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       const dy = target.y - n.y;
       n.dir = faceDir(dx, dy);
 
-      // In striking range AND with a clear line (no wall between): stand and
-      // swing on cooldown (resolved server-side; the pose broadcasts so every
-      // client sees the attack). A wall between them drops to the chase below,
-      // so the enemy paths around it instead of hitting through it.
-      if (dist <= (n.attackRange || ATTACK_RANGE) && !wallBetween(n.x, n.y, target.x, target.y)) {
+      // In striking range AND with a clear line (no wall AND no doorway between):
+      // stand and swing on cooldown (resolved server-side; the pose broadcasts so
+      // every client sees the attack). A wall OR a door between them drops to the
+      // chase below, so the enemy paths to/through the doorway — becoming visible
+      // in your room — instead of hitting across the seam (an invisible attacker).
+      const reachBlocked =
+        wallBetween(n.x, n.y, target.x, target.y) || doorBetween(n.x, n.y, target.x, target.y);
+      if (dist <= (n.attackRange || ATTACK_RANGE) && !reachBlocked) {
         if (now - n.lastSwing >= n.attackCooldown && n.pose !== 'hurt') {
           n.lastSwing = now;
           n.pose = 'attack';
@@ -2205,9 +2168,6 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
                   targetPlayer: target.id,
                 });
             } else {
-              console.log(
-                `[HITDBG] ENEMY hit player ${target.id}: enemy id=${n.id} sprite=${n.sprite} kind=${n.kind} mode=${n.mode} dead=${n.dead} at (${Math.round(n.x)},${Math.round(n.y)}) -> player at (${Math.round(target.x)},${Math.round(target.y)}) dist=${Math.round(dist)} dmg=${res.dmg}`
-              );
               if (onEnemyHit)
                 onEnemyHit(
                   target.id,
@@ -2741,9 +2701,6 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             });
           continue;
         }
-        console.log(
-          `[HITDBG] PVP hit player ${t.id}: by player ${playerId} at (${Math.round(t.x)},${Math.round(t.y)}) dmg=${res.dmg}`
-        );
         // Knock the victim back from the attacker's feet (host applies + pushes)
         // and carry the same paralysis proc a player swing lands on enemies.
         onPlayerHitCb(
@@ -2877,12 +2834,11 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           if (near) {
             if (n.kind === 'car') tickCar(n, players, now);
             else if (n.roam) tickEnemy(n, players, now, onEnemyHit, recentWarps);
-            else if (n.isVehicle) tickVehicle(n, players, now);
             else tickNpc(n, players, now);
             // Never let two bodies stay stacked: nudge apart if this tick ended
-            // overlapping another actor. Enemies + townsfolk only — cars and
-            // vehicles are meant to plow THROUGH actors, not separate from them.
-            if (n.kind === 'enemy' || (n.kind === 'person' && !n.isVehicle)) unstack(n);
+            // overlapping another actor. Enemies + townsfolk only — cars are meant
+            // to plow THROUGH actors, not separate from them.
+            if (n.kind === 'enemy' || n.kind === 'person') unstack(n);
           } else if (n.roam && n.mode !== 'patrol') {
             // Off-station with no player nearby (the target fled far): keep
             // ticking so it finishes heading back to spawn instead of freezing
@@ -3041,7 +2997,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
      * run one use pass or apply raw damage without standing up the full tick.
      */
     _test: {
-      townsfolk: () => actors.filter((n) => n.kind === 'person' && !n.isVehicle),
+      townsfolk: () => actors.filter((n) => n.kind === 'person'),
       useCarried: (n) => npcUseCarried(n),
       damage: (n, dmg, now) => applyDamage(n, dmg, now == null ? Date.now() : now, null),
     },

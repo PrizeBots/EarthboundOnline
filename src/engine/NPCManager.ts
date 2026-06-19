@@ -153,6 +153,9 @@ export interface Vehicle {
   speed: number;
   loop: boolean;
   enabled: boolean;
+  /** Facing (0-7) for a PARKED car (1 waypoint). Driving cars derive it from the
+   *  route, so it's only authored/used when there's no route. Omitted → South. */
+  dir?: number;
   waypoints: [number, number][];
   /** Max HP — a car is attackable (PK rules). Omitted → server VEHICLE_HP. */
   hp?: number;
@@ -169,10 +172,11 @@ export interface CarTraffic {
 /** Default max HP for a traffic car with no authored hp — mirrors npcSim VEHICLE_HP. */
 const VEHICLE_DEFAULT_HP = 80;
 
-/** Vehicles that produce a live car slot — KEEP IN SYNC with npcSim.js. */
+/** Vehicles that produce a live car slot — KEEP IN SYNC with npcSim.js.
+ *  >=1 waypoint: a single point is a PARKED car; 2+ drive the route. */
 function activeVehicles(cfg: CarTraffic | null): Vehicle[] {
   return (cfg?.vehicles ?? []).filter(
-    (v) => v.enabled !== false && Array.isArray(v.waypoints) && v.waypoints.length >= 2
+    (v) => v.enabled !== false && Array.isArray(v.waypoints) && v.waypoints.length >= 1
   );
 }
 
@@ -332,11 +336,14 @@ export async function loadNPCs(): Promise<void> {
   // starts at its first waypoint; the server drives it from there.
   for (const v of activeVehicles(carOv ?? carBase)) {
     const [sx, sy] = v.waypoints[0];
-    // A vehicle is an NPC that drives — and may also be talkable (carries a
-    // textId), e.g. EB's parked cars with a line of dialogue. A car is also a
-    // combatant: it carries HP (so its bar has a denominator; the server is
-    // authoritative and sends npc_hp deltas) and is attackable under PK rules.
-    const car = new NPC(sx, sy, v.sprite, Direction.S, 'car', v.t ?? null);
+    // A vehicle is a car NPC: parked (1 waypoint) or driving (2+). It may also be
+    // talkable (carries a textId), e.g. EB's parked cars with a line of dialogue.
+    // A car is a combatant: it carries HP (so its bar has a denominator; the
+    // server is authoritative and sends npc_hp deltas) and is attackable under PK
+    // rules. Initial facing = authored v.dir (essential for a PARKED car, which
+    // the server never re-faces); a driving car is re-faced by npc_update deltas.
+    const face = (v.dir ?? Direction.S) as Direction;
+    const car = new NPC(sx, sy, v.sprite, face, 'car', v.t ?? null);
     const maxHp = v.hp && v.hp > 0 ? v.hp : VEHICLE_DEFAULT_HP;
     car.applyHp(maxHp, maxHp);
     npcsById[id++] = car;
@@ -583,6 +590,30 @@ export function colBoxFor(sprite: number, x: number, y: number): [number, number
   return [x - NPC_COL_W / 2, y + NPC_COL_OY, NPC_COL_W, NPC_COL_H];
 }
 
+/** World-space whole-body box `[x,y,w,h]` for a VEHICLE (kind 'car') facing
+ *  `dir` at (x,y), or null if its sprite sheet hasn't loaded. Priority mirrors
+ *  blockedByNPC + the server's actorBox: manual Entity Manager `col` override,
+ *  then the per-direction box from colboxes.json, then the full sprite cell.
+ *  For a car this single box is BOTH its collision box and its hurtbox (the
+ *  server's handleAttack tests a swing against actorBox) — the debug overlay
+ *  (Renderer.drawDebugBoxes) draws it so you can see what a swing must overlap. */
+export function carColBoxFor(
+  sprite: number,
+  dir: number,
+  x: number,
+  y: number
+): [number, number, number, number] | null {
+  const manual = entityCols.get(sprite);
+  if (manual)
+    return [x + manual.offX - manual.w / 2, y + manual.offY - manual.h, manual.w, manual.h];
+  const perDir = carColBoxes[String(sprite)]?.[String(dir)];
+  if (perDir)
+    return [x + perDir.offX - perDir.w / 2, y + perDir.offY - perDir.h, perDir.w, perDir.h];
+  const meta = getSpriteGroupMeta(sprite);
+  if (!meta) return null; // sheet not loaded yet
+  return [x - meta.width / 2, y - meta.height, meta.width, meta.height];
+}
+
 export function blockedByNPC(
   x: number,
   y: number,
@@ -658,6 +689,20 @@ export function blockedByNPC(
  */
 export function liveNpcForKey(key: string): NPC | null {
   return npcByKey.get(key) ?? null;
+}
+
+/**
+ * Re-apply per-player gift open-state to every placed container. NPCs are built
+ * at boot (buildStaticNpcs → tagGift), but the player's saved flags only arrive
+ * later in the network `welcome`, so presents already opened in a prior session
+ * would otherwise load showing the CLOSED frame. Call this once flags hydrate to
+ * flip those to the open (lidless North) frame. tagGift only ever sets open, so
+ * re-running it is safe and won't undo a present opened this session.
+ */
+export function applyGiftFlagStates(): void {
+  for (const npc of npcByKey.values()) {
+    if (npc.isGift) tagGift(npc);
+  }
 }
 
 /** Kick off the lazy sprite-sheet load for an NPC the first time it's needed. */

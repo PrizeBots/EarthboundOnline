@@ -12,6 +12,15 @@ import { measureText, FONT_LINE_HEIGHT } from '../TextRenderer';
 import { getGoods } from '../Inventory';
 import { getStoreItems, sellPrice } from '../Shop';
 import { EQUIP_SLOTS } from '../Equipment';
+import {
+  PSI_BASE,
+  PSI_FAMILIES,
+  PSI_TABS,
+  PSI_CATEGORY_LABEL,
+  PsiCategory,
+  familiesInTab,
+  tierLabel,
+} from '../PsiTuning';
 import { SCREEN_WIDTH, SCREEN_HEIGHT } from '../../types';
 
 export const MENU_STYLE = 0; // EB "Plain" dark-blue window flavor
@@ -148,40 +157,12 @@ export const ROWS = 3;
 
 // PSI abilities castable from the PSI command. DEV: every family is available to
 // every player (no learn/level gate yet — that's wired to level + Mental later);
-// the server validates PP + resolves the effect. `pp` MIRRORS the server PSI
-// table (gameHost.js PSI). `anim` is the PsiAnim catalog id whose authored frames
-// play on cast AND show as the hotbar icon (the game id differs, e.g. fire →
-// psi_fire_alpha, so we carry the mapping explicitly).
-// `target`: who the cast applies to — 'ally' (self OR a chosen friend; the game
-// enters target mode), 'enemy' (auto/aim a foe), 'self' (the caster only). PP +
-// effects MIRROR the server (gameHost.js PSI); both are canon (psi.json).
-export const PSI_ABILITIES = [
-  { id: 'lifeup', name: 'Lifeup α', pp: 5, anim: 'lifeup_alpha', target: 'ally' }, // heal
-  { id: 'healing', name: 'Healing α', pp: 5, anim: 'healing_alpha', target: 'ally' }, // cure statuses
-  { id: 'healing_gamma', name: 'Healing γ', pp: 20, anim: 'healing_alpha', target: 'ally' }, // cure + revive (half HP)
-  { id: 'healing_omega', name: 'Healing Ω', pp: 38, anim: 'healing_alpha', target: 'ally' }, // cure + revive (full HP)
-  { id: 'fire', name: 'PSI Fire α', pp: 5, anim: 'psi_fire_alpha', target: 'enemy' }, // offense (projectile)
-  { id: 'freeze', name: 'PSI Freeze α', pp: 4, anim: 'psi_freeze_alpha', target: 'enemy' }, // offense
-  { id: 'thunder', name: 'PSI Thunder α', pp: 3, anim: 'psi_thunder_alpha', target: 'enemy' }, // offense
-  { id: 'flash', name: 'PSI Flash α', pp: 8, anim: 'psi_flash_alpha', target: 'enemy' }, // offense + paralyze
-  {
-    id: 'starstorm',
-    name: 'PSI Starstorm α',
-    pp: 24,
-    anim: 'psi_starstorm_alpha',
-    target: 'enemy',
-  }, // big offense
-  { id: 'rockin', name: 'PSI Rockin α', pp: 6, anim: 'psi_alpha', target: 'enemy' }, // offense (the ???? move)
-  { id: 'hypnosis', name: 'Hypnosis α', pp: 4, anim: 'hypnosis_alpha', target: 'enemy' }, // sleep a foe
-  { id: 'paralysis', name: 'Paralysis α', pp: 5, anim: 'paralysis_alpha', target: 'enemy' }, // paralyze a foe
-  { id: 'brainshock', name: 'Brainshock α', pp: 6, anim: 'brainshock_alpha', target: 'enemy' }, // strange + noPsi
-  { id: 'shield', name: 'Shield α', pp: 6, anim: 'shield_alpha', target: 'self' }, // (effect TODO — anim only)
-  { id: 'psishield', name: 'PSI Shield α', pp: 8, anim: 'psi_shield_alpha', target: 'self' }, // (anim only)
-  { id: 'offenseup', name: 'Offense up α', pp: 10, anim: 'offense_up_alpha', target: 'self' }, // (anim only)
-  { id: 'defensedown', name: 'Defense down α', pp: 6, anim: 'defense_down_alpha', target: 'enemy' }, // (anim only)
-  { id: 'magnet', name: 'PSI Magnet α', pp: 1, anim: 'psi_magnet_alpha', target: 'enemy' }, // (anim only)
-  { id: 'teleport', name: 'Teleport α', pp: 2, anim: 'teleport_alpha', target: 'self' }, // (anim only)
-];
+// the server validates PP + resolves the effect. The full table (incl. effect
+// fields) is the single client base in PsiTuning.ts; we re-export it here as the
+// menu list so there's no duplicate to drift. The PSI Manager tool edits these
+// via overrides/psi.json (the same file the server merges). The menu reads only
+// id/name/pp/anim/target; effect fields ride along harmlessly.
+export const PSI_ABILITIES = PSI_BASE;
 
 /** Who a PSI ability targets: 'ally' (self/friend), 'enemy', or 'self'. */
 export function psiTarget(abilityId: string): string {
@@ -350,23 +331,109 @@ export function equipSelectRowAt(px: number, py: number, itemCount: number, curs
   return listRowAt(equipSelectLayout(itemCount, cursor), px, py);
 }
 
-// The PSI ability list — sits to the RIGHT of the command grid at the top edge,
-// and scrolls (every PSI is dev-available, so the list is long).
-export function psiLayout(cursor = 0): ListLayout {
-  const PSI_MIN_W = 96;
-  const maxLabelW = Math.max(...PSI_ABILITIES.map((a) => measureText(a.name, FONT_ID)));
-  const innerW = Math.max(PSI_MIN_W, CURSOR_W + maxLabelW);
+// --- PSI menu (canon-style): a TAB BAR (Offense/Recover/Assist/Other), a FAMILY
+// list under it, and — when a family is opened — a TIER popup to the right (α/β/
+// γ/Ω/Σ). All three sit to the right of the command grid. The tab bar and family
+// list share one column width so they line up; the tier popup hangs off the right.
+const PSI_TAB_GAP = 6;
+const PSI_MARK_W = 8; // room for the ▸ "has more tiers" marker on a family row
+
+/** Top-left anchor of the PSI cluster (right of the command window). */
+function psiAnchor(): { x: number; y: number } {
   const cmd = commandLayout();
-  const winX = cmd.winX + cmd.winW + 4;
-  const winY = cmd.winY;
-  // +scrollbar gutter so labels keep their room when the list scrolls.
-  const winW = innerW + PADDING * 2 + BORDER * 2 + SCROLLBAR_W + 2;
-  return scrollList(winX, winY, winW, PSI_ABILITIES.length, cursor);
+  return { x: cmd.winX + cmd.winW + 4, y: cmd.winY };
 }
 
-/** Item index of the PSI row under a point (scroll-aware), or -1. */
-export function psiRowAt(px: number, py: number, cursor = 0): number {
-  return listRowAt(psiLayout(cursor), px, py);
+/** Shared inner width of the tab bar + family list (so they align). */
+function psiSharedInnerW(): number {
+  const tabsW = PSI_TABS.reduce(
+    (s, c, i) => s + measureText(PSI_CATEGORY_LABEL[c], FONT_ID) + (i ? PSI_TAB_GAP : 0),
+    0
+  );
+  const famW =
+    CURSOR_W + Math.max(...PSI_FAMILIES.map((f) => measureText(f.family, FONT_ID))) + PSI_MARK_W;
+  return Math.max(tabsW, famW);
+}
+
+/** Outer width shared by the tab bar + family list windows. */
+function psiClusterWinW(): number {
+  return psiSharedInnerW() + PADDING * 2 + BORDER * 2 + SCROLLBAR_W + 2;
+}
+
+/** The tab-bar window + each tab's clickable cell. */
+export function psiTabLayout(): {
+  winX: number;
+  winY: number;
+  winW: number;
+  winH: number;
+  cells: Cell[];
+} {
+  const a = psiAnchor();
+  const winW = psiClusterWinW();
+  const winH = ITEM_H + PADDING * 2 + BORDER * 2;
+  const cells: Cell[] = [];
+  let cx = a.x + BORDER + PADDING;
+  const cy = a.y + BORDER + PADDING;
+  for (const c of PSI_TABS) {
+    const w = measureText(PSI_CATEGORY_LABEL[c], FONT_ID);
+    cells.push({ x: cx, y: cy, w, h: ITEM_H });
+    cx += w + PSI_TAB_GAP;
+  }
+  return { winX: a.x, winY: a.y, winW, winH, cells };
+}
+
+/** Tab index under a point, or -1. */
+export function psiTabAt(px: number, py: number): number {
+  const { cells } = psiTabLayout();
+  for (let i = 0; i < cells.length; i++) {
+    const c = cells[i];
+    if (px >= c.x && px < c.x + c.w && py >= c.y && py < c.y + c.h) return i;
+  }
+  return -1;
+}
+
+/** The family list for a tab (scrolls if a tab has many families). */
+export function psiFamilyLayout(tab: PsiCategory, cursor = 0): ListLayout {
+  const tb = psiTabLayout();
+  const winY = tb.winY + tb.winH + 2;
+  const n = familiesInTab(tab).length;
+  return scrollList(tb.winX, winY, tb.winW, n, cursor);
+}
+
+/** Family index under a point for the given tab, or -1. */
+export function psiFamilyRowAt(tab: PsiCategory, px: number, py: number, cursor = 0): number {
+  return listRowAt(psiFamilyLayout(tab, cursor), px, py);
+}
+
+/** Per-tier row label, e.g. "α   5PP" (Σ for sigma). */
+export function psiTierRowLabel(move: {
+  tier: Parameters<typeof tierLabel>[0];
+  pp: number;
+}): string {
+  return `${tierLabel(move.tier)}   ${move.pp}PP`;
+}
+
+/** The tier popup (right of the family list) for the opened family. */
+export function psiTierLayout(tab: PsiCategory, familyCursor: number, tierCursor = 0): ListLayout {
+  const fam = familiesInTab(tab)[familyCursor];
+  const list = psiFamilyLayout(tab, familyCursor);
+  const winX = list.winX + list.winW + 4;
+  const labels = fam ? fam.moves.map((m) => psiTierRowLabel(m)) : [''];
+  const innerW = Math.max(40, CURSOR_W + Math.max(...labels.map((l) => measureText(l, FONT_ID))));
+  const winW = innerW + PADDING * 2 + BORDER * 2 + SCROLLBAR_W + 2;
+  const n = fam ? fam.moves.length : 1;
+  return scrollList(winX, list.winY, winW, n, tierCursor);
+}
+
+/** Tier index under a point for the opened family, or -1. */
+export function psiTierRowAt(
+  tab: PsiCategory,
+  familyCursor: number,
+  px: number,
+  py: number,
+  tierCursor = 0
+): number {
+  return listRowAt(psiTierLayout(tab, familyCursor, tierCursor), px, py);
 }
 
 // Shop rows render "Name......$Cost"; the list is wide enough for the longest

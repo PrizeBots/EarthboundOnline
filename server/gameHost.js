@@ -18,6 +18,7 @@
 const fs = require('fs');
 const path = require('path');
 const { createNpcSim } = require('./npcSim');
+const { createEventRuntime } = require('./eventRuntime');
 const { loadShops } = require('./shops');
 const { sanitizeAlloc, deriveCombatStats, STAT_KEYS, defaultAlloc } = require('./charStats');
 const status = require('./status'); // EB status-condition engine (shared with npcSim)
@@ -105,94 +106,175 @@ const PK_LOCK_MS = 5 * 60 * 1000;
 // HP; `damage` strikes the nearest enemy within `range` px (offense PSI); `anim`
 // is the PsiAnim catalog id whose authored frames play on cast. Heal/damage
 // amounts are placeholders pending the canon effect values.
-const PSI = {
-  // heal / cure / revive — PARTY-target (self OR an ally; the client picks the
-  // target, the server validates + applies). PP mirrors canon (psi.json). Lifeup
-  // restores HP; Healing cures statuses; Healing γ/Ω also REVIVE a downed ally
-  // (γ = partial HP, Ω = full HP + full cure) — canon (item help text, data_56).
-  lifeup: { name: 'Lifeup α', pp: 5, heal: 30, target: 'ally', anim: 'lifeup_alpha' },
-  healing: { name: 'Healing α', pp: 5, cures: true, target: 'ally', anim: 'healing_alpha' },
-  healing_gamma: {
-    name: 'Healing γ',
-    pp: 20,
-    cures: true,
-    reviveFrac: 0.5, // revives a downed ally to half HP (canon: "HP is not maxed out")
+//
+// This is the BASE table; the PSI Manager tool layers authored tuning on top from
+// public/overrides/psi.json (merged in per-host via GameHost._loadPsi → this.PSI,
+// read at startup like equip_stats). KEEP IN SYNC with the client base in
+// src/engine/PsiTuning.ts (same ids/fields).
+// The full canon roster (52 abilities, all families + tiers) is built from a
+// COMPACT family spec so there's one short source to keep in sync with the client
+// (src/engine/PsiTuning.ts PSI_FAMILY_SPECS — same ids/pp/effect fields). Each
+// move's id matches the ROM PSI catalog id AND its psi_anim.json animation key.
+// Heal/cure/revive are PARTY-target; Healing γ/Ω also REVIVE a downed ally
+// (γ = partial HP, Ω = full HP) — canon (item help text, data_56). `multi` = ROM
+// row/all (hits every enemy in range). assist buffs/Magnet/Teleport effects
+// aren't wired yet — they just play their animation + spend PP.
+const GREEK = { alpha: 'α', beta: 'β', gamma: 'γ', omega: 'Ω', sigma: 'Σ' };
+const PSI_FAMILY_SPECS = [
+  // ---- Offense ----
+  {
+    stem: 'psi',
+    family: "PSI Rockin'",
+    target: 'enemy',
+    tiers: ['alpha', 'beta', 'gamma', 'omega'],
+    pp: [10, 14, 40, 98],
+    effect: (i) => ({ damage: [20, 45, 100, 220][i], range: 260, multi: true }),
+  },
+  {
+    stem: 'psi_fire',
+    family: 'PSI Fire',
+    target: 'enemy',
+    tiers: ['alpha', 'beta', 'gamma', 'omega'],
+    pp: [6, 12, 20, 42],
+    effect: (i) => ({ damage: [14, 30, 60, 130][i], range: 240, multi: true }),
+  },
+  {
+    stem: 'psi_freeze',
+    family: 'PSI Freeze',
+    target: 'enemy',
+    tiers: ['alpha', 'beta', 'gamma', 'omega'],
+    pp: [4, 9, 18, 28],
+    effect: (i) => ({ damage: [12, 28, 58, 110][i], range: 240 }),
+  },
+  {
+    stem: 'psi_thunder',
+    family: 'PSI Thunder',
+    target: 'enemy',
+    tiers: ['alpha', 'beta', 'gamma', 'omega'],
+    pp: [3, 7, 16, 20],
+    effect: (i) => ({ damage: [16, 34, 70, 100][i], range: 300, multi: true }),
+  },
+  {
+    stem: 'psi_flash',
+    family: 'PSI Flash',
+    target: 'enemy',
+    tiers: ['alpha', 'beta', 'gamma', 'omega'],
+    pp: [8, 16, 24, 32],
+    effect: (i) => ({
+      damage: [10, 22, 40, 70][i],
+      range: 240,
+      multi: true,
+      inflict: [{ type: 'paralysis', chance: [40, 50, 60, 70][i] }],
+    }),
+  },
+  {
+    stem: 'psi_starstorm',
+    family: 'PSI Starstorm',
+    target: 'enemy',
+    tiers: ['alpha', 'omega'],
+    pp: [24, 42],
+    effect: (i) => ({ damage: [30, 60][i], range: 360, multi: true }),
+  },
+  // ---- Recover ----
+  {
+    stem: 'lifeup',
+    family: 'Lifeup',
     target: 'ally',
-    anim: 'healing_alpha',
+    tiers: ['alpha', 'beta', 'gamma', 'omega'],
+    pp: [5, 8, 13, 24],
+    effect: (i) => ({ heal: [40, 80, 150, 300][i] }),
   },
-  healing_omega: {
-    name: 'Healing Ω',
-    pp: 38,
-    cures: true,
-    reviveFrac: 1, // revives a downed ally to FULL HP (canon: "maxes out HP")
+  {
+    stem: 'healing',
+    family: 'Healing',
     target: 'ally',
-    anim: 'healing_alpha',
+    tiers: ['alpha', 'beta', 'gamma', 'omega'],
+    pp: [5, 8, 20, 38],
+    effect: (i) => ({ cures: true, reviveFrac: [0, 0, 0.5, 1][i] || undefined }),
   },
-  // offense (strikes the nearest enemy)
-  // multi: ROM target "row"/"all" — the bolt penetrates and hits EVERY enemy in range.
-  fire: { name: 'PSI Fire α', pp: 5, damage: 14, range: 240, anim: 'psi_fire_alpha', multi: true },
-  // ailment (status on the nearest enemy; chances are element-scaled by its resist)
-  hypnosis: {
-    name: 'Hypnosis α',
-    pp: 4,
-    range: 240,
-    anim: 'hypnosis_alpha',
-    inflict: [{ type: 'sleep', chance: 90 }],
+  {
+    stem: 'psi_magnet',
+    family: 'PSI Magnet',
+    target: 'enemy',
+    tiers: ['alpha', 'omega'],
+    pp: [1, 1],
   },
-  paralysis: {
-    name: 'Paralysis α',
-    pp: 5,
-    range: 240,
-    anim: 'paralysis_alpha',
-    inflict: [{ type: 'paralysis', chance: 90 }],
+  // ---- Assist ----
+  {
+    stem: 'hypnosis',
+    family: 'Hypnosis',
+    target: 'enemy',
+    tiers: ['alpha', 'omega'],
+    pp: [6, 18],
+    effect: (i) => ({ range: 240, multi: i === 1, inflict: [{ type: 'sleep', chance: 90 }] }),
   },
-  brainshock: {
-    name: 'Brainshock α',
-    pp: 6,
-    range: 240,
-    anim: 'brainshock_alpha',
-    inflict: [
-      { type: 'strange', chance: 80 },
-      { type: 'noPsi', chance: 80 },
-    ],
+  {
+    stem: 'paralysis',
+    family: 'Paralysis',
+    target: 'enemy',
+    tiers: ['alpha', 'omega'],
+    pp: [8, 24],
+    effect: (i) => ({ range: 240, multi: i === 1, inflict: [{ type: 'paralysis', chance: 90 }] }),
   },
-  // more offense families (strike the nearest enemy)
-  freeze: { name: 'PSI Freeze α', pp: 4, damage: 12, range: 240, anim: 'psi_freeze_alpha' },
-  thunder: {
-    name: 'PSI Thunder α',
-    pp: 3,
-    damage: 16,
-    range: 280,
-    anim: 'psi_thunder_alpha',
-    multi: true,
+  {
+    stem: 'brainshock',
+    family: 'Brainshock',
+    target: 'enemy',
+    tiers: ['alpha', 'omega'],
+    pp: [10, 30],
+    effect: (i) => ({
+      range: 240,
+      multi: i === 1,
+      inflict: [
+        { type: 'strange', chance: 80 },
+        { type: 'noPsi', chance: 80 },
+      ],
+    }),
   },
-  flash: {
-    name: 'PSI Flash α',
-    pp: 8,
-    damage: 10,
-    range: 240,
-    anim: 'psi_flash_alpha',
-    inflict: [{ type: 'paralysis', chance: 40 }], // Flash's signature random-ish stun
-    multi: true,
+  {
+    stem: 'offense_up',
+    family: 'Offense up',
+    target: 'self',
+    tiers: ['alpha', 'omega'],
+    pp: [10, 30],
   },
-  starstorm: {
-    name: 'PSI Starstorm α',
-    pp: 24,
-    damage: 30,
-    range: 340,
-    anim: 'psi_starstorm_alpha',
-    multi: true,
+  {
+    stem: 'defense_down',
+    family: 'Defense down',
+    target: 'enemy',
+    tiers: ['alpha', 'omega'],
+    pp: [6, 18],
   },
-  rockin: { name: 'PSI Rockin α', pp: 6, damage: 18, range: 240, anim: 'psi_alpha', multi: true },
-  // assist / utility — DEV: castable for testing; effects (buffs/teleport/magnet)
-  // aren't wired yet, so these just play their animation + spend PP.
-  shield: { name: 'Shield α', pp: 6, anim: 'shield_alpha' },
-  psishield: { name: 'PSI Shield α', pp: 8, anim: 'psi_shield_alpha' },
-  offenseup: { name: 'Offense up α', pp: 10, anim: 'offense_up_alpha' },
-  defensedown: { name: 'Defense down α', pp: 6, anim: 'defense_down_alpha' },
-  magnet: { name: 'PSI Magnet α', pp: 1, anim: 'psi_magnet_alpha' },
-  teleport: { name: 'Teleport α', pp: 2, anim: 'teleport_alpha' },
-};
+  {
+    stem: 'shield',
+    family: 'Shield',
+    target: 'self',
+    tiers: ['alpha', 'beta', 'omega', 'sigma'],
+    pp: [6, 10, 30, 18],
+  },
+  {
+    stem: 'psi_shield',
+    family: 'PSI Shield',
+    target: 'self',
+    tiers: ['alpha', 'beta', 'omega', 'sigma'],
+    pp: [8, 14, 42, 24],
+  },
+  // ---- Other ----
+  { stem: 'teleport', family: 'Teleport', target: 'self', tiers: ['alpha', 'beta'], pp: [2, 8] },
+];
+const PSI_BASE = {};
+for (const spec of PSI_FAMILY_SPECS) {
+  spec.tiers.forEach((tier, i) => {
+    const id = `${spec.stem}_${tier}`;
+    PSI_BASE[id] = {
+      name: `${spec.family} ${GREEK[tier]}`,
+      pp: spec.pp[i],
+      target: spec.target,
+      anim: id,
+      ...(spec.effect ? spec.effect(i) : {}),
+    };
+  });
+}
 // Unit facing vectors by Direction (S,N,W,E,NW,SW,SE,NE) — where an offense PSI
 // fizzles toward when no enemy is in range (so the projectile still reads).
 const PSI_DIR = [
@@ -338,6 +420,11 @@ class GameHost {
     const root = path.resolve(assetsDir, '..', '..');
     this.SPAWN = GameHost._readSpawn(root);
 
+    // Effective PSI table: base ← authored tuning (overrides/psi.json), read once
+    // at startup. The PSI Manager tool edits that file; the client mirrors the
+    // same merge over its own base (PsiTuning.ts).
+    this.PSI = GameHost._loadPsi(root);
+
     // Present box catalog: placement key -> { romFlag, item }. ROM-derived
     // (assets/map/gifts.json) with authored contents + new boxes layered on
     // (overrides/gifts.json). Drives the one-time 'open_gift' grant. Paths kept
@@ -350,6 +437,16 @@ class GameHost {
     this.npcSim = createNpcSim(assetsDir);
     // World pixel bounds for move validation (clamp players onto the map).
     this.WORLD = this.npcSim.bounds();
+
+    // Event runtime (EVENT_MANAGER.md Phase 2): timed group encounters authored
+    // in the Event Manager tool. Drives countdown -> warp party -> timer -> exit.
+    this.eventRuntime = createEventRuntime({
+      root,
+      getPlayers: () => this.players.values(),
+      broadcast: (data) => this.broadcastAll(data),
+      warpPlayer: (id, x, y, dir, eventId) => this.warpEventPlayer(id, x, y, dir, eventId),
+    });
+    this._eventTimer = null; // event tick handle (set in start()).
 
     // Idle-connection sweep handle (set in start()).
     this._heartbeat = null;
@@ -368,6 +465,30 @@ class GameHost {
       }
     }
     return { x: 1296, y: 1168, dir: 0 };
+  }
+
+  /**
+   * Effective PSI table: the BASE (PSI_BASE) with authored per-move tuning layered
+   * on from public/overrides/psi.json ({ version, moves: { <id>: {pp,heal,…} } }).
+   * Edited in the PSI Manager tool; the client mirrors the same merge over its own
+   * base (PsiTuning.ts). Missing/bad file -> base only. Read once at startup, so
+   * tuning applies on server restart (parallels equip_stats in shops.js).
+   */
+  static _loadPsi(root) {
+    const out = {};
+    for (const [id, base] of Object.entries(PSI_BASE)) out[id] = { ...base };
+    try {
+      const doc = JSON.parse(fs.readFileSync(path.join(root, 'public/overrides/psi.json'), 'utf8'));
+      const moves = (doc && doc.moves) || {};
+      for (const [id, fields] of Object.entries(moves)) {
+        if (!fields || typeof fields !== 'object') continue;
+        // Layer authored fields over the base (or seed a new authored move).
+        out[id] = Object.assign(out[id] || { name: id, pp: 0, anim: id }, fields);
+      }
+    } catch {
+      /* none authored — base table only */
+    }
+    return out;
   }
 
   /**
@@ -449,6 +570,11 @@ class GameHost {
     // worn-off statuses (re-broadcasting the set). 4Hz is plenty for ~1s DoT.
     this._statusTimer = setInterval(() => this._tickPlayerStatuses(), STATUS_TICK_MS);
     if (this._statusTimer.unref) this._statusTimer.unref();
+
+    // Event runtime tick (countdowns, warps, timers, end conditions). 10Hz is
+    // plenty for second-resolution timers and a smooth countdown.
+    this._eventTimer = setInterval(() => this.eventRuntime.tick(Date.now()), 100);
+    if (this._eventTimer.unref) this._eventTimer.unref();
 
     // Hot-reload the gift catalog when the Gift Manager saves overrides/gifts.json
     // (dev), so newly-placed boxes are openable without a server restart. Polling
@@ -549,6 +675,9 @@ class GameHost {
     this._heartbeat = null;
     if (this._statusTimer) clearInterval(this._statusTimer);
     this._statusTimer = null;
+    if (this._eventTimer) clearInterval(this._eventTimer);
+    this._eventTimer = null;
+    if (this.eventRuntime) this.eventRuntime.stop();
     if (this._giftsWatchPath) fs.unwatchFile(this._giftsWatchPath);
     this._giftsWatchPath = null;
   }
@@ -574,6 +703,30 @@ class GameHost {
     for (const [id, entry] of this.players) {
       if (id !== exceptId && entry._ws.readyState === 1) entry._ws.send(msg);
     }
+  }
+
+  // Event runtime warp: snap a player's authoritative position to (x,y) and tell
+  // their client to do a door-style fade there. `eventId` is the event they're
+  // now in (null when warped back out). Shields them from hits during the fade,
+  // exactly like a door transition. Remote copies follow once the warped client
+  // resumes reporting its position (same as doors).
+  warpEventPlayer(id, x, y, dir, eventId) {
+    const entry = this.players.get(id);
+    if (!entry) return;
+    entry.x = Math.round(x);
+    entry.y = Math.round(y);
+    entry.direction = dir | 0;
+    entry.moving = false;
+    entry.frame = 0;
+    entry.warping = true;
+    entry.warpUntil = Date.now() + WARP_SHIELD_MAX_MS;
+    this.sendTo(id, {
+      type: 'event_warp',
+      x: entry.x,
+      y: entry.y,
+      dir: entry.direction,
+      eventId: eventId || null,
+    });
   }
 
   // Recompute the combat bonuses from a player's equipped gear: weapon offense
@@ -738,7 +891,7 @@ class GameHost {
       const id = arr[i];
       if (typeof id !== 'string' || id.length > 32) continue;
       if (id.startsWith(HOTBAR_PSI_TAG)) {
-        if (PSI[id.slice(HOTBAR_PSI_TAG.length)]) out[i] = id;
+        if (this.PSI[id.slice(HOTBAR_PSI_TAG.length)]) out[i] = id;
       } else {
         const good = this.GOODS[id];
         const armor = good && good.equip && good.equip.slot !== 'weapon';
@@ -1310,6 +1463,14 @@ class GameHost {
         break;
       }
 
+      case 'event_talk': {
+        // Client finished talking to an NPC (textId). May arm a dialogue-start
+        // event if this player is standing in its trigger circle. No-op otherwise.
+        const npcTextId = Number.isFinite(msg.npcTextId) ? msg.npcTextId : null;
+        if (npcTextId != null) this.eventRuntime.onTalk(playerId, npcTextId);
+        break;
+      }
+
       case 'editor': {
         // Dev editor opened (on:true) / closed (false). While on, this player is
         // pulled from the NPC sim so its parked avatar can't be aggroed, hit, or
@@ -1739,7 +1900,7 @@ class GameHost {
         const entry = this.players.get(playerId);
         if (!entry || entry.hp <= 0) break;
         const psiId = typeof msg.psiId === 'string' ? msg.psiId : null;
-        const def = psiId ? PSI[psiId] : null;
+        const def = psiId ? this.PSI[psiId] : null;
         if (!def || entry.pp < def.pp) break; // unknown ability or not enough PP
         // "Can't concentrate" (noPsi) blocks ALL PSI, even a cure — it must wear
         // off. The client also gates this; the server is the authority.

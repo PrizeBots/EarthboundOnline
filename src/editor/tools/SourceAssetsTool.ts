@@ -2,7 +2,7 @@ import { EditorTool, EditorShellApi } from '../types';
 import { FolderDesktop, FolderDesktopStore, FolderDesktopFolder } from '../FolderDesktop';
 import { loadJSON, loadImage } from '../../engine/AssetLoader';
 import { addCustomSprite, customSpritesDoc } from '../../engine/CustomSprites';
-import { getNameOverrides } from '../../engine/SpriteNames';
+import { getNameOverrides, getSpriteName } from '../../engine/SpriteNames';
 import {
   addCustomItem,
   customItemsDoc,
@@ -116,9 +116,18 @@ class SourceAssetsTool implements EditorTool {
         const a = this.byId.get(id);
         if (!a) return id;
         const base = a.file.split('/').pop() ?? a.file;
-        return `${base}  ${a.w}×${a.h}`;
+        // Sprite groups are stored by NUMBER (SpriteGroups/074.png) — show their
+        // human name (spriteNames.json / admin renames) so they're findable.
+        const nm = this.spriteGroupName(a);
+        return nm ? `${nm}  ·  #${this.spriteGroupId(a)} ${a.w}×${a.h}` : `${base}  ${a.w}×${a.h}`;
       },
-      matches: (id, q) => id.toLowerCase().includes(q),
+      // Search matches the path AND, for sprite groups, the human name — so
+      // "police", "cop", "car" find SpriteGroups/074, /075, /255, etc.
+      matches: (id, q) => {
+        const a = this.byId.get(id);
+        const nm = a ? this.spriteGroupName(a) : null;
+        return `${id} ${nm ?? ''}`.toLowerCase().includes(q);
+      },
       onFocus: (id) => {
         this.selected = id;
         this.refreshDetail();
@@ -129,6 +138,21 @@ class SourceAssetsTool implements EditorTool {
   }
 
   /** Draw a ROM image fit into the thumb canvas (async load, pixelated). */
+  /** The numeric sprite-group id for a `SpriteGroups/NNN.png` asset, else null. */
+  private spriteGroupId(a: RomAsset): number | null {
+    if (a.folder !== 'SpriteGroups') return null;
+    const base = (a.file.split('/').pop() ?? '').replace(/\.png$/i, '');
+    const gid = parseInt(base, 10);
+    return Number.isFinite(gid) ? gid : null;
+  }
+
+  /** Human name for a sprite-group asset (spriteNames.json + admin renames), or
+   *  null for non-sprite-group assets / unnamed groups. */
+  private spriteGroupName(a: RomAsset): string | null {
+    const gid = this.spriteGroupId(a);
+    return gid == null ? null : getSpriteName(gid);
+  }
+
   private drawThumb(canvas: HTMLCanvasElement, id: string): void {
     const a = this.byId.get(id);
     if (!a) return;

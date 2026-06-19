@@ -36,10 +36,14 @@ const OVERRIDE_ALLOW = new Set([
   'flags.json', // Flag Editor — flag catalog (id/name/scope/default)
   'triggers.json', // Flag Editor — event→flag rules
   'sfx_events.json', // Sound Manager SFX tab — event→sound map + per-event volumes
+  'combat_juice.json', // Combat tool — floating damage/heal/crit number feel (numbers/colors only)
   'entity_folders.json', // Entity Desktop — folder layout + sprite→folder assignment
   'item_folders.json', // Item Desktop — folder layout + item→folder assignment
   'equip_stats.json', // Item Manager — per-item stat overrides (offense/defense/crit/dodge/attackSpeed/cost/heal/inflict)
   'gifts.json', // Gift Manager — authored present-box contents (edits[k]={item})
+  'events.json', // Event Manager — authored event triggers/rooms (trigger circle, entrance/exit warps, end conditions)
+  'psi.json', // PSI Manager — per-move tuning (pp/power/range/status), merged client + server
+  'psi_folders.json', // PSI Manager — folder layout + move→folder assignment
 ]);
 const SAVE_BODY_LIMIT = 8 * 1024 * 1024; // sprite overrides carry data URLs
 
@@ -106,6 +110,26 @@ function editorSavePlugin() {
           console.log(`[editor] override hot-reload ${overrideHotReload ? 'ON' : 'OFF'}`);
           reply();
         });
+      });
+
+      // Serve authored override files straight from disk so a BRAND-NEW override
+      // domain loads without a dev-server restart. Vite's publicDir (sirv) caches
+      // its file list at boot, so the first-ever events.json (created after boot)
+      // would otherwise 404 to the SPA fallback and the editor would load empty.
+      // Runs before sirv; only allow-listed names, so no path traversal.
+      server.middlewares.use('/overrides', (req: any, res: any, next: any) => {
+        if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+        const name = decodeURIComponent((req.url || '').split('?')[0].replace(/^\/+/, ''));
+        if (!OVERRIDE_ALLOW.has(name)) return next(); // not ours — let sirv/SPA handle
+        const file = path.join(OVERRIDES_DIR, name);
+        if (!fs.existsSync(file)) {
+          res.statusCode = 404; // loadOverride treats 404 as "nothing authored yet"
+          res.end('not found');
+          return;
+        }
+        res.setHeader('content-type', 'application/json');
+        res.setHeader('cache-control', 'no-cache');
+        res.end(fs.readFileSync(file));
       });
 
       server.middlewares.use('/__editor/save', (req: any, res: any) => {

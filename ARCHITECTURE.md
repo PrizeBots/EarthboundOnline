@@ -581,6 +581,12 @@ you're just walking through. Player hits fire from `Game`'s `onPlayerHp` (heavie
 only when the local player dealt or took it. Weapon **attack speed** (`equip_stats.json`
 `attackSpeed`, server-authoritative) scales both the swing cooldown and the
 client swing-pose duration so fast weapons animate as fast as they resolve.
+Floating **combat numbers** (`Emitter.ts`: damage/heal/crit/miss popups, plus the
+magnitude-scaled size — bigger hits read bigger) take their feel from
+`CombatJuice.ts`, a live-tunable config (size curve, arc/gravity/launch, fade,
+crit-burst scale, the per-popup colors, and an optional big-hit color ramp). It
+loads from `overrides/combat_juice.json` and is dialed in real time by the dev
+**Combat** editor tool (numbers/colors only — combat MATH stays server-side).
 
 **Status conditions + inflict model.** `server/status.js` is the single catalog +
 timer/immunity/DoT engine (paralysis, sleep, diamond, poison, …), shared by
@@ -622,9 +628,24 @@ the over-head countdown, and the owner's closing **vignette**.
 PARTY-target: the client enters a **target picker** (rings on valid targets, `Z`=
 self, click an ally, `Esc`) and sends `use_psi` with a `targetId`; the server routes
 heal/cure/revive to that target (or self) and validates range (`PSI_HEAL_RANGE`).
-Offense PSI still auto-strikes the nearest enemy. PP/effects are canon (`psi.json`):
-Healing γ/Ω revive (γ half HP, Ω full), Lifeup heals. (Full multi-tier roster +
-per-character learn-by-level gating remains a backlog content/system task.)
+Offense PSI still auto-strikes the nearest enemy. Healing γ/Ω revive (γ half HP,
+Ω full), Lifeup heals. (Full multi-tier roster + per-character learn-by-level
+gating remains a backlog content/system task.)
+
+**PSI tuning (mod layer).** Every move's stats — PP, heal, damage, range, `multi`,
+`reviveFrac`, `cures`, status `inflict` — live in a base table on each side
+(server `gameHost.js` `PSI_BASE`, client `src/engine/PsiTuning.ts` `PSI_BASE`,
+re-exported as the menu's `PSI_ABILITIES` so there's no duplicate list). The
+**PSI Manager** tool (`src/editor/tools/PsiManagerTool.ts`) layers authored tuning
+on top via **`overrides/psi.json`** (`{ version, moves: { <id>: {…} } }`) — the
+SAME file the server merges (`GameHost._loadPsi`, read at startup → `this.PSI`,
+like `equip_stats`) and the client mirrors (`effectivePsi`). It's a FolderDesktop
+library (category folders Recover/Offense/Ailment/Assist, persisted to
+`overrides/psi_folders.json`) whose tiles show each move's cast-animation icon;
+the right panel tunes the fields and an **"Edit animation →"** button hands off to
+the Sprite Editor's PSI mode (`openSpriteEditor({ focusPsi })`, which authors
+`overrides/psi_anim.json`). Combat values apply on **server restart** (parallels
+`equip_stats`).
 
 **Ranged weapons.** A weapon's `equip_stats.json` can set `ranged:true` + `range`
 (px); `recomputeEquipStats` exposes `weaponRange`, and `handleAttack` swaps the 14px
@@ -668,24 +689,16 @@ player swings, enemy swings, and NPC swings (it awards EXP only on player-dealt
 enemy kills); all damage is still gated by `canHurt`. `hpSnapshot` ships
 damaged/downed persons too so late joiners see their bars.
 
-**Vehicles.** A sprite group flagged **`vehicle`** in the Entity Manager
-(`entities[sprite].vehicle`) becomes an autonomous friendly actor (`tickVehicle`)
-— it rides on the `person` kind, so it carries HP + a health bar and is
-destructible. It roams, but HUNTS foes (enemies + PKers via `nearestFoeTo`) within
-`VEHICLE_DETECT` and drives at them. Its movement is **wall-only** — it plows
-straight _through_ the crowd; `plow()` resolves whoever its body box overlaps each
-step. Its single "attack" is the collision: a foe takes `VEHICLE_DAMAGE` with a
-**scattered knockback** (`pushActor`/`knockbackPlayerSpot` now accept a `dir`
-override + `mult`/`dist`) — `vehicleKnockDir` blends the car's travel heading with
-the perpendicular toward the victim's _side_ plus jitter, so foes fly _out of the
-lane_ (`VEHICLE_KB_MULT` force) instead of straight back, per-victim
-cooldown-gated. Friendlies (townsfolk + peaceful players) take **no damage**, only
-a minimal `VEHICLE_FRIENDLY_KB` nudge aside (players via the new damage-free
-`onPlayerShove` host callback) so the plow never stalls. EM vehicles and traffic
-cars (above) share one attackable-target path: `handleAttack` loops a maintained
-`vehicles` list (`kind === 'car' || isVehicle`) under the same PK rules as enemies,
-so a PKer can destroy either, and both revive on a timer (`reviveNpcs` for the
-`person`-kind EM vehicle, `reviveCars` for traffic cars).
+**Vehicles** are exclusively the `car` kind (see Traffic, below) — there is no
+separate "vehicle entity" flag. A vehicle is either **parked** (1 waypoint, holds
+its authored facing) or **driving** (2+ waypoints, follows the route via
+`tickCar`). Both are attackable: `handleAttack` loops a maintained `vehicles` list
+(`kind === 'car'`) under the same PK rules as enemies, so a PKer can destroy any
+car, and they revive on a timer (`reviveCars`). _(Historical note: an Entity
+Manager `vehicle` boolean once spawned an autonomous `person`-kind actor with its
+own `tickVehicle` hunt-and-wander AI. That was removed — it duplicated the car
+system and idled like a townsperson; the flag, `isVehicle`, and `tickVehicle` are
+gone. A car that should chase is just a routed traffic car.)_
 
 **Pursuit into buildings & regroup.** Each enemy runs a small `mode` machine:
 `patrol` (wander) → `chase` (has a target) → `return` (lost it). Player movement
@@ -697,8 +710,11 @@ chased `targetId` jumped while it's within `WARP_FOLLOW_RANGE` of the doorway
 **follows through** — it's dropped beside where the player landed (`findFreeNear`)
 and the door is pushed onto its `warpStack`. A locked chase has **no home leash**
 — the enemy pursues relentlessly wherever the target goes; it gives up only when
-the target passes `GIVE_UP_RANGE` (hysteresis: acquire at `detectRange`, drop at
-the larger give-up distance) or it dies, then it paths home. A respawn-teleport also jumps the (full-HP)
+the target passes `giveUpRange` (hysteresis: acquire at `detectRange`, drop at
+the larger give-up distance) or it dies, then it paths home. Both radii are
+per-SPAWNER fields tunable in the Enemy Spawner tool ("aggro" / "chase"), so two
+spawners of the same sprite can differ; they default to `DETECT_RANGE` /
+`GIVE_UP_RANGE`. (Placement enemies, which have no spawner, use the defaults.) A respawn-teleport also jumps the (full-HP)
 player to spawn, indistinguishable from a door warp, so the host calls
 `npcSim.noteRespawn(id)` to exempt that one jump. On losing the target the enemy
 switches to `return`: it retraces its `warpStack` (warping back out at each
@@ -741,15 +757,20 @@ rule cover it.
 
 ## Traffic (cars)
 
-Car is a fourth NPC kind. `car_traffic.json` (OUR content — committed default in
-`public/assets/map/`, editor override in `public/overrides/`) lists vehicles,
-each with a sprite group, speed, loop flag, **`hp`**, **`damage`**, and a
-hand-authored **waypoint route**. Client (`NPCManager`) and server (`npcSim`)
-build the same car **pool** appended _after_ the enemy pool (one slot per active
-vehicle — `enabled` with ≥2 waypoints — in file order) so wire ids stay aligned.
-The server drives each car along its route (`tickCar`/`dir8`), facing its travel
-direction, and broadcasts position over the existing `npc_update` channel. A car
-is a **full combatant** like an Entity Manager `vehicle` (below), but it follows
+Car is a fourth NPC kind, and the ONLY kind of vehicle. `car_traffic.json` (OUR
+content — committed default in `public/assets/map/`, editor override in
+`public/overrides/`) lists vehicles, each with a sprite group, speed, loop flag,
+**`hp`**, **`damage`**, a **`dir`** (parked facing), and a hand-authored
+**waypoint route**. A vehicle is **parked** (1 waypoint — spawns, sits at its
+`dir` facing, fully attackable) or **driving** (2+ waypoints — follows the route).
+Client (`NPCManager`) and server (`npcSim`) build the same car **pool** appended
+_after_ the enemy pool (one slot per active vehicle — `enabled` with **≥1
+waypoint**; `activeVehicles` filter kept in sync) in file order so wire ids stay
+aligned. The server drives each routed car along its waypoints (`tickCar`/`dir8`),
+facing its travel direction, and broadcasts position over the existing
+`npc_update` channel; `tickCar` no-ops a 1-waypoint car, so a parked car simply
+holds its spot and authored facing (the server never re-faces it — the client
+seeds the parked facing from `dir`). A car is a **full combatant** that follows
 its **hand-authored route and is NOT wall-blocked** (routes are drawn on drivable
 streets; a wall check would falsely stall the large body box on tile edges). As it
 drives, `plow()` resolves whoever its body box overlaps — foes (enemies + PKers,
@@ -758,7 +779,7 @@ out of the lane. It **is itself attackable** (`handleAttack`
 loops the `vehicles` list under the same PK rules — only PKers can wreck a car),
 carries `hp`/`maxHp` broadcast on the `npc_hp` channel (HP bar + damage numbers on
 the client), and on death respawns at its route start (`reviveCars`). A **vehicle
-is an NPC that drives**, so it can also be **talkable**: a vehicle may carry a `t`
+is a car NPC** (parked or driving), so it can also be **talkable**: a vehicle may carry a `t`
 (textId), and `NPCManager` spawns the car NPC with it — `Game.tryTalk`/
 `getNpcDialogue` work on any NPC with a textId, so a car speaks like EB's parked
 cars. Author its line via the Traffic Editor's **Dialogue** button (same handoff
@@ -789,9 +810,14 @@ removes the now-duplicate static placement via an `npcs.json` `edits[k]=null`
 (talkable `person` cars carry their `t`/textId onto the vehicle so the dialogue
 survives — the car stays speakable). The script is
 idempotent (deterministic `v_npc_<k>` ids). The **Placement Editor** surfaces all
-traffic vehicles as read-only green markers in its NPCs tab; selecting one shows
-an "Edit route in Traffic →" button that opens the Traffic Editor preselected on
-that vehicle (`TrafficEditorTool.requestVehicle`).
+traffic vehicles as green markers in its NPCs tab and can **place** one: the
+**`+ vehicle`** button drops a parked car (1 waypoint, South facing, default Car
+sprite) and writes it straight to `car_traffic.json` (`PlacementTool.saveTraffic`,
+same file shape the Traffic Editor saves). Selecting a vehicle shows an
+"Edit route in Traffic →" button that opens the Traffic Editor preselected on that
+vehicle (`TrafficEditorTool.requestVehicle`) — where you draw its route (making it
+drive), pick its sprite/facing, set speed/HP/damage, and author dialogue. So the
+workflow is: drop a car in Placement → optionally route it in Traffic.
 
 ## NPC system
 

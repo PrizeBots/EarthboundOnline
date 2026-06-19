@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "events": [
+    {
+      "id": "event-1",
+      "name": "Frank Fight",
+      "enabled": true,
+      "trigger": {
+        "start": "dialogue",
+        "npcTextId": 146,
+        "x": 1610,
+        "y": 1631,
+        "radius": 48,
+        "countdownMs": 5000,
+        "minPlayers": 1,
+        "cooldownMs": 30000
+      },
+      "entrance": {
+        "enabled": true,
+        "x": 145,
+        "y": 11348,
+        "dir": 0
+      },
+      "exit": {
+        "enabled": true,
+        "x": 1609,
+        "y": 1637,
+        "dir": 0
+      },
+      "eventTimerMs": 9000,
+      "end": ["bossDefeated", "allPlayersDead", "timer"]
+    }
+  ]
+}

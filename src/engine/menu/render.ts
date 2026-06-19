@@ -27,7 +27,6 @@ import {
   FONT_ID,
   CURSOR_W,
   MENU_ITEMS,
-  PSI_ABILITIES,
   PSI_TAG,
   isPsiEntry,
   psiName,
@@ -38,13 +37,17 @@ import {
   goodsLayout,
   equipListLayout,
   equipSelectLayout,
-  psiLayout,
+  psiTabLayout,
+  psiFamilyLayout,
+  psiTierLayout,
+  psiTierRowLabel,
   shopListLayout,
   shopListItems,
   hotbarLayout,
   wrapText,
   ListLayout,
 } from './layout';
+import { PSI_TABS, PSI_CATEGORY_LABEL, familiesInTab } from '../PsiTuning';
 
 /** Shop UI: a Buy/Sell chooser top-left, the active list beside it, money
  *  top-right, and an optional note line at the bottom. */
@@ -239,16 +242,57 @@ export function renderEquipSelect(ctx: CanvasRenderingContext2D, v: MenuView): v
   drawScrollbar(ctx, lay.scroll);
 }
 
+/** A small right-pointing triangle (the "has more tiers" marker on a family row). */
+function drawMiniArrow(ctx: CanvasRenderingContext2D, x: number, y: number): void {
+  ctx.fillStyle = '#f0f0f0';
+  for (let col = 0; col < 3; col++) ctx.fillRect(x + col, y + col, 1, 5 - col * 2);
+}
+
+// Canon-style PSI menu: a tab bar (Offense/Recover/Assist/Other), the families in
+// the active tab below it, and — once a family is opened — a tier popup (α/β/γ/Ω/Σ)
+// to the right. The cursor sits on the family list while browsing, and moves to the
+// tier popup once it's open (v.psiTierOpen).
 export function renderPsi(ctx: CanvasRenderingContext2D, v: MenuView): void {
-  const lay = psiLayout(v.psiCursor);
-  drawWindow(ctx, lay.winX, lay.winY, lay.winW, lay.winH, MENU_STYLE);
-  for (const r of lay.rows) {
-    const a = PSI_ABILITIES[r.index];
-    if (!a) continue;
-    if (r.index === v.psiCursor) drawCursor(ctx, r.x, r.y + 3);
-    drawText(ctx, fitText(a.name, r.w - CURSOR_W), r.x + CURSOR_W, r.y, FONT_ID);
+  const tab = PSI_TABS[v.psiTab];
+
+  // Tab bar — the active tab gets a highlight bar behind its (fixed-color) label.
+  const tb = psiTabLayout();
+  drawWindow(ctx, tb.winX, tb.winY, tb.winW, tb.winH, MENU_STYLE);
+  for (let i = 0; i < tb.cells.length; i++) {
+    const c = tb.cells[i];
+    if (i === v.psiTab) {
+      ctx.fillStyle = 'rgba(128,150,210,0.55)';
+      ctx.fillRect(c.x - 1, c.y - 1, c.w + 2, c.h);
+    }
+    drawText(ctx, PSI_CATEGORY_LABEL[PSI_TABS[i]], c.x, c.y, FONT_ID);
   }
-  drawScrollbar(ctx, lay.scroll);
+
+  // Family list.
+  const fams = familiesInTab(tab);
+  const fl = psiFamilyLayout(tab, v.psiFamilyCursor);
+  drawWindow(ctx, fl.winX, fl.winY, fl.winW, fl.winH, MENU_STYLE);
+  for (const r of fl.rows) {
+    const fam = fams[r.index];
+    if (!fam) continue;
+    if (!v.psiTierOpen && r.index === v.psiFamilyCursor) drawCursor(ctx, r.x, r.y + 3);
+    drawText(ctx, fitText(fam.family, r.w - CURSOR_W - 6), r.x + CURSOR_W, r.y, FONT_ID);
+    if (fam.moves.length > 1) drawMiniArrow(ctx, r.x + r.w - 4, r.y + 3);
+  }
+  drawScrollbar(ctx, fl.scroll);
+
+  // Tier popup (right of the family list) once a family is opened.
+  if (v.psiTierOpen) {
+    const fam = fams[v.psiFamilyCursor];
+    const tl = psiTierLayout(tab, v.psiFamilyCursor, v.psiTierCursor);
+    drawWindow(ctx, tl.winX, tl.winY, tl.winW, tl.winH, MENU_STYLE);
+    for (const r of tl.rows) {
+      const m = fam?.moves[r.index];
+      if (!m) continue;
+      if (r.index === v.psiTierCursor) drawCursor(ctx, r.x, r.y + 3);
+      drawText(ctx, psiTierRowLabel(m), r.x + CURSOR_W, r.y, FONT_ID);
+    }
+    drawScrollbar(ctx, tl.scroll);
+  }
 }
 
 export function renderMessage(ctx: CanvasRenderingContext2D, v: MenuView): void {

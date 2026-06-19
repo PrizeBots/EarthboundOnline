@@ -538,8 +538,8 @@ check('use_psi (heal) spends PP and broadcasts psi_cast at the caster', () => {
   p.hp = p.maxHp;
   p.pp = 7;
   alice.clear();
-  alice.recv({ type: 'use_psi', psiId: 'lifeup' });
-  assert.strictEqual(host.players.get(aliceId).pp, 7 - 5, 'lifeup costs 5 PP (canon)');
+  alice.recv({ type: 'use_psi', psiId: 'lifeup_alpha' });
+  assert.strictEqual(host.players.get(aliceId).pp, 7 - 5, 'Lifeup α costs 5 PP (canon)');
   const cast = alice.last('psi_cast');
   assert(cast && cast.id === 'lifeup_alpha', 'broadcasts the PsiAnim id to the caster too');
   assert.strictEqual(cast.tx, cast.x, 'self/heal PSI targets the caster spot');
@@ -550,8 +550,8 @@ check('use_psi (offense) spends PP and broadcasts a projectile psi_cast', () => 
   const p = host.players.get(aliceId);
   p.pp = 9;
   alice.clear();
-  alice.recv({ type: 'use_psi', psiId: 'fire' });
-  assert.strictEqual(host.players.get(aliceId).pp, 9 - 5, 'PSI Fire costs 5 PP');
+  alice.recv({ type: 'use_psi', psiId: 'psi_fire_alpha' });
+  assert.strictEqual(host.players.get(aliceId).pp, 9 - 6, 'PSI Fire α costs 6 PP (canon)');
   const cast = alice.last('psi_cast');
   assert(cast && cast.id === 'psi_fire_alpha', 'fire broadcasts its anim id');
   assert(typeof cast.tx === 'number' && typeof cast.ty === 'number', 'carries a projectile target');
@@ -559,9 +559,9 @@ check('use_psi (offense) spends PP and broadcasts a projectile psi_cast', () => 
 
 check('use_psi is refused without enough PP (no cast)', () => {
   const p = host.players.get(aliceId);
-  p.pp = 1; // below lifeup (3) and fire (5)
+  p.pp = 1; // below Lifeup α (5) and PSI Fire α (6)
   alice.clear();
-  alice.recv({ type: 'use_psi', psiId: 'fire' });
+  alice.recv({ type: 'use_psi', psiId: 'psi_fire_alpha' });
   assert.strictEqual(host.players.get(aliceId).pp, 1, 'PP untouched when too low');
   assert.strictEqual(alice.ofType('psi_cast').length, 0, 'no cast broadcast');
 });
@@ -572,7 +572,7 @@ check('use_psi is blocked while "can\'t concentrate" (noPsi), even with PP', () 
   p.statuses = {};
   statusMod.applyStatus(p, statusMod.STATUS.NO_PSI, Date.now());
   alice.clear();
-  alice.recv({ type: 'use_psi', psiId: 'lifeup' });
+  alice.recv({ type: 'use_psi', psiId: 'lifeup_alpha' });
   assert.strictEqual(host.players.get(aliceId).pp, 9, 'PP untouched while noPsi');
   assert.strictEqual(alice.ofType('psi_cast').length, 0, 'no cast while noPsi');
   p.statuses = {};
@@ -585,7 +585,7 @@ check("Healing PSI clears the caster's status conditions", () => {
   statusMod.applyStatus(p, statusMod.STATUS.PARALYSIS, Date.now());
   statusMod.applyStatus(p, statusMod.STATUS.POISON, Date.now());
   alice.clear();
-  alice.recv({ type: 'use_psi', psiId: 'healing' });
+  alice.recv({ type: 'use_psi', psiId: 'healing_alpha' });
   assert.strictEqual(
     Object.keys(host.players.get(aliceId).statuses).length,
     0,

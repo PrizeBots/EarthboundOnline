@@ -41,6 +41,8 @@ interface Spawner {
   x: number;
   y: number;
   wanderRadius: number;
+  detectRange: number; // px — player within this aggros THIS spawner's enemies
+  giveUpRange: number; // px — once locked on, the chase breaks off past this
   maxActive: number;
   spawnIntervalMs: number;
   respawnDelayMs: number;
@@ -60,6 +62,8 @@ interface EnemyFile {
 const DEFAULTS: Omit<Spawner, 'name' | 'x' | 'y'> = {
   sprite: 284,
   wanderRadius: 600,
+  detectRange: 220, // KEEP IN SYNC with npcSim DETECT_RANGE
+  giveUpRange: 560, // KEEP IN SYNC with npcSim GIVE_UP_RANGE
   maxActive: 4,
   spawnIntervalMs: 3500,
   respawnDelayMs: 9000,
@@ -135,6 +139,10 @@ class EnemySpawnerTool implements EditorTool {
   private listSearch = '';
   private listFilter: 'all' | 'on' | 'off' | 'bad' = 'all';
   private countEl: HTMLSpanElement | null = null;
+  // Outline state: which enemy-type (sprite) groups are expanded. Collapsed is
+  // the resting state — the list groups spawners by enemy so dozens collapse to
+  // a handful of headers. A search/state filter auto-expands matching groups.
+  private expanded = new Set<number>();
 
   activate(shell: EditorShellApi): void {
     this.shell = shell;
@@ -206,6 +214,8 @@ class EnemySpawnerTool implements EditorTool {
         x: s.x ?? 0,
         y: s.y ?? 0,
         wanderRadius: s.wanderRadius ?? DEFAULTS.wanderRadius,
+        detectRange: s.detectRange ?? DEFAULTS.detectRange,
+        giveUpRange: s.giveUpRange ?? DEFAULTS.giveUpRange,
         maxActive: s.maxActive ?? DEFAULTS.maxActive,
         spawnIntervalMs: s.spawnIntervalMs ?? DEFAULTS.spawnIntervalMs,
         respawnDelayMs: s.respawnDelayMs ?? DEFAULTS.respawnDelayMs,
@@ -260,6 +270,8 @@ class EnemySpawnerTool implements EditorTool {
         x: Math.round(s.x),
         y: Math.round(s.y),
         wanderRadius: s.wanderRadius,
+        detectRange: s.detectRange,
+        giveUpRange: s.giveUpRange,
         poolSize: derivePoolSize(s.maxActive),
         maxActive: s.maxActive,
         spawnIntervalMs: s.spawnIntervalMs,
@@ -537,17 +549,15 @@ class EnemySpawnerTool implements EditorTool {
       if (this.countEl) this.countEl.textContent = '';
       return;
     }
-    // Filter (search + state), then sort by name so same-enemy spawners group.
+    // Filter (search + state) first.
     const q = this.listSearch;
-    const shown = this.spawners
-      .filter((s) => {
-        if (this.listFilter === 'on' && !s.enabled) return false;
-        if (this.listFilter === 'off' && s.enabled) return false;
-        if (this.listFilter === 'bad' && !this.isBad(s)) return false;
-        if (!q) return true;
-        return `${s.name} #${s.sprite}`.toLowerCase().includes(q);
-      })
-      .sort((a, b) => a.name.localeCompare(b.name));
+    const shown = this.spawners.filter((s) => {
+      if (this.listFilter === 'on' && !s.enabled) return false;
+      if (this.listFilter === 'off' && s.enabled) return false;
+      if (this.listFilter === 'bad' && !this.isBad(s)) return false;
+      if (!q) return true;
+      return `${s.name} #${s.sprite}`.toLowerCase().includes(q);
+    });
     if (this.countEl) this.countEl.textContent = `${shown.length}/${this.spawners.length}`;
     if (shown.length === 0) {
       const e = document.createElement('div');
@@ -556,32 +566,83 @@ class EnemySpawnerTool implements EditorTool {
       this.listEl.appendChild(e);
       return;
     }
+
+    // Group by enemy type (sprite). Same-enemy spawners are what you tune
+    // together, and grouping collapses dozens of rows to a few headers.
+    const groups = new Map<number, Spawner[]>();
     for (const s of shown) {
-      const row = document.createElement('div');
-      const bad = this.isBad(s);
-      const on = s === this.sel;
-      row.style.cssText =
-        'display:flex;align-items:center;gap:6px;padding:2px 4px;cursor:pointer;border-radius:3px;' +
-        (on ? 'background:#2a1818;' : '');
-      const dot = document.createElement('span');
-      dot.textContent = '●';
-      dot.style.color = !s.enabled ? '#667' : bad ? '#ff5a5a' : '#e85050';
-      const label = document.createElement('span');
-      label.textContent = `${s.name}  (#${s.sprite})`;
-      label.style.cssText =
-        'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' +
-        (s.enabled ? '' : 'color:#778;');
-      row.appendChild(dot);
-      row.appendChild(label);
-      row.onclick = () => {
-        this.sel = s;
-        // Fly the view to the spawner so it's actually on screen (they're
-        // scattered across town, usually off the current view).
-        this.shell?.context.teleport(s.x, s.y);
+      const g = groups.get(s.sprite);
+      if (g) g.push(s);
+      else groups.set(s.sprite, [s]);
+    }
+    // While filtering, force every matching group open so results are visible
+    // without hunting for the toggle.
+    const forceOpen = !!q || this.listFilter !== 'all';
+    // Keep the selected spawner's group open so the highlight is never hidden.
+    if (this.sel) this.expanded.add(this.sel.sprite);
+
+    const sortedSprites = [...groups.keys()].sort((a, b) =>
+      (getSpriteName(a) ?? `#${a}`).localeCompare(getSpriteName(b) ?? `#${b}`)
+    );
+    for (const sprite of sortedSprites) {
+      const kids = groups.get(sprite)!.sort((a, b) => a.name.localeCompare(b.name));
+      const open = forceOpen || this.expanded.has(sprite);
+      const anyBad = kids.some((k) => this.isBad(k));
+
+      // --- group header -------------------------------------------------------
+      const header = document.createElement('div');
+      header.style.cssText =
+        'display:flex;align-items:center;gap:6px;padding:3px 4px;cursor:pointer;' +
+        'border-radius:3px;background:#161c24;';
+      const caret = document.createElement('span');
+      caret.textContent = open ? '▾' : '▸';
+      caret.style.cssText = 'color:#7a8aa0;width:9px;';
+      const hname = document.createElement('span');
+      hname.textContent = `${getSpriteName(sprite) ?? 'enemy'} (#${sprite})`;
+      hname.style.cssText =
+        'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#cde;font-weight:bold;';
+      const cnt = document.createElement('span');
+      cnt.textContent = anyBad ? `${kids.length} ⚠` : String(kids.length);
+      cnt.style.cssText = `font-size:10px;color:${anyBad ? '#ff6a6a' : '#7a8aa0'};white-space:nowrap;`;
+      header.append(caret, hname, cnt);
+      header.onclick = () => {
+        // Toggle is a no-op while a filter forces everything open.
+        if (forceOpen) return;
+        if (this.expanded.has(sprite)) this.expanded.delete(sprite);
+        else this.expanded.add(sprite);
         this.refreshList();
-        this.rebuildForm();
       };
-      this.listEl.appendChild(row);
+      this.listEl.appendChild(header);
+      if (!open) continue;
+
+      // --- children -----------------------------------------------------------
+      for (const s of kids) {
+        const row = document.createElement('div');
+        const bad = this.isBad(s);
+        const sel = s === this.sel;
+        row.style.cssText =
+          'display:flex;align-items:center;gap:6px;padding:2px 4px 2px 18px;cursor:pointer;border-radius:3px;' +
+          (sel ? 'background:#2a1818;' : '');
+        const dot = document.createElement('span');
+        dot.textContent = '●';
+        dot.style.color = !s.enabled ? '#667' : bad ? '#ff5a5a' : '#e85050';
+        const label = document.createElement('span');
+        label.textContent = s.name;
+        label.style.cssText =
+          'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' +
+          (s.enabled ? '' : 'color:#778;');
+        row.appendChild(dot);
+        row.appendChild(label);
+        row.onclick = () => {
+          this.sel = s;
+          // Fly the view to the spawner so it's actually on screen (they're
+          // scattered across town, usually off the current view).
+          this.shell?.context.teleport(s.x, s.y);
+          this.refreshList();
+          this.rebuildForm();
+        };
+        this.listEl.appendChild(row);
+      }
     }
   }
 
@@ -705,6 +766,20 @@ class EnemySpawnerTool implements EditorTool {
       () => s.wanderRadius,
       (n) => (s.wanderRadius = Math.max(32, Math.round(n))),
       'Wander radius in pixels — how far enemies roam from the spawn point. Shown as the ring on the map. Min 32.'
+    );
+    numField(
+      'aggro',
+      'aggro',
+      () => s.detectRange,
+      (n) => (s.detectRange = Math.max(1, Math.round(n))),
+      'Aggro radius in pixels — how close a player must get to wake THIS spawner’s enemies. Independent per spawner.'
+    );
+    numField(
+      'chase',
+      'chase',
+      () => s.giveUpRange,
+      (n) => (s.giveUpRange = Math.max(s.detectRange, Math.round(n))),
+      'Chase give-up distance in pixels — a locked-on enemy pursues until the target is this far, then returns home. Never below aggro.'
     );
     numField(
       'rate',

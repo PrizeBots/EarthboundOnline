@@ -12,6 +12,7 @@ import {
   RawNPC,
   NpcOverrides,
   reloadNpcsLive,
+  loadNPCs,
   Vehicle,
   CarTraffic,
   liveNpcForKey,
@@ -89,6 +90,13 @@ interface DoorEntry {
 }
 
 type Mode = 'npcs' | 'spawn' | 'doors';
+
+// Defaults for a car dropped here as a PARKED vehicle — its sprite/facing/route
+// are refined in the Traffic Editor. KEEP IN SYNC with TrafficEditorTool +
+// npcSim VEHICLE_HP / VEHICLE_DAMAGE.
+const PLACE_VEHICLE_SPRITE = 255; // Car
+const VEHICLE_DEFAULT_HP = 80;
+const VEHICLE_DEFAULT_DAMAGE = 14;
 type Snap = 1 | 8 | 32;
 
 class PlacementTool implements EditorTool {
@@ -115,6 +123,9 @@ class PlacementTool implements EditorTool {
   // tab) so a selected vehicle can hop to its route via the Traffic Editor.
   private vehicles: Vehicle[] = [];
   private selVehicle: Vehicle | null = null;
+  private placingVehicle = false; // next click drops a parked car into car_traffic.json
+  private dragVehicle: Vehicle | null = null; // body-drag to move a car (translates its route)
+  private trafficSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
   // --- Spawn state ---
   private spawn = { x: spawnBase.x, y: spawnBase.y, dir: spawnBase.dir };
@@ -160,8 +171,10 @@ class PlacementTool implements EditorTool {
     this.selDoor = null;
     this.selVehicle = null;
     this.placingKind = null;
+    this.placingVehicle = false;
     this.placingDoor = false;
     this.dragNpc = null;
+    this.dragVehicle = null;
     this.doorDragPart = null;
   }
 
@@ -386,6 +399,21 @@ class PlacementTool implements EditorTool {
       this.dragNpc.x = this.snapV(p.x + this.grabOffset.x);
       this.dragNpc.y = this.snapV(p.y + this.grabOffset.y);
       this.refreshFields();
+    } else if (this.dragVehicle) {
+      const wp0 = this.dragVehicle.waypoints[0];
+      if (wp0) {
+        const nx = this.snapV(p.x + this.grabOffset.x);
+        const ny = this.snapV(p.y + this.grabOffset.y);
+        const dx = nx - wp0[0];
+        const dy = ny - wp0[1];
+        // Move the whole route so a parked car relocates and a routed one keeps
+        // its shape (drag the body; edit individual waypoints in Traffic).
+        for (const wp of this.dragVehicle.waypoints) {
+          wp[0] += dx;
+          wp[1] += dy;
+        }
+      }
+      this.refreshFields();
     } else if (this.draggingSpawn) {
       this.spawn.x = this.snapV(p.x);
       this.spawn.y = this.snapV(p.y);
@@ -406,6 +434,16 @@ class PlacementTool implements EditorTool {
       const e = this.dragNpc;
       this.dragNpc = null;
       this.commitDrag('move placement', e, { x: e.x, y: e.y }, 'npcs');
+    } else if (this.dragVehicle) {
+      const v = this.dragVehicle;
+      this.dragVehicle = null;
+      const wp0 = v.waypoints[0];
+      // Only persist if it actually moved (a plain select-click also arms drag).
+      if (wp0 && (wp0[0] !== this.dragStart.x || wp0[1] !== this.dragStart.y)) {
+        void this.saveTraffic().catch((e) =>
+          this.shell?.toast(`Couldn't save vehicle: ${e}`, true)
+        );
+      }
     } else if (this.draggingSpawn) {
       this.draggingSpawn = false;
       this.commitDrag('move spawn', this.spawn, { x: this.spawn.x, y: this.spawn.y }, 'spawn');
@@ -477,7 +515,16 @@ class PlacementTool implements EditorTool {
    * and the panel. Save commits the removal to the overrides layer.
    */
   private deleteSelected(): void {
-    if (this.mode === 'npcs' && this.selNpc) {
+    if (this.mode === 'npcs' && this.selVehicle) {
+      const v = this.selVehicle;
+      this.vehicles = this.vehicles.filter((x) => x !== v);
+      this.selVehicle = null;
+      this.dragVehicle = null;
+      void this.saveTraffic().catch((e) =>
+        this.shell?.toast(`Couldn't delete vehicle: ${e}`, true)
+      );
+      this.rebuildForm();
+    } else if (this.mode === 'npcs' && this.selNpc) {
       this.mutate('delete placement', this.selNpc, { deleted: true }, 'npcs');
       this.selNpc = null;
       this.refreshPanel();
@@ -495,18 +542,28 @@ class PlacementTool implements EditorTool {
   // --- NPC mode -----------------------------------------------------------------
 
   private npcMouseDown(p: WorldPoint): boolean {
+    if (this.placingVehicle) {
+      this.placingVehicle = false;
+      void this.addVehicle(p);
+      return true;
+    }
     if (this.placingKind) {
       this.addNpc(p, this.placingKind);
       this.placingKind = null;
       return true;
     }
     // A vehicle marker takes the click first (it sits where its static prop used
-    // to). Vehicles aren't dragged here — they're edited in the Traffic Editor.
+    // to). A car is selected + edited with the SAME NPC form (plus an Edit-route
+    // button); body-drag moves it (translating its whole route), like any NPC.
     const vh = this.vehicleHitTest(p);
     if (vh) {
       this.selNpc = null;
       this.selVehicle = vh;
-      this.rebuildForm(); // swap to the vehicle form
+      this.dragVehicle = vh;
+      const wp0 = vh.waypoints[0];
+      this.dragStart = { x: wp0?.[0] ?? p.x, y: wp0?.[1] ?? p.y };
+      this.grabOffset = { x: (wp0?.[0] ?? p.x) - p.x, y: (wp0?.[1] ?? p.y) - p.y };
+      this.rebuildForm(); // (re)build the NPC form bound to this car
       return true;
     }
     const hit = this.npcHitTest(p);
@@ -579,6 +636,133 @@ class PlacementTool implements EditorTool {
     const live = liveNpcForKey(e.k);
     if (live && !live.dead && (live.x !== e.x || live.y !== e.y)) spots.push([live.x, live.y]);
     return spots;
+  }
+
+  /**
+   * Drop a PARKED car into the traffic system: one waypoint at the click, South
+   * facing, default Car sprite. It persists to car_traffic.json immediately and
+   * is selected so you can "Edit route in Traffic →" to give it a route (or just
+   * leave it parked). Sprite/facing/route are refined in the Traffic Editor.
+   */
+  private async addVehicle(p: WorldPoint): Promise<void> {
+    const v: Vehicle = {
+      id: `v_${Date.now().toString(36)}${this.nextAddId++}`,
+      name: this.nextVehicleName(),
+      sprite: PLACE_VEHICLE_SPRITE,
+      speed: 1,
+      loop: true,
+      enabled: true,
+      hp: VEHICLE_DEFAULT_HP,
+      damage: VEHICLE_DEFAULT_DAMAGE,
+      dir: Direction.S,
+      waypoints: [[this.snapV(p.x), this.snapV(p.y)]],
+    };
+    this.vehicles.push(v);
+    try {
+      await this.saveTraffic();
+    } catch (e) {
+      this.vehicles = this.vehicles.filter((x) => x !== v);
+      this.shell?.toast(`Couldn't save vehicle: ${e}`, true);
+      return;
+    }
+    this.selNpc = null;
+    this.selVehicle = v;
+    this.rebuildForm();
+    this.shell?.toast('Parked car placed — use "Edit route in Traffic →" to make it drive.');
+  }
+
+  /** Lowest unused car-N name across the current vehicles. */
+  private nextVehicleName(): string {
+    const taken = new Set(this.vehicles.map((v) => v.name));
+    let n = this.vehicles.length + 1;
+    while (taken.has(`car-${n}`)) n++;
+    return `car-${n}`;
+  }
+
+  /**
+   * Persist the whole car_traffic.json overrides doc (shared with the Traffic
+   * Editor — same shape) and live-reload this client's cars. The server picks the
+   * file up via its watch. Changing the active-vehicle count shifts wire ids, so
+   * other connected clients must refresh to resync.
+   */
+  private async saveTraffic(): Promise<void> {
+    const file: CarTraffic = {
+      version: 1,
+      vehicles: this.vehicles.map((v) => {
+        const meta = getSpriteGroupMeta(v.sprite);
+        return {
+          id: v.id,
+          name: v.name,
+          sprite: v.sprite,
+          w: meta?.width ?? v.w ?? 40,
+          h: meta?.height ?? v.h ?? 28,
+          speed: v.speed,
+          loop: v.loop,
+          enabled: v.enabled,
+          hp: v.hp ?? VEHICLE_DEFAULT_HP,
+          damage: v.damage ?? VEHICLE_DEFAULT_DAMAGE,
+          dir: v.dir ?? Direction.S,
+          waypoints: v.waypoints.map(
+            ([x, y]) => [Math.round(x), Math.round(y)] as [number, number]
+          ),
+          ...(v.t != null ? { t: v.t } : {}),
+        };
+      }),
+    };
+    await saveOverride('car_traffic.json', file);
+    await loadNPCs();
+  }
+
+  /** Debounced car_traffic.json save — vehicle form edits don't go through the
+   *  shell 'traffic' dirty channel (the Traffic Editor owns that handler), so we
+   *  persist directly a beat after the last edit. */
+  private queueTrafficSave(): void {
+    if (this.trafficSaveTimer) clearTimeout(this.trafficSaveTimer);
+    this.trafficSaveTimer = setTimeout(() => {
+      this.trafficSaveTimer = null;
+      void this.saveTraffic().catch((e) => this.shell?.toast(`Couldn't save vehicle: ${e}`, true));
+    }, 350);
+  }
+
+  /** Apply an NPC-shaped field patch to the selected vehicle: x/y move its first
+   *  waypoint (parked spot / route start), the rest set the matching field. Then
+   *  queue a save. Mirrors `mutate` for the car_traffic.json side. */
+  private setVehicleField(
+    v: Vehicle,
+    patch: { x?: number; y?: number; sprite?: number; dir?: number; t?: number | null }
+  ): void {
+    const wp = v.waypoints[0];
+    if (patch.x != null && wp) wp[0] = patch.x;
+    if (patch.y != null && wp) wp[1] = patch.y;
+    if (patch.sprite != null) v.sprite = patch.sprite;
+    if (patch.dir != null) v.dir = patch.dir;
+    if ('t' in patch) v.t = patch.t ?? null;
+    this.queueTrafficSave();
+    this.refreshPanel();
+  }
+
+  /** Lowest unused textId across vehicles (kept clear of ROM config ids). */
+  private mintVehicleTextId(): number {
+    let max = 899999;
+    for (const x of this.vehicles) if (x.t != null && x.t > max) max = x.t;
+    return max + 1;
+  }
+
+  /** Author the selected car's dialogue — mint a textId if needed, persist, then
+   *  open the Dialogue Editor (same handoff as the NPC path). */
+  private async authorVehicleDialogue(v: Vehicle): Promise<void> {
+    if (v.t == null) {
+      v.t = this.mintVehicleTextId();
+      this.refreshPanel();
+    }
+    try {
+      await this.saveTraffic();
+    } catch (e) {
+      this.shell?.toast(String(e), true);
+      return;
+    }
+    dialogueTool.requestEntry(String(v.t));
+    this.shell?.openTool('dialogue');
   }
 
   private addNpc(p: WorldPoint, kind: 'person' | 'prop'): void {
@@ -762,7 +946,7 @@ class PlacementTool implements EditorTool {
     }
     if (this.selNpc) this.drawLiveLink(ctx, this.selNpc, camX, camY);
     this.drawVehicles(ctx, camX, camY, vw, vh);
-    if (this.placingKind) this.drawPlaceCursor(ctx, camX, camY);
+    if (this.placingKind || this.placingVehicle) this.drawPlaceCursor(ctx, camX, camY);
   }
 
   /**
@@ -824,7 +1008,7 @@ class PlacementTool implements EditorTool {
       }
       const face = v.waypoints[1]
         ? dir8(v.waypoints[1][0] - wp[0], v.waypoints[1][1] - wp[1])
-        : Direction.S;
+        : ((v.dir ?? Direction.S) as Direction);
       ctx.globalAlpha = 0.55;
       drawSprite(ctx, v.sprite, face, 0, sx, sy);
       ctx.globalAlpha = 1;
@@ -972,6 +1156,7 @@ class PlacementTool implements EditorTool {
       b.onclick = () => {
         this.mode = m;
         this.placingKind = null;
+        this.placingVehicle = false;
         this.placingDoor = false;
         this.rebuildForm();
       };
@@ -1073,53 +1258,10 @@ class PlacementTool implements EditorTool {
       b.style.borderColor = on ? '#e8a33d' : '#3a4a5a';
     }
     if (this.mode === 'npcs') {
-      if (this.selVehicle) this.buildVehicleForm();
-      else this.buildNpcForm();
+      this.buildNpcForm(); // also handles a selected vehicle (car NPC)
     } else if (this.mode === 'spawn') this.buildSpawnForm();
     else this.buildDoorForm();
     this.refreshPanel();
-  }
-
-  /**
-   * Compact read-only form for a selected vehicle. Vehicles live in the traffic
-   * system, so this just summarizes and hands off to the Traffic Editor (which
-   * owns the route, speed, and on/off) with the vehicle preselected.
-   */
-  private buildVehicleForm(): void {
-    const form = this.formEl!;
-    const v = this.selVehicle!;
-
-    const note = document.createElement('div');
-    note.style.cssText = 'color:#9fb8cc;font-size:11px;line-height:1.4;';
-    note.textContent =
-      'This vehicle is driven by the traffic system. Its route, speed, and on/off ' +
-      'switch live in the Traffic Editor.';
-    form.appendChild(note);
-
-    const actions = document.createElement('div');
-    actions.style.cssText =
-      'display:flex;gap:6px;border-top:1px solid #243;padding-top:7px;flex-wrap:wrap;';
-    form.appendChild(actions);
-    this.mkBtn(
-      '🚗 Edit route in Traffic →',
-      () => {
-        trafficEditorTool.requestVehicle(v.id);
-        this.shell?.openTool('traffic');
-      },
-      actions,
-      true
-    );
-    this.mkBtn(
-      'Center view',
-      () => {
-        const wp = v.waypoints[0];
-        if (!wp) return;
-        const cam = this.shell!.context.camera;
-        cam.x = wp[0] - cam.viewW / 2;
-        cam.y = wp[1] - cam.viewH / 2;
-      },
-      actions
-    );
   }
 
   private buildNpcForm(): void {
@@ -1143,12 +1285,32 @@ class PlacementTool implements EditorTool {
       },
       btns
     );
+    this.mkBtn(
+      '+ vehicle',
+      () => {
+        this.placingKind = null;
+        this.placingVehicle = true;
+        this.shell?.toast('Click to drop a parked car — route it later in the Traffic Editor');
+      },
+      btns
+    );
     this.mkBtn('snap (G)', () => this.onKey('g'), btns);
 
     const sel = (fn: (e: NpcEntry) => void) => () => {
       if (this.selNpc) fn(this.selNpc);
     };
     const num = (v: string) => parseInt(v, 10);
+    // Unified field setter: routes a patch to the selected NPC (undoable, saved to
+    // npcs.json) OR the selected car (saved to car_traffic.json — x/y move its
+    // first waypoint). Lets one form drive both, so a car edits like any NPC.
+    const apply = (
+      label: string,
+      patch: { x?: number; y?: number; sprite?: number; dir?: number; t?: number | null }
+    ) => {
+      if (this.selVehicle) this.setVehicleField(this.selVehicle, patch);
+      else if (this.selNpc) this.mutate(label, this.selNpc, patch as Partial<NpcEntry>, 'npcs');
+    };
+    const selSprite = () => this.selVehicle?.sprite ?? this.selNpc?.sprite;
 
     const keyRow = this.mkRow(form, 'key');
     const keySpan = document.createElement('span');
@@ -1156,12 +1318,12 @@ class PlacementTool implements EditorTool {
     keySpan.style.cssText = 'color:#778;font-size:10px;';
     keyRow.appendChild(keySpan);
 
-    this.mkInput(form, 'x', 'x', (v) =>
-      sel((e) => !Number.isNaN(num(v)) && this.mutate('x', e, { x: num(v) }, 'npcs'))()
-    );
-    this.mkInput(form, 'y', 'y', (v) =>
-      sel((e) => !Number.isNaN(num(v)) && this.mutate('y', e, { y: num(v) }, 'npcs'))()
-    );
+    this.mkInput(form, 'x', 'x', (v) => {
+      if (!Number.isNaN(num(v))) apply('x', { x: num(v) });
+    });
+    this.mkInput(form, 'y', 'y', (v) => {
+      if (!Number.isNaN(num(v))) apply('y', { y: num(v) });
+    });
 
     // Sprite picker — the shared dropdown with a pixel preview per row + a
     // quick-search box (same component as the Cast / Entity / Spawner tools).
@@ -1170,11 +1332,10 @@ class PlacementTool implements EditorTool {
     this.spritePicker = createSpritePicker({
       // ROM sprite groups + standalone custom entities (Source Assets imports).
       sections: [{ values: [...listSpriteGroupIds(), ...customSpriteGroupIds()].map(String) }],
-      initial: String(this.selNpc?.sprite ?? 1),
+      initial: String(selSprite() ?? 1),
       labelFor: (v) => `${v} ${getSpriteName(Number(v)) ?? ''}`.trim(),
       drawThumb: drawSpriteGroupThumb,
-      onSelect: (v) =>
-        sel((e) => this.mutate('sprite', e, { sprite: Math.max(0, num(v)) }, 'npcs'))(),
+      onSelect: (v) => apply('sprite', { sprite: Math.max(0, num(v)) }),
     });
     this.spritePicker.el.style.flex = '1';
     spriteRow.appendChild(this.spritePicker.el);
@@ -1195,15 +1356,15 @@ class PlacementTool implements EditorTool {
     this.mkBtn(
       '✎',
       () => {
-        const e = this.selNpc;
-        if (!e) return;
-        const current = getSpriteName(e.sprite) ?? '';
+        const sp = selSprite();
+        if (sp == null) return;
+        const current = getSpriteName(sp) ?? '';
         const name = window.prompt(
-          `Rename sprite group #${e.sprite} (renames every NPC using this sprite)`,
+          `Rename sprite group #${sp} (renames every NPC using this sprite)`,
           current
         );
         if (name === null) return;
-        setSpriteNameOverride(e.sprite, name.trim() || null);
+        setSpriteNameOverride(sp, name.trim() || null);
         this.shell?.markDirty('names');
         this.spritePicker?.refresh(); // relabel the dropdown rows with the new name
         this.refreshPanel();
@@ -1220,42 +1381,45 @@ class PlacementTool implements EditorTool {
       'dir',
       'facing',
       DIR_NAMES.map(([d, n]) => [String(d), n] as [string, string]),
-      (v) => sel((e) => this.mutate('facing', e, { dir: num(v) }, 'npcs'))()
+      (v) => apply('facing', { dir: num(v) })
     );
-    this.mkSelect(
-      form,
-      'kind',
-      'kind',
-      [
-        ['person', 'person'],
-        ['prop', 'prop'],
-        ['enemy', 'enemy'],
-      ],
-      (v) => {
-        const kind: NPCKind = v === 'person' ? 'person' : v === 'enemy' ? 'enemy' : 'prop';
-        sel((e) => this.mutate('kind', e, { kind }, 'npcs'))();
-      }
-    );
-    this.mkInput(form, 't', 'text id', (v) =>
-      sel((e) => {
-        const t = v.trim() === '' ? null : num(v);
-        if (t === null || !Number.isNaN(t)) this.mutate('text id', e, { t }, 'npcs');
-      })()
-    );
+    // 'kind' applies only to real NPC placements — a car is always kind 'car'.
+    if (!this.selVehicle) {
+      this.mkSelect(
+        form,
+        'kind',
+        'kind',
+        [
+          ['person', 'person'],
+          ['prop', 'prop'],
+          ['enemy', 'enemy'],
+        ],
+        (v) => {
+          const kind: NPCKind = v === 'person' ? 'person' : v === 'enemy' ? 'enemy' : 'prop';
+          sel((e) => this.mutate('kind', e, { kind }, 'npcs'))();
+        }
+      );
+    }
+    this.mkInput(form, 't', 'text id', (v) => {
+      const t = v.trim() === '' ? null : num(v);
+      if (t === null || !Number.isNaN(t)) apply('text id', { t });
+    });
 
     const actions = document.createElement('div');
-    actions.style.cssText = 'display:flex;gap:6px;border-top:1px solid #243;padding-top:7px;';
+    actions.style.cssText =
+      'display:flex;gap:6px;border-top:1px solid #243;padding-top:7px;flex-wrap:wrap;';
     form.appendChild(actions);
     this.mkBtn(
       'Dialogue ✎',
       () => {
-        if (this.selNpc) void this.authorDialogue(this.selNpc);
+        if (this.selVehicle) void this.authorVehicleDialogue(this.selVehicle);
+        else if (this.selNpc) void this.authorDialogue(this.selNpc);
       },
       actions
     );
     // Cross-tool handoff to the Entity Manager (same as the Enemy Spawner's
     // "Edit entity →") — tune this enemy's combat stats by sprite group. Only
-    // meaningful for enemies, so refreshPanel hides it for people/props.
+    // meaningful for enemies, so refreshPanel hides it for people/props/cars.
     const editEntityBtn = this.mkBtn(
       'Edit entity →',
       () => {
@@ -1268,6 +1432,20 @@ class PlacementTool implements EditorTool {
       true
     );
     editEntityBtn.dataset.role = 'edit-entity';
+    // A car carries the SAME form as any NPC, plus this one extra: jump to the
+    // Traffic Editor to draw/edit its waypoint route. Hidden for non-vehicles.
+    const editRouteBtn = this.mkBtn(
+      '🚗 Edit route in Traffic →',
+      () => {
+        if (this.selVehicle) {
+          trafficEditorTool.requestVehicle(this.selVehicle.id);
+          this.shell?.openTool('traffic');
+        }
+      },
+      actions,
+      true
+    );
+    editRouteBtn.dataset.role = 'edit-route';
     this.mkBtn('Delete (Del)', () => this.deleteSelected(), actions);
     // No Save button — NPC edits auto-save via the shell (registered 'npcs'
     // handler); applied live, persons start moving in ~2s.
@@ -1452,7 +1630,13 @@ class PlacementTool implements EditorTool {
       const el = this.fields.get(name);
       if (el && document.activeElement !== el) el.value = v;
     };
-    if (this.mode === 'npcs' && this.selNpc) {
+    if (this.mode === 'npcs' && this.selVehicle) {
+      const wp = this.selVehicle.waypoints[0];
+      if (wp) {
+        setVal('x', String(wp[0]));
+        setVal('y', String(wp[1]));
+      }
+    } else if (this.mode === 'npcs' && this.selNpc) {
       setVal('x', String(this.selNpc.x));
       setVal('y', String(this.selNpc.y));
     } else if (this.mode === 'spawn') {
@@ -1476,44 +1660,54 @@ class PlacementTool implements EditorTool {
     const keySpan = this.panel.querySelector<HTMLSpanElement>('[data-role=key]');
     const snapLabel = this.snap === 1 ? 'free' : `${this.snap}px`;
 
-    if (this.mode === 'npcs' && this.selVehicle) {
-      const v = this.selVehicle;
-      this.infoEl.textContent =
-        `🚗 ${v.name} · ${getSpriteName(v.sprite) ?? `sprite ${v.sprite}`} · ` +
-        `${v.waypoints.length}wp · ${v.enabled === false ? 'disabled' : 'driving'} (traffic)`;
-      if (keySpan) keySpan.textContent = v.id;
-      return;
-    }
-
     if (this.mode === 'npcs') {
+      // A car (selVehicle) drives the SAME form as an NPC (selNpc); read fields
+      // from whichever is selected.
+      const veh = this.selVehicle;
       const e = this.selNpc;
-      if (e) {
-        this.spritePicker?.setValue(String(e.sprite));
-        setVal('dir', String(e.dir));
-        setVal('kind', e.kind);
-        setVal('t', e.t === null ? '' : String(e.t));
+      const sprite = veh ? veh.sprite : e?.sprite;
+      const dir = veh ? (veh.dir ?? Direction.S) : e?.dir;
+      const t = veh ? (veh.t ?? null) : (e?.t ?? null);
+      if (sprite != null) this.spritePicker?.setValue(String(sprite));
+      if (dir != null) setVal('dir', String(dir));
+      if (e) setVal('kind', e.kind); // the kind field only exists for NPCs
+      if (veh || e) setVal('t', t === null ? '' : String(t));
+
+      if (veh) {
+        const drives = veh.waypoints.length >= 2;
+        this.infoEl.textContent =
+          `🚗 ${veh.name} · ${getSpriteName(veh.sprite) ?? `sprite ${veh.sprite}`} · ` +
+          `${drives ? `${veh.waypoints.length}wp` : 'parked'} · ` +
+          `${veh.enabled === false ? 'disabled' : drives ? 'driving' : 'stationary'} (traffic)`;
+        if (keySpan) keySpan.textContent = veh.id;
+      } else {
+        const edited = this.npcs.filter((x) => x.deleted || x.added || this.isNpcEdited(x)).length;
+        this.infoEl.textContent = e
+          ? `${getSpriteName(e.sprite) ?? `sprite ${e.sprite}`} (${e.kind}) · snap ${snapLabel}`
+          : `${this.npcs.length} placements · ${edited} authored · snap ${snapLabel} — click a sprite to select`;
+        if (keySpan) keySpan.textContent = e ? `${e.k}${e.deleted ? ' (deleted)' : ''}` : '—';
       }
-      const edited = this.npcs.filter((x) => x.deleted || x.added || this.isNpcEdited(x)).length;
-      this.infoEl.textContent = e
-        ? `${getSpriteName(e.sprite) ?? `sprite ${e.sprite}`} (${e.kind}) · snap ${snapLabel}`
-        : `${this.npcs.length} placements · ${edited} authored · snap ${snapLabel} — click a sprite to select`;
-      if (keySpan) keySpan.textContent = e ? `${e.k}${e.deleted ? ' (deleted)' : ''}` : '—';
+
       const nameEl = this.panel.querySelector<HTMLDivElement>('[data-role=sprite-name]');
       if (nameEl) {
-        nameEl.textContent = e ? (getSpriteName(e.sprite) ?? '(unnamed sprite)') : '';
+        nameEl.textContent = sprite != null ? (getSpriteName(sprite) ?? '(unnamed sprite)') : '';
       }
-      // The "Edit entity →" handoff only applies to enemies (combat stats).
+      // "Edit entity →" only for enemy NPCs; "Edit route in Traffic →" only for cars.
       const editBtn = this.panel.querySelector<HTMLButtonElement>('[data-role=edit-entity]');
-      if (editBtn) editBtn.style.display = e?.kind === 'enemy' ? '' : 'none';
-      if (e && this.thumb) {
+      if (editBtn) editBtn.style.display = !veh && e?.kind === 'enemy' ? '' : 'none';
+      const routeBtn = this.panel.querySelector<HTMLButtonElement>('[data-role=edit-route]');
+      if (routeBtn) routeBtn.style.display = veh ? '' : 'none';
+
+      if (sprite != null && this.thumb) {
         const tctx = this.thumb.getContext('2d')!;
         tctx.imageSmoothingEnabled = false;
         tctx.clearRect(0, 0, 48, 56);
-        void loadSpriteGroup(e.sprite)
+        const dr = (dir ?? Direction.S) as Direction;
+        void loadSpriteGroup(sprite)
           .then(() => {
             tctx.save();
             tctx.scale(2, 2);
-            drawSprite(tctx, e.sprite, e.dir as Direction, 0, 12, 27);
+            drawSprite(tctx, sprite, dr, 0, 12, 27);
             tctx.restore();
           })
           .catch(() => {});

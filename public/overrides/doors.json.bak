@@ -28,6 +28,15 @@
       "worldX": 8176,
       "worldY": 112
     },
+    "1424,500": {
+      "destX": 2752,
+      "destY": 8608,
+      "destDir": 3,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 1424,
+      "worldY": 504
+    },
     "7224,396": {
       "destX": 2016,
       "destY": 1712,
@@ -344,6 +353,24 @@
       "sfx": "door-open",
       "worldX": 1152,
       "worldY": 1688
+    },
+    "1584,1684": {
+      "destX": 7816,
+      "destY": 688,
+      "destDir": 0,
+      "style": 4,
+      "sfx": "door-open",
+      "worldX": 1576,
+      "worldY": 1680
+    },
+    "1600,1684": {
+      "destX": 7816,
+      "destY": 688,
+      "destDir": 0,
+      "style": 4,
+      "sfx": "door-open",
+      "worldX": 1592,
+      "worldY": 1672
     },
     "7352,1644": {
       "destX": 7888,

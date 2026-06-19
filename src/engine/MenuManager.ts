@@ -53,7 +53,6 @@ import {
   ROWS,
   HOTBAR_SLOTS,
   MENU_ITEMS,
-  PSI_ABILITIES,
   psiCost,
   psiTarget,
   PSI_TAG,
@@ -65,8 +64,11 @@ import {
   equipRowAt,
   equipSelectLayout,
   equipSelectRowAt,
-  psiLayout,
-  psiRowAt,
+  psiTabAt,
+  psiFamilyLayout,
+  psiFamilyRowAt,
+  psiTierLayout,
+  psiTierRowAt,
   shopListItems,
   shopListLayout,
   shopRowAt,
@@ -87,6 +89,7 @@ import {
   renderHotbar,
   renderDragGhost,
 } from './menu/render';
+import { PSI_TABS, familiesInTab, PsiMove } from './PsiTuning';
 export type { MenuHooks }; // public API: Game wires the equipment hooks
 
 // Hooks into the local player's equipment, wired by Game (MenuManager has no
@@ -171,10 +174,39 @@ function persistHotbar(): void {
   sendHotbar([...hotbar]);
 }
 
-/** Restore the saved hotbar from the server (welcome). Fixed length; unknown
- *  ids are kept as-is (the server already validated them on save). */
+// PSI ids became tier-suffixed catalog ids (e.g. 'fire' → 'psi_fire_alpha') when
+// the full canon roster landed. Map any legacy bare-family id saved in an old
+// hotbar to its α-tier equivalent so existing characters keep their assignment.
+const LEGACY_PSI_IDS: Record<string, string> = {
+  lifeup: 'lifeup_alpha',
+  healing: 'healing_alpha',
+  fire: 'psi_fire_alpha',
+  freeze: 'psi_freeze_alpha',
+  thunder: 'psi_thunder_alpha',
+  flash: 'psi_flash_alpha',
+  starstorm: 'psi_starstorm_alpha',
+  rockin: 'psi_alpha',
+  hypnosis: 'hypnosis_alpha',
+  paralysis: 'paralysis_alpha',
+  brainshock: 'brainshock_alpha',
+  shield: 'shield_alpha',
+  psishield: 'psi_shield_alpha',
+  offenseup: 'offense_up_alpha',
+  defensedown: 'defense_down_alpha',
+  magnet: 'psi_magnet_alpha',
+  teleport: 'teleport_alpha',
+};
+function migrateHotbarId(id: string | null): string | null {
+  if (!id || !isPsiEntry(id)) return id;
+  const bare = id.slice(PSI_TAG.length);
+  const mapped = LEGACY_PSI_IDS[bare];
+  return mapped ? PSI_TAG + mapped : id;
+}
+
+/** Restore the saved hotbar from the server (welcome). Fixed length; legacy PSI
+ *  ids are migrated to the canon catalog ids; other unknown ids are kept as-is. */
 export function setHotbar(slots: (string | null)[]): void {
-  for (let i = 0; i < HOTBAR_SLOTS; i++) hotbar[i] = slots[i] ?? null;
+  for (let i = 0; i < HOTBAR_SLOTS; i++) hotbar[i] = migrateHotbarId(slots[i] ?? null);
 }
 
 // NOTE: a depleted consumable slot is intentionally KEPT (not cleared) — it
@@ -450,10 +482,28 @@ function usePsi(abilityId: string): void {
   // player_stats (PP decrease) so the bars redraw.
   sendUsePsi(abilityId);
   playEventSfx('player-try-psi');
-  // Lifeup layers its heal chime on top of the generic PSI cast sound.
-  if (abilityId === 'lifeup') playEventSfx('heal');
+  // Lifeup layers its heal chime on top of the generic PSI cast sound (any tier).
+  if (abilityId.startsWith('lifeup')) playEventSfx('heal');
   // The cast ANIMATION is server-driven (psi_cast → onPsiCast), so everyone —
   // including us — sees it at the authoritative caster/target positions.
+}
+
+/** The move currently highlighted in the PSI menu: the selected tier when the
+ *  tier popup is open, else the highlighted family's first (α) tier. */
+function currentPsiMove(): PsiMove | null {
+  const fam = familiesInTab(PSI_TABS[psiTab])[psiFamilyCursor];
+  if (!fam) return null;
+  return psiTierOpen ? (fam.moves[psiTierCursor] ?? null) : fam.moves[0];
+}
+
+/** Assign a PSI move to a hotbar slot (tagged), persist, and confirm. Shared by
+ *  the number-key and drag-to-slot equip paths in the PSI menu. */
+function equipPsiToSlot(move: PsiMove, slot: number): void {
+  if (slot < 0 || slot >= HOTBAR_SLOTS) return;
+  hotbar[slot] = PSI_TAG + move.id;
+  persistHotbar();
+  hooks?.notify?.(`${move.name} → slot ${slot + 1}`);
+  playEventSfx('cursor-horizontal');
 }
 
 /** Trigger a hotbar slot. Weapon → swap to / equip it; consumable → use it
@@ -521,9 +571,17 @@ function updateHotbarDrag(): void {
       const i = goodsRowAt(press.x, press.y);
       if (i >= 0 && items[i]) drag = { id: items[i].id };
     } else if (menuState === 'psi') {
-      // Drag a PSI move onto a hotbar box to quick-cast it with 1/2.
-      const i = psiRowAt(press.x, press.y, psiCursor);
-      if (i >= 0 && PSI_ABILITIES[i]) drag = { id: PSI_TAG + PSI_ABILITIES[i].id };
+      // Drag a PSI move onto a hotbar box to assign it (cast later with 1-6). The
+      // source is the selected tier when the popup is open, else the family's α.
+      if (psiTierOpen) {
+        const fam = familiesInTab(PSI_TABS[psiTab])[psiFamilyCursor];
+        const i = psiTierRowAt(PSI_TABS[psiTab], psiFamilyCursor, press.x, press.y, psiTierCursor);
+        if (fam && fam.moves[i]) drag = { id: PSI_TAG + fam.moves[i].id };
+      } else {
+        const fams = familiesInTab(PSI_TABS[psiTab]);
+        const i = psiFamilyRowAt(PSI_TABS[psiTab], press.x, press.y, psiFamilyCursor);
+        if (i >= 0 && fams[i]) drag = { id: PSI_TAG + fams[i].moves[0].id };
+      }
     }
   }
   const rel = consumePointerRelease();
@@ -545,10 +603,21 @@ function updateHotbarDrag(): void {
       const items = getGoods();
       if (i >= 0 && items[i] && items[i].id === drag.id) useOrEquipGood(items[i].id);
     } else if (menuState === 'psi') {
-      // Released back on the same PSI row (not a box): treat as a click → cast.
-      const i = psiRowAt(rel.x, rel.y, psiCursor);
-      if (i >= 0 && PSI_ABILITIES[i] && PSI_TAG + PSI_ABILITIES[i].id === drag.id)
-        usePsi(PSI_ABILITIES[i].id);
+      if (psiTierOpen) {
+        // Released on the same tier row (not a box): treat as a click → cast.
+        const fam = familiesInTab(PSI_TABS[psiTab])[psiFamilyCursor];
+        const i = psiTierRowAt(PSI_TABS[psiTab], psiFamilyCursor, rel.x, rel.y, psiTierCursor);
+        if (fam && fam.moves[i] && PSI_TAG + fam.moves[i].id === drag.id) usePsi(fam.moves[i].id);
+      } else {
+        // Released on a family row: open its tier popup (mouse equivalent of Enter).
+        const i = psiFamilyRowAt(PSI_TABS[psiTab], rel.x, rel.y, psiFamilyCursor);
+        if (i >= 0) {
+          psiFamilyCursor = i;
+          psiTierOpen = true;
+          psiTierCursor = 0;
+          playEventSfx('cursor-vertical');
+        }
+      }
     }
     drag = null;
   }
@@ -585,7 +654,11 @@ function hotbarActive(): boolean {
 
 let cursorIndex = 0;
 let goodsCursor = 0;
-let psiCursor = 0;
+// PSI menu (canon-style): active tab → family in that tab → tier popup.
+let psiTab = 0; // index into PSI_TABS
+let psiFamilyCursor = 0; // family row within the active tab
+let psiTierOpen = false; // is the α/β/γ/Ω/Σ popup open for the selected family?
+let psiTierCursor = 0; // tier row within the opened family
 let message = '';
 let shopStore = -1; // store id of the clerk being talked to
 let shopRootCursor = 0; // 0 = Buy, 1 = Sell
@@ -637,7 +710,15 @@ export function updateMenu(): void {
   // assignment is in updateHotbarDrag. See hotbarActive / HOTBAR_BLOCKED.
   if (hotbarActive()) {
     for (let n = 0; n < HOTBAR_SLOTS; n++) {
-      if (justPressed(`Digit${n + 1}`)) activateSlot(n);
+      if (!justPressed(`Digit${n + 1}`)) continue;
+      // In the PSI menu the number keys EQUIP the highlighted move to that slot
+      // (you opened PSI to assign one); everywhere else they trigger the slot.
+      if (menuState === 'psi') {
+        const m = currentPsiMove();
+        if (m) equipPsiToSlot(m, n);
+      } else {
+        activateSlot(n);
+      }
     }
     updateHotbarDrag();
   }
@@ -758,29 +839,83 @@ export function updateMenu(): void {
       }
     }
   } else if (menuState === 'psi') {
+    // Canon-style: a tab bar (←/→) → a family list (↑/↓) → a tier popup (↑/↓).
+    // Enter opens a family / casts the chosen tier; the number keys 1-6 equip the
+    // highlighted move to a hotbar slot (handled in the global hotbar block). Mouse
+    // open/cast/equip is in updateHotbarDrag so a drag-to-slot never also casts.
     if (toggle || justPressed('Backspace')) {
-      menuState = 'command'; // cancel back to the command grid
-    } else {
-      const prevPsi = psiCursor;
-      if (justPressed('ArrowUp') || justPressed('KeyW'))
-        psiCursor = (psiCursor + PSI_ABILITIES.length - 1) % PSI_ABILITIES.length;
-      if (justPressed('ArrowDown') || justPressed('KeyS'))
-        psiCursor = (psiCursor + 1) % PSI_ABILITIES.length;
-      if (psiCursor !== prevPsi) playEventSfx('cursor-vertical');
-
-      const sc = applyListScroll(psiLayout(psiCursor), PSI_ABILITIES.length, psiCursor);
-      psiCursor = sc.cursor;
-
+      if (psiTierOpen) {
+        psiTierOpen = false; // close the tier popup, back to the family list
+        playEventSfx('cursor-vertical');
+      } else {
+        menuState = 'command'; // cancel back to the command grid
+      }
+    } else if (!psiTierOpen) {
+      // ←/→ switch tab (resets the family cursor).
+      const prevTab = psiTab;
+      if (justPressed('ArrowLeft') || justPressed('KeyA'))
+        psiTab = (psiTab + PSI_TABS.length - 1) % PSI_TABS.length;
+      if (justPressed('ArrowRight') || justPressed('KeyD')) psiTab = (psiTab + 1) % PSI_TABS.length;
       const p = getPointer();
-      const hovered = sc.active || !mouseMoved ? -1 : psiRowAt(p.x, p.y, psiCursor);
-      if (hovered >= 0) psiCursor = hovered;
+      if (click) {
+        const ti = psiTabAt(click.x, click.y);
+        if (ti >= 0) psiTab = ti;
+      }
+      if (psiTab !== prevTab) {
+        psiFamilyCursor = 0;
+        psiTierCursor = 0;
+        playEventSfx('cursor-horizontal');
+      }
 
-      // Cast via keyboard confirm only. Mouse cast (and drag-to-hotbar) is
-      // handled by updateHotbarDrag on pointer RELEASE, so dropping a PSI move
-      // onto a slot assigns it without also casting it.
-      const use = confirm ? psiCursor : -1;
-      if (use >= 0 && PSI_ABILITIES[use]) {
-        usePsi(PSI_ABILITIES[use].id);
+      const fams = familiesInTab(PSI_TABS[psiTab]);
+      const prevFam = psiFamilyCursor;
+      if (justPressed('ArrowUp') || justPressed('KeyW'))
+        psiFamilyCursor = (psiFamilyCursor + fams.length - 1) % fams.length;
+      if (justPressed('ArrowDown') || justPressed('KeyS'))
+        psiFamilyCursor = (psiFamilyCursor + 1) % fams.length;
+      if (psiFamilyCursor !== prevFam) playEventSfx('cursor-vertical');
+
+      const lay = psiFamilyLayout(PSI_TABS[psiTab], psiFamilyCursor);
+      const sc = applyListScroll(lay, fams.length, psiFamilyCursor);
+      psiFamilyCursor = sc.cursor;
+      const hovered =
+        lay.scroll || sc.active || !mouseMoved
+          ? -1
+          : psiFamilyRowAt(PSI_TABS[psiTab], p.x, p.y, psiFamilyCursor);
+      if (hovered >= 0) psiFamilyCursor = hovered;
+
+      // Enter opens the highlighted family's tier popup. (A mouse click on a
+      // family opens it via updateHotbarDrag's release handler.)
+      if (confirm && fams[psiFamilyCursor]) {
+        psiTierOpen = true;
+        psiTierCursor = 0;
+        playEventSfx('cursor-vertical');
+      }
+    } else {
+      const fam = familiesInTab(PSI_TABS[psiTab])[psiFamilyCursor];
+      if (!fam) {
+        psiTierOpen = false;
+      } else {
+        const prevTier = psiTierCursor;
+        if (justPressed('ArrowUp') || justPressed('KeyW'))
+          psiTierCursor = (psiTierCursor + fam.moves.length - 1) % fam.moves.length;
+        if (justPressed('ArrowDown') || justPressed('KeyS'))
+          psiTierCursor = (psiTierCursor + 1) % fam.moves.length;
+        if (psiTierCursor !== prevTier) playEventSfx('cursor-vertical');
+
+        const lay = psiTierLayout(PSI_TABS[psiTab], psiFamilyCursor, psiTierCursor);
+        const sc = applyListScroll(lay, fam.moves.length, psiTierCursor);
+        psiTierCursor = sc.cursor;
+        const p = getPointer();
+        const hovered =
+          lay.scroll || sc.active || !mouseMoved
+            ? -1
+            : psiTierRowAt(PSI_TABS[psiTab], psiFamilyCursor, p.x, p.y, psiTierCursor);
+        if (hovered >= 0) psiTierCursor = hovered;
+
+        // Cast via keyboard confirm. Mouse cast (release on the row) + drag-to-slot
+        // equip are in updateHotbarDrag.
+        if (confirm && fam.moves[psiTierCursor]) usePsi(fam.moves[psiTierCursor].id);
       }
     }
   } else if (menuState === 'equip') {
@@ -819,11 +954,16 @@ export function updateMenu(): void {
       if (equipSelectCursor !== prevSel) playEventSfx('cursor-vertical');
       if (equipSelectCursor >= n) equipSelectCursor = n - 1;
 
-      const sc = applyListScroll(equipSelectLayout(n, equipSelectCursor), n, equipSelectCursor);
+      const lay = equipSelectLayout(n, equipSelectCursor);
+      const sc = applyListScroll(lay, n, equipSelectCursor);
       equipSelectCursor = sc.cursor;
 
       const p = getPointer();
-      const hov = sc.active || !mouseMoved ? -1 : equipSelectRowAt(p.x, p.y, n, equipSelectCursor);
+      // Hover only selects when the list fits; a scrolling list scrolls via the bar.
+      const hov =
+        lay.scroll || sc.active || !mouseMoved
+          ? -1
+          : equipSelectRowAt(p.x, p.y, n, equipSelectCursor);
       if (hov >= 0) equipSelectCursor = hov;
       if (confirm) activateEquipSelect(equipSelectCursor);
       if (click) {
@@ -866,16 +1006,16 @@ export function updateMenu(): void {
         shopBuyCursor = (shopBuyCursor + 1) % items.length;
       if (shopBuyCursor !== prevShopBuy) playEventSfx('cursor-vertical');
 
-      const sc = applyListScroll(
-        shopListLayout('buy', shopStore, shopBuyCursor),
-        items.length,
-        shopBuyCursor
-      );
+      const lay = shopListLayout('buy', shopStore, shopBuyCursor);
+      const sc = applyListScroll(lay, items.length, shopBuyCursor);
       shopBuyCursor = sc.cursor;
 
       const p = getPointer();
+      // Hover only selects when the list fits; a scrolling list scrolls via the bar.
       const hovered =
-        sc.active || !mouseMoved ? -1 : shopRowAt('buy', shopStore, p.x, p.y, shopBuyCursor);
+        lay.scroll || sc.active || !mouseMoved
+          ? -1
+          : shopRowAt('buy', shopStore, p.x, p.y, shopBuyCursor);
       if (hovered >= 0) shopBuyCursor = hovered;
       let pick = confirm ? shopBuyCursor : -1;
       if (click) {
@@ -918,16 +1058,16 @@ export function updateMenu(): void {
         shopSellCursor = (shopSellCursor + 1) % items.length;
       if (shopSellCursor !== prevShopSell) playEventSfx('cursor-vertical');
 
-      const sc = applyListScroll(
-        shopListLayout('sell', shopStore, shopSellCursor),
-        items.length,
-        shopSellCursor
-      );
+      const lay = shopListLayout('sell', shopStore, shopSellCursor);
+      const sc = applyListScroll(lay, items.length, shopSellCursor);
       shopSellCursor = sc.cursor;
 
       const p = getPointer();
+      // Hover only selects when the list fits; a scrolling list scrolls via the bar.
       const hovered =
-        sc.active || !mouseMoved ? -1 : shopRowAt('sell', shopStore, p.x, p.y, shopSellCursor);
+        lay.scroll || sc.active || !mouseMoved
+          ? -1
+          : shopRowAt('sell', shopStore, p.x, p.y, shopSellCursor);
       if (hovered >= 0) shopSellCursor = hovered;
       let pick = confirm ? shopSellCursor : -1;
       if (click) {
@@ -1106,7 +1246,10 @@ function buildView(): MenuView {
     state: menuState,
     cursorIndex,
     goodsCursor,
-    psiCursor,
+    psiTab,
+    psiFamilyCursor,
+    psiTierOpen,
+    psiTierCursor,
     equipCursor,
     shopRootCursor,
     shopBuyCursor,
@@ -1332,7 +1475,10 @@ function onSelect(action: string): void {
     return;
   }
   if (action === 'psi') {
-    psiCursor = 0;
+    psiTab = 0;
+    psiFamilyCursor = 0;
+    psiTierOpen = false;
+    psiTierCursor = 0;
     menuState = 'psi';
     return;
   }

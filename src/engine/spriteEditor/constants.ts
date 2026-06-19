@@ -353,6 +353,8 @@ export interface SpriteEditorCallbacks {
   onCancel?: () => void;
   /** Open straight into Item mode editing this catalog item (Item Manager handoff). */
   focusItem?: string;
+  /** Open straight into PSI mode editing this ability's animation (PSI Manager handoff). */
+  focusPsi?: string;
   /** Open in Character mode on this sprite group id (Entity Manager handoff). */
   focusChar?: number;
 }

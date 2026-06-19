@@ -537,6 +537,28 @@ correct regions in OUR overrides layer.
 
 ---
 
+## 8b. Combat (feel) — DONE (`src/editor/tools/CombatTool.ts`, READY)
+
+Live dials for the **feel of floating combat numbers** — the cosmetic layer only;
+combat MATH (damage, crit/dodge rolls, knockback) stays server-authoritative
+(`npcSim.js`) and is NOT touched here.
+
+- [x] Sliders for the number-juice knobs: **size** (magnitude-scale growth curve +
+      cap — bigger hits pop bigger), **motion** (pop-up speed, gravity, horizontal
+      spread, spawn jitter, lifetime, fade), and the **crit burst** (start/climax
+      scale + life). Every change pushes live via `CombatJuice.setCombatJuice()`
+- [x] **Color pickers** for each popup kind (damage, your-hurt, heal, crit, miss)
+      plus an optional **big-hit color ramp** (toggle + damage threshold + target
+      color): a damage number ramps toward the hot color as it grows
+- [x] **Test buttons** fire sample popups (hit spread, crit, your-hurt, miss) at
+      the editor camera center so you tune without fighting; **Reset** restores
+      built-in defaults
+- [x] Saves to `public/overrides/combat_juice.json` (`{version, juice:{…}}` — OUR
+      data, numbers/colors only). `loadCombatJuice()` runs at startup; `Emitter.ts`
+      reads the live config every spawn/frame
+
+---
+
 ## Save-Back Channel
 
 Shared dev-only persistence used by all tools. **Implemented as a Vite dev-server

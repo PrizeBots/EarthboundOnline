@@ -2,7 +2,7 @@ import { Camera } from './Camera';
 import { Player } from './Player';
 import { NPC } from './NPC';
 import { getTileAt, getSectorForTile } from './MapManager';
-import { colBoxFor } from './NPCManager';
+import { colBoxFor, carColBoxFor } from './NPCManager';
 import { drawTile, drawForegroundTile, hasForegroundTile } from './TilesetManager';
 import { isComposite, drawComposite, drawCompositeFg } from './CompositeTiles';
 import { drawSprite, getSpriteGroupMeta, SpritePart } from './SpriteManager';
@@ -294,7 +294,9 @@ function drawDownedCountdown(
   const x = Math.round(centerX - tw / 2);
   const y = Math.round(feetY - spriteH - 7);
   ctx.fillStyle = '#101018cc';
-  ctx.fillRect(x - 2, y - 1, Math.ceil(tw) + 4, 10);
+  ctx.beginPath();
+  ctx.roundRect(x - 2, y - 1, Math.ceil(tw) + 4, 10, 3);
+  ctx.fill();
   ctx.save();
   ctx.scale(0.5, 0.5);
   drawText(ctx, text, x * 2, y * 2 + 1, 1, 1);
@@ -909,6 +911,15 @@ export class Renderer {
       if (npc.kind === 'person' || npc.kind === 'enemy') {
         hurt(npc.x, npc.y);
         col(npc.spriteGroupId, npc.x, npc.y);
+      } else if (npc.kind === 'car') {
+        // A vehicle's whole-body box is BOTH its collision box and its hurtbox
+        // (server actorBox), so one rect serves both — drawn cyan since it's the
+        // box a swing must overlap to wreck it.
+        const b = carColBoxFor(npc.spriteGroupId, npc.direction, npc.x, npc.y);
+        if (b) {
+          ctx.strokeStyle = 'rgba(0,224,255,0.9)'; // cyan = hurt/collision
+          ctx.strokeRect(Math.round(b[0]) - camX + 0.5, Math.round(b[1]) - camY + 0.5, b[2], b[3]);
+        }
       }
     }
 

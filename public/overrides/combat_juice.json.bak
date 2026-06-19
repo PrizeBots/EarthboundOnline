@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "juice": {
+    "numScaleMin": 0.8,
+    "numScaleMax": 1.8,
+    "numScaleCap": 9999,
+    "lifetime": 850,
+    "fade": 300,
+    "gravity": 480,
+    "launchVy": 130,
+    "launchVx": 30,
+    "spawnJitter": 5,
+    "critScaleFrom": 0.3,
+    "critScaleTo": 2,
+    "critLife": 1100,
+    "bigHitRamp": false,
+    "bigHitThreshold": 99,
+    "colDamage": "#ffffff",
+    "colOwnDamage": "#ff3b3b",
+    "colHeal": "#5cff5c",
+    "colCrit": "#ff4d4d",
+    "colMiss": "#b8c0cc",
+    "colBigHit": "#c800ff"
+  }
+}

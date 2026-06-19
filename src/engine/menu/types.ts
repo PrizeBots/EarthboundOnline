@@ -66,7 +66,11 @@ export interface MenuView {
   state: MenuName;
   cursorIndex: number;
   goodsCursor: number;
-  psiCursor: number;
+  /** PSI menu: active tab (0..3), family row in that tab, and the tier popup. */
+  psiTab: number;
+  psiFamilyCursor: number;
+  psiTierOpen: boolean;
+  psiTierCursor: number;
   equipCursor: number;
   shopRootCursor: number;
   shopBuyCursor: number;

@@ -7,10 +7,13 @@ import { entityManagerTool } from './tools/EntityManagerTool';
 import { trafficEditorTool } from './tools/TrafficEditorTool';
 import { dialogueTool } from './tools/DialogueTool';
 import { itemManagerTool } from './tools/ItemManagerTool';
+import { psiManagerTool } from './tools/PsiManagerTool';
 import { giftManagerTool } from './tools/GiftManagerTool';
 import { sourceAssetsTool } from './tools/SourceAssetsTool';
 import { soundTool } from './tools/SoundTool';
+import { combatTool } from './tools/CombatTool';
 import { roomBuilderTool } from './tools/RoomBuilderTool';
+import { eventManagerTool } from './tools/EventManagerTool';
 import { registerEditorTool, registerSaveHandler } from './registry';
 import { saveOverride } from './saveOverride';
 import { getNameOverrides } from '../engine/SpriteNames';
@@ -41,10 +44,13 @@ export function initEditorTools(context: EditorContext): EditorHooks {
   registerEditorTool(trafficEditorTool);
   registerEditorTool(dialogueTool);
   registerEditorTool(itemManagerTool);
+  registerEditorTool(psiManagerTool);
   registerEditorTool(giftManagerTool);
   registerEditorTool(sourceAssetsTool);
   registerEditorTool(soundTool);
+  registerEditorTool(combatTool);
   registerEditorTool(roomBuilderTool);
+  registerEditorTool(eventManagerTool);
   for (const t of PLANNED) registerEditorTool({ ...t, status: 'wip' });
 
   // Sprite Editor (engine/SpriteEditor.ts): a self-contained overlay that owns

@@ -13,37 +13,43 @@
  */
 
 import { drawText, measureText, getLineHeight } from './TextRenderer';
+import { getCombatJuice } from './CombatJuice';
 
+// The combat-number feel knobs (lifetime, gravity, launch speed, scaling, the
+// damage/heal/crit/miss colors) are LIVE-TUNABLE — they live in CombatJuice and
+// are read per spawn/frame via getCombatJuice() so the dev Combat tool can dial
+// them in real time. The constants below are STRUCTURAL (not combat-feel) and
+// stay fixed: XP/level-up/loot text isn't combat juice.
 const FONT = 4; // small 8px battle font (matches EB damage text)
-const LIFETIME = 850; // ms a popup lives before vanishing
-const FADE = 300; // ms of fade-out at the end of life
-const GRAVITY = 480; // px/s^2 downward pull on the arc
-const LAUNCH_VY = 130; // px/s initial upward speed
-const LAUNCH_VX = 30; // px/s max random horizontal drift (±)
 const FLOAT_RISE = 22; // px/s straight-up drift for XP / level-up text
 const SPAWN_RISE = 18; // px above the feet the number pops from
-const SPAWN_JITTER = 5; // px random x offset so stacked hits don't overlap
 const BURST_RISE = 26; // px/s upward drift for the SMAAAASH! burst
-const BURST_SCALE_FROM = 0.7; // burst starts small...
-const BURST_SCALE_TO = 2.0; // ...and climaxes large right as it fades out
 const BURST_HOLD = 0.55; // fraction of life fully opaque before the climax fade
 const LEVELUP_SCALE = 1.5; // LEVEL UP! renders bigger than other popups
 
-const DAMAGE_COLOR = '#ffffff';
-const OWN_DAMAGE_COLOR = '#ff3b3b'; // red — the LOCAL player's OWN damage only
-const HEAL_COLOR = '#5cff5c';
 const XP_COLOR = '#7fd0ff'; // cyan, matches the EB "you won the battle" EXP text
 const LEVELUP_COLOR = '#ffd23d'; // gold
-const CRIT_COLOR = '#ff4d4d'; // red — SMAAAASH! crit
-const MISS_COLOR = '#b8c0cc'; // dim slate — a whiffed swing
 const SHADOW_COLOR = '#000000';
+// 8-way unit offsets for the black outline ring drawn under every popup (scaled
+// by the popup's render scale so big numbers get a proportional outline).
+const OUTLINE_OFFSETS: readonly [number, number][] = [
+  [-1, -1],
+  [0, -1],
+  [1, -1],
+  [-1, 0],
+  [1, 0],
+  [-1, 1],
+  [0, 1],
+  [1, 1],
+];
 
 const MAX_POPUPS = 64; // hard cap; oldest dropped past this
 
-// arc   = ballistic launch + gravity + late fade (damage/heal/miss)
+// arc   = ballistic launch + gravity + late fade (damage/miss)
 // float = drift straight up, centered, fade over life (XP / loot / level-up)
 // burst = drift up while scaling up, fades away at its scale climax (SMAAAASH!)
-type PopupStyle = 'arc' | 'float' | 'burst';
+// heal  = drift up while swaying on a sine curve, fade over life (heal numbers)
+type PopupStyle = 'arc' | 'float' | 'burst' | 'heal';
 
 interface Popup {
   text: string;
@@ -69,21 +75,49 @@ function now(): number {
   return performance.now();
 }
 
-/** Pop a white damage number off an entity at world (x, y = feet). */
+// Bigger hits/heals pop bigger numbers — size ramps from numScaleMin (1 damage)
+// to numScaleMax (numScaleCap damage, the FF-style 9999 ceiling). The map is
+// LOGARITHMIC so the low-to-mid range — where real EB-scale damage lives —
+// still varies visibly instead of pinning to min against the huge ceiling.
+// (log: 1→min, cap→max, and e.g. sqrt(cap)≈half-scale.) All three are tunable.
+function magnitudeScale(amount: number): number {
+  const j = getCombatJuice();
+  const cap = Math.max(2, j.numScaleCap); // >1 so log(cap) is a safe, nonzero divisor
+  const v = Math.min(cap, Math.max(1, amount));
+  const t = Math.log(v) / Math.log(cap); // 0 at 1 damage, 1 at the cap
+  return j.numScaleMin + (j.numScaleMax - j.numScaleMin) * t;
+}
+
+/** Pop a damage number off an entity at world (x, y = feet). The heaviest hits
+ *  ramp toward the bigHit color when that's enabled in CombatJuice. */
 export function spawnDamageNumber(x: number, y: number, amount: number): void {
-  spawn(String(Math.round(amount)), x, y, DAMAGE_COLOR);
+  const j = getCombatJuice();
+  let color = j.colDamage;
+  if (j.bigHitRamp && j.bigHitThreshold > 0 && amount > j.bigHitThreshold) {
+    // Ramp from the normal color at the threshold to full bigHit color at 2×.
+    const t = Math.min(1, (amount - j.bigHitThreshold) / j.bigHitThreshold);
+    color = lerpHex(j.colDamage, j.colBigHit, t);
+  }
+  spawn(String(Math.round(amount)), x, y, color, { scale: magnitudeScale(amount) });
 }
 
 /** Pop a RED damage number for the LOCAL player getting hit. Each client renders
  *  its own popups, so only that player sees their own damage in red; everyone
  *  else's hits stay white (spawnDamageNumber). */
 export function spawnOwnDamageNumber(x: number, y: number, amount: number): void {
-  spawn(String(Math.round(amount)), x, y, OWN_DAMAGE_COLOR);
+  spawn(String(Math.round(amount)), x, y, getCombatJuice().colOwnDamage, {
+    scale: magnitudeScale(amount),
+  });
 }
 
-/** Pop a green heal number off an entity at world (x, y = feet). */
+/** Pop a green heal number off an entity — drifts up while swaying on a sine
+ *  curve and fades, so healing reads as soothing vs the punchy damage arc. */
 export function spawnHealNumber(x: number, y: number, amount: number): void {
-  spawn(`+${Math.round(amount)}`, x, y, HEAL_COLOR);
+  spawn(`+${Math.round(amount)}`, x, y, getCombatJuice().colHeal, {
+    style: 'heal',
+    life: getCombatJuice().healLife,
+    scale: magnitudeScale(amount),
+  });
 }
 
 /** Pop a cyan "+N XP" that floats straight up off the player and fades. */
@@ -106,12 +140,16 @@ export function spawnLevelUp(x: number, y: number): void {
 /** Pop a red "SMAAAASH!" off a crit — centered, rises while scaling up, then
  *  fades away at its climax (no arc). */
 export function spawnCritText(x: number, y: number): void {
-  spawn('SMAAAASH!', x, y, CRIT_COLOR, { style: 'burst', riseExtra: 6, life: 1100 });
+  spawn('SMAAAASH!', x, y, getCombatJuice().colCrit, {
+    style: 'burst',
+    riseExtra: 6,
+    life: getCombatJuice().critLife,
+  });
 }
 
 /** Pop a dim "MISS" off a whiffed/dodged swing. */
 export function spawnMissText(x: number, y: number): void {
-  spawn('MISS', x, y, MISS_COLOR, { life: 750 });
+  spawn('MISS', x, y, getCombatJuice().colMiss, { life: 750 });
 }
 
 /** Pop a gold loot toast (e.g. "Found Cookie!", "Got $40") off the player. */
@@ -119,9 +157,11 @@ export function spawnLootText(x: number, y: number, label: string): void {
   spawn(label, x, y, LEVELUP_COLOR, { style: 'float', riseExtra: 10, life: 1300 });
 }
 
+const NOTICE_COLOR = '#ff4d4d'; // red — UI notice (not combat juice, stays fixed)
+
 /** Pop a red notice (e.g. "Your bag is full!") off the player. */
 export function spawnNoticeText(x: number, y: number, label: string): void {
-  spawn(label, x, y, CRIT_COLOR, { style: 'float', riseExtra: 10, life: 1300 });
+  spawn(label, x, y, NOTICE_COLOR, { style: 'float', riseExtra: 10, life: 1300 });
 }
 
 interface SpawnOpts {
@@ -133,15 +173,16 @@ interface SpawnOpts {
 }
 
 function spawn(text: string, x: number, y: number, color: string, opts: SpawnOpts = {}): void {
-  const { riseExtra = 0, style = 'arc', life = LIFETIME, scale = 1, top = false } = opts;
+  const j = getCombatJuice();
+  const { riseExtra = 0, style = 'arc', life = j.lifetime, scale = 1, top = false } = opts;
   const isArc = style === 'arc';
   popups.push({
     text,
     // Float/burst center straight above the entity (no jitter / drift) so the
     // text reads cleanly; arc scatters so stacked hits don't overlap.
-    x0: x + (isArc ? (Math.random() * 2 - 1) * SPAWN_JITTER : 0),
+    x0: x + (isArc ? (Math.random() * 2 - 1) * j.spawnJitter : 0),
     y0: y - SPAWN_RISE - riseExtra,
-    vx: isArc ? (Math.random() * 2 - 1) * LAUNCH_VX : 0,
+    vx: isArc ? (Math.random() * 2 - 1) * j.launchVx : 0,
     color,
     born: now(),
     style,
@@ -165,6 +206,24 @@ function easeOut(t: number): number {
   return 1 - (1 - t) * (1 - t);
 }
 
+/** Linear blend between two "#rrggbb" colors (t: 0 → a, 1 → b). Used for the
+ *  big-hit damage color ramp. Returns "#rrggbb"; falls back to `a` on bad input. */
+function lerpHex(a: string, b: string, t: number): string {
+  const pa = parseHex(a);
+  const pb = parseHex(b);
+  if (!pa || !pb) return a;
+  const k = Math.max(0, Math.min(1, t));
+  const mix = (i: number) => Math.round(pa[i] + (pb[i] - pa[i]) * k);
+  return `#${[mix(0), mix(1), mix(2)].map((n) => n.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function parseHex(s: string): [number, number, number] | null {
+  const m = /^#?([0-9a-f]{6})$/i.exec(s.trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
+}
+
 /** Draw all live popups in world space. Call inside the camera/zoom transform. */
 export function renderEmitters(
   ctx: CanvasRenderingContext2D,
@@ -172,6 +231,7 @@ export function renderEmitters(
 ): void {
   if (popups.length === 0) return;
   const t = now();
+  const j = getCombatJuice();
 
   // Two passes so `top` popups (level-up) always render above everything else,
   // regardless of spawn order.
@@ -191,18 +251,23 @@ export function renderEmitters(
         // it reaches its climax (held opaque, then a quick fade over the tail).
         worldY = p.y0 - BURST_RISE * ts;
         const e = easeOut(prog);
-        scale = p.scale * (BURST_SCALE_FROM + (BURST_SCALE_TO - BURST_SCALE_FROM) * e);
+        scale = p.scale * (j.critScaleFrom + (j.critScaleTo - j.critScaleFrom) * e);
         alpha = prog < BURST_HOLD ? 1 : Math.max(0, 1 - (prog - BURST_HOLD) / (1 - BURST_HOLD));
       } else if (p.style === 'float') {
         // XP / loot / level-up: drift straight up and fade over the lifetime.
         worldY = p.y0 - FLOAT_RISE * ts;
         alpha = Math.max(0, 1 - prog);
+      } else if (p.style === 'heal') {
+        // Heal: drift up while swaying side-to-side on a sine curve, fading out.
+        worldY = p.y0 - j.healRise * ts;
+        worldX = p.x0 + j.healWobbleAmp * Math.sin(2 * Math.PI * j.healWobbleHz * ts);
+        alpha = Math.max(0, 1 - prog);
       } else {
         // Ballistic arc: launch up, gravity pulls back down (y grows downward).
-        const yOff = -LAUNCH_VY * ts + 0.5 * GRAVITY * ts * ts;
+        const yOff = -j.launchVy * ts + 0.5 * j.gravity * ts * ts;
         worldX = p.x0 + p.vx * ts;
         worldY = p.y0 + yOff;
-        alpha = age > p.life - FADE ? Math.max(0, 1 - (age - (p.life - FADE)) / FADE) : 1;
+        alpha = age > p.life - j.fade ? Math.max(0, 1 - (age - (p.life - j.fade)) / j.fade) : 1;
       }
       if (alpha <= 0) continue;
 
@@ -213,7 +278,13 @@ export function renderEmitters(
       ctx.save();
       ctx.globalAlpha = alpha;
       ctx.imageSmoothingEnabled = false;
-      blitTinted(ctx, p.text, cx + scale, cy + scale, SHADOW_COLOR, scale); // drop shadow
+      // Black outline: lay the black silhouette down at every surrounding offset
+      // (8-way, 1px ring scaled with the number), then the colored fill on top —
+      // so the number reads against any background, not just below-right.
+      const o = scale;
+      for (const [dx, dy] of OUTLINE_OFFSETS) {
+        blitTinted(ctx, p.text, cx + dx * o, cy + dy * o, SHADOW_COLOR, scale);
+      }
       blitTinted(ctx, p.text, cx, cy, p.color, scale); // colored fill
       ctx.restore();
     }

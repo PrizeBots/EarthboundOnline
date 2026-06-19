@@ -245,7 +245,6 @@
     "205": "objects",
     "206": "vehicles",
     "207": "vehicles",
-    "208": "objects",
     "209": "objects",
     "210": "objects",
     "211": "objects",
@@ -500,6 +499,7 @@
     "460": "objects",
     "461": "enemies",
     "462": "objects",
-    "463": "objects"
+    "463": "objects",
+    "100000": "enemies"
   }
 }

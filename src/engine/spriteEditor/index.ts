@@ -98,6 +98,7 @@ export async function openSpriteEditor(callbacks: SpriteEditorCallbacks = {}): P
   }
   S.itemTab = S.itemEditId ? tabForItem(S.itemEditId) : (cats[0]?.id ?? 'custom');
   buildItemBuffer();
+  if (callbacks.focusPsi) S.psiEditId = callbacks.focusPsi; // PSI Manager handoff
   if (!S.psiEditId) S.psiEditId = listPsi()[0]?.id ?? '';
   buildPsiBuffer(); // seed the PSI frame buffers (Lifeup / first ability)
 
@@ -109,6 +110,10 @@ export async function openSpriteEditor(callbacks: SpriteEditorCallbacks = {}): P
     setEditMode('item');
     loadItemIntoBuffer(callbacks.focusItem);
     S.itemPicker?.setValue(callbacks.focusItem);
+  } else if (callbacks.focusPsi) {
+    // PSI Manager handoff: S.psiEditId was set above, so the picker + buffer are
+    // already on this move; just switch into PSI mode.
+    setEditMode('psi');
   } else if (callbacks.focusChar != null && Number.isInteger(callbacks.focusChar)) {
     // Entity Manager handoff: a custom group → Entity mode (paintable); a ROM
     // cast/vehicle group → Character mode.

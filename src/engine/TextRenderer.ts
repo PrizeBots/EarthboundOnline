@@ -14,6 +14,27 @@ const SHEET_COLS = 16;
 const SHEET_ROWS = 8;
 const ASCII_OFFSET = 0x20; // Grid position 0 = ASCII space
 
+// EarthBound's font stores 5 PSI tier symbols right AFTER 'Z' (grid 58) — at the
+// cells our plain-ASCII mapping would call [ \ ] ^ _ (grid 59–63). PSI names
+// carry the real Unicode Greek letters (e.g. "Lifeup α"), whose codepoints fall
+// outside the 0x20–0x9F grid and would otherwise be skipped (rendering blank, so
+// every tier looked identical). Remap those codepoints onto the bitmap cells so
+// the Greek tiers render in the EB font. KEEP IN SYNC with the font sheet order.
+const GREEK_GLYPH_GRID: Record<number, number> = {
+  0x3b1: 59, // α alpha
+  0x3b2: 60, // β beta
+  0x3b3: 61, // γ gamma
+  0x3a3: 62, // Σ sigma
+  0x3a9: 63, // Ω omega
+};
+
+/** Grid cell for a character code: a remapped Greek tier symbol, else the plain
+ *  ASCII offset. -1 if it falls outside the 128-cell sheet. */
+function gridIndexFor(code: number): number {
+  const g = GREEK_GLYPH_GRID[code] ?? code - ASCII_OFFSET;
+  return g >= 0 && g < 128 ? g : -1;
+}
+
 interface FontData {
   image: HTMLImageElement;
   widths: number[];
@@ -74,11 +95,11 @@ export function drawText(
 
   let cursorX = x;
   for (let i = 0; i < text.length; i++) {
-    const ascii = text.charCodeAt(i);
-    if (ascii === 0x0a) continue; // skip newline
+    const code = text.charCodeAt(i);
+    if (code === 0x0a) continue; // skip newline
 
-    const gridIndex = ascii - ASCII_OFFSET;
-    if (gridIndex < 0 || gridIndex >= 128) continue; // out of range
+    const gridIndex = gridIndexFor(code);
+    if (gridIndex < 0) continue; // out of range
 
     const col = gridIndex % SHEET_COLS;
     const row = Math.floor(gridIndex / SHEET_COLS);
@@ -104,8 +125,8 @@ export function measureText(text: string, fontId: number = 1, tracking: number =
 
   let w = 0;
   for (let i = 0; i < text.length; i++) {
-    const gridIndex = text.charCodeAt(i) - ASCII_OFFSET;
-    if (gridIndex < 0 || gridIndex >= 128) continue;
+    const gridIndex = gridIndexFor(text.charCodeAt(i));
+    if (gridIndex < 0) continue;
     const charWidth = font.widths[gridIndex] ?? font.cellW;
     if (charWidth === 255) continue;
     w += charWidth + tracking;

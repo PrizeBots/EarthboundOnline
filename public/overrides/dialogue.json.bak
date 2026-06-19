@@ -2,8 +2,15 @@
   "version": 1,
   "edits": {
     "14": [
-      "He, $name. Your Ness's friend?",
+      "Hello, $name. Your Ness's friend?",
       "You're welcome to stay as long as you'd like!"
+    ],
+    "146": [
+      ".....",
+      "...I'm Frank.  You are?",
+      "C'mon, can't you at least say your name?",
+      "\"Fail-proof\" Frank can't be beaten.",
+      "Puff, puff, puff\nAnd this is\n\"Frankystein Mark II.\""
     ],
     "900003": [
       "Hey, do you smell that?",
@@ -23,6 +30,12 @@
     ],
     "900008": [
       "Sure is nice out today!"
+    ],
+    "900009": [
+      "Ah, fresh air.."
+    ],
+    "900010": [
+      "These stinkin' punks think they run this town.."
     ]
   }
 }
