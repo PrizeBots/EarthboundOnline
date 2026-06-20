@@ -456,7 +456,13 @@ export function pasteClipboard(): void {
 }
 
 /** Flood-fill the contiguous same-color region at (px,py) with the current
- *  color, bounded by the frame (and clipped to the selection if one is set). */
+ *  color, bounded by the frame (and clipped to the selection if one is set).
+ *
+ *  Region membership is by PALETTE INDEX, not raw RGBA: this is an indexed
+ *  editor, so two pixels belong to the same region when they map to the same
+ *  palette color (or are both transparent). Matching raw bytes instead made
+ *  fills stop at any imported/anti-aliased pixel that was a hair off the
+ *  start color — the "fills only some pixels" bug. */
 function floodFill(px: number, py: number): void {
   const { ctx, w, h, ox, oy } = activeTarget();
   const bound = opRegion();
@@ -464,16 +470,18 @@ function floodFill(px: number, py: number): void {
   const img = ctx.getImageData(ox, oy, w, h);
   const data = img.data;
   const at = (x: number, y: number) => (y * w + x) * 4;
-  const si = at(px, py);
-  const tr = data[si],
-    tg = data[si + 1],
-    tb = data[si + 2],
-    ta = data[si + 3];
+  // The palette index a pixel reads as: alpha<128 => transparent (0).
+  const indexAt = (i: number) =>
+    data[i + 3] < 128 ? 0 : nearestActiveIndex(data[i], data[i + 1], data[i + 2]);
+  const target = indexAt(at(px, py));
   const [fr, fg, fb, fa] = fillRGBA(); // current color (transparent if clear index)
-  if (tr === fr && tg === fg && tb === fb && ta === fa) return; // already that color
+  const isFillExact = (i: number) =>
+    data[i] === fr && data[i + 1] === fg && data[i + 2] === fb && data[i + 3] === fa;
+  if (isFillExact(at(px, py))) return; // start pixel already the exact fill color
   pushUndo();
-  const match = (i: number) =>
-    data[i] === tr && data[i + 1] === tg && data[i + 2] === tb && data[i + 3] === ta;
+  // Match the start region by index, but skip pixels already written to the
+  // exact fill color so the scan terminates even when fill index == target.
+  const match = (i: number) => indexAt(i) === target && !isFillExact(i);
   const stack = [[px, py]];
   while (stack.length) {
     const [x, y] = stack.pop()!;

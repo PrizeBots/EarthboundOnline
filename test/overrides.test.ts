@@ -97,7 +97,21 @@ describe('public/overrides/enemy_spawns.json', () => {
 
   it('every spawner sprite has stats (catalog or authored), else is whitelisted', () => {
     const parsed = EnemySpawnsSchema.parse(data);
-    const statted = new Set([...Object.keys(parsed.entities).map(Number), ...catalogSprites]);
+    // The authored entity table now lives in entities.json; fall back to the
+    // legacy enemy_spawns.json `entities` for pre-split saves.
+    const authoredEntities = (() => {
+      try {
+        return (
+          readJson('public/overrides/entities.json') as { entities?: Record<string, unknown> }
+        ).entities;
+      } catch {
+        return parsed.entities;
+      }
+    })();
+    const statted = new Set([
+      ...Object.keys(authoredEntities ?? {}).map(Number),
+      ...catalogSprites,
+    ]);
     const missing = [...new Set(parsed.spawners.map((s) => s.sprite))].filter(
       (spr) => !statted.has(spr) && !KNOWN_UNMAPPED.has(spr)
     );

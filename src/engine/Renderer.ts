@@ -9,7 +9,12 @@ import { drawSprite, getSpriteGroupMeta, SpritePart } from './SpriteManager';
 import { getNameplate, getLevelPlate } from './NamePlate';
 import { drawHeldItem, isItemBehind } from './Items';
 import { renderDrops } from './DropManager';
-import { getSpritePriority, getPromotedMinitiles } from './Collision';
+import {
+  getSpritePriority,
+  getPromotedMinitiles,
+  getEffectiveRowAt,
+  FG_PROMOTE_BIT,
+} from './Collision';
 import { getStatus } from './StatusModal';
 import { drawText, measureText } from './TextRenderer';
 import {
@@ -33,6 +38,19 @@ export function setDebugBoxes(on: boolean): void {
 }
 export function debugBoxesOn(): boolean {
   return debugBoxes;
+}
+
+// --- Debug collision/priority layers (editor header "Collision" toggle) ----
+// Tints the live world with the SAME overlay the Collision & Priority Painter
+// draws (reads getEffectiveRowAt, so it shows exactly what the collision system
+// resolves): red = solid wall (0x80), blue = pri-lo (0x01), purple = pri-hi
+// (0x02), yellow = FG-promote/hide (0x40). Off by default.
+let debugCollision = false;
+export function setDebugCollision(on: boolean): void {
+  debugCollision = on;
+}
+export function debugCollisionOn(): boolean {
+  return debugCollision;
 }
 // Below this editor zoom the world is so shrunk that foreground tiles (canopies,
 // sign tops) are a pixel or two — invisible. Skip the two FG tile passes there
@@ -849,6 +867,11 @@ export class Renderer {
       this.ctx.restore();
     }
 
+    // Collision/priority tint under the hit boxes, so both overlays read clearly.
+    if (debugCollision) {
+      this.drawCollisionLayers(camX, camY, vw, vh, camera.zoom);
+    }
+
     if (debugBoxes) {
       this.drawDebugBoxes(camX, camY, player, remotePlayers, npcs);
     }
@@ -867,6 +890,61 @@ export class Renderer {
       const t = 1 - Math.max(0, Math.min(1, (player.downedUntil - now) / total));
       drawDownedVignette(this.ctx, cx, cy, t);
       drawGiveUpPrompt(this.ctx, player.giveUpProgress);
+    }
+  }
+
+  /**
+   * Draw the collision/priority overlay live over the world (editor header
+   * "Collision" toggle). Mirrors CollisionTool.drawOverlay exactly — same
+   * getEffectiveRowAt source and colors — so what you see in-game matches the
+   * Priority Painter and the collision system: red = solid (0x80), blue = pri-lo
+   * (0x01), purple = pri-hi (0x02), yellow = FG-promote/hide (0x40).
+   */
+  private drawCollisionLayers(camX: number, camY: number, vw: number, vh: number, zoom: number) {
+    const ctx = this.ctx;
+    const M = MINITILE_SIZE;
+    const t0x = Math.floor(camX / TILE_SIZE);
+    const t0y = Math.floor(camY / TILE_SIZE);
+    const t1x = Math.ceil((camX + vw) / TILE_SIZE);
+    const t1y = Math.ceil((camY + vh) / TILE_SIZE);
+    for (let ty = t0y; ty <= t1y; ty++) {
+      for (let tx = t0x; tx <= t1x; tx++) {
+        const row = getEffectiveRowAt(tx, ty);
+        if (!row) continue;
+        const baseX = tx * TILE_SIZE - camX;
+        const baseY = ty * TILE_SIZE - camY;
+        for (let i = 0; i < 16; i++) {
+          const b = row[i];
+          if (b === 0) continue;
+          const cx = baseX + (i % 4) * M;
+          const cy = baseY + (i >> 2) * M;
+          if (b & 0x80) {
+            ctx.fillStyle = 'rgba(255,60,60,0.5)'; // solid → red
+            ctx.fillRect(cx, cy, M, M);
+            // Dark cross-hatch so solid reads clearly over busy tile art.
+            ctx.strokeStyle = 'rgba(20,0,0,0.9)';
+            ctx.lineWidth = 1 / zoom;
+            ctx.beginPath();
+            ctx.moveTo(cx, cy);
+            ctx.lineTo(cx + M, cy + M);
+            ctx.moveTo(cx + M, cy);
+            ctx.lineTo(cx, cy + M);
+            ctx.stroke();
+          }
+          if (b & 0x01) {
+            ctx.fillStyle = 'rgba(70,130,255,0.55)'; // pri-lo → blue
+            ctx.fillRect(cx, cy, M, M);
+          }
+          if (b & 0x02) {
+            ctx.fillStyle = 'rgba(175,80,255,0.6)'; // pri-hi → purple
+            ctx.fillRect(cx, cy, M, M);
+          }
+          if (b & FG_PROMOTE_BIT) {
+            ctx.fillStyle = 'rgba(245,215,40,0.55)'; // behind/hide → yellow
+            ctx.fillRect(cx, cy, M, M);
+          }
+        }
+      }
     }
   }
 

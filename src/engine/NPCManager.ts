@@ -14,11 +14,11 @@ import { FLASH_MS } from './Juice';
 import { playEventSfxAt } from './SfxEvents';
 import { Direction, POSES } from '../types';
 import type { NpcUpdate } from './Network';
-import { createInterpolator } from './RemoteInterp';
+import { createInterpolator, applyPredOffset, injectPredOffset } from './RemoteInterp';
 import { checkPlayerCollision } from './Collision';
 import { loadShops, shopStoreForNpc } from './Shop';
 import { DEFAULT_ENTITY_STATS, DEFAULT_BEHAVIOR_RANGES } from './EntityStats';
-import type { EntityCol, EntityProps, EntityPropsOverride } from './EntityStats';
+import type { EntityCol, EntityProps, EntityPropsOverride, EntityDefs } from './EntityStats';
 import { hasFlag } from './PlayerFlags';
 import { loadGifts, tagGift, giftAdditions, GIFT_SPRITE_CLOSED } from './Gifts';
 
@@ -158,15 +158,19 @@ function resolveProps(
 ): { hp: number; col?: EntityCol; level: number } {
   const o = over ?? {};
   const ent = entityDefs.get(sprite);
-  const hp =
-    kind === 'enemy'
-      ? (o.hp ?? ent?.hp ?? enemyDefaultHp)
-      : kind === 'car'
-        ? (o.hp ?? VEHICLE_DEFAULT_HP)
-        : (o.hp ?? 0);
-  // Level cascade mirrors the server: enemies read the catalog/default, everyone
-  // else is level 1 unless the placement overrides it. (instance > catalog > def)
-  const level = kind === 'enemy' ? (o.level ?? ent?.level ?? DEFAULT_ENEMY_LEVEL) : (o.level ?? 1);
+  // UNIVERSAL cascade (mirrors server/npcSim.js resolveProps): the entity table
+  // feeds EVERY kind; the kind value below is just the floor default. Client only
+  // consumes hp (bar denominator), col, and level. (instance > entity > kind.)
+  const hpFloor =
+    kind === 'car'
+      ? VEHICLE_DEFAULT_HP
+      : kind === 'enemy'
+        ? enemyDefaultHp
+        : kind === 'person'
+          ? NPC_DEFAULT_HP
+          : 0; // props are inert
+  const hp = o.hp ?? ent?.hp ?? hpFloor;
+  const level = o.level ?? ent?.level ?? (kind === 'enemy' ? DEFAULT_ENEMY_LEVEL : 1);
   const col = o.col ?? ent?.col;
   return { hp, col, level };
 }
@@ -176,10 +180,18 @@ function resolveProps(
  *  already-merged entityDefs (ROM catalog + authored), so no extra loading. */
 export function entityBaseline(kind: NPCKind, sprite: number): EntityProps {
   const ent = entityDefs.get(sprite) ?? {};
-  const hp = kind === 'enemy' ? (ent.hp ?? enemyDefaultHp) : (ent.hp ?? DEFAULT_ENTITY_STATS.hp);
-  // Level: enemies read catalog/default; everyone else is level 1 (mirrors the
-  // server's resolveProps, so the placeholder matches the actual resolved level).
-  const level = kind === 'enemy' ? (ent.level ?? DEFAULT_ENTITY_STATS.level) : 1;
+  // Mirror resolveProps' floors so the placeholder matches the resolved value:
+  // the entity table wins, falling back to the per-kind floor.
+  const hpFloor =
+    kind === 'car'
+      ? VEHICLE_DEFAULT_HP
+      : kind === 'enemy'
+        ? enemyDefaultHp
+        : kind === 'person'
+          ? NPC_DEFAULT_HP
+          : 0;
+  const hp = ent.hp ?? hpFloor;
+  const level = ent.level ?? (kind === 'enemy' ? DEFAULT_ENEMY_LEVEL : 1);
   return { ...DEFAULT_ENTITY_STATS, ...DEFAULT_BEHAVIOR_RANGES, ...ent, hp, level };
 }
 
@@ -220,6 +232,9 @@ export interface CarTraffic {
 
 /** Default max HP for a traffic car with no authored hp — mirrors npcSim VEHICLE_HP. */
 const VEHICLE_DEFAULT_HP = 80;
+
+/** Default max HP for a townsperson with no authored hp — mirrors npcSim NPC_HP. */
+const NPC_DEFAULT_HP = 30;
 
 /** Vehicles that produce a live car slot — KEEP IN SYNC with npcSim.js.
  *  >=1 waypoint: a single point is a PARKED car; 2+ drive the route. */
@@ -301,6 +316,7 @@ export async function loadNPCs(): Promise<void> {
     overrides,
     text,
     dialogueOv,
+    entitiesOv,
     enemyOv,
     enemyBase,
     enemyCatalog,
@@ -314,6 +330,9 @@ export async function loadNPCs(): Promise<void> {
     loadJSON<Record<string, string[]>>('/assets/map/npc_text.json'),
     // Dialogue Editor override — authored pages win over the decoded text.
     loadJSON<DialogueOverrides>('/overrides/dialogue.json').catch(() => null),
+    // UNIVERSAL entity master table (Entity Manager → overrides/entities.json).
+    // Stats for EVERY kind. KEEP IN SYNC with server/npcSim.js loadEntities.
+    loadJSON<{ entities?: EntityDefs }>('/overrides/entities.json').catch(() => null),
     // Enemy spawners: editor-authored override (Enemy Spawner tool) wins over
     // the committed default. KEEP IN SYNC with server/npcSim.js — both build
     // the same pool (disabled spawners skipped) so wire ids stay aligned.
@@ -335,11 +354,13 @@ export async function loadNPCs(): Promise<void> {
   const enemyCfg = enemyOv ?? enemyBase;
   carColBoxes = colBoxes ?? {};
 
-  // Effective per-entity stats = ROM catalog (defaults) overlaid by authored
-  // entities. KEEP merge order IN SYNC with server/npcSim.js buildEntityDefs.
+  // Effective per-entity stats = ROM catalog (defaults) overlaid by the authored
+  // entity table. The table now lives in overrides/entities.json (Entity Manager);
+  // fall back to the legacy enemy_spawns.json `entities` for pre-split saves.
+  // KEEP merge order IN SYNC with server/npcSim.js buildEntityDefs.
   entityDefs.clear();
   const cat = enemyCatalog?.bySprite ?? {};
-  const authored = enemyCfg.entities ?? {};
+  const authored = entitiesOv?.entities ?? enemyCfg.entities ?? {};
   for (const sprite of new Set([...Object.keys(cat), ...Object.keys(authored)])) {
     entityDefs.set(Number(sprite), { ...cat[sprite], ...authored[sprite] });
   }
@@ -595,18 +616,9 @@ export function interpolateNpcs(): void {
     const npc = npcsById[Number(key)];
     if (!npc || npc.dead) continue;
     npcInterp.interpolate(key, npc); // authoritative (delayed) position → npc.x/y
-    // Layer the client-predicted push lead on top, then bleed it off so the
-    // authoritative stream reconciles it away. While the player keeps plowing,
-    // predictPlayerPush replenishes it each frame; when they stop, it decays to 0
-    // and the NPC settles exactly where the server says.
-    if (npc.predOffX || npc.predOffY) {
-      npc.x += npc.predOffX;
-      npc.y += npc.predOffY;
-      npc.predOffX *= PRED_DECAY;
-      npc.predOffY *= PRED_DECAY;
-      if (Math.abs(npc.predOffX) < 0.05) npc.predOffX = 0;
-      if (Math.abs(npc.predOffY) < 0.05) npc.predOffY = 0;
-    }
+    // Layer the client-predicted push/knockback lead on top, then bleed it off so
+    // the authoritative stream reconciles it away (see RemoteInterp.applyPredOffset).
+    applyPredOffset(npc);
   }
 }
 
@@ -618,9 +630,60 @@ export function interpolateNpcs(): void {
 // locally via NPC.predOff (reconciled by interpolateNpcs). Mirrors the server's
 // pushFromPlayers (mass gate, wall clamp, moving-only) so the prediction lands
 // where the authoritative stream will — minimal correction when it arrives.
-const PRED_DECAY = 0.8; // per-frame bleed-off of the predicted lead (~5 frames)
 const PRED_PUSH_STEP = 1.4; // px/frame local nudge (≈ server PLOW_STEP at 60fps vs 20Hz tick)
-const PRED_MAX_LEAD = 12; // px — cap how far prediction can run ahead of the server
+const PRED_PUSH_MAX_LEAD = 12; // px — cap how far a push prediction runs ahead of the server
+
+// Melee swing hitbox + enemy hurtbox — MIRROR of server/npcSim.js handleAttack so
+// the client predicts knockback on exactly the enemies the server will hit. KEEP
+// these values IN SYNC with that file (DIR_VEC/ATTACK_REACH/ATTACK_HALF/HURT_*).
+const DIAG = Math.SQRT1_2;
+const DIR_VEC: ReadonlyArray<readonly [number, number]> = [
+  [0, 1],
+  [0, -1],
+  [-1, 0],
+  [1, 0],
+  [-DIAG, -DIAG],
+  [-DIAG, DIAG],
+  [DIAG, DIAG],
+  [DIAG, -DIAG],
+];
+const ATTACK_REACH = 14;
+const ATTACK_HALF = 8;
+const HURT_W = 14;
+const HURT_H = 18;
+const HURT_OY = -18;
+const PRED_HIT_KB = 10; // px base predicted recoil for a connecting swing (server reconciles exact)
+const PRED_HIT_MAX_LEAD = 26; // px — knockback leads further than a push, but still capped
+// Weight-class recoil scale (mirrors server massKnockScale): a heavier attacker
+// flings a lighter victim further, a much lighter one barely rocks it.
+function massScale(attLevel: number, vicLevel: number): number {
+  const a = 1 + Math.max(0, attLevel);
+  const v = 1 + Math.max(0, vicLevel);
+  return Math.max(0.15, Math.min(2, (2 * a) / (a + v)));
+}
+
+/** NPC foot box (manual Entity Manager override or the default), mirroring
+ *  blockedByNPC / the server actorBox. */
+function footBox(npc: NPC): [number, number, number, number] {
+  const m = entityCols.get(npc.spriteGroupId);
+  return m
+    ? [npc.x + m.offX - m.w / 2, npc.y + m.offY - m.h, m.w, m.h]
+    : [npc.x - NPC_COL_W / 2, npc.y + NPC_COL_OY, NPC_COL_W, NPC_COL_H];
+}
+
+/** Run `fn` over every live person/enemy NPC near (px,py) — the ±1 area sweep
+ *  plus the town-wide roamer pool (same coverage as blockedByNPC). */
+function forNearbyActors(px: number, py: number, fn: (npc: NPC) => void): void {
+  const ax = Math.floor(px / AREA_PX);
+  const ay = Math.floor(py / AREA_PX);
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const bucket = npcsByArea.get((ay + dy) * AREA_COLS + (ax + dx));
+      if (bucket) for (const npc of bucket) fn(npc);
+    }
+  }
+  for (const npc of roamers) fn(npc);
+}
 
 /**
  * Predict the local player's walk-push on nearby NPCs. Call once per frame AFTER
@@ -637,17 +700,10 @@ export function predictPlayerPush(
   if (!moving) return; // a standing player isn't a repulsion aura (matches server)
   const fx = px - NPC_COL_W / 2;
   const fy = py + NPC_COL_OY;
-  const ax = Math.floor(px / AREA_PX);
-  const ay = Math.floor(py / AREA_PX);
-  const tryPush = (npc: NPC): void => {
+  forNearbyActors(px, py, (npc) => {
     if (npc.dead || (npc.kind !== 'person' && npc.kind !== 'enemy')) return;
     if (pusherLevel <= npc.level) return; // only plow strictly-lighter bodies
-    // NPC foot box (manual override or the default), same as blockedByNPC.
-    const manual = entityCols.get(npc.spriteGroupId);
-    const nx = manual ? npc.x + manual.offX - manual.w / 2 : npc.x - NPC_COL_W / 2;
-    const ny = manual ? npc.y + manual.offY - manual.h : npc.y + NPC_COL_OY;
-    const nw = manual ? manual.w : NPC_COL_W;
-    const nh = manual ? manual.h : NPC_COL_H;
+    const [nx, ny, nw, nh] = footBox(npc);
     if (!(fx < nx + nw && fx + NPC_COL_W > nx && fy < ny + nh && fy + NPC_COL_H > ny)) return;
     let dx = npc.x - px;
     let dy = npc.y - py;
@@ -661,28 +717,56 @@ export function predictPlayerPush(
       dx /= d;
       dy /= d;
     }
-    const sx = dx * PRED_PUSH_STEP;
-    const sy = dy * PRED_PUSH_STEP;
-    // Wall-clamp the predicted lead so we never push a body into a wall the
-    // server wouldn't (which would cause a visible snap-back on reconcile).
-    const lead = Math.hypot(npc.predOffX + sx, npc.predOffY + sy);
-    const tx = nx + npc.predOffX + sx;
-    const ty = ny + npc.predOffY + sy;
-    if (lead <= PRED_MAX_LEAD && !checkPlayerCollision(tx, ty, nw, nh)) {
-      npc.predOffX += sx;
-      npc.predOffY += sy;
-      // Show it THIS frame too (interpolateNpcs already ran), not next frame.
-      npc.x += sx;
-      npc.y += sy;
+    // Wall-clamp: never predict a body into a wall the server wouldn't (that would
+    // snap back on reconcile).
+    const tx = nx + (npc.predOffX ?? 0) + dx * PRED_PUSH_STEP;
+    const ty = ny + (npc.predOffY ?? 0) + dy * PRED_PUSH_STEP;
+    if (!checkPlayerCollision(tx, ty, nw, nh)) {
+      injectPredOffset(npc, dx, dy, PRED_PUSH_STEP, PRED_PUSH_MAX_LEAD);
     }
-  };
-  for (let dy = -1; dy <= 1; dy++) {
-    for (let dx = -1; dx <= 1; dx++) {
-      const bucket = npcsByArea.get((ay + dy) * AREA_COLS + (ax + dx));
-      if (bucket) for (const npc of bucket) tryPush(npc);
+  });
+}
+
+/**
+ * Predict the recoil of the local player's melee swing on enemies, so a struck
+ * enemy lurches THIS frame instead of a network round-trip later. Mirrors the
+ * server's handleAttack hitbox; the server still authoritatively resolves the hit
+ * (dodge/crit/exact knockback) and the stream reconciles. Call on swing.
+ */
+export function predictMeleeKnockback(
+  px: number,
+  py: number,
+  dir: number,
+  attackerLevel: number
+): void {
+  const v = DIR_VEC[dir] ?? DIR_VEC[0];
+  const hx = px + v[0] * ATTACK_REACH - ATTACK_HALF;
+  const hy = py - 10 + v[1] * ATTACK_REACH - ATTACK_HALF;
+  const hw = ATTACK_HALF * 2;
+  const hh = ATTACK_HALF * 2;
+  forNearbyActors(px, py, (npc) => {
+    if (npc.dead || npc.kind !== 'enemy') return;
+    const ex = npc.x - HURT_W / 2;
+    const ey = npc.y + HURT_OY;
+    if (!(hx < ex + HURT_W && hx + hw > ex && hy < ey + HURT_H && hy + hh > ey)) return;
+    let dx = npc.x - px;
+    let dy = npc.y - py;
+    const d = Math.hypot(dx, dy);
+    if (d < 0.001) {
+      dx = v[0];
+      dy = v[1];
+    } else {
+      dx /= d;
+      dy /= d;
     }
-  }
-  for (const npc of roamers) tryPush(npc);
+    const dist = PRED_HIT_KB * massScale(attackerLevel, npc.level);
+    const [nx, ny, nw, nh] = footBox(npc);
+    const tx = nx + (npc.predOffX ?? 0) + dx * dist;
+    const ty = ny + (npc.predOffY ?? 0) + dy * dist;
+    if (!checkPlayerCollision(tx, ty, nw, nh)) {
+      injectPredOffset(npc, dx, dy, dist, PRED_HIT_MAX_LEAD);
+    }
+  });
 }
 
 /**

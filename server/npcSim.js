@@ -138,9 +138,17 @@ function massKnockScale(attMass, vicMass) {
 // --- Enemy aggression (Heavy) ---
 // Enemies have a level (set from the spawner / a default) and so do players, so
 // a future EarthBound-style "flee if you out-level it" rule can hook in here.
-// For now level is just tracked; aggro is unconditional: any enemy chases and
-// hits the nearest living player it can see.
+// Aggro is conditional on the LEVEL GAP (EarthBound's "weak enemies flee you"):
+// an enemy whose level a nearby player at least DOUBLES will not chase or attack
+// that player — it FLEES, and a touch from that player is an instant win (full
+// XP/loot, no fight). Otherwise aggro is unconditional: it chases and hits the
+// nearest living player it can see. `outLevels(player, enemy)` is the gate.
 const DEFAULT_ENEMY_LEVEL = 4;
+const FLEE_LEVEL_RATIO = 2; // player.level >= ratio * enemy.level → enemy flees
+const FLEE_TOUCH_RADIUS = 18; // px between feet — a scarer this close auto-wins
+function outLevels(player, n) {
+  return player && player.level != null && player.level >= FLEE_LEVEL_RATIO * (n.level || 1);
+}
 const DETECT_RANGE = 220; // px — default aggro radius; per-SPAWNER `detectRange` (Enemy Spawner tool) overrides it
 // Once an enemy has LOCKED ON it does not give up at the detect radius — it
 // pursues relentlessly (no home-distance leash) until the target gets this far
@@ -715,6 +723,25 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       return null; // no enemies if neither file is present
     }
   }
+
+  // The UNIVERSAL entity master table (per sprite-group stats for EVERY kind —
+  // person/prop/enemy/car), authored in the Entity Manager. It used to live
+  // inside enemy_spawns.json under `entities`, but that file is really the
+  // ENEMY-SPAWNER config (spawners + enemy classification); the entity table is
+  // its own concern, so it now lives in overrides/entities.json. Back-compat:
+  // fall back to enemy_spawns.json `entities` for saves made before the split.
+  // KEEP IN SYNC with src/engine/NPCManager.ts (loadNPCs reads the same pair).
+  const ENTITIES_OV_PATH = path.join(assetsDir, '..', 'overrides', 'entities.json');
+  function loadEntities() {
+    try {
+      const d = JSON.parse(fs.readFileSync(ENTITIES_OV_PATH, 'utf8'));
+      if (d && d.entities) return d.entities;
+    } catch {
+      /* no entities.json yet — fall through to the legacy location */
+    }
+    const cfg = loadEnemyCfg();
+    return (cfg && cfg.entities) || {};
+  }
   // ROM-derived enemy catalog (tools/extract_enemies.py -> assets/map/enemies.json):
   // the DEFAULTS layer of per-entity stats, keyed by sprite id. Merged UNDER the
   // authored enemy_spawns.json `entities`. Rarely changes (re-extracted from ROM),
@@ -730,11 +757,11 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   }
   const enemyCatalog = loadEnemyCatalog();
 
-  // Effective per-entity stats = catalog (ROM defaults) overlaid by authored
-  // entities. Rebuilt whenever enemy_spawns.json changes (reloadEnemies).
-  function buildEntityDefs(cfg) {
+  // Effective per-entity stats = catalog (ROM defaults) overlaid by the authored
+  // entity table. Rebuilt whenever entities.json changes (reloadEntities).
+  function buildEntityDefs(entities) {
     const cat = (enemyCatalog && enemyCatalog.bySprite) || {};
-    const file = (cfg && cfg.entities) || {};
+    const file = entities || {};
     const out = {};
     for (const k of new Set([...Object.keys(cat), ...Object.keys(file)])) {
       out[k] = Object.assign({}, cat[k], file[k]);
@@ -744,7 +771,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
 
   // `let` so the file watch can swap them in live.
   let enemyCfg = loadEnemyCfg();
-  let entityDefs = buildEntityDefs(enemyCfg);
+  let entityDefs = buildEntityDefs(loadEntities());
   // Sprites auto-classified as enemies regardless of placement kind (backward
   // compat with placements authored before 'enemy' was a first-class kind).
   // NOTE: intentionally NOT every catalog sprite — only the authored list — so
@@ -791,30 +818,34 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     const enemy = kind === 'enemy';
     const person = kind === 'person';
     const car = kind === 'car';
-    // sprite-group layer: only enemies read the entity table for combat numbers
-    // (people/props/cars don't today). `ent(key, def)` = entity value or default.
-    const ent = (key, def) => (enemy ? entityStat(sprite, key, def) : def);
-    // instance override wins over the (entity/kind) layer beneath it.
+    // sprite-group (entity table) layer — UNIVERSAL: every kind inherits its
+    // parent entity's stats, with the kind value below as the floor default. The
+    // Entity Manager is the master for all entities; a placement/spawner's `o`
+    // override still wins over both. KEEP IN SYNC with NPCManager.resolveProps.
+    const ent = (key, def) => entityStat(sprite, key, def);
+    // instance override wins over the (entity → kind) layers beneath it.
     const pick = (key, below) => (o[key] != null ? o[key] : below);
-    // `speed` is per-kind by design (see EntityProps.speed): px/tick for walkers,
-    // a route ×multiplier (~1) for cars.
+    // `speed` is per-kind by design (see EntityProps.speed): walkers (enemy/
+    // person) read px/tick from the entity table; a car reads a route ×multiplier
+    // (~1) and is not entity-driven (its motion model is different).
     const speed = pick('speed', car ? 1 : ent('speed', ENEMY_SPEED));
     return {
-      hp: pick(
-        'hp',
-        car ? VEHICLE_HP : enemy ? entityStat(sprite, 'hp', STATIC_ENEMY_HP) : person ? NPC_HP : 0
-      ),
-      level: pick('level', enemy ? entityStat(sprite, 'level', DEFAULT_ENEMY_LEVEL) : 1),
-      xp: pick('xp', enemy ? entityStat(sprite, 'xp', DEFAULT_ENEMY_XP) : 0),
+      // hp floor by kind (car heavy, enemy static-default, person NPC_HP, prop 0 —
+      // props are inert); the entity table overrides it, the instance wins last.
+      hp: pick('hp', ent('hp', car ? VEHICLE_HP : enemy ? STATIC_ENEMY_HP : person ? NPC_HP : 0)),
+      level: pick('level', ent('level', enemy ? DEFAULT_ENEMY_LEVEL : 1)),
+      xp: pick('xp', ent('xp', enemy ? DEFAULT_ENEMY_XP : 0)),
       damage: pick('damage', car ? VEHICLE_DAMAGE : ent('damage', ENEMY_DAMAGE)),
       attackCooldown: pick('attackCooldownMs', ent('attackCooldownMs', ENEMY_ATTACK_COOLDOWN_MS)),
       speed,
       chaseSpeed: speed * CHASE_RATIO, // walkers only (cars route, never chase)
       attackRange: pick('attackRange', ent('attackRange', ATTACK_RANGE)),
-      detectRange: pick('detectRange', DETECT_RANGE),
-      giveUpRange: pick('giveUpRange', GIVE_UP_RANGE),
-      // null = no per-instance roam radius; the tick falls back to spawner / 256.
-      wanderRadius: o.wanderRadius != null ? o.wanderRadius : null,
+      detectRange: pick('detectRange', ent('detectRange', DETECT_RANGE)),
+      giveUpRange: pick('giveUpRange', ent('giveUpRange', GIVE_UP_RANGE)),
+      // null = no per-instance/entity roam radius; the tick then falls back to
+      // the spawner's radius / 256 (entityStat returns null when unset).
+      wanderRadius:
+        o.wanderRadius != null ? o.wanderRadius : entityStat(sprite, 'wanderRadius', null),
     };
   }
 
@@ -1433,12 +1464,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // live pool size shifts wire ids — connected clients must refresh (the
   // editing client re-runs loadNPCs on save); tuning-only edits (radius, rate,
   // hp, position) apply live without an id shift.
-  function reloadEnemies() {
-    enemyCfg = loadEnemyCfg();
-    entityDefs = buildEntityDefs(enemyCfg);
-    ENEMY_SPRITES = new Set((enemyCfg && enemyCfg.enemySpriteGroups) || []);
-    SPAWNERS = ((enemyCfg && enemyCfg.spawners) || []).filter((s) => s.enabled !== false);
-    STATIC_ENEMY_HP = (SPAWNERS[0] && SPAWNERS[0].hp) || 24;
+  // Rebuild the static placements + spawner/car pools and the derived actor
+  // lists. Shared by every reload that changes resolved stats or counts.
+  function rebuildPoolsAndActors() {
     staticNpcs = buildNpcs(loadMergedPlacements());
     pool = buildPool(staticNpcs.length);
     carPool = buildCarPool(staticNpcs.length + pool.length);
@@ -1447,9 +1475,28 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     actors = npcs.filter((n) => n.kind === 'person' || n.isEnemy || n.kind === 'car');
     enemies = npcs.filter((n) => n.isEnemy);
     vehicles = npcs.filter((n) => n.kind === 'car');
+  }
+
+  function reloadEnemies() {
+    enemyCfg = loadEnemyCfg();
+    entityDefs = buildEntityDefs(loadEntities());
+    ENEMY_SPRITES = new Set((enemyCfg && enemyCfg.enemySpriteGroups) || []);
+    SPAWNERS = ((enemyCfg && enemyCfg.spawners) || []).filter((s) => s.enabled !== false);
+    STATIC_ENEMY_HP = (SPAWNERS[0] && SPAWNERS[0].hp) || 24;
+    rebuildPoolsAndActors();
     console.log(
       `[npcSim] reloaded enemy spawners (${enemies.length} enemies, ${SPAWNERS.length} spawners)`
     );
+  }
+
+  // Hot-reload the entity master table (overrides/entities.json — Entity Manager).
+  // Entity stats now feed EVERY kind, so re-resolve every placement AND the
+  // spawner pool against the new defs (mirrors reloadEnemies minus the spawner
+  // re-read). A stat-only edit keeps the same counts, so wire ids don't shift.
+  function reloadEntities() {
+    entityDefs = buildEntityDefs(loadEntities());
+    rebuildPoolsAndActors();
+    console.log(`[npcSim] reloaded entity stats (${Object.keys(entityDefs).length} sprite defs)`);
   }
 
   // Hot-reload traffic when the Traffic Editor saves overrides/car_traffic.json.
@@ -1484,6 +1531,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   fs.watchFile(path.join(assetsDir, NPCS_FILE), { interval: 2000 }, reloadPlacements);
   fs.watchFile(OVERRIDES_PATH, { interval: 2000 }, reloadPlacements);
   fs.watchFile(ENEMY_OV_PATH, { interval: 2000 }, reloadEnemies);
+  fs.watchFile(ENTITIES_OV_PATH, { interval: 2000 }, reloadEntities);
   fs.watchFile(CAR_OV_PATH, { interval: 2000 }, reloadTraffic);
   fs.watchFile(ROOMS_OV_PATH, { interval: 2000 }, reloadRooms);
 
@@ -2382,6 +2430,44 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     // show (movement would overwrite the frame via stepAnimation).
     if ((n.pose === 'attack' || n.pose === 'hurt') && now < n.poseUntil) return;
 
+    // EarthBound-style avoidance, BEFORE any chase/door logic: if a player who
+    // out-levels this enemy (>= FLEE_LEVEL_RATIO×) is nearby, it never chases or
+    // attacks them — it FLEES, and a touch from that player is an automatic win.
+    {
+      let scary = null;
+      let scaryD = Infinity;
+      for (const p of players) {
+        if (p.editor || (p.hp !== undefined && p.hp <= 0) || !outLevels(p, n)) continue;
+        const d = Math.hypot(p.x - n.x, p.y - n.y);
+        if (d < scaryD) {
+          scaryD = d;
+          scary = p;
+        }
+      }
+      if (scary) {
+        // Contact = instant victory: lethal self-damage credited to the scarer
+        // runs the normal kill path (XP + loot drops). No battle, no knockback —
+        // exactly EB's "you won" on touching a fled-from foe. No LoS needed; if
+        // they're touching, they see it.
+        if (scaryD <= FLEE_TOUCH_RADIUS) {
+          applyDamage(n, n.hp, now, scary.id);
+          return;
+        }
+        // In sight range: run directly away from the scariest player (no leash —
+        // a fleer may leave its wander radius). Regroups home once it's clear.
+        if (scaryD <= (n.detectRange || DETECT_RANGE) && canSense(n, scary.x, scary.y)) {
+          n.mode = 'flee';
+          n.targetId = null;
+          const len = scaryD || 1;
+          const ax = n.x + ((n.x - scary.x) / len) * 200;
+          const ay = n.y + ((n.y - scary.y) / len) * 200;
+          n.dir = faceDir(ax - n.x, ay - n.y);
+          moveToward(n, ax, ay, n.chaseSpeed, players, Infinity);
+          return;
+        }
+      }
+    }
+
     // Already walking to a doorway: finish that before anything else, so a
     // townsperson at the door can't steal the chase and an interior stamped
     // close by can't re-lock aggro into a wall.
@@ -2502,8 +2588,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
 
     // No target this tick. A door-follow chance was already taken at the top of
     // the tick if the chased player warped; reaching here means there's no live
-    // warp to follow — the target is genuinely gone, so regroup at spawn.
-    if (n.mode === 'chase') {
+    // warp to follow — the target is genuinely gone, so regroup at spawn. A
+    // 'flee' that reaches here means the scary player left detect range, so it
+    // also heads home instead of stranding wherever it fled to.
+    if (n.mode === 'chase' || n.mode === 'flee') {
       n.mode = 'return';
       n.returnSince = now;
       n.targetId = null;
@@ -3782,6 +3870,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       fs.unwatchFile(path.join(assetsDir, NPCS_FILE), reloadPlacements);
       fs.unwatchFile(OVERRIDES_PATH, reloadPlacements);
       fs.unwatchFile(ENEMY_OV_PATH, reloadEnemies);
+      fs.unwatchFile(ENTITIES_OV_PATH, reloadEntities);
       fs.unwatchFile(CAR_OV_PATH, reloadTraffic);
       fs.unwatchFile(ROOMS_OV_PATH, reloadRooms);
       fs.unwatchFile(COLLISION_OV_PATH, loadCollisionWithOverrides);

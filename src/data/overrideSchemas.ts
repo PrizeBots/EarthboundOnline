@@ -95,11 +95,24 @@ export const SpawnerSchema = z
 export const EnemySpawnsSchema = z.object({
   version: z.number(),
   enemySpriteGroups: z.array(z.number().int()),
-  entities: z.record(z.string(), EntityPropsSchema), // sparse authored deltas
+  // The per-entity master table USED to live here; it now has its own file
+  // (entities.json, EntitiesFileSchema). Optional for back-compat with pre-split
+  // saves — the Enemy Spawner tool no longer writes it.
+  entities: z.record(z.string(), EntityPropsSchema).optional(),
   spawners: z.array(SpawnerSchema),
 });
 
 export type EnemySpawns = z.infer<typeof EnemySpawnsSchema>;
+
+/** overrides/entities.json — the UNIVERSAL per-entity master table (Entity
+ *  Manager), keyed by sprite group, applying to EVERY kind. Sparse authored
+ *  deltas layered over the ROM catalog. KEEP IN SYNC with npcSim.loadEntities. */
+export const EntitiesFileSchema = z.object({
+  version: z.number(),
+  entities: z.record(z.string(), EntityPropsSchema),
+});
+
+export type EntitiesFile = z.infer<typeof EntitiesFileSchema>;
 
 // One placement row in npcs.json (a base-entry edit or an addition). LOOSE: only
 // the structural fields are checked; unknown keys pass (catchall). `props` is the

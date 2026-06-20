@@ -88,6 +88,11 @@ export interface RemotePlayer {
   downed?: boolean;
   /** Epoch-ms the downed window ends (for the over-head countdown). */
   downedUntil?: number;
+  /** Client-side prediction offset (px), layered on the interpolated position and
+   *  decayed each frame — see RemoteInterp.applyPredOffset. Lets the local player's
+   *  push/knockback on this remote player show instantly, then reconcile. */
+  predOffX?: number;
+  predOffY?: number;
 }
 
 export enum Direction {

@@ -210,7 +210,11 @@ class EnemySpawnerTool implements EditorTool {
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null);
     }
-    this.entities = { ...(cfg?.entities ?? {}) };
+    // Read-only entity stats (to show what a spawner's sprite inherits) come from
+    // the master table — overrides/entities.json (Entity Manager). Back-compat:
+    // pre-split saves kept it inside enemy_spawns.json under `entities`.
+    const entOv = await loadOverride<{ entities?: EntityDefs }>('entities.json').catch(() => null);
+    this.entities = { ...(entOv?.entities ?? cfg?.entities ?? {}) };
     await this.loadCatalog();
     const spawnerSprites = new Set<number>();
     this.spawners = (cfg?.spawners ?? []).map((s) => {
@@ -286,20 +290,13 @@ class EnemySpawnerTool implements EditorTool {
   private async save(): Promise<void> {
     const groups = new Set<number>(this.spriteGroupExtras);
     for (const s of this.spawners) if (s.enabled) groups.add(s.sprite);
-    // Preserve the per-entity stats section (Entity Manager's domain). Re-read
-    // the file so a stats edit the Entity Manager just saved isn't clobbered;
-    // fall back to our loaded copy.
-    let entities = this.entities;
-    try {
-      const cur = await loadOverride<EnemyFile>('enemy_spawns.json');
-      if (cur?.entities) entities = cur.entities;
-    } catch {
-      /* keep our copy */
-    }
+    // enemy_spawns.json is now PURELY the spawner config (spawners + enemy
+    // classification). The entity master table lives in entities.json (Entity
+    // Manager), so we no longer write `entities` here — saving a spawner also
+    // strips any legacy `entities` left over from before the split.
     const file: EnemyFile = {
       version: 1,
       enemySpriteGroups: [...groups],
-      entities,
       spawners: this.spawners.map((s) => ({
         name: s.name,
         sprite: s.sprite,

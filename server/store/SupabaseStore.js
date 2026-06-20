@@ -145,14 +145,22 @@ class SupabaseStore {
   // ============================ Accounts ============================
 
   async createAccount({ username, passwordHash, now }) {
+    const usernameLower = username.toLowerCase();
+    // Pre-check so the common "username taken" case doesn't fire a doomed
+    // INSERT — the IDENTITY sequence advances even on a failed insert, leaving
+    // permanent gaps in account ids. (Mirrors SqliteStore.createAccount.)
+    if (await this.getAccountByUsername(usernameLower)) {
+      throw new DuplicateUsernameError(username);
+    }
     try {
       const r = await this._q(
         `INSERT INTO accounts (username, username_lower, password_hash, created_at)
          VALUES ($1, $2, $3, $4) RETURNING *`,
-        [username, username.toLowerCase(), passwordHash, now]
+        [username, usernameLower, passwordHash, now]
       );
       return this._account(r.rows[0]);
     } catch (e) {
+      // Guard the race where two registrations slip past the pre-check.
       if (e.code === '23505') throw new DuplicateUsernameError(username); // unique_violation
       throw e;
     }

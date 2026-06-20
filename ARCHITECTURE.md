@@ -636,6 +636,23 @@ crit-burst scale, the per-popup colors, and an optional big-hit color ramp). It
 loads from `overrides/combat_juice.json` and is dialed in real time by the dev
 **Combat** editor tool (numbers/colors only — combat MATH stays server-side).
 
+**Netcode / client-side prediction.** Model: the **local player** is client-authoritative
+and predicted (moves instantly, reports position); **remote players + NPCs/enemies/cars**
+are snapshot-interpolated ~100-160ms in the past (`RemoteInterp.ts`). The weak point was
+server-authoritative REACTIONS to the local player's actions (a walk-push, a melee
+knockback) — they only return a broadcast+interp-delay later, which felt "loose." So
+those are **predicted then reconciled**: `RemoteInterp.applyPredOffset`/`injectPredOffset`
+maintain a `predOff` displacement layered on top of the interpolated position and decayed
+each frame (`PRED_DECAY`), so the authoritative stream bleeds it back to zero. The
+injectors mirror the server's exact math so the prediction lands where the result will:
+`predictPlayerPush`/`predictMeleeKnockback` (NPCManager, for NPCs) and
+`Game.predictPushRemotePlayers`/`predictPvpKnockback` (remote players). Prediction is
+movement-only — flash/hitstop/damage numbers stay server-confirmed, so a server-side
+dodge never shows a false hit. NOT YET BUILT (the two big ones): server-authoritative
+player movement with input-replay reconciliation (would close the speedhack/teleport
+exploit the current client-authoritative model allows), and lag-compensated hit
+resolution (server rewinds targets to the attacker's render-time view).
+
 **Status conditions + inflict model.** `server/status.js` is the single catalog +
 timer/immunity/DoT engine (paralysis, sleep, diamond, poison, …), shared by
 in-sim actors (npcSim) and players (gameHost). Each status names the ROM
@@ -763,7 +780,16 @@ townsperson hides (hp 0, like a dead enemy — the client's `NPC.dead` getter no
 covers persons) and `reviveNpcs` revives it at its home spot after
 `NPC_RESPAWN_MS` (backlog: a hospital / per-entity respawn point). Enemies target the nearest living
 **player** within `DETECT_RANGE`, and **only if none is in range** fall back to
-the nearest townsperson — players always take targeting priority. **Retaliation:**
+the nearest townsperson — players always take targeting priority. **Level-gap
+flee (EB-style):** before any of that, an enemy checks for a nearby player who
+out-levels it by `FLEE_LEVEL_RATIO`× (`outLevels`, default 2× — every actor
+carries a resolved `level`; enemies from the ROM catalog, townsfolk default 1).
+If one is in `DETECT_RANGE` and in sight, the enemy never chases or attacks it —
+it enters `flee` mode and runs directly away (no leash), regrouping home once the
+scarer leaves. A touch from that player (within `FLEE_TOUCH_RADIUS`) is an
+**instant win**: lethal self-damage credited to the scarer runs the normal kill
+path (full XP + loot, no battle), exactly like EarthBound's auto-victory on
+contacting a fled-from foe. **Retaliation:**
 when an NPC hits an enemy it stamps itself as that enemy's `aggressor` for
 `ENEMY_AGGRO_MEMORY_MS`; with no player in range the enemy turns on its attacker
 first (over a closer bystander). `applyDamage` is the one death path shared by

@@ -12,7 +12,7 @@ import { Direction, Pose } from '../types';
 // (whose ids would otherwise collide — player "1" vs npc 1) stay separate.
 
 const PLAYER_DELAY_MS = 100; // ~2 packets of headroom at the player send rate
-const TELEPORT_DIST = 64;    // a gap this large is a door/teleport — snap, don't glide
+const TELEPORT_DIST = 64; // a gap this large is a door/teleport — snap, don't glide
 const BUFFER_MAX_AGE_MS = 1000;
 
 interface Snapshot {
@@ -31,6 +31,57 @@ export interface InterpTarget {
   direction: Direction;
   frame: number;
   pose?: Pose;
+}
+
+// --- Client-side prediction (predict-then-reconcile) -------------------------
+// A server-authoritative REACTION to the local player's action (a walk-push, a
+// melee knockback) only reaches us a broadcast + interp-delay later (~150-250ms)
+// — long enough to feel "loose." So we predict it locally: nudge the target NOW
+// via a `predOff` displacement layered on top of its interpolated authoritative
+// position, then DECAY that offset every frame so the authoritative stream
+// reconciles it away. Equal-handed: with no prediction predOff is 0 and these
+// are no-ops. Used for NPCs (NPCManager) and remote players (Game).
+const PRED_DECAY = 0.8; // per-frame bleed-off of the predicted lead (~5 frames)
+
+/** Anything we can predict a displacement on: a render target with an offset. */
+export interface Predicted {
+  x: number;
+  y: number;
+  predOffX?: number;
+  predOffY?: number;
+}
+
+/** Add the live predicted offset on top of `t`'s (already-interpolated) position,
+ *  then decay it toward zero. Call once per frame AFTER interpolation. */
+export function applyPredOffset(t: Predicted): void {
+  if (!t.predOffX && !t.predOffY) return;
+  t.x += t.predOffX ?? 0;
+  t.y += t.predOffY ?? 0;
+  t.predOffX = (t.predOffX ?? 0) * PRED_DECAY;
+  t.predOffY = (t.predOffY ?? 0) * PRED_DECAY;
+  if (Math.abs(t.predOffX) < 0.05) t.predOffX = 0;
+  if (Math.abs(t.predOffY) < 0.05) t.predOffY = 0;
+}
+
+/** Grow `t`'s predicted offset by `dist` px along unit dir (dx,dy) — a push nudge
+ *  or a hit recoil — and show it THIS frame. Capped at `maxLead` so the prediction
+ *  can't run too far ahead of the authoritative result (a big snap-back on
+ *  reconcile). Returns whether it applied. */
+export function injectPredOffset(
+  t: Predicted,
+  dx: number,
+  dy: number,
+  dist: number,
+  maxLead: number
+): boolean {
+  const ox = (t.predOffX ?? 0) + dx * dist;
+  const oy = (t.predOffY ?? 0) + dy * dist;
+  if (Math.hypot(ox, oy) > maxLead) return false;
+  t.predOffX = ox;
+  t.predOffY = oy;
+  t.x += dx * dist;
+  t.y += dy * dist;
+  return true;
 }
 
 export interface Interpolator {
@@ -56,7 +107,7 @@ export function createInterpolator(delayMs: number = PLAYER_DELAY_MS): Interpola
     y: number,
     direction: Direction,
     frame: number,
-    pose: Pose,
+    pose: Pose
   ): void {
     let buf = buffers.get(id);
     if (!buf) {
@@ -129,7 +180,7 @@ export function pushRemoteSnapshot(
   y: number,
   direction: Direction,
   frame: number,
-  pose: Pose,
+  pose: Pose
 ): void {
   players.push(id, x, y, direction, frame, pose);
 }

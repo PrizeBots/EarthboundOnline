@@ -199,8 +199,7 @@ class EntityManagerTool implements EditorTool {
   }
 
   private async load(): Promise<void> {
-    const cfg = await this.readConfig();
-    this.entities = { ...(cfg?.entities ?? {}) };
+    this.entities = { ...(await this.readEntities()) };
     this.colBoxes = await loadJSON<Record<string, Record<string, EntityCol>>>(
       '/assets/sprites/colboxes.json'
     ).catch(() => ({}));
@@ -239,27 +238,16 @@ class EntityManagerTool implements EditorTool {
       this.autoOrganize();
     }
 
-    if (!this.sprite) {
-      this.sprite = cfg?.spawners?.length
-        ? ((cfg.spawners[0] as { sprite?: number }).sprite ?? listSpriteGroupIds()[0] ?? 1)
-        : (listSpriteGroupIds()[0] ?? 1);
-    }
+    if (!this.sprite) this.sprite = listSpriteGroupIds()[0] ?? 1;
   }
 
-  /** Override (live authoring) wins over the committed default. */
-  private async readConfig(): Promise<EnemyFile | null> {
-    let cfg: EnemyFile | null = null;
-    try {
-      cfg = await loadOverride<EnemyFile>('enemy_spawns.json');
-    } catch {
-      cfg = null;
-    }
-    if (!cfg) {
-      cfg = await fetch('/assets/map/enemy_spawns.json')
-        .then((r) => (r.ok ? r.json() : null))
-        .catch(() => null);
-    }
-    return cfg;
+  /** The authored entity master table. New home: overrides/entities.json. Back-
+   *  compat: pre-split saves kept it inside enemy_spawns.json under `entities`. */
+  private async readEntities(): Promise<EntityDefs> {
+    const ent = await loadOverride<{ entities?: EntityDefs }>('entities.json').catch(() => null);
+    if (ent?.entities) return ent.entities;
+    const legacy = await loadOverride<EnemyFile>('enemy_spawns.json').catch(() => null);
+    return legacy?.entities ?? {};
   }
 
   /** The inherited baseline shown as placeholders: DEFAULT < canon ROM catalog,
@@ -302,14 +290,14 @@ class EntityManagerTool implements EditorTool {
     this.shell?.markDirty('entities');
   }
 
-  // --- save (read-merge-write: only the `entities` section) ----------------------------
+  // --- save (the universal entity master table lives in its own file) ------------------
 
   private async save(): Promise<void> {
-    const cfg: EnemyFile = (await this.readConfig()) ?? { version: 1 };
-    cfg.version = cfg.version ?? 1;
-    cfg.entities = this.entities;
-    await saveOverride('enemy_spawns.json', cfg);
-    await loadNPCs(); // hp shows on this client; server picks it up via file watch
+    // entities.json is the master for EVERY entity (all kinds). It's separate
+    // from enemy_spawns.json, which is the enemy-spawner config (spawners +
+    // enemy classification) — the Enemy Spawner tool owns that.
+    await saveOverride('entities.json', { version: 1, entities: this.entities });
+    await loadNPCs(); // hp/level apply on this client; server picks it up via file watch
     this.shell?.clearDirty('entities');
     this.shell?.toast('Saved entity stats — live here; other clients refresh to resync');
   }

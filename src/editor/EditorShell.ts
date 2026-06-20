@@ -18,7 +18,12 @@ import {
   setSpriteEditorShellExit,
 } from '../engine/spriteEditor';
 import { getKeySet } from '../engine/Input';
-import { setDebugBoxes, debugBoxesOn } from '../engine/Renderer';
+import {
+  setDebugBoxes,
+  debugBoxesOn,
+  setDebugCollision,
+  debugCollisionOn,
+} from '../engine/Renderer';
 import { CommandStack } from './CommandStack';
 import { LocationNav, PlaceAnchor } from './LocationNav';
 import { findEditorTool, getEditorTools, getSaveHandler } from './registry';
@@ -991,6 +996,22 @@ export class EditorShell {
     boxesBtn.title =
       'Show combat hit/hurt/collision boxes live (cyan=hurt, blue=collision, red=attack; also B key)';
     syncBoxesBtn(boxesBtn);
+
+    // Collision/priority layer toggle: tints the live world with the same overlay
+    // the Collision & Priority Painter draws (red=solid, blue=pri-lo, purple=pri-hi,
+    // yellow=hide), so you can see the collision map without entering the tool.
+    const syncCollisionBtn = (btn: HTMLButtonElement) => {
+      const on = debugCollisionOn();
+      btn.style.color = on ? '#7fe07f' : '#cde';
+      btn.style.borderColor = on ? '#7fe07f' : '#3a4a5a';
+    };
+    const collisionBtn = mkBtn('Collision', () => {
+      setDebugCollision(!debugCollisionOn());
+      syncCollisionBtn(collisionBtn);
+    });
+    collisionBtn.title =
+      'Show collision/priority layers live (red=solid, blue=pri-lo, purple=pri-hi, yellow=hide)';
+    syncCollisionBtn(collisionBtn);
 
     // Reload toggle: when OFF (default) NOTHING refreshes the page — neither
     // editor override saves nor source (.ts) edits via Vite HMR — so you stay in

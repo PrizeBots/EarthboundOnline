@@ -21,7 +21,8 @@ const OVERRIDE_ALLOW = new Set([
   'sprites.json',
   'names.json',
   'song_names.json', // Sound Manager — admin song renames (parallel to names.json)
-  'enemy_spawns.json',
+  'enemy_spawns.json', // Enemy Spawner tool — spawner instances + enemy classification
+  'entities.json', // Entity Manager — the UNIVERSAL per-entity master table (all kinds)
   // NOTE: places.json is NO LONGER a file override — the Places outline now lives
   // in the DB (world_docs, via /api/world/places). Left out on purpose.
   'car_traffic.json',

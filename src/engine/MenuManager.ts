@@ -300,27 +300,35 @@ export function openPhoneMenu(): void {
   menuState = 'phone';
 }
 
-// ATM — move money between your bank account and on-hand cash. Up/Down pick the
-// action (Withdraw / Deposit); Left/Right size the amount (clamped to what's
-// available); confirm sends the request. The server is authoritative and re-clamps,
+// ATM — move money between your bank account and on-hand cash, OG EarthBound style.
+// Two steps: (1) pick the action (Withdraw / Deposit) with Up/Down, confirm; then
+// (2) an odometer amount entry — Up/Down roll the selected digit, Left/Right move
+// between digit places, confirm sends. The server is authoritative and re-clamps,
 // so nothing here can mint or overdraw money — see GameHost atm_withdraw/deposit.
 const ATM_ACTIONS = ['Withdraw', 'Deposit'] as const;
 let atmCursor = 0; // 0 = Withdraw, 1 = Deposit
-let atmAmount = 0; // currently dialed-in amount
+let atmAmount = 0; // assembled amount
+let atmStage: 'action' | 'amount' = 'action'; // pick the action, then enter the amount
+let atmDigit = 0; // selected odometer place, from the RIGHT (0 = ones, 1 = tens, …)
 
 /** Max amount the selected action can move (bank for withdraw, cash for deposit). */
 function atmMax(): number {
   return atmCursor === 0 ? getBank() : getMoney();
 }
-/** Step the dialed amount by ~1/10 of the available max (min $1), clamped. */
-function atmStep(): number {
-  return Math.max(1, Math.round(atmMax() / 10));
+
+/** How many digit places the odometer shows — enough for the current balance
+ *  (min 1), so you can never even dial a place past what you have. */
+function atmPlaces(): number {
+  const max = atmMax();
+  return max <= 0 ? 1 : Math.floor(Math.log10(max)) + 1;
 }
 
 /** Open the ATM/bank menu (called from Game.tryTalk for an ATM sprite). */
 export function openAtmMenu(): void {
   atmCursor = 0;
+  atmStage = 'action';
   atmAmount = 0;
+  atmDigit = 0;
   menuState = 'atm';
 }
 
@@ -1133,30 +1141,53 @@ export function updateMenu(): void {
     // Bank machine: pick Withdraw/Deposit (Up/Down), size the amount (Left/Right),
     // confirm to send. Cancel leaves. The amount is always clamped to what's
     // available for the chosen action so you can't dial past your balance.
-    if (toggle || justPressed('Backspace')) {
-      menuState = 'closed';
-    } else {
-      const prevCursor = atmCursor;
-      if (justPressed('ArrowUp') || justPressed('KeyW')) atmCursor = (atmCursor + 1) % 2;
-      if (justPressed('ArrowDown') || justPressed('KeyS')) atmCursor = (atmCursor + 1) % 2;
-      if (atmCursor !== prevCursor) {
-        atmAmount = 0; // reset the dial when switching account direction
-        playEventSfx('cursor-vertical');
+    if (atmStage === 'action') {
+      // Step 1: pick Withdraw / Deposit. Cancel (Esc/Q/X) leaves the ATM.
+      if (toggle) {
+        menuState = 'closed';
+      } else {
+        const prevCursor = atmCursor;
+        if (justPressed('ArrowUp') || justPressed('KeyW')) atmCursor = (atmCursor + 1) % 2;
+        if (justPressed('ArrowDown') || justPressed('KeyS')) atmCursor = (atmCursor + 1) % 2;
+        if (atmCursor !== prevCursor) playEventSfx('cursor-vertical');
+        if (confirm) {
+          atmStage = 'amount'; // proceed to the odometer
+          atmAmount = 0;
+          atmDigit = 0;
+          playEventSfx('cursor-horizontal');
+        }
       }
-      const max = atmMax();
-      if (atmAmount > max) atmAmount = max; // a balance change may have shrunk it
-      const prevAmt = atmAmount;
-      if (justPressed('ArrowRight') || justPressed('KeyD'))
-        atmAmount = Math.min(max, atmAmount + atmStep());
-      if (justPressed('ArrowLeft') || justPressed('KeyA'))
-        atmAmount = Math.max(0, atmAmount - atmStep());
-      if (atmAmount !== prevAmt) playEventSfx('cursor-horizontal');
+    } else {
+      // Step 2: odometer amount entry. Cancel (Esc/Q/X/Backspace) goes back to the
+      // action chooser. Up/Down roll the selected digit; Left/Right move places.
+      if (toggle || justPressed('Backspace')) {
+        atmStage = 'action';
+        playEventSfx('cursor-vertical');
+      } else {
+        const places = atmPlaces();
+        if (atmDigit > places - 1) atmDigit = places - 1; // balance shrank the field
+        const prevDigit = atmDigit;
+        if (justPressed('ArrowRight') || justPressed('KeyD')) atmDigit = Math.max(0, atmDigit - 1);
+        if (justPressed('ArrowLeft') || justPressed('KeyA'))
+          atmDigit = Math.min(places - 1, atmDigit + 1);
+        if (atmDigit !== prevDigit) playEventSfx('cursor-horizontal');
 
-      if (confirm && atmAmount > 0) {
-        if (atmCursor === 0) sendAtmWithdraw(atmAmount);
-        else sendAtmDeposit(atmAmount);
-        playEventSfx('cash-register');
-        atmAmount = 0; // server pushes new balances; start a fresh dial
+        const placeVal = Math.pow(10, atmDigit);
+        const cur = Math.floor(atmAmount / placeVal) % 10;
+        const prevAmt = atmAmount;
+        if (justPressed('ArrowUp') || justPressed('KeyW'))
+          atmAmount += (((cur + 1) % 10) - cur) * placeVal; // roll this digit up (9→0)
+        if (justPressed('ArrowDown') || justPressed('KeyS'))
+          atmAmount += (((cur + 9) % 10) - cur) * placeVal; // roll this digit down (0→9)
+        atmAmount = Math.max(0, Math.min(atmMax(), atmAmount)); // never past the balance
+        if (atmAmount !== prevAmt) playEventSfx('cursor-vertical');
+
+        if (confirm && atmAmount > 0) {
+          if (atmCursor === 0) sendAtmWithdraw(atmAmount);
+          else sendAtmDeposit(atmAmount);
+          playEventSfx('cash-register');
+          atmStage = 'action'; // done — back to the chooser (balances refresh from server)
+        }
       }
     }
   } else if (menuState === 'confirm') {
@@ -1336,7 +1367,8 @@ function phoneRowAt(px: number, py: number): number {
 }
 
 // ATM/bank window — balances on top, the Withdraw/Deposit chooser with a ">"
-// cursor below, and the dialed amount. Top-left, same window family as the phone.
+// cursor below, and the typed amount (blinking caret). Top-left, same window
+// family as the phone.
 function renderAtm(ctx: CanvasRenderingContext2D): void {
   const winX = 8;
   const winY = 8;
@@ -1357,7 +1389,9 @@ function renderAtm(ctx: CanvasRenderingContext2D): void {
     drawText(ctx, ATM_ACTIONS[i], innerX + CURSOR_W, y, FONT_ID);
     y += lineH;
   }
-  drawText(ctx, `Amount: $${atmAmount}`, innerX, y, FONT_ID);
+  // The amount is a TYPED entry — a blinking caret signals "punch in a number".
+  const caret = Date.now() % 1000 < 500 ? '_' : ' ';
+  drawText(ctx, `Amount: $${atmAmount}${caret}`, innerX, y, FONT_ID);
 }
 
 function renderPhone(ctx: CanvasRenderingContext2D): void {

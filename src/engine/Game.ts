@@ -30,6 +30,7 @@ import {
   getNpcDialogue,
   interpolateNpcs,
   predictPlayerPush,
+  predictMeleeKnockback,
   liveNpcForKey,
 } from './NPCManager';
 import { NPC } from './NPC';
@@ -77,7 +78,13 @@ import { loadNameOverrides, getSpriteName } from './SpriteNames';
 import { loadCustomSprites } from './CustomSprites';
 import { loadSongNameOverrides } from './SongNames';
 import { setStatus } from './StatusModal';
-import { pushRemoteSnapshot, dropRemoteBuffer, interpolateRemotePlayer } from './RemoteInterp';
+import {
+  pushRemoteSnapshot,
+  dropRemoteBuffer,
+  interpolateRemotePlayer,
+  applyPredOffset,
+  injectPredOffset,
+} from './RemoteInterp';
 import { loadItemSprites, loadCustomItems } from './Items';
 import { loadItemFolders } from './ItemFolders';
 import { loadCustomTiles } from './CustomTiles';
@@ -969,6 +976,105 @@ export class Game {
     });
   }
 
+  // Player foot box (mirrors Player.ts COL_* and the server COL_*). Used by the
+  // remote-player prediction below.
+  private static readonly COL_W = 14;
+  private static readonly COL_H = 8;
+  private static readonly COL_OY = -8;
+  private static readonly PRED_PUSH_STEP = 1.4;
+  private static readonly PRED_PUSH_MAX_LEAD = 12;
+  private static readonly PRED_HIT_KB = 10;
+  private static readonly PRED_HIT_MAX_LEAD = 26;
+  private static readonly ATTACK_REACH = 14;
+  private static readonly ATTACK_HALF = 8;
+  // Unit dir per Direction enum — MIRROR of server/npcSim.js DIR_VEC.
+  private static readonly DIR_VEC: ReadonlyArray<readonly [number, number]> = [
+    [0, 1],
+    [0, -1],
+    [-1, 0],
+    [1, 0],
+    [-Math.SQRT1_2, -Math.SQRT1_2],
+    [-Math.SQRT1_2, Math.SQRT1_2],
+    [Math.SQRT1_2, Math.SQRT1_2],
+    [Math.SQRT1_2, -Math.SQRT1_2],
+  ];
+
+  // Weight-class recoil scale (mirrors server massKnockScale).
+  private massScale(attLevel: number, vicLevel: number): number {
+    const a = 1 + Math.max(0, attLevel);
+    const v = 1 + Math.max(0, vicLevel);
+    return Math.max(0.15, Math.min(2, (2 * a) / (a + v)));
+  }
+
+  /** Predict the local player plowing LIGHTER remote players aside (mirrors the
+   *  server's pushPlayers). Instant, then the player_push stream reconciles. */
+  private predictPushRemotePlayers(moving: boolean): void {
+    if (!moving) return;
+    const W = Game.COL_W;
+    const H = Game.COL_H;
+    const fx = this.player.x - W / 2;
+    const fy = this.player.y + Game.COL_OY;
+    const mine = this.player.level;
+    for (const [, rp] of this.remotePlayers) {
+      if (rp.downed || (rp.hp !== undefined && rp.hp <= 0)) continue;
+      if (mine <= (rp.level ?? 1)) continue; // only plow strictly-lighter players
+      const rx = rp.x - W / 2;
+      const ry = rp.y + Game.COL_OY;
+      if (!(fx < rx + W && fx + W > rx && fy < ry + H && fy + H > ry)) continue;
+      let dx = rp.x - this.player.x;
+      let dy = rp.y - this.player.y;
+      const d = Math.hypot(dx, dy);
+      if (d < 0.001) {
+        const v = Game.DIR_VEC[this.player.direction] ?? Game.DIR_VEC[0];
+        dx = v[0];
+        dy = v[1];
+      } else {
+        dx /= d;
+        dy /= d;
+      }
+      const tx = rx + (rp.predOffX ?? 0) + dx * Game.PRED_PUSH_STEP;
+      const ty = ry + (rp.predOffY ?? 0) + dy * Game.PRED_PUSH_STEP;
+      if (!checkPlayerCollision(tx, ty, W, H)) {
+        injectPredOffset(rp, dx, dy, Game.PRED_PUSH_STEP, Game.PRED_PUSH_MAX_LEAD);
+      }
+    }
+  }
+
+  /** Predict the local player's swing knocking back remote players (PvP). Mirrors
+   *  the server hitbox + canHurt gate (you may hit a player if you OR they are PK). */
+  private predictPvpKnockback(px: number, py: number, dir: number): void {
+    const v = Game.DIR_VEC[dir] ?? Game.DIR_VEC[0];
+    const half = Game.ATTACK_HALF;
+    const hx = px + v[0] * Game.ATTACK_REACH - half;
+    const hy = py - 10 + v[1] * Game.ATTACK_REACH - half;
+    const hw = half * 2;
+    const W = Game.COL_W;
+    const H = Game.COL_H;
+    for (const [, rp] of this.remotePlayers) {
+      if (rp.downed || (rp.hp !== undefined && rp.hp <= 0)) continue;
+      if (!this.player.pk && !rp.pk) continue; // canHurt: PvP needs an aggressor
+      const rx = rp.x - W / 2;
+      const ry = rp.y + Game.COL_OY;
+      if (!(hx < rx + W && hx + hw > rx && hy < ry + H && hy + hw > ry)) continue;
+      let dx = rp.x - px;
+      let dy = rp.y - py;
+      const d = Math.hypot(dx, dy);
+      if (d < 0.001) {
+        dx = v[0];
+        dy = v[1];
+      } else {
+        dx /= d;
+        dy /= d;
+      }
+      const dist = Game.PRED_HIT_KB * this.massScale(this.player.level, rp.level ?? 1);
+      const tx = rx + (rp.predOffX ?? 0) + dx * dist;
+      const ty = ry + (rp.predOffY ?? 0) + dy * dist;
+      if (!checkPlayerCollision(tx, ty, W, H)) {
+        injectPredOffset(rp, dx, dy, dist, Game.PRED_HIT_MAX_LEAD);
+      }
+    }
+  }
+
   /**
    * Make a remote player's sprite drawable: register their custom pixel-edited
    * sheet or load their ROM sprite group. Falls back to Ness if neither resolves.
@@ -1390,7 +1496,10 @@ export class Game {
 
     // Remote players + server NPCs/enemies keep gliding even while menus/
     // dialogue/transitions freeze the local world — their senders haven't stopped.
-    for (const [, rp] of this.remotePlayers) interpolateRemotePlayer(rp);
+    for (const [, rp] of this.remotePlayers) {
+      interpolateRemotePlayer(rp);
+      applyPredOffset(rp); // layer predicted push/knockback on top, then decay
+    }
     interpolateNpcs();
 
     // Editor mode (dev only): free camera replaces gameplay simulation; the
@@ -1496,6 +1605,10 @@ export class Game {
     if (isAttackPressed() && this.player.attack()) {
       sendAttack(this.player.x, this.player.y, this.player.direction);
       playEventSfx('player-attack');
+      // Predict the swing's knockback so a struck enemy/player lurches THIS frame
+      // instead of a round-trip later (server still resolves the real hit).
+      predictMeleeKnockback(this.player.x, this.player.y, this.player.direction, this.player.level);
+      this.predictPvpKnockback(this.player.x, this.player.y, this.player.direction);
     }
     // 1/2 = trigger the quick-select slot during overworld play (brandish a
     // weapon, use a consumable, or cast an assigned PSI move).
@@ -1509,6 +1622,7 @@ export class Game {
     // instead of a network round-trip later (the server still authoritatively
     // shoves them; this just hides the latency and reconciles).
     predictPlayerPush(this.player.x, this.player.y, this.player.level, this.player.moving);
+    this.predictPushRemotePlayers(this.player.moving);
     // NPC simulation is server-authoritative; getNearbyNPCs (in render) still
     // triggers lazy sprite-sheet loads as NPCs come into range.
     this.camera.follow(this.player.x, this.player.y);
