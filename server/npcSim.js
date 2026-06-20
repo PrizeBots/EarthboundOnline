@@ -343,6 +343,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       spawnMoneyDrop: () => {},
       noteRespawn: () => {},
       noteEditorExit: () => {},
+      noteTeleport: () => {},
       wallBetween: () => false,
     };
   }
@@ -2401,13 +2402,12 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       const top = n.warpStack[n.warpStack.length - 1];
       const already = top && top.inX === (w && w.toX) && top.inY === (w && w.toY);
       if (w && !already && Math.hypot(n.x - w.fromX, n.y - w.fromY) <= WARP_FOLLOW_RANGE) {
-        // Walk to the crossing point and warp through on contact (tickDoorSeek)
-        // — NEVER teleport across the room. A resolved door gives the exact
-        // doorway anchor; a zone seam / scripted warp has no door trigger, so
-        // the player's OWN pre-warp position is the crossing the enemy walks to
-        // and warps through, treated as a synthetic doorway. Same walk-to-warp
-        // path either way, so the regroup retrace (warpStack) is uniform.
-        const cross = w.door || { x: w.fromX, y: w.fromY };
+        // Walk to the doorway and warp through on contact (tickDoorSeek) — NEVER
+        // teleport across the room. `w.door` is always a real resolved door now
+        // (the detector only records a warp when one sits at the crossing; a
+        // door-less jump is a teleport and is never followed), so the enemy
+        // physically routes to that doorway just like the player did.
+        const cross = w.door;
         n.pendingDoor = { triggerX: cross.x, triggerY: cross.y, destX: w.toX, destY: w.toY };
         n.doorSince = now;
         n.mode = 'door';
@@ -2876,7 +2876,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     attackSpeed = 1,
     inflict = null,
     range = 0,
-    attackerLevel = 1
+    attackerLevel = 1,
+    projSpeed = 0,
+    pierce = false,
+    projSprite = null
   ) {
     const now = Date.now();
     // The attacker's weight class drives knockback vs the victim's (see
@@ -2908,25 +2911,35 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     // harder); falls back to the flat constant if none was passed.
     const base = offense > 0 ? offense : ATTACK_DAMAGE;
     const v = DIR_VEC[dir] || DIR_VEC[0];
-    // Hitbox: a small box in front for a melee swing; a long forward "beam" out to
-    // `range` for a ranged ("gun") weapon — the same loop then damages EVERY enemy
-    // along it (a piercing shot) with the usual dodge/crit/LoS resolution.
-    let hx, hy, hw, hh;
+    // Ranged weapon: don't resolve a hitbox here — launch a projectile that flies
+    // forward over the next ticks (stepProjectiles) and damages the first target
+    // it overlaps, or EVERY new target if the weapon pierces. Same dodge/crit/LoS/
+    // knockback resolution a melee swing uses, just spread over its flight.
     if (range > 0) {
-      const BEAM_HALF = 10; // beam half-width
-      const oy = y - 10; // shots leave from chest height, like the melee box
-      const fx = x + v[0] * range;
-      const fy = oy + v[1] * range;
-      hx = Math.min(x, fx) - BEAM_HALF;
-      hy = Math.min(oy, fy) - BEAM_HALF;
-      hw = Math.abs(fx - x) + BEAM_HALF * 2;
-      hh = Math.abs(fy - oy) + BEAM_HALF * 2;
-    } else {
-      hx = x + v[0] * ATTACK_REACH - ATTACK_HALF;
-      hy = y - 10 + v[1] * ATTACK_REACH - ATTACK_HALF;
-      hw = ATTACK_HALF * 2;
-      hh = ATTACK_HALF * 2;
+      spawnProjectile({
+        x: x + v[0] * 6, // muzzle, just ahead of the body
+        y: y - 10 + v[1] * 6, // chest height, like the melee box
+        vx: v[0],
+        vy: v[1],
+        speed: projSpeed,
+        maxDist: range,
+        base,
+        critChance,
+        attacker,
+        attackerId: playerId,
+        attackerMass,
+        inflict: swingInflict,
+        pierce,
+        sprite: projSprite,
+      });
+      return;
     }
+    // Melee: a small box in front of the attacker damages every enemy it overlaps.
+    let hx, hy, hw, hh;
+    hx = x + v[0] * ATTACK_REACH - ATTACK_HALF;
+    hy = y - 10 + v[1] * ATTACK_REACH - ATTACK_HALF;
+    hw = ATTACK_HALF * 2;
+    hh = ATTACK_HALF * 2;
     // Total damage THIS swing dealt to enemies. Drives the attacker's hit juice
     // (freeze + shake) via a server-confirmed 'hit' event below, so only a swing
     // that actually connected rattles the attacker's screen — never an air-swing.
@@ -3067,6 +3080,212 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     }
   }
 
+  // --- Ranged-weapon projectiles -----------------------------------------
+  // A ranged weapon (handleAttack with range > 0) launches a projectile that
+  // marches forward a few px each tick. It damages the first target its small
+  // hitbox overlaps — or EVERY new target, if the weapon pierces — through the
+  // same resolveMelee / applyDamage path a melee swing uses, then is spent (or
+  // flies on, piercing) until it hits a wall or reaches its max range.
+  // Server-authoritative: clients only render the shot from the `projectile`
+  // broadcast and clear it on `proj_end`. See src/engine/Projectiles.ts.
+  const PROJ_HALF = 5; // shot hitbox half-size (px)
+  const PROJ_DEFAULT_SPEED = 6; // px/tick when a weapon authors no projSpeed
+  const PROJ_KNOCK_BEHIND = 20; // knockback source sits this far behind the shot
+  let projectiles = [];
+  let projSeq = 0;
+
+  // Same shape as handleAttack's inline combat events; factored out so the
+  // projectile path and (future callers) emit hit/miss/crit identically.
+  function emitCombat(evt, ex, ey, byPlayer, targetPlayer, dmg) {
+    if (!broadcastCb) return;
+    const m = {
+      type: 'combat',
+      evt,
+      x: Math.round(ex),
+      y: Math.round(ey),
+      byPlayer,
+      targetPlayer: targetPlayer == null ? null : targetPlayer,
+    };
+    if (dmg) m.dmg = dmg;
+    broadcastCb(m);
+  }
+
+  function spawnProjectile(o) {
+    const len = Math.hypot(o.vx, o.vy) || 1;
+    const p = {
+      id: ++projSeq,
+      x: o.x,
+      y: o.y,
+      vx: o.vx / len, // unit direction
+      vy: o.vy / len,
+      speed: o.speed > 0 ? o.speed : PROJ_DEFAULT_SPEED,
+      traveled: 0,
+      maxDist: o.maxDist,
+      base: o.base,
+      critChance: o.critChance,
+      attacker: o.attacker,
+      attackerId: o.attackerId,
+      attackerMass: o.attackerMass,
+      inflict: o.inflict,
+      pierce: !!o.pierce,
+      hit: new Set(), // actors already damaged (piercing shots never double-hit)
+      hitPlayers: new Set(),
+    };
+    projectiles.push(p);
+    if (broadcastCb)
+      broadcastCb({
+        type: 'projectile',
+        id: p.id,
+        byPlayer: p.attackerId,
+        x: Math.round(p.x),
+        y: Math.round(p.y),
+        vx: p.vx,
+        vy: p.vy,
+        speed: p.speed,
+        dist: p.maxDist,
+        sprite: o.sprite || null,
+        pierce: p.pierce,
+      });
+    return p;
+  }
+
+  function endProjectile(p, hit) {
+    if (broadcastCb)
+      broadcastCb({
+        type: 'proj_end',
+        id: p.id,
+        x: Math.round(p.x),
+        y: Math.round(p.y),
+        hit: !!hit,
+      });
+  }
+
+  // Resolve overlaps at the shot's current position. Damages each NEW target
+  // (tracked per-shot, so a piercing shot never hits the same body twice) using
+  // the swing resolution. Returns true if a NON-piercing shot connected and
+  // should now be consumed.
+  function projectileHits(p, players, now) {
+    const bx = p.x - PROJ_HALF;
+    const by = p.y - PROJ_HALF;
+    const bw = PROJ_HALF * 2;
+    const bh = PROJ_HALF * 2;
+    // Knock targets along the shot's travel direction: place the knockback source
+    // just BEHIND the projectile (pushActor / knockbackPlayerSpot shove away from it).
+    const kx = p.x - p.vx * PROJ_KNOCK_BEHIND;
+    const ky = p.y - p.vy * PROJ_KNOCK_BEHIND;
+    for (const n of enemies) {
+      if (n.dead || p.hit.has(n)) continue;
+      if (!canHurt(p.attacker, n)) continue;
+      if (!aabb(bx, by, bw, bh, n.x - HURT_W / 2, n.y + HURT_OY, HURT_W, HURT_H)) continue;
+      p.hit.add(n);
+      const res = resolveMelee(p.critChance, n.dodge || 0, p.base, rng);
+      if (res.miss) {
+        emitCombat('miss', n.x, n.y, p.attackerId, null);
+        if (!p.pierce) return true;
+        continue;
+      }
+      applyDamage(n, res.dmg, now, p.attackerId, {
+        x: kx,
+        y: ky,
+        amass: p.attackerMass,
+        inflict: p.inflict,
+      });
+      emitCombat('hit', p.x, p.y, p.attackerId, null, res.dmg);
+      if (res.crit) emitCombat('crit', n.x, n.y, p.attackerId, null);
+      if (!p.pierce) return true;
+    }
+    // Vehicles (traffic cars + Entity Manager vehicles): no dodge, no status proc.
+    for (const n of vehicles) {
+      if (n.dead || n.hp <= 0 || p.hit.has(n)) continue;
+      if (!canHurt(p.attacker, n)) continue;
+      const [vbx, vby, vbw, vbh] = actorBox(n, n.x, n.y);
+      if (!aabb(bx, by, bw, bh, vbx, vby, vbw, vbh)) continue;
+      p.hit.add(n);
+      const res = resolveMelee(p.critChance, 0, p.base, rng);
+      if (res.miss) {
+        emitCombat('miss', n.x, n.y, p.attackerId, null);
+        if (!p.pierce) return true;
+        continue;
+      }
+      applyDamage(n, res.dmg, now, p.attackerId, { x: kx, y: ky, inflict: [] });
+      emitCombat('hit', p.x, p.y, p.attackerId, null, res.dmg);
+      if (res.crit) emitCombat('crit', n.x, n.y, p.attackerId, null);
+      if (!p.pierce) return true;
+    }
+    // PvP: a shot lands on other players the PK rules allow (host owns their HP).
+    if (getPlayersCb && onPlayerHitCb) {
+      for (const t of players) {
+        if (t.id === p.attackerId || t.editor) continue;
+        if (t.hp !== undefined && t.hp <= 0) continue;
+        if (p.hitPlayers.has(t.id)) continue;
+        if (!canHurt(p.attacker, { isEnemy: false, pk: t.pk })) continue;
+        if (!aabb(bx, by, bw, bh, t.x - HURT_W / 2, t.y + HURT_OY, HURT_W, HURT_H)) continue;
+        p.hitPlayers.add(t.id);
+        const res = resolveMelee(p.critChance, t.dodge || 0, p.base, rng);
+        if (res.miss) {
+          emitCombat('miss', t.x, t.y, p.attackerId, t.id);
+          if (!p.pierce) return true;
+          continue;
+        }
+        onPlayerHitCb(
+          t.id,
+          res.dmg,
+          p.attackerId,
+          knockbackPlayerSpot(t.x, t.y, kx, ky, res.dmg, {
+            amass: p.attackerMass,
+            vmass: massOf(t),
+          }),
+          p.inflict
+        );
+        emitCombat('hit', p.x, p.y, p.attackerId, t.id, res.dmg);
+        if (res.crit) emitCombat('crit', t.x, t.y, p.attackerId, t.id);
+        if (!p.pierce) return true;
+      }
+    }
+    return false;
+  }
+
+  // Advance every projectile one tick. Each marches forward in sub-steps no larger
+  // than its hitbox, so a fast shot can't tunnel past a thin target or wall between
+  // ticks; it ends on a wall, on its first hit (unless piercing), or at max range.
+  function stepProjectiles(now) {
+    if (!projectiles.length) return;
+    const players = getPlayersCb ? getPlayersCb() : [];
+    for (let i = projectiles.length - 1; i >= 0; i--) {
+      const p = projectiles[i];
+      const steps = Math.max(1, Math.ceil(p.speed / PROJ_HALF));
+      const sx = (p.vx * p.speed) / steps;
+      const sy = (p.vy * p.speed) / steps;
+      const stepLen = Math.hypot(sx, sy);
+      let done = false;
+      let connected = false;
+      for (let s = 0; s < steps; s++) {
+        const px0 = p.x;
+        const py0 = p.y;
+        p.x += sx;
+        p.y += sy;
+        p.traveled += stepLen;
+        if (wallBetween(px0, py0, p.x, p.y)) {
+          done = true; // a shot stops at the first solid wall it meets
+          break;
+        }
+        if (projectileHits(p, players, now)) {
+          connected = true;
+          done = true; // non-piercing shot spent on its first target
+          break;
+        }
+        if (p.traveled >= p.maxDist) {
+          done = true; // flew its full range without connecting
+          break;
+        }
+      }
+      if (done) {
+        endProjectile(p, connected);
+        projectiles.splice(i, 1);
+      }
+    }
+  }
+
   let tickInterval = null;
   let sendInterval = null;
 
@@ -3110,16 +3329,29 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           const stepDist = prev ? Math.hypot(p.x - prev.x, p.y - prev.y) : 0;
           if (stepDist > PLAYER_MOVE_EPS && stepDist <= WARP_DELTA) playerMoved.add(p.id);
           if (!guarded && prev && stepDist > WARP_DELTA) {
-            // Resolve which doorway the player stepped through (its last pre-warp
-            // position sits on the trigger) so chasers can walk to it and warp.
-            recentWarps.set(p.id, {
-              fromX: prev.x,
-              fromY: prev.y,
-              toX: p.x,
-              toY: p.y,
-              until: now + WARP_FOLLOW_MS,
-              door: resolveDoor(prev.x, prev.y),
-            });
+            // A one-tick jump bigger than WARP_DELTA is EITHER a door warp OR a
+            // teleport (event warp, editor reposition, scripted move). Enemies may
+            // follow a player through a DOOR, NEVER through a teleport — otherwise a
+            // chaser materializes (invisible) at the player's new spot and keeps
+            // hitting them. So this is only a followable warp if a REAL door sits at
+            // the pre-warp position (the trigger the player stepped onto). No door
+            // there ⇒ a teleport: record nothing and DROP any stale follow, so the
+            // chaser loses the target and regroups at home. This one check makes
+            // "no enemy teleports unless through a door" hold for every teleport
+            // source, present or future — not just the ones we remember to exempt.
+            const door = resolveDoor(prev.x, prev.y);
+            if (door) {
+              recentWarps.set(p.id, {
+                fromX: prev.x,
+                fromY: prev.y,
+                toX: p.x,
+                toY: p.y,
+                until: now + WARP_FOLLOW_MS,
+                door,
+              });
+            } else {
+              recentWarps.delete(p.id);
+            }
           }
           // Always track position (even while guarded) so the moment the window
           // ends prev == current and no stale jump is mistaken for a warp.
@@ -3203,6 +3435,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         // they're standing on (e.g. clearing a blocked doorway). Runs once per tick
         // after actor movement, using this tick's movement set.
         pushPlayers(players, playerMoved);
+        // Fly + resolve ranged-weapon shots after actors have moved this tick, so
+        // a projectile collides against fresh enemy/player positions.
+        stepProjectiles(now);
         // Ground-drop pickup: first player within reach claims each drop. The
         // host owns inventory/cash and decides if it can be taken (bag room);
         // accepted -> remove + broadcast, refused (bag full) -> leave it.
@@ -3494,6 +3729,13 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     wallBetween,
 
     /**
+     * Advance + resolve in-flight ranged-weapon projectiles one tick. The live
+     * tick loop calls this every frame; exposed so combat tests can drive a shot
+     * forward deterministically (handleAttack only LAUNCHES the projectile).
+     */
+    stepProjectiles,
+
+    /**
      * Tell the sim a player just respawn-teleported to the spawn point. Pauses
      * door-warp detection for that player for RESPAWN_GUARD_MS, so a chasing
      * enemy won't follow the (revived, full-HP) player back to spawn — death
@@ -3517,6 +3759,19 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
      * drop any queued warp so chasers don't follow the editor teleport.
      */
     noteEditorExit(id) {
+      respawnGuard.set(id, Date.now() + RESPAWN_GUARD_MS);
+      recentWarps.delete(id);
+    },
+
+    /**
+     * Tell the sim a player was TELEPORTED by a script/event (e.g. warped into an
+     * event room or out to its exit point). A scripted teleport is not a door, so
+     * chasers must NOT follow it: pause warp detection briefly and drop any queued
+     * warp. The door-only follow check already refuses door-less jumps; this is
+     * the explicit belt-and-suspenders for the case where the teleport ORIGIN
+     * happens to sit on a door trigger (which would otherwise read as a warp).
+     */
+    noteTeleport(id) {
       respawnGuard.set(id, Date.now() + RESPAWN_GUARD_MS);
       recentWarps.delete(id);
     },

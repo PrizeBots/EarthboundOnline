@@ -52,6 +52,19 @@ export class NPC extends Entity {
   statuses: string[] = [];
   /** Store id if this NPC is a shop clerk (set by NPCManager), else null. */
   shopStore: number | null = null;
+  /** Resolved level (set by NPCManager via resolveProps; mirrors the server's
+   *  actor level). Drives the weight-class walk-push: a higher-level player walks
+   *  THROUGH (and the server shoves aside) any person/enemy below their level —
+   *  see blockedByNPC. Defaults to 1 (the non-enemy baseline). */
+  level = 1;
+  /** Client-side PREDICTION offset (px) layered on top of the interpolated
+   *  authoritative position. When the local player plows this NPC, the client
+   *  nudges it instantly (no round-trip wait) by growing this offset; it DECAYS
+   *  each frame so the authoritative server stream reconciles it back to zero.
+   *  This is the reusable predict-then-reconcile primitive — see interpolateNpcs
+   *  / predictPlayerPush in NPCManager. */
+  predOffX = 0;
+  predOffY = 0;
   /**
    * Placement identity (RawNPC.k for ROM/base placements, "+i" for the i-th
    * editor addition). Set by NPCManager.buildStaticNpcs so editor tools can map

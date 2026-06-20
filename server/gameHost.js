@@ -763,6 +763,10 @@ class GameHost {
     entry.frame = 0;
     entry.warping = true;
     entry.warpUntil = Date.now() + WARP_SHIELD_MAX_MS;
+    // A scripted event warp is a TELEPORT, not a door — exempt this jump from
+    // enemy door-warp follow so a chaser doesn't teleport along and keep hitting
+    // the player invisibly (mirrors the respawn / editor-exit exemptions).
+    this.npcSim.noteTeleport(id);
     this.sendTo(id, {
       type: 'event_warp',
       x: entry.x,
@@ -792,6 +796,13 @@ class GameHost {
     entry.weaponInflict = wInf.length ? wInf : null;
     // Ranged-weapon reach (px): a gun fires a forward shot this far; 0 = melee.
     entry.weaponRange = we && we.slot === 'weapon' && we.ranged ? we.range | 0 : 0;
+    // Projectile shape for a ranged weapon: travel speed (px/tick), whether the
+    // shot pierces (hits every target in its path vs the first), and its on-screen
+    // look. npcSim picks a default speed when 0. All inert for melee weapons.
+    const rng2 = we && we.slot === 'weapon' && we.ranged;
+    entry.weaponProjSpeed = rng2 && we.projSpeed > 0 ? we.projSpeed : 0;
+    entry.weaponPierce = !!(rng2 && we.pierce);
+    entry.weaponProjSprite = rng2 ? we.projSprite || null : null;
     let def = 0;
     for (const s of ['body', 'arms', 'other']) {
       const id = entry.equipped[s];
@@ -1610,7 +1621,10 @@ class GameHost {
           entry.attackSpeed || 1,
           entry.weaponInflict,
           entry.weaponRange || 0,
-          entry.level || 1
+          entry.level || 1,
+          entry.weaponProjSpeed || 0,
+          entry.weaponPierce || false,
+          entry.weaponProjSprite || null
         );
         break;
       }

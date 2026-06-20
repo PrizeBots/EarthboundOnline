@@ -29,6 +29,7 @@ import {
   applyGiftFlagStates,
   getNpcDialogue,
   interpolateNpcs,
+  predictPlayerPush,
   liveNpcForKey,
 } from './NPCManager';
 import { NPC } from './NPC';
@@ -158,6 +159,12 @@ import {
 } from './Emitter';
 import { triggerHitstop, tickHitstop, addShake, tickShake, FLASH_MS } from './Juice';
 import { initPsiFx, updatePsiFx, renderPsiFx, spawnPsiFx } from './PsiFx';
+import {
+  spawnProjectile,
+  endProjectile,
+  updateProjectiles,
+  renderProjectiles,
+} from './Projectiles';
 import { updateItemFx, renderItemFx, spawnItemFx } from './ItemFx';
 import { setDrops, addDrop, removeDrop } from './DropManager';
 import { playEventSfx, loadSfxEvents } from './SfxEvents';
@@ -793,6 +800,15 @@ export class Game {
           // (the local user already spawned their own via the itemUseFx hook).
           spawnItemFx(item, x, y);
         },
+        onProjectile: (id, x, y, vx, vy, speed, dist, sprite) => {
+          // A ranged weapon fired (anyone's, incl. ours) — render the flying shot.
+          // Server owns travel/damage; this is the visual only.
+          spawnProjectile({ id, x, y, vx, vy, speed, dist, sprite });
+        },
+        onProjEnd: (id, x, y, hit) => {
+          // The shot landed — snap to the impact point + pop a spark.
+          endProjectile(id, x, y, hit);
+        },
         onPlayerRespawn: (id, x, y, dir) => {
           if (id === this.localPlayerId) {
             this.player.x = x;
@@ -861,6 +877,7 @@ export class Game {
           this.player.maxHp = stats.hpMax;
           this.player.hp = stats.hp;
           this.player.speed = stats.speed; // drives walk speed — faster as Speed grows
+          this.player.level = stats.level; // weight-class walk-push (blockedByNPC)
           if (gained > 0) spawnXpNumber(this.player.x, this.player.y, gained);
           if (leveled) {
             spawnLevelUp(this.player.x, this.player.y);
@@ -1368,6 +1385,7 @@ export class Game {
     updateChatBubbles();
     updateEmitters();
     updatePsiFx(); // PSI cast animations advance even while a menu/dialogue is up
+    updateProjectiles(); // ranged-weapon shots fly + retire on the same cadence
     updateItemFx(); // item-use animations (eating a Cookie, etc.) advance too
 
     // Remote players + server NPCs/enemies keep gliding even while menus/
@@ -1487,6 +1505,10 @@ export class Game {
     if (isToggleBoxesPressed()) setDebugBoxes(!debugBoxesOn());
 
     this.player.update();
+    // Predict the local player's walk-push so plowed NPCs react THIS frame
+    // instead of a network round-trip later (the server still authoritatively
+    // shoves them; this just hides the latency and reconciles).
+    predictPlayerPush(this.player.x, this.player.y, this.player.level, this.player.moving);
     // NPC simulation is server-authoritative; getNearbyNPCs (in render) still
     // triggers lazy sprite-sheet loads as NPCs come into range.
     this.camera.follow(this.player.x, this.player.y);
@@ -1992,6 +2014,7 @@ export class Game {
       this.ctx.save();
       this.ctx.scale(this.camera.zoom, this.camera.zoom);
       renderPsiFx(this.ctx, this.camera);
+      renderProjectiles(this.ctx, this.camera);
       renderItemFx(this.ctx, this.camera);
       renderEmitters(this.ctx, this.camera);
       renderChat(this.ctx, this.camera, this.player, this.remotePlayers);
@@ -2003,6 +2026,7 @@ export class Game {
       // the black shroud instead of bleeding numbers/FX through it.
       const clipped = this._pushRoomClip();
       renderPsiFx(this.ctx, this.camera);
+      renderProjectiles(this.ctx, this.camera);
       renderItemFx(this.ctx, this.camera);
       renderEmitters(this.ctx, this.camera, this._roomOriginGate());
       renderChat(this.ctx, this.camera, this.player, this.remotePlayers);

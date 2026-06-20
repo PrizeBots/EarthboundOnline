@@ -717,15 +717,27 @@ the Sprite Editor's PSI mode (`openSpriteEditor({ focusPsi })`, which authors
 `overrides/psi_anim.json`). Combat values apply on **server restart** (parallels
 `equip_stats`).
 
-**Ranged weapons.** A weapon's `equip_stats.json` can set `ranged:true` + `range`
-(px); `recomputeEquipStats` exposes `weaponRange`, and `handleAttack` swaps the 14px
-melee box for a forward **beam** out to `range` (the same loop damages every enemy
-along it — a piercing shot, LoS-gated). Aim is the facing direction (click-an-enemy
-targeting is a possible enhancement on the same picker).
+**Ranged weapons (projectiles).** A weapon's `equip_stats.json` can set
+`ranged:true` + `range` (px), plus `projSpeed` (px/tick travel), `pierce`
+(hit every target in the path vs the first), and `projSprite` (on-screen look:
+`'bullet'` default, `'pellet'` slings, `'beam'` energy weapons). `recomputeEquipStats`
+exposes these as `weaponRange/weaponProjSpeed/weaponPierce/weaponProjSprite`. Instead
+of an instant hitbox, `handleAttack` **launches a projectile** that
+`stepProjectiles` (run each tick after actor movement) marches forward in sub-steps
+(no tunnelling); it damages the first target its small box overlaps via the same
+`resolveMelee`/`applyDamage`/LoS path a melee swing uses — or EVERY new target if
+`pierce` — then ends on a wall, on its first hit, or at max range. Server-authoritative:
+the launch broadcasts `projectile` (id, muzzle, unit dir, speed, dist, sprite) and the
+end broadcasts `proj_end` (id, impact point, hit?); the client (`src/engine/Projectiles.ts`,
+wired in `Game.ts`/`Network.ts`) only renders the flying shot + impact spark, and
+self-retires a shot that flew its full `dist` if `proj_end` is ever dropped. Aim is the
+facing direction. Equippable guns/beams/slings (item ids 36–48, 50, 51, 215) are all
+tagged; one-shot battle items (Bazooka, Bottle rockets, sprays) have no equip slot and
+are out of this system.
 
 `overrides/equip_stats.json` is the **per-item mod layer** edited in the **Item
 Manager** — name, kind (`slot`, incl. `'none'`=consumable), users,
-offense/defense/crit/dodge/attackSpeed/ranged/range/cost/heal/healPp/cure/buffs/revive
+offense/defense/crit/dodge/attackSpeed/ranged/range/projSpeed/pierce/projSprite/cost/heal/healPp/cure/buffs/revive
 
 - the inflict list. It is
   layered over the ROM item table on BOTH sides (ROM data untouched): `server/shops.js`
@@ -775,10 +787,19 @@ gone. A car that should chase is just a routed traffic car.)_
 is client-reported (`index.js`/`vite.config.ts` just record `msg.x/y`) and the
 client warps through a door by setting its own coords, so a door warp reaches the
 sim as a **one-tick position jump** (`> WARP_DELTA`). The tick loop diffs each
-player's position against `prevPlayerPos` to spot those jumps; an enemy whose
-chased `targetId` jumped while it's within `WARP_FOLLOW_RANGE` of the doorway
-**follows through** — it's dropped beside where the player landed (`findFreeNear`)
-and the door is pushed onto its `warpStack`. A locked chase has **no home leash**
+player's position against `prevPlayerPos` to spot those jumps. A jump is only a
+**followable door warp if a real door (`resolveDoor`) sits at the pre-jump
+position** — that is the trigger the player stepped onto. Any other big jump is a
+**teleport** (event warp, editor reposition, scripted move, respawn): it is NOT
+recorded and any queued follow is dropped, so a chaser can never teleport along
+and keep hitting the player invisibly. This door-only rule holds for every
+teleport source by construction; sources that snap a player server-side also call
+an explicit exemption (`noteRespawn` / `noteEditorExit` / `noteTeleport`) as
+belt-and-suspenders for the rare case the teleport ORIGIN lands on a door trigger.
+An enemy whose chased `targetId` made a real door warp while it's within
+`WARP_FOLLOW_RANGE` of the doorway **follows through** — it walks to the doorway
+and warps on contact (never teleports across the room), landing beside where the
+player did, and the door is pushed onto its `warpStack`. A locked chase has **no home leash**
 — the enemy pursues relentlessly wherever the target goes; it gives up only when
 the target passes `giveUpRange` (hysteresis: acquire at `detectRange`, drop at
 the larger give-up distance) or it dies, then it paths home. Both radii (plus

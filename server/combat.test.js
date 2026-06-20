@@ -104,6 +104,48 @@ check('wallBetween: adjacent actors are never wall-separated', () => {
   assert.strictEqual(sim.wallBetween(100, 100, 104, 100), false);
 });
 
+// --- Ranged-weapon projectiles (fire → fly → resolve over ticks) ---
+
+check('a ranged shot flies forward, hits once for exactly `offense`, then is spent', () => {
+  // A full-hp enemy with a clear line 40px to its west — well beyond the 14px
+  // melee reach, so only a flying shot can connect.
+  const e = live.find(
+    (c) => hpOf(c.id).hp === c.maxHp && !sim.wallBetween(c.x - 40, c.y + 1, c.x, c.y)
+  );
+  if (!e) {
+    console.log('  skip ranged shot — no fresh clear-line enemy left on this map');
+    return;
+  }
+  const before = hpOf(e.id).hp;
+  // handleAttack args after `range`: attackerLevel, projSpeed, pierce, projSprite.
+  // range 120 reaches; projSpeed 8 px/tick. A melee swing from here would whiff.
+  sim.handleAttack(
+    e.x - 40,
+    e.y + 1,
+    3,
+    'proj-atk',
+    4,
+    false,
+    0,
+    1,
+    null,
+    120,
+    1,
+    8,
+    false,
+    'bullet'
+  );
+  assert.strictEqual(
+    hpOf(e.id).hp,
+    before,
+    'launch alone deals no damage — the shot must fly first'
+  );
+  // Fly it forward. It should connect within a handful of ticks (40/8 ≈ 5), then
+  // be consumed; extra ticks must NOT keep damaging (no lingering/double-hit).
+  for (let t = 0; t < 40; t++) sim.stepProjectiles(Date.now());
+  assert.strictEqual(hpOf(e.id).hp, before - 4, 'the shot connected exactly once for its offense');
+});
+
 // --- Crit / dodge resolution (resolveMelee, pure + deterministic) ---
 
 check('resolveMelee: a normal swing deals exactly base damage', () => {

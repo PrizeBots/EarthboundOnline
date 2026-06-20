@@ -86,9 +86,15 @@ function loadShops(assetsDir) {
         attackSpeed: aspd,
         inflict,
         // Ranged ("gun") weapons fire a forward shot up to `range` px instead of a
-        // 14px melee swing; 0/absent = melee. The server resolves the reach.
+        // 14px melee swing; 0/absent = melee. The server simulates a projectile
+        // that travels at `projSpeed` px/tick and (unless `pierce`) is spent on the
+        // first thing it hits. `projSprite` is the on-screen look ('bullet' default,
+        // 'pellet' for slings, 'beam' for energy weapons). See npcSim.stepProjectiles.
         ranged: !!ov.ranged && slot === 'weapon',
         range: num(ov.range, 0),
+        projSpeed: num(ov.projSpeed, 0),
+        pierce: !!ov.pierce,
+        projSprite: typeof ov.projSprite === 'string' ? ov.projSprite : null,
       };
     }
     goods[id] = {

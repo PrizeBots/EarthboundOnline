@@ -96,7 +96,7 @@ export const SPAWNER_STAT_FIELDS = fields([
  *  by kind (a townsperson can only take a speed override; an enemy takes all). */
 export const PLACEMENT_PROP_FIELDS = fields([...COMBAT_KEYS, ...BEHAVIOR_KEYS], {
   hp: ['enemy'],
-  level: ['enemy'],
+  level: ['enemy', 'person'], // level drives walk-push weight class for people too
   xp: ['enemy'],
   damage: ['enemy'],
   attackCooldownMs: ['enemy'],

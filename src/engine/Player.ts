@@ -62,6 +62,10 @@ export class Player extends Entity {
   /** The Speed STAT (server-authoritative; grows on level-up). Drives walk
    *  speed via moveSpeedFor. Defaults to the level-1 base until stats arrive. */
   speed = DEFAULT_SPEED_STAT;
+  /** Level (server-authoritative; grows on level-up). Drives the weight-class
+   *  walk-push: the player walks THROUGH any person/enemy below this level (the
+   *  server shoves it aside) instead of being blocked. Defaults to 1. */
+  level = 1;
   /** Epoch-ms the PK enable-lock expires (can't disable PK before this). */
   pkUntil = 0;
   private poseTimer = 0;
@@ -260,7 +264,7 @@ export class Player extends Entity {
   private blocked(colX: number, colY: number, curColX?: number, curColY?: number): boolean {
     return (
       checkPlayerCollision(colX, colY, COL_WIDTH, COL_HEIGHT) ||
-      blockedByNPC(colX, colY, COL_WIDTH, COL_HEIGHT, curColX, curColY)
+      blockedByNPC(colX, colY, COL_WIDTH, COL_HEIGHT, curColX, curColY, this.level)
     );
   }
 

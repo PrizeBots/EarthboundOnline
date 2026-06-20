@@ -123,7 +123,10 @@
       "y": 1728,
       "sprite": 74,
       "dir": 0,
-      "kind": "person"
+      "kind": "person",
+      "props": {
+        "level": 12
+      }
     },
     {
       "x": 2016,
@@ -223,8 +226,8 @@
       "kind": "prop"
     },
     {
-      "x": 7760,
-      "y": 336,
+      "x": 7592,
+      "y": 328,
       "sprite": 429,
       "dir": 0,
       "kind": "prop"

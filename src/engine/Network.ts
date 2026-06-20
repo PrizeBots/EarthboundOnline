@@ -103,6 +103,22 @@ type NetworkCallback = {
   /** Another player used a consumable — play its "use" animation at (x,y).
    *  `item` is the item id; the caster already plays its own. Visual only. */
   onItemUse?: (id: string, item: string, x: number, y: number) => void;
+  /** A ranged weapon fired — spawn the flying shot. (x,y)=muzzle, (vx,vy)=unit
+   *  direction, `speed` px/tick, `dist` max travel, `sprite` look. Visual only;
+   *  the server owns travel/damage and follows up with `proj_end`. */
+  onProjectile?: (
+    id: number,
+    x: number,
+    y: number,
+    vx: number,
+    vy: number,
+    speed: number,
+    dist: number,
+    sprite: string | null
+  ) => void;
+  /** A shot ended at (x,y) — snap it there + pop an impact spark. `hit` = it
+   *  connected with a target (vs hitting a wall / flying out its range). */
+  onProjEnd?: (id: number, x: number, y: number, hit: boolean) => void;
   /**
    * A status was just inflicted on a player — drives the floating EB battle-text
    * ("became numb!") at (x, y). `blocks` = it locks action (paralysis/sleep/
@@ -402,6 +418,21 @@ function openSocket() {
         break;
       case 'item_use':
         callbacks?.onItemUse?.(msg.id, msg.item, msg.x, msg.y);
+        break;
+      case 'projectile':
+        callbacks?.onProjectile?.(
+          msg.id,
+          msg.x,
+          msg.y,
+          msg.vx,
+          msg.vy,
+          msg.speed,
+          msg.dist,
+          typeof msg.sprite === 'string' ? msg.sprite : null
+        );
+        break;
+      case 'proj_end':
+        callbacks?.onProjEnd?.(msg.id, msg.x, msg.y, !!msg.hit);
         break;
       case 'status_applied':
         callbacks?.onStatusApplied?.(

@@ -15,6 +15,7 @@ import { playEventSfxAt } from './SfxEvents';
 import { Direction, POSES } from '../types';
 import type { NpcUpdate } from './Network';
 import { createInterpolator } from './RemoteInterp';
+import { checkPlayerCollision } from './Collision';
 import { loadShops, shopStoreForNpc } from './Shop';
 import { DEFAULT_ENTITY_STATS, DEFAULT_BEHAVIOR_RANGES } from './EntityStats';
 import type { EntityCol, EntityProps, EntityPropsOverride } from './EntityStats';
@@ -146,11 +147,15 @@ const entityDefs = new Map<number, EntityPropsOverride>();
 // spawner). This is the CLIENT SUBSET: the client only consumes hp (health-bar
 // denominator) and col (collision), so it resolves just those two. The instance
 // layer wins. KEEP order + defaults IN SYNC with server/npcSim.js resolveProps.
+// Default enemy level when neither the placement nor the catalog sets one.
+// KEEP IN SYNC with server/npcSim.js DEFAULT_ENEMY_LEVEL.
+const DEFAULT_ENEMY_LEVEL = 4;
+
 function resolveProps(
   kind: NPCKind,
   sprite: number,
   over?: EntityPropsOverride
-): { hp: number; col?: EntityCol } {
+): { hp: number; col?: EntityCol; level: number } {
   const o = over ?? {};
   const ent = entityDefs.get(sprite);
   const hp =
@@ -159,8 +164,11 @@ function resolveProps(
       : kind === 'car'
         ? (o.hp ?? VEHICLE_DEFAULT_HP)
         : (o.hp ?? 0);
+  // Level cascade mirrors the server: enemies read the catalog/default, everyone
+  // else is level 1 unless the placement overrides it. (instance > catalog > def)
+  const level = kind === 'enemy' ? (o.level ?? ent?.level ?? DEFAULT_ENEMY_LEVEL) : (o.level ?? 1);
   const col = o.col ?? ent?.col;
-  return { hp, col };
+  return { hp, col, level };
 }
 
 /** Resolved sprite-group + kind baseline for a sprite, WITHOUT the per-instance
@@ -169,7 +177,10 @@ function resolveProps(
 export function entityBaseline(kind: NPCKind, sprite: number): EntityProps {
   const ent = entityDefs.get(sprite) ?? {};
   const hp = kind === 'enemy' ? (ent.hp ?? enemyDefaultHp) : (ent.hp ?? DEFAULT_ENTITY_STATS.hp);
-  return { ...DEFAULT_ENTITY_STATS, ...DEFAULT_BEHAVIOR_RANGES, ...ent, hp };
+  // Level: enemies read catalog/default; everyone else is level 1 (mirrors the
+  // server's resolveProps, so the placeholder matches the actual resolved level).
+  const level = kind === 'enemy' ? (ent.level ?? DEFAULT_ENTITY_STATS.level) : 1;
+  return { ...DEFAULT_ENTITY_STATS, ...DEFAULT_BEHAVIOR_RANGES, ...ent, hp, level };
 }
 
 // Exact per-direction collision boxes for vehicles (tools/extract_vehicle_colboxes.py
@@ -360,10 +371,12 @@ export async function loadNPCs(): Promise<void> {
     if (sp.enabled === false) continue; // disabled spawner: no pool (server skips it too)
     // maxHp drives the health bar — resolved through the cascade (the spawner is
     // the instance-override layer for the enemies it prints).
-    const maxHp = resolveProps('enemy', sp.sprite, sp).hp;
+    const sprops = resolveProps('enemy', sp.sprite, sp);
+    const maxHp = sprops.hp;
     for (let i = 0; i < (sp.poolSize ?? 0); i++) {
       const npc = new NPC(sp.x, sp.y, sp.sprite, Direction.N, 'enemy', null);
       npc.applyHp(0, maxHp);
+      npc.level = sprops.level; // weight-class push (blockedByNPC)
       npcsById[id++] = npc;
       roamers.push(npc);
     }
@@ -411,10 +424,9 @@ function buildStaticNpcs(raw: RawNPC[], overrides: NpcOverrides | null): (NPC | 
     // sprite. KEEP IN SYNC with server/npcSim.js isEnemyPlacement.
     const kind: NPCKind = r.kind === 'enemy' || enemySpriteSet.has(r.sprite) ? 'enemy' : r.kind;
     const npc = new NPC(r.x, r.y, r.sprite, r.dir as Direction, kind, r.t ?? null);
-    if (kind === 'enemy') {
-      const hp = resolveProps('enemy', r.sprite, r.props).hp;
-      npc.applyHp(hp, hp);
-    }
+    const props = resolveProps(kind, r.sprite, r.props);
+    npc.level = props.level; // weight-class push (blockedByNPC)
+    if (kind === 'enemy') npc.applyHp(props.hp, props.hp);
     // Shop clerks (by ROM config id) carry the store they sell — Game.tryTalk
     // opens the shop instead of dialogue. Custom/override NPCs have no ROM id.
     if (kind === 'person') npc.shopStore = shopStoreForNpc(npcIdFromKey(r.k));
@@ -581,8 +593,96 @@ export function applyNpcUpdates(rows: NpcUpdate[]): void {
 export function interpolateNpcs(): void {
   for (const key of npcInterp.ids()) {
     const npc = npcsById[Number(key)];
-    if (npc && !npc.dead) npcInterp.interpolate(key, npc);
+    if (!npc || npc.dead) continue;
+    npcInterp.interpolate(key, npc); // authoritative (delayed) position → npc.x/y
+    // Layer the client-predicted push lead on top, then bleed it off so the
+    // authoritative stream reconciles it away. While the player keeps plowing,
+    // predictPlayerPush replenishes it each frame; when they stop, it decays to 0
+    // and the NPC settles exactly where the server says.
+    if (npc.predOffX || npc.predOffY) {
+      npc.x += npc.predOffX;
+      npc.y += npc.predOffY;
+      npc.predOffX *= PRED_DECAY;
+      npc.predOffY *= PRED_DECAY;
+      if (Math.abs(npc.predOffX) < 0.05) npc.predOffX = 0;
+      if (Math.abs(npc.predOffY) < 0.05) npc.predOffY = 0;
+    }
   }
+}
+
+// --- Client-side walk-push prediction ---------------------------------------
+// The server is authoritative for the shove, but its result only reaches us a
+// broadcast + interp-delay later (~150ms) — long enough that plowing a crowd
+// feels "loose" (you clip into bodies before they react). So we PREDICT it: the
+// instant the local player overlaps a lighter person/enemy, nudge it aside
+// locally via NPC.predOff (reconciled by interpolateNpcs). Mirrors the server's
+// pushFromPlayers (mass gate, wall clamp, moving-only) so the prediction lands
+// where the authoritative stream will — minimal correction when it arrives.
+const PRED_DECAY = 0.8; // per-frame bleed-off of the predicted lead (~5 frames)
+const PRED_PUSH_STEP = 1.4; // px/frame local nudge (≈ server PLOW_STEP at 60fps vs 20Hz tick)
+const PRED_MAX_LEAD = 12; // px — cap how far prediction can run ahead of the server
+
+/**
+ * Predict the local player's walk-push on nearby NPCs. Call once per frame AFTER
+ * the player has moved, with the player's foot-box center (x,y), level, and
+ * whether they actually moved this frame. Injects a decaying predicted offset on
+ * any person/enemy the player outweighs and overlaps — instant, server-reconciled.
+ */
+export function predictPlayerPush(
+  px: number,
+  py: number,
+  pusherLevel: number,
+  moving: boolean
+): void {
+  if (!moving) return; // a standing player isn't a repulsion aura (matches server)
+  const fx = px - NPC_COL_W / 2;
+  const fy = py + NPC_COL_OY;
+  const ax = Math.floor(px / AREA_PX);
+  const ay = Math.floor(py / AREA_PX);
+  const tryPush = (npc: NPC): void => {
+    if (npc.dead || (npc.kind !== 'person' && npc.kind !== 'enemy')) return;
+    if (pusherLevel <= npc.level) return; // only plow strictly-lighter bodies
+    // NPC foot box (manual override or the default), same as blockedByNPC.
+    const manual = entityCols.get(npc.spriteGroupId);
+    const nx = manual ? npc.x + manual.offX - manual.w / 2 : npc.x - NPC_COL_W / 2;
+    const ny = manual ? npc.y + manual.offY - manual.h : npc.y + NPC_COL_OY;
+    const nw = manual ? manual.w : NPC_COL_W;
+    const nh = manual ? manual.h : NPC_COL_H;
+    if (!(fx < nx + nw && fx + NPC_COL_W > nx && fy < ny + nh && fy + NPC_COL_H > ny)) return;
+    let dx = npc.x - px;
+    let dy = npc.y - py;
+    const d = Math.hypot(dx, dy);
+    if (d < 0.001) {
+      // Exactly co-located — scatter on a stable per-id angle (mirrors server).
+      const ang = ((Number(npc.placementKey ?? 0) % 16) / 16) * Math.PI * 2;
+      dx = Math.cos(ang);
+      dy = Math.sin(ang);
+    } else {
+      dx /= d;
+      dy /= d;
+    }
+    const sx = dx * PRED_PUSH_STEP;
+    const sy = dy * PRED_PUSH_STEP;
+    // Wall-clamp the predicted lead so we never push a body into a wall the
+    // server wouldn't (which would cause a visible snap-back on reconcile).
+    const lead = Math.hypot(npc.predOffX + sx, npc.predOffY + sy);
+    const tx = nx + npc.predOffX + sx;
+    const ty = ny + npc.predOffY + sy;
+    if (lead <= PRED_MAX_LEAD && !checkPlayerCollision(tx, ty, nw, nh)) {
+      npc.predOffX += sx;
+      npc.predOffY += sy;
+      // Show it THIS frame too (interpolateNpcs already ran), not next frame.
+      npc.x += sx;
+      npc.y += sy;
+    }
+  };
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const bucket = npcsByArea.get((ay + dy) * AREA_COLS + (ax + dx));
+      if (bucket) for (const npc of bucket) tryPush(npc);
+    }
+  }
+  for (const npc of roamers) tryPush(npc);
 }
 
 /**
@@ -642,7 +742,8 @@ export function blockedByNPC(
   w: number,
   h: number,
   curX?: number,
-  curY?: number
+  curY?: number,
+  pusherLevel?: number
 ): boolean {
   const haveCur = curX !== undefined && curY !== undefined;
   // Solid for the player: live people, live enemies (sharks), and cars. Props
@@ -673,6 +774,13 @@ export function blockedByNPC(
   const hits = (npc: NPC): boolean => {
     if (npc.dead) return false;
     if (npc.kind !== 'person' && npc.kind !== 'enemy' && npc.kind !== 'car') return false;
+    // Weight-class walk-push: a heavier (higher-level) mover isn't blocked by a
+    // lighter person/enemy — they walk INTO it and the server (pushFromPlayers)
+    // shoves it aside. Cars never yield (you don't push a car); equal/heavier
+    // NPCs still block. KEEP the rule (strict >) IN SYNC with npcSim massOf.
+    if (pusherLevel !== undefined && npc.kind !== 'car' && pusherLevel > npc.level) {
+      return false;
+    }
     const box = boxOf(npc);
     if (!box) return false;
     const [nx, ny, nw, nh] = box;
