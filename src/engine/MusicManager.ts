@@ -1,5 +1,6 @@
 import { loadJSON } from './AssetLoader';
 import { getSector } from './MapManager';
+import { roomAt, getRoom, pointInRoom, RoomDef } from './Rooms';
 import { SECTOR_TILES_X, SECTOR_TILES_Y, TILE_SIZE } from '../types';
 
 // asm.js SPC engine globals (loaded via <script> tag)
@@ -64,6 +65,18 @@ export function setMusicAreas(areas: MusicArea[]): void {
   musicAreas = areas.slice();
   currentAreaIndex = -1; // area refs changed — re-resolve from scratch
   lastLoggedSong = -2; // force the next updateMusic to re-evaluate + log
+}
+
+// Rooms are the runtime BGM source (a room's `bgm` property). The legacy
+// music-area path is now used ONLY while the Sound Manager is open for live
+// authoring/preview; `setMusicAuthoring(true)` flips updateMusic to it. When off
+// (normal play), updateMusic resolves bgm from the active room.
+let authoringAreas = false;
+export function setMusicAuthoring(on: boolean): void {
+  authoringAreas = on;
+  currentAreaIndex = -1;
+  currentBgmRoomId = null;
+  lastLoggedSong = -2; // force a re-evaluate on the next tick
 }
 
 /**
@@ -252,6 +265,38 @@ export function playCharSelectMusic(): void {
   if (!initialized) initMusic();
   if (audioContext && audioContext.state === 'suspended') void audioContext.resume();
   void playSPCSong(CHAR_SELECT_SONG);
+}
+
+// Browser autoplay policy: the AudioContext can only be created/resumed inside a
+// user-gesture handler. On the title/account overlay and the character-select
+// screen the player may interact entirely with DOM buttons (sign in, pick a slot)
+// — none of which run the canvas input path — so the gesture that should unlock
+// audio was being missed and the naming music never started. While armed, a
+// CAPTURE-phase listener on window catches ANY pointer/key/touch anywhere (it fires
+// before any target handler can stopPropagation) and unlocks + starts the music.
+// playCharSelectMusic is idempotent, so firing on every gesture is harmless.
+const UNLOCK_EVENTS = ['pointerdown', 'keydown', 'touchstart'] as const;
+let charSelectUnlockArmed = false;
+function charSelectGestureHandler(): void {
+  playCharSelectMusic();
+}
+
+/** Start listening for the first user gesture (anywhere) to unlock audio + the
+ *  character-select music. Call on entering the char-select / start screen. */
+export function armCharSelectAudioUnlock(): void {
+  if (charSelectUnlockArmed || typeof window === 'undefined') return;
+  charSelectUnlockArmed = true;
+  for (const ev of UNLOCK_EVENTS)
+    window.addEventListener(ev, charSelectGestureHandler, { capture: true });
+}
+
+/** Stop the gesture listener (call when the game starts, so in-game clicks don't
+ *  restart the naming music over the world music). */
+export function disarmCharSelectAudioUnlock(): void {
+  if (!charSelectUnlockArmed) return;
+  charSelectUnlockArmed = false;
+  for (const ev of UNLOCK_EVENTS)
+    window.removeEventListener(ev, charSelectGestureHandler, { capture: true });
 }
 
 /**
@@ -475,30 +520,69 @@ export function playSfxAt(id: string | undefined | null, x: number, y: number, v
 }
 
 let lastLoggedSong = -1;
+// The room whose bgm is currently playing. Sticky like currentAreaIndex: we hold
+// it until the player is clearly OUTSIDE it (EDGE_MARGIN) so brushing a seam
+// never flips the song — the hysteresis ported from the old music-area path.
+let currentBgmRoomId: string | null = null;
+
+/** The song + a log label for the player's position, sourced from the active
+ *  room's bgm (sticky), falling back to the sector's ROM musicId. */
+function roomMusicAt(playerX: number, playerY: number): { song: number; source: string } | null {
+  // Sticky: keep the current bgm room until the player has clearly left it.
+  let room: RoomDef | null = null;
+  if (currentBgmRoomId) {
+    const cur = getRoom(currentBgmRoomId);
+    if (cur && pointInRoom(cur, playerX, playerY, EDGE_MARGIN)) room = cur;
+  }
+  if (!room) room = roomAt(playerX, playerY);
+  currentBgmRoomId = room?.id ?? null;
+
+  const bgm = room?.bgm ?? null;
+  if (bgm != null && bgm > 0) {
+    return { song: bgm, source: `room "${room!.label}"` };
+  }
+  // null/absent bgm (overworld gap or untagged interior) → sector ROM musicId.
+  const sectorX = Math.floor(playerX / (SECTOR_TILES_X * TILE_SIZE));
+  const sectorY = Math.floor(playerY / (SECTOR_TILES_Y * TILE_SIZE));
+  const sector = getSector(sectorX, sectorY);
+  if (!sector) return null;
+  return {
+    song: musicMap[String(sector.musicId)] ?? 0,
+    source: `sector musicId=${sector.musicId}`,
+  };
+}
+
+/** The legacy music-area path — only while the Sound Manager is authoring. */
+function areaMusicAt(playerX: number, playerY: number): { song: number; source: string } | null {
+  const ai = areaForPoint(playerX, playerY);
+  if (ai >= 0) {
+    currentAreaIndex = ai;
+    return { song: musicAreas[ai].song, source: `area "${musicAreas[ai].name}"` };
+  }
+  currentAreaIndex = -1;
+  const sectorX = Math.floor(playerX / (SECTOR_TILES_X * TILE_SIZE));
+  const sectorY = Math.floor(playerY / (SECTOR_TILES_Y * TILE_SIZE));
+  const sector = getSector(sectorX, sectorY);
+  if (!sector) return null;
+  return {
+    song: musicMap[String(sector.musicId)] ?? 0,
+    source: `sector musicId=${sector.musicId}`,
+  };
+}
 
 export function updateMusic(playerX: number, playerY: number): void {
   if (!initialized) return;
   listenerX = playerX;
   listenerY = playerY;
 
-  // An authored area wins (sticky — see areaForPoint); otherwise fall back to
-  // the sector's ROM musicId.
-  const ai = areaForPoint(playerX, playerY);
-  let songNumber: number;
-  let source: string;
-  if (ai >= 0) {
-    currentAreaIndex = ai;
-    songNumber = musicAreas[ai].song;
-    source = `area "${musicAreas[ai].name}"`;
-  } else {
-    currentAreaIndex = -1;
-    const sectorX = Math.floor(playerX / (SECTOR_TILES_X * TILE_SIZE));
-    const sectorY = Math.floor(playerY / (SECTOR_TILES_Y * TILE_SIZE));
-    const sector = getSector(sectorX, sectorY);
-    if (!sector) return;
-    songNumber = musicMap[String(sector.musicId)] ?? 0;
-    source = `sector musicId=${sector.musicId}`;
-  }
+  // Rooms drive music in normal play; the Sound Manager's live areas win only
+  // while it's open for authoring (so Test/preview still works).
+  const res =
+    authoringAreas && musicAreas.length
+      ? areaMusicAt(playerX, playerY)
+      : roomMusicAt(playerX, playerY);
+  if (!res) return;
+  const { song: songNumber, source } = res;
 
   if (songNumber !== lastLoggedSong) {
     console.log(`Music: song ${songNumber} (${source})`);

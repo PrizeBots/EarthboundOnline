@@ -56,11 +56,12 @@ type NetworkCallback = {
    * damage arrives via onNpcHp / onPlayerHp.
    */
   onCombat: (
-    evt: 'crit' | 'miss',
+    evt: 'crit' | 'miss' | 'hit',
     x: number,
     y: number,
     byPlayer: string | null,
-    targetPlayer: string | null
+    targetPlayer: string | null,
+    dmg: number
   ) => void;
   /** The local player's Goods list (welcome snapshot + post-use deltas). */
   onInventory: (items: GoodsItem[]) => void;
@@ -89,7 +90,16 @@ type NetworkCallback = {
   onPlayerStatus?: (id: string, statuses: string[]) => void;
   /** A PSI was cast — play its effect. (x,y)=caster, (tx,ty)=target (projectile
    *  flies between them). Sent to everyone incl. the caster. Visual only. */
-  onPsiCast?: (id: string, casterId: string, x: number, y: number, tx: number, ty: number) => void;
+  onPsiCast?: (
+    id: string,
+    casterId: string,
+    x: number,
+    y: number,
+    tx: number,
+    ty: number,
+    hits?: { x: number; y: number }[],
+    beams?: { tx: number; ty: number }[]
+  ) => void;
   /** Another player used a consumable — play its "use" animation at (x,y).
    *  `item` is the item id; the caster already plays its own. Visual only. */
   onItemUse?: (id: string, item: string, x: number, y: number) => void;
@@ -363,7 +373,14 @@ function openSocket() {
         callbacks?.onPlayerHp(msg.id, msg.hp, msg.maxHp, msg.dmg ?? 0, msg.heal ?? 0);
         break;
       case 'combat':
-        callbacks?.onCombat(msg.evt, msg.x, msg.y, msg.byPlayer ?? null, msg.targetPlayer ?? null);
+        callbacks?.onCombat(
+          msg.evt,
+          msg.x,
+          msg.y,
+          msg.byPlayer ?? null,
+          msg.targetPlayer ?? null,
+          msg.dmg ?? 0
+        );
         break;
       case 'player_push':
         callbacks?.onPlayerPush?.(msg.id, msg.x, msg.y);
@@ -378,7 +395,9 @@ function openSocket() {
           msg.x,
           msg.y,
           typeof msg.tx === 'number' ? msg.tx : msg.x,
-          typeof msg.ty === 'number' ? msg.ty : msg.y
+          typeof msg.ty === 'number' ? msg.ty : msg.y,
+          Array.isArray(msg.hits) ? msg.hits : undefined,
+          Array.isArray(msg.beams) ? msg.beams : undefined
         );
         break;
       case 'item_use':

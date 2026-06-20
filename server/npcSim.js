@@ -109,6 +109,32 @@ function knockDist(dmg) {
   return Math.max(KB_MIN, Math.min(KB_MAX, dmg * KB_PER_DMG));
 }
 
+// --- Mass / weight class (level-driven push + knockback resistance) ---
+// Every actor AND player carries a `mass` derived from its level: heavier things
+// shove lighter ones aside on contact (walk-push) and resist being knocked back.
+// EQUAL mass reproduces the old behavior exactly (50/50 separation, full
+// knockback), so a fair same-level fight is unchanged — only a level GAP creates
+// asymmetry. A per-entity `mass` override (Entity Manager field: TODO) wins over
+// the curve, so a level-2 boss can still be authored heavy / a big gnat light.
+const MASS_PER_LEVEL = 1; // mass = 1 + level*this; level 2 → 3, level 12 → 13
+function massOf(a) {
+  if (a && typeof a.mass === 'number' && a.mass > 0) return a.mass;
+  const lvl = a && typeof a.level === 'number' ? a.level : 1;
+  return 1 + Math.max(0, lvl) * MASS_PER_LEVEL;
+}
+// Knockback scale from the attacker/victim mass ratio. A hit from something your
+// own weight shoves you the full (damage-proportional) distance; a much heavier
+// attacker flings a lighter victim toward the cap, a much lighter attacker barely
+// budges a heavy victim. Equal mass → 1 (UNCHANGED), so this never detunes a fair
+// fight — only a lopsided one. Returns 1 when either mass is missing (vehicle /
+// legacy / test callers) so their tuned knockback is untouched.
+const KB_MASS_FLOOR = 0.15; // a featherweight attacker still nudges a heavy victim a little
+const KB_MASS_CEIL = 2.0; // cap the bonus a heavyweight gets vs a gnat (final dist still ≤ KB_MAX)
+function massKnockScale(attMass, vicMass) {
+  if (!(attMass > 0) || !(vicMass > 0)) return 1;
+  return Math.max(KB_MASS_FLOOR, Math.min(KB_MASS_CEIL, (2 * attMass) / (attMass + vicMass)));
+}
+
 // --- Enemy aggression (Heavy) ---
 // Enemies have a level (set from the spawner / a default) and so do players, so
 // a future EarthBound-style "flee if you out-level it" rule can hook in here.
@@ -320,9 +346,95 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       wallBetween: () => false,
     };
   }
-  // Map height is data-driven (the map grows with the stamped interiors band;
-  // see ARCHITECTURE.md). Width is fixed at 256, so the row count is the height.
-  const mapHTiles = Math.round(tiles.length / MAP_W_TILES);
+  // The ROM overworld is the base; the Room Manager's custom rooms are stamped
+  // into a BAND below it (bandY >= base height) — exactly like the client's
+  // MapManager.buildCustomRoomBand. The server MUST mirror this or every enemy/
+  // NPC placed in a custom room sits below the server's world, reads as
+  // out-of-bounds solid (blocked), and freezes — it can neither sense players
+  // (canSense) nor wander. Player movement is client-side, so the player walks
+  // there fine while the server thinks it's void. KEEP IN SYNC with MapManager.
+  const baseTiles = tiles; // never mutated — the band is re-stamped over a copy
+  const baseSectors = sectors;
+  const baseHTiles = Math.round(baseTiles.length / MAP_W_TILES);
+  const baseHSectors = Math.round(baseSectors.length / MAP_W_SECTORS);
+  // Map height is data-driven (grows with the stamped band). Width fixed at 256.
+  let mapHTiles = baseHTiles;
+  const DEFAULT_BAND_SECTOR = {
+    tilesetId: 0,
+    paletteId: 0,
+    musicId: 0,
+    indoor: false,
+    dungeon: false,
+  };
+  // Composite-tile registry (id >= COMPOSITE_BASE → 16 packed minitile refs).
+  // Custom rooms can author sub-tile detail; each composite cell's collision is
+  // assembled from its source minitiles' own bytes. KEEP IN SYNC with
+  // CompositeTiles.ts / CustomTiles.ts (the ref packing + base offsets).
+  const COMPOSITE_BASE = 1_000_000;
+  const CUSTOM_REF_BASE = 100_000_000;
+  const composites = new Map();
+  const unpackRef = (n) => {
+    const mi = n % 16;
+    let r = (n - mi) / 16;
+    const arr = r % 1024;
+    r = (r - arr) / 1024;
+    const pal = r % 16;
+    const ts = (r - pal) / 16;
+    return { ts, pal, arr, mi };
+  };
+  const ROOMS_OV_PATH = path.join(assetsDir, '..', 'overrides', 'rooms.json');
+  // Re-stamp the custom-room band over a fresh copy of the ROM base (idempotent —
+  // never double-stamps). Grows tiles/sectors to fit the lowest room, writes each
+  // room's arrangement cells + sector style, and registers its composites.
+  function buildRoomBand() {
+    tiles = baseTiles.slice();
+    sectors = baseSectors.slice();
+    composites.clear();
+    let doc = null;
+    try {
+      doc = JSON.parse(fs.readFileSync(ROOMS_OV_PATH, 'utf8'));
+    } catch {
+      doc = null; // no rooms authored — overworld only
+    }
+    const custom = (doc && doc.rooms) || [];
+    let hSectors = baseHSectors;
+    for (const r of custom) hSectors = Math.max(hSectors, Math.ceil((r.bandY + r.h) / SEC_TY));
+    const hTiles = hSectors * SEC_TY;
+    for (let i = tiles.length; i < hTiles * MAP_W_TILES; i++) tiles.push(0);
+    for (let i = sectors.length; i < hSectors * MAP_W_SECTORS; i++)
+      sectors.push({ ...DEFAULT_BAND_SECTOR });
+    for (const r of custom) {
+      for (let ly = 0; ly < r.h; ly++) {
+        for (let lx = 0; lx < r.w; lx++) {
+          tiles[(r.bandY + ly) * MAP_W_TILES + (r.bandX + lx)] =
+            (r.tiles && r.tiles[ly * r.w + lx]) || 0;
+        }
+      }
+      const s0x = Math.floor(r.bandX / SEC_TX);
+      const s1x = Math.floor((r.bandX + r.w - 1) / SEC_TX);
+      const s0y = Math.floor(r.bandY / SEC_TY);
+      const s1y = Math.floor((r.bandY + r.h - 1) / SEC_TY);
+      for (let sy = s0y; sy <= s1y; sy++) {
+        for (let sx = s0x; sx <= s1x; sx++) sectors[sy * MAP_W_SECTORS + sx] = { ...r.sector };
+      }
+      for (const [id, refs] of Object.entries(r.composites || {})) composites.set(Number(id), refs);
+    }
+    mapHTiles = hTiles;
+  }
+  buildRoomBand();
+  // Collision byte of one minitile (idx 0-15) of a composite cell — assembled
+  // from its source minitile's own tileset collision (mirrors Collision.ts
+  // compositeRow). Empty/custom refs default to walkable (0).
+  function compositeByte(arr, idx) {
+    const refs = composites.get(arr);
+    if (!refs) return 0;
+    const n = refs[idx] ?? -1;
+    if (n < 0 || n >= CUSTOM_REF_BASE) return 0;
+    const ref = unpackRef(n);
+    const c = collisionByDrawTs.get(tilesetMapping[ref.ts] ?? 0);
+    if (c && ref.arr < c.length) return c[ref.arr][ref.mi] ?? 0;
+    return 0;
+  }
   const collisionByDrawTs = new Map();
   // Per-map-tile collision overrides (overrides/collision.json `cells`):
   // tileY*MAP_W_TILES+tileX -> { minitileIdx: byte }. Applied on top of the
@@ -386,11 +498,17 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         const ty = Math.floor(my / 4);
         const sector = sectorForTile(tx, ty);
         if (!sector) return true;
-        const cols = collisionByDrawTs.get(tilesetMapping[sector.tilesetId] ?? 0);
-        if (!cols) return true;
         const arr = tiles[ty * MAP_W_TILES + tx] ?? 0;
         const idx = (my % 4) * 4 + (mx % 4);
-        let byte = arr < cols.length ? cols[arr][idx] : 0;
+        let byte;
+        if (arr >= COMPOSITE_BASE) {
+          // Custom-room composite cell: collision is per-source-minitile.
+          byte = compositeByte(arr, idx);
+        } else {
+          const cols = collisionByDrawTs.get(tilesetMapping[sector.tilesetId] ?? 0);
+          if (!cols) return true;
+          byte = arr < cols.length ? cols[arr][idx] : 0;
+        }
         const ov = cellOv.get(ty * MAP_W_TILES + tx);
         if (ov && ov[idx] !== undefined) byte = ov[idx]; // per-cell override wins
         if ((byte & 0x80) !== 0) return true;
@@ -656,6 +774,47 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   function entityStat(sprite, key, def) {
     const e = entityDefs[String(sprite)];
     return e && e[key] != null ? e[key] : def;
+  }
+
+  // Resolve the SHARED entity props for an actor through the cascade:
+  //   kind default -> sprite-group entity table (enemies) -> instance override.
+  // `over` is the instance-override layer: a placement's `r.props`, OR a spawner
+  // object, OR undefined. Sparse — any absent field inherits the layer beneath,
+  // and the instance layer WINS over the entity/kind layers. Returns resolved
+  // actor fields (note: `attackCooldownMs` prop -> `attackCooldown` field, and
+  // `chaseSpeed` is derived from speed). Cars are NOT resolved here — they have
+  // disjoint defaults/fields and carry their own inline props (see buildCarPool).
+  // KEEP IN SYNC with src/engine/NPCManager.ts resolveProps (order + defaults).
+  function resolveProps(kind, sprite, over) {
+    const o = over || {};
+    const enemy = kind === 'enemy';
+    const person = kind === 'person';
+    const car = kind === 'car';
+    // sprite-group layer: only enemies read the entity table for combat numbers
+    // (people/props/cars don't today). `ent(key, def)` = entity value or default.
+    const ent = (key, def) => (enemy ? entityStat(sprite, key, def) : def);
+    // instance override wins over the (entity/kind) layer beneath it.
+    const pick = (key, below) => (o[key] != null ? o[key] : below);
+    // `speed` is per-kind by design (see EntityProps.speed): px/tick for walkers,
+    // a route ×multiplier (~1) for cars.
+    const speed = pick('speed', car ? 1 : ent('speed', ENEMY_SPEED));
+    return {
+      hp: pick(
+        'hp',
+        car ? VEHICLE_HP : enemy ? entityStat(sprite, 'hp', STATIC_ENEMY_HP) : person ? NPC_HP : 0
+      ),
+      level: pick('level', enemy ? entityStat(sprite, 'level', DEFAULT_ENEMY_LEVEL) : 1),
+      xp: pick('xp', enemy ? entityStat(sprite, 'xp', DEFAULT_ENEMY_XP) : 0),
+      damage: pick('damage', car ? VEHICLE_DAMAGE : ent('damage', ENEMY_DAMAGE)),
+      attackCooldown: pick('attackCooldownMs', ent('attackCooldownMs', ENEMY_ATTACK_COOLDOWN_MS)),
+      speed,
+      chaseSpeed: speed * CHASE_RATIO, // walkers only (cars route, never chase)
+      attackRange: pick('attackRange', ent('attackRange', ATTACK_RANGE)),
+      detectRange: pick('detectRange', DETECT_RANGE),
+      giveUpRange: pick('giveUpRange', GIVE_UP_RANGE),
+      // null = no per-instance roam radius; the tick falls back to spawner / 256.
+      wanderRadius: o.wanderRadius != null ? o.wanderRadius : null,
+    };
   }
 
   // Per-element status vulnerability % for a sprite (100 = fully susceptible,
@@ -983,6 +1142,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         detectRange: DETECT_RANGE, // px the player must be within to aggro this enemy
         giveUpRange: GIVE_UP_RANGE, // px a locked-on chase breaks off past
         attackRange: ATTACK_RANGE, // px the enemy must be within to land a hit
+        wanderRadius: null, // per-instance roam radius; null -> spawner / 256 (see tickEnemy)
         dead: false,
         hpDirty: false,
         respawnAt: 0,
@@ -1043,12 +1203,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         });
       }
       const enemy = isEnemyPlacement(r);
-      const person = !enemy && r.kind === 'person'; // props/deleted carry no HP
-      // Enemy stats come from the merged per-entity table (ROM catalog overlaid
-      // by authored entities), keyed by sprite — same source the spawner pool
-      // uses, so a placed enemy and a spawned one of the same sprite match.
-      const hp = enemy ? entityStat(r.sprite, 'hp', STATIC_ENEMY_HP) : person ? NPC_HP : 0;
-      const speed = enemy ? entityStat(r.sprite, 'speed', ENEMY_SPEED) : ENEMY_SPEED;
+      // One cascade: kind default -> sprite-group entity table -> this placement's
+      // `props` override. Same resolver the spawner pool uses, so a placed enemy
+      // and a spawned one of the same sprite match (minus any per-instance props).
+      const p = resolveProps(enemy ? 'enemy' : r.kind, r.sprite, r.props);
       return baseActor({
         id,
         kind: enemy ? 'enemy' : r.kind,
@@ -1066,19 +1224,18 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         // ones — `roam` is the tick dispatch flag that routes to tickEnemy
         // (full enemy AI) rather than tickNpc (townsfolk self-defense).
         roam: enemy,
-        hp,
-        maxHp: hp,
-        level: enemy ? entityStat(r.sprite, 'level', DEFAULT_ENEMY_LEVEL) : 1,
-        xp: enemy ? entityStat(r.sprite, 'xp', DEFAULT_ENEMY_XP) : 0,
-        damage: enemy ? entityStat(r.sprite, 'damage', ENEMY_DAMAGE) : ENEMY_DAMAGE,
-        attackCooldown: enemy
-          ? entityStat(r.sprite, 'attackCooldownMs', ENEMY_ATTACK_COOLDOWN_MS)
-          : ENEMY_ATTACK_COOLDOWN_MS,
-        speed,
-        chaseSpeed: speed * CHASE_RATIO,
-        // Aggro/chase ranges are per-SPAWNER (see buildPool); placement enemies
-        // have no spawner, so they take the global defaults (set in baseActor).
-        attackRange: enemy ? entityStat(r.sprite, 'attackRange', ATTACK_RANGE) : ATTACK_RANGE,
+        hp: p.hp,
+        maxHp: p.hp,
+        level: p.level,
+        xp: p.xp,
+        damage: p.damage,
+        attackCooldown: p.attackCooldown,
+        speed: p.speed,
+        chaseSpeed: p.chaseSpeed,
+        attackRange: p.attackRange,
+        detectRange: p.detectRange,
+        giveUpRange: p.giveUpRange,
+        wanderRadius: p.wanderRadius, // null unless this placement overrides it
       });
     });
   }
@@ -1086,21 +1243,16 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // Fixed enemy pool from the spawners, appended AFTER the ROM placements so
   // wire ids (array indexes) align with the client, which builds the same pool
   // from the same file. Slots start dead (hp 0 = hidden) until activated.
-  // Combat stats now live PER ENTITY (sprite group) in enemyCfg.entities, set by
-  // the Entity Manager; spawners inherit them. Fall back to any legacy
-  // per-spawner field (old files), then the global default.
-  function spawnerStat(sp, key, def) {
-    const e = entityDefs[String(sp.sprite)] || {};
-    if (e[key] != null) return e[key];
-    if (sp[key] != null) return sp[key]; // legacy per-spawner field (old files)
-    return def;
-  }
-
+  // Combat stats resolve through resolveProps: kind default -> sprite-group
+  // entity table (Entity Manager) -> the spawner's own fields (instance layer).
   function buildPool(startId) {
     const out = [];
     let id = startId;
     for (const sp of SPAWNERS) {
-      const speed = spawnerStat(sp, 'speed', ENEMY_SPEED);
+      // The SPAWNER is the instance-override layer for the enemies it prints:
+      // kind default -> sprite-group entity table -> this spawner's own fields.
+      // So two spawners of the same sprite can differ (hp/aggro/chase/roam/...).
+      const p = resolveProps('enemy', sp.sprite, sp);
       for (let i = 0; i < (sp.poolSize || 0); i++) {
         out.push(
           baseActor({
@@ -1120,18 +1272,17 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             isEnemy: true,
             pk: true, // pooled enemies are PK
             roam: true,
-            maxHp: spawnerStat(sp, 'hp', 24),
-            level: spawnerStat(sp, 'level', DEFAULT_ENEMY_LEVEL),
-            xp: spawnerStat(sp, 'xp', DEFAULT_ENEMY_XP),
-            damage: spawnerStat(sp, 'damage', ENEMY_DAMAGE),
-            attackCooldown: spawnerStat(sp, 'attackCooldownMs', ENEMY_ATTACK_COOLDOWN_MS),
-            speed,
-            chaseSpeed: speed * CHASE_RATIO,
-            // Per-SPAWNER aggro/chase: read straight off the spawner (NOT via
-            // spawnerStat) so two spawners of the same sprite stay independent.
-            detectRange: sp.detectRange != null ? sp.detectRange : DETECT_RANGE,
-            giveUpRange: sp.giveUpRange != null ? sp.giveUpRange : GIVE_UP_RANGE,
-            attackRange: spawnerStat(sp, 'attackRange', ATTACK_RANGE),
+            maxHp: p.hp,
+            level: p.level,
+            xp: p.xp,
+            damage: p.damage,
+            attackCooldown: p.attackCooldown,
+            speed: p.speed,
+            chaseSpeed: p.chaseSpeed,
+            detectRange: p.detectRange,
+            giveUpRange: p.giveUpRange,
+            attackRange: p.attackRange,
+            wanderRadius: p.wanderRadius, // per-spawner roam radius (else null -> 256)
             dead: true, // inactive until the spawner wakes it
             spawner: sp,
           })
@@ -1150,11 +1301,12 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     let id = startId;
     for (const v of activeVehicles(carCfg)) {
       const [sx, sy] = v.waypoints[0];
-      // A traffic car is a full combatant like an Entity Manager vehicle: it has
-      // HP (so it can be attacked — PK rules, see handleAttack) and a collide
-      // damage it deals when it plows a foe (tickCar → plow). Authored per-vehicle
-      // in the Traffic Editor; falls back to the same defaults the EM flag uses.
-      const hp = v.hp > 0 ? v.hp : VEHICLE_HP;
+      // A traffic car is a full combatant: it has HP (attackable — PK rules, see
+      // handleAttack) and a collide damage it deals when it plows a foe (tickCar →
+      // plow). The vehicle IS its own instance-override layer, so hp/damage/speed
+      // resolve through the SAME cascade as every other entity (resolveProps); the
+      // vehicle-only extras (waypoints/loop/box) are set alongside.
+      const p = resolveProps('car', v.sprite, v);
       out.push(
         baseActor({
           id: id++,
@@ -1171,12 +1323,12 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           wpIndex: 1, // heading toward the second waypoint
           step: 1, // ping-pong direction for non-looping routes
           loop: v.loop !== false,
-          speed: v.speed || 1,
+          speed: p.speed,
           carW: v.w || 40,
           carH: v.h || 28,
-          hp,
-          maxHp: hp,
-          damage: v.damage != null ? v.damage : VEHICLE_DAMAGE,
+          hp: p.hp,
+          maxHp: p.hp,
+          damage: p.damage,
         })
       );
     }
@@ -1223,9 +1375,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           return;
         }
         const enemy = isEnemyPlacement(r);
-        const person = !enemy && r.kind === 'person';
-        const hp = enemy ? entityStat(r.sprite, 'hp', STATIC_ENEMY_HP) : person ? NPC_HP : 0;
-        const speed = enemy ? entityStat(r.sprite, 'speed', ENEMY_SPEED) : ENEMY_SPEED;
+        // Same cascade as buildNpcs (kind -> entity table -> placement props).
+        const p = resolveProps(enemy ? 'enemy' : r.kind, r.sprite, r.props);
         n.kind = enemy ? 'enemy' : r.kind;
         n.sprite = r.sprite;
         n.x = r.x;
@@ -1241,21 +1392,18 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         n.isEnemy = enemy;
         n.pk = enemy;
         n.roam = enemy; // see buildNpcs: routes placed enemies to tickEnemy
-        n.maxHp = hp;
-        n.hp = hp;
-        n.level = enemy ? entityStat(r.sprite, 'level', DEFAULT_ENEMY_LEVEL) : 1;
-        n.xp = enemy ? entityStat(r.sprite, 'xp', DEFAULT_ENEMY_XP) : 0;
-        n.damage = enemy ? entityStat(r.sprite, 'damage', ENEMY_DAMAGE) : ENEMY_DAMAGE;
-        n.attackCooldown = enemy
-          ? entityStat(r.sprite, 'attackCooldownMs', ENEMY_ATTACK_COOLDOWN_MS)
-          : ENEMY_ATTACK_COOLDOWN_MS;
-        n.speed = speed;
-        n.chaseSpeed = speed * CHASE_RATIO;
-        // Aggro/chase ranges are per-SPAWNER (see buildPool); placement enemies
-        // have no spawner, so they take the global defaults.
-        n.detectRange = DETECT_RANGE;
-        n.giveUpRange = GIVE_UP_RANGE;
-        n.attackRange = enemy ? entityStat(r.sprite, 'attackRange', ATTACK_RANGE) : ATTACK_RANGE;
+        n.maxHp = p.hp;
+        n.hp = p.hp;
+        n.level = p.level;
+        n.xp = p.xp;
+        n.damage = p.damage;
+        n.attackCooldown = p.attackCooldown;
+        n.speed = p.speed;
+        n.chaseSpeed = p.chaseSpeed;
+        n.detectRange = p.detectRange;
+        n.giveUpRange = p.giveUpRange;
+        n.attackRange = p.attackRange;
+        n.wanderRadius = p.wanderRadius; // null unless this placement overrides it
         n.dead = false;
         n.dirty = n.kind === 'person' || enemy;
         n.hpDirty = enemy;
@@ -1318,6 +1466,17 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     console.log(`[npcSim] reloaded traffic (${carPool.length} cars)`);
   }
 
+  // Hot-reload the custom-room band when the Room Manager saves overrides/
+  // rooms.json: re-stamp the band (collision + sectors + height grow), then
+  // rebuild placements so each actor's `indoor` flag and in-bounds status
+  // re-derive against the new map. Without this, an enemy placed in a freshly
+  // authored room would stay frozen until the server restarts.
+  function reloadRooms() {
+    buildRoomBand();
+    reloadPlacements();
+    console.log(`[npcSim] reloaded custom-room band (map now ${mapHTiles} tiles tall)`);
+  }
+
   // fs.watchFile (polling) over fs.watch: reliable on Windows and across
   // editors/scripts that replace the file rather than write in place. Watch
   // BOTH the extracted base and the editor overrides.
@@ -1325,6 +1484,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   fs.watchFile(OVERRIDES_PATH, { interval: 2000 }, reloadPlacements);
   fs.watchFile(ENEMY_OV_PATH, { interval: 2000 }, reloadEnemies);
   fs.watchFile(CAR_OV_PATH, { interval: 2000 }, reloadTraffic);
+  fs.watchFile(ROOMS_OV_PATH, { interval: 2000 }, reloadRooms);
 
   function stepAnimation(n) {
     if (++n.animTimer >= 8) {
@@ -1542,11 +1702,19 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         // Swing at a PK player: HP lives on the host, so apply it there. Flat
         // NPC_DAMAGE (no crit/dodge) — townsfolk are a deliberate PK deterrent.
         if (onPlayerHitCb)
-          onPlayerHitCb(e.id, dmg, null, knockbackPlayerSpot(e.x, e.y, n.x, n.y, dmg));
+          onPlayerHitCb(
+            e.id,
+            dmg,
+            null,
+            knockbackPlayerSpot(e.x, e.y, n.x, n.y, dmg, {
+              amass: massOf(n),
+              vmass: massOf(e),
+            })
+          );
       } else {
         // Townsfolk knock enemies back but don't paralyze them (a deliberate
         // deterrent, not a lockdown) — no status inflict.
-        applyDamage(e, dmg, now, null, { x: n.x, y: n.y, inflict: [] });
+        applyDamage(e, dmg, now, null, { x: n.x, y: n.y, amass: massOf(n), inflict: [] });
         e.aggressor = n; // the enemy remembers (and may turn on) whoever hit it
         e.aggroUntil = now + ENEMY_AGGRO_MEMORY_MS;
       }
@@ -1769,33 +1937,60 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // player is in range does the enemy fall back to the nearest living
   // townsperson it's allowed to hurt (canHurt). `isPlayer` tells the caller
   // whether to route the hit through the host (players) or apply it here (NPCs).
+  // Line-of-sight gate for target ACQUISITION: an actor can only sense a target
+  // it has a clear, same-room path to — no solid wall AND no door seam between
+  // their foot positions. Without it, two rooms the editor places adjacent in
+  // world space (separated only by a wall, or by a no-collision room boundary)
+  // let an enemy "see" a target one room over and run endlessly into the wall —
+  // the combat reach check blocks the swing but not the chase. Following a player
+  // who actually WARPS through a door is handled before this (warpStack / door
+  // mode), so gating the door seam here doesn't break chase-through-doors.
+  function canSense(n, tx, ty) {
+    return !wallBetween(n.x, n.y, tx, ty) && !doorBetween(n.x, n.y, tx, ty);
+  }
+
   function aggroTarget(n, players, now) {
     // Hysteresis: a fresh enemy acquires inside detectRange, but one already
     // chasing holds the lock until the target passes the larger give-up distance
     // — it doesn't quit the moment the player steps a pixel past detect.
     const detect = n.detectRange || DETECT_RANGE; // per-spawner aggro radius (Enemy Spawner tool)
     const range = n.mode === 'chase' ? Math.max(n.giveUpRange || GIVE_UP_RANGE, detect) : detect;
+
+    // RETALIATE FIRST — this OUTRANKS the players-always-win rule below. An NPC
+    // that's right on top of this enemy (within its own striking distance) and
+    // still inside the fresh grudge window is the thing actually hurting it, so
+    // the enemy turns and swings back even if a player is also nearby. The reach
+    // gate (attackRange, not detect) keeps this narrow: a player can still pull
+    // aggro off any enemy that ISN'T currently being meleed by an NPC, since the
+    // general player loop below owns that case.
+    const reten = n.aggressor;
+    if (reten && !reten.dead && reten.hp > 0 && now < n.aggroUntil && canHurt(n, reten)) {
+      const rd = Math.hypot(reten.x - n.x, reten.y - n.y);
+      if (rd <= (n.attackRange || ATTACK_RANGE) && canSense(n, reten.x, reten.y))
+        return { target: reten, dist: rd, isPlayer: false };
+    }
+
     let target = null;
     let best = range;
     for (const p of players) {
       if (p.editor) continue; // editor avatar is untargetable (out of the fight)
       if (p.hp !== undefined && p.hp <= 0) continue;
       const d = Math.hypot(p.x - n.x, p.y - n.y);
-      if (d <= best) {
+      if (d <= best && canSense(n, p.x, p.y)) {
         best = d;
         target = p;
       }
     }
     if (target) return { target, dist: best, isPlayer: true };
 
-    // No player in range. RETALIATE first: an enemy being attacked turns on the
-    // NPC that's hitting it (kept fresh in applyDamage), preferring that
-    // aggressor over a marginally closer bystander as long as it's alive and
-    // still in detection range.
+    // No player in range. RETALIATE (the at-range case is handled above, ahead
+    // of players): an enemy attacked from a distance still turns on the NPC that
+    // hit it (kept fresh in applyDamage), preferring that aggressor over a
+    // marginally closer bystander as long as it's alive and still in detect range.
     const a = n.aggressor;
     if (a && !a.dead && a.hp > 0 && now < n.aggroUntil && canHurt(n, a)) {
       const d = Math.hypot(a.x - n.x, a.y - n.y);
-      if (d <= range) return { target: a, dist: d, isPlayer: false };
+      if (d <= range && canSense(n, a.x, a.y)) return { target: a, dist: d, isPlayer: false };
     }
 
     // Otherwise defend-on-sight: the nearest townsperson it may hurt.
@@ -1803,7 +1998,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     for (const o of actors) {
       if (o.kind !== 'person' || o.dead || o.hp <= 0 || !canHurt(n, o)) continue;
       const d = Math.hypot(o.x - n.x, o.y - n.y);
-      if (d <= best) {
+      if (d <= best && canSense(n, o.x, o.y)) {
         best = d;
         target = o;
       }
@@ -1822,7 +2017,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     for (const e of enemies) {
       if (e.dead || e.hp <= 0 || !canHurt(n, e)) continue;
       const d = Math.hypot(e.x - n.x, e.y - n.y);
-      if (d <= best) {
+      if (d <= best && canSense(n, e.x, e.y)) {
         best = d;
         found = e;
         isPlayer = false;
@@ -1834,7 +2029,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         if (p.hp !== undefined && p.hp <= 0) continue;
         if (!canHurt(n, { isEnemy: false, pk: p.pk })) continue; // only PKers
         const d = Math.hypot(p.x - n.x, p.y - n.y);
-        if (d <= best) {
+        if (d <= best && canSense(n, p.x, p.y)) {
           best = d;
           found = p;
           isPlayer = true;
@@ -1904,38 +2099,19 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // it — aabb needs real overlap — so swarming a target still works. Exactly
   // co-located actors scatter on a stable per-id angle so they don't push the
   // same way and re-stack.
-  const UNSTACK_STEP = 2; // px/tick separation nudge
-  function unstack(n) {
-    const [bx, by, bw, bh] = actorBox(n, n.x, n.y);
-    let sx = 0;
-    let sy = 0;
-    let stacked = false;
-    for (const o of actors) {
-      if (o === n || o.dead || o.kind === 'deleted') continue;
-      const [ox, oy, ow, oh] = actorBox(o, o.x, o.y);
-      if (!aabb(bx, by, bw, bh, ox, oy, ow, oh)) continue; // not overlapping
-      stacked = true;
-      let dx = n.x - o.x;
-      let dy = n.y - o.y;
-      if (dx === 0 && dy === 0) {
-        const ang = ((n.id % 16) / 16) * Math.PI * 2; // stable per-id scatter
-        dx = Math.cos(ang);
-        dy = Math.sin(ang);
-      }
-      const d = Math.hypot(dx, dy) || 1;
-      sx += dx / d;
-      sy += dy / d;
-    }
-    if (!stacked) return;
-    const len = Math.hypot(sx, sy) || 1;
-    const ux = (sx / len) * UNSTACK_STEP;
-    const uy = (sy / len) * UNSTACK_STEP;
+  const UNSTACK_STEP = 2; // px/tick separation nudge at EQUAL weight (preserves old feel)
+  // Slide `n` by `step` px along the summed direction (sx,sy), checking ONLY walls
+  // (never actors). If the direct push hits a wall, try the two perpendiculars so
+  // the pile still drains in a corner instead of jamming. Returns whether it moved.
+  function slideApart(n, sx, sy, step) {
+    const len = Math.hypot(sx, sy);
+    if (len < 0.001 || step <= 0) return false;
+    const ux = (sx / len) * step;
+    const uy = (sy / len) * step;
     const free = (mx, my) => {
       const [fx, fy, fw, fh] = actorBox(n, mx, my);
       return !blocked(fx, fy, fw, fh);
     };
-    // Push apart; if a wall blocks that, slide along it (either perpendicular)
-    // so the pile still drains instead of jamming in a corner.
     if (free(n.x + ux, n.y + uy)) {
       n.x += ux;
       n.y += uy;
@@ -1946,9 +2122,122 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       n.x += uy;
       n.y -= ux;
     } else {
-      return; // boxed in by walls on every side — can't move this tick
+      return false; // boxed in by walls on every side — can't move this tick
     }
     n.dirty = true;
+    return true;
+  }
+
+  function unstack(n) {
+    const [bx, by, bw, bh] = actorBox(n, n.x, n.y);
+    const mN = massOf(n);
+    let sx = 0;
+    let sy = 0;
+    let shareSum = 0;
+    let cnt = 0;
+    for (const o of actors) {
+      if (o === n || o.dead || o.kind === 'deleted') continue;
+      const [ox, oy, ow, oh] = actorBox(o, o.x, o.y);
+      if (!aabb(bx, by, bw, bh, ox, oy, ow, oh)) continue; // not overlapping
+      let dx = n.x - o.x;
+      let dy = n.y - o.y;
+      if (dx === 0 && dy === 0) {
+        const ang = ((n.id % 16) / 16) * Math.PI * 2; // stable per-id scatter
+        dx = Math.cos(ang);
+        dy = Math.sin(ang);
+      }
+      const d = Math.hypot(dx, dy) || 1;
+      sx += dx / d;
+      sy += dy / d;
+      // Inverse-mass: `n` yields in proportion to how heavy `o` is relative to it.
+      // Equal mass → 0.5 each (the old 50/50 split); a lighter `n` gives more
+      // ground, a heavier one barely budges — so the lighter body does the moving.
+      const mO = massOf(o);
+      shareSum += mO / (mN + mO);
+      cnt++;
+    }
+    if (!cnt) return;
+    const lightShare = shareSum / cnt; // 0.5 at equal weight → UNSTACK_STEP, as before
+    slideApart(n, sx, sy, UNSTACK_STEP * 2 * lightShare);
+  }
+
+  // Walk-push: a HEAVIER player walking into a lower-mass actor shoves it aside
+  // (the "plow through the level-2 townsfolk blocking the shop" case). A small
+  // per-tick nudge (NOT a knockback impulse) so sustained contact slides the
+  // actor out of the way smoothly without flinging it. Equal/lighter players
+  // don't push — the normal mutual block (client-side) stands. Walls clamp the
+  // slide (slideApart checks blocked), so nobody is shoved through a wall.
+  const PLOW_STEP = 3; // px/tick base nudge from a heavier player's body
+  const PLOW_STEP_MAX = 5; // cap so even a huge weight gap is a shove, not a teleport
+  function pushFromPlayers(n, players) {
+    if (!players || !players.length || n.kind === 'car') return;
+    const [bx, by, bw, bh] = actorBox(n, n.x, n.y);
+    const mN = massOf(n);
+    let sx = 0;
+    let sy = 0;
+    let shareSum = 0;
+    let cnt = 0;
+    for (const p of players) {
+      if (p.editor) continue; // parked editor avatar is non-solid
+      if (p.hp !== undefined && p.hp <= 0) continue; // downed players don't shove
+      const mP = massOf(p);
+      if (mP <= mN) continue; // only a heavier player plows this actor
+      const px = p.x - COL_W / 2;
+      const py = p.y + COL_OY;
+      if (!aabb(bx, by, bw, bh, px, py, COL_W, COL_H)) continue;
+      let dx = n.x - p.x;
+      let dy = n.y - p.y;
+      if (dx === 0 && dy === 0) {
+        const ang = ((n.id % 16) / 16) * Math.PI * 2;
+        dx = Math.cos(ang);
+        dy = Math.sin(ang);
+      }
+      const d = Math.hypot(dx, dy) || 1;
+      sx += dx / d;
+      sy += dy / d;
+      shareSum += mP / (mN + mP); // heavier player → bigger share → actor moves more
+      cnt++;
+    }
+    if (!cnt) return;
+    const share = shareSum / cnt; // > 0.5 (player heavier) up toward 1
+    slideApart(n, sx, sy, Math.min(PLOW_STEP_MAX, PLOW_STEP * 2 * share));
+  }
+
+  // Player↔player walk-push: a HEAVIER (higher-level) player walking into a
+  // lighter one shoves them aside — the "low-level peons can't block the door to
+  // a higher-level player" case. Players live on the HOST, not in `actors`, so we
+  // can't move them directly: the sim computes a wall-clamped landing spot
+  // (`knockbackPlayerSpot`, no damage) and hands it to the host via onPlayerShoveCb
+  // (→ GameHost.shovePlayer), the SAME path the vehicle plow uses. Gated on the
+  // heavier player actually MOVING this tick (playerMoved) so a resting chad isn't
+  // a permanent repulsion field — you push through people as you walk, not while
+  // standing. Equal/lighter players don't shove: peers still mutually block.
+  const PLAYER_MOVE_EPS = 0.1; // px — below this a player counts as standing still
+  function pushPlayers(players, playerMoved) {
+    if (!onPlayerShoveCb || players.length < 2) return;
+    for (const a of players) {
+      if (a.editor || (a.hp !== undefined && a.hp <= 0)) continue;
+      if (!playerMoved.has(a.id)) continue; // only a MOVING player plows
+      const mA = massOf(a);
+      const ax = a.x - COL_W / 2;
+      const ay = a.y + COL_OY;
+      for (const b of players) {
+        if (b === a || b.editor || (b.hp !== undefined && b.hp <= 0)) continue;
+        if (massOf(b) >= mA) continue; // a only plows strictly lighter players
+        const bx = b.x - COL_W / 2;
+        const by = b.y + COL_OY;
+        if (!aabb(ax, ay, COL_W, COL_H, bx, by, COL_W, COL_H)) continue;
+        const mB = massOf(b);
+        const share = mA / (mA + mB); // > 0.5; bigger gap → bigger shove
+        const step = Math.min(PLOW_STEP_MAX, PLOW_STEP * 2 * share);
+        const spot = knockbackPlayerSpot(b.x, b.y, a.x, a.y, 0, { dist: step });
+        if (spot) {
+          onPlayerShoveCb(b.id, spot);
+          b.x = spot.x; // keep the local snapshot in sync so a chain of pushes this
+          b.y = spot.y; // tick resolves against the moved position, not the stale one
+        }
+      }
+    }
   }
 
   // Steer one tick toward (tx,ty) at `speed`, using the same separation +
@@ -2173,7 +2462,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
                   target.id,
                   res.dmg,
                   n,
-                  knockbackPlayerSpot(target.x, target.y, n.x, n.y, res.dmg),
+                  knockbackPlayerSpot(target.x, target.y, n.x, n.y, res.dmg, {
+                    amass: massOf(n),
+                    vmass: massOf(target),
+                  }),
                   enemyInflict(n)
                 );
               if (res.crit && broadcastCb)
@@ -2189,7 +2481,12 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           } else {
             // Enemy → townsperson: the SAME inflict spec the enemy uses on
             // players (enemyInflict); tryStatus scales it by the victim's resist.
-            applyDamage(target, n.damage, now, null, { x: n.x, y: n.y, inflict: enemyInflict(n) });
+            applyDamage(target, n.damage, now, null, {
+              x: n.x,
+              y: n.y,
+              amass: massOf(n),
+              inflict: enemyInflict(n),
+            });
           }
         }
         return;
@@ -2232,8 +2529,14 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       const ny = n.y + n.walkDy * n.speed;
       // wanderRadius 0 = STATIONARY (ambush mimics): any step exceeds 0 from home
       // and is rejected, so the enemy holds its spawn until a player aggros it.
-      // Use != null (not ||) so 0 is honored; absent => the 256px roam default.
-      const wr = n.spawner && n.spawner.wanderRadius != null ? n.spawner.wanderRadius : 256;
+      // Use != null (not ||) so 0 is honored. Resolved per-instance first (a
+      // placement's props), then the spawner's field, then the 256px default.
+      const wr =
+        n.wanderRadius != null
+          ? n.wanderRadius
+          : n.spawner && n.spawner.wanderRadius != null
+            ? n.spawner.wanderRadius
+            : 256;
       const stop =
         blocked(nx - COL_W / 2, ny + COL_OY, COL_W, COL_H) ||
         hitsPlayer(nx - COL_W / 2, ny + COL_OY, COL_W, COL_H, players) ||
@@ -2415,6 +2718,12 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     let cy = o.y;
     let rem =
       opts && opts.dist != null ? opts.dist : knockDist(dmg) * (opts && opts.mult ? opts.mult : 1);
+    // Damage-based knockback (not an explicit `dist` shove) scales by the
+    // attacker/victim weight class: a heavy victim resists, a heavy attacker
+    // flings, clamped back under KB_MAX so it can't cross a room.
+    if (!(opts && opts.dist != null)) {
+      rem = Math.min(KB_MAX, rem * massKnockScale(opts && opts.amass, massOf(o)));
+    }
     while (rem > 0) {
       const step = Math.min(KB_STEP, rem);
       const nx = cx + ux * step;
@@ -2446,6 +2755,12 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     let cy = py;
     let rem =
       opts && opts.dist != null ? opts.dist : knockDist(dmg) * (opts && opts.mult ? opts.mult : 1);
+    // Weight-class scaling (see massKnockScale): a high-level player barely moves
+    // when a weak enemy connects; a heavy hit on a light victim flings toward the
+    // cap. `vmass` is the victim's mass, passed by the caller (it has the player).
+    if (!(opts && opts.dist != null)) {
+      rem = Math.min(KB_MAX, rem * massKnockScale(opts && opts.amass, opts && opts.vmass));
+    }
     while (rem > 0) {
       const step = Math.min(KB_STEP, rem);
       const nx = cx + ux * step;
@@ -2538,8 +2853,11 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       // Survived the hit — react to it: knocked back away from the attacker, plus
       // any status procs the hit carries (each element-scaled by the target's ROM
       // resist in tryStatus; an action-block holds the flinch for the freeze).
-      // `atk.kb` (vehicles) overrides the shove heading/force for the plow effect.
-      pushActor(target, atk.x, atk.y, dmg, atk.kb);
+      // `atk.kb` (vehicles) overrides the shove heading/force for the plow effect;
+      // `atk.amass` (attacker mass) scales the knockback by weight class.
+      const kbOpts = atk.kb ? Object.assign({}, atk.kb) : {};
+      if (atk.amass != null) kbOpts.amass = atk.amass;
+      pushActor(target, atk.x, atk.y, dmg, kbOpts);
       for (const inf of atk.inflict || []) tryStatus(target, inf.type, inf.chance, now);
     }
   }
@@ -2557,9 +2875,14 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     critChance = 0,
     attackSpeed = 1,
     inflict = null,
-    range = 0
+    range = 0,
+    attackerLevel = 1
   ) {
     const now = Date.now();
+    // The attacker's weight class drives knockback vs the victim's (see
+    // massKnockScale): a high-level player flings weaker foes harder. Defaults to
+    // level 1 for legacy/test callers (→ scale 1 unless the victim is heavier).
+    const attackerMass = massOf({ level: attackerLevel });
     // The status spec this swing carries. The equipped weapon supplies it
     // (gameHost → recomputeEquipStats); `null` means an unauthored weapon / bare
     // hands / a legacy caller, which falls back to the baseline paralysis proc so
@@ -2604,6 +2927,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       hw = ATTACK_HALF * 2;
       hh = ATTACK_HALF * 2;
     }
+    // Total damage THIS swing dealt to enemies. Drives the attacker's hit juice
+    // (freeze + shake) via a server-confirmed 'hit' event below, so only a swing
+    // that actually connected rattles the attacker's screen — never an air-swing.
+    let dealtToEnemies = 0;
     for (const n of enemies) {
       if (n.dead) continue;
       if (!canHurt(attacker, n)) continue; // PK rules decide if this lands
@@ -2628,7 +2955,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       // Shared death path: flinch, HP broadcast, respawn, and EXP to the killer.
       // The attacker's feet (x,y) drive knockback; the swing carries a paralysis
       // proc (element-scaled by the enemy's ROM resist in tryStatus).
-      applyDamage(n, res.dmg, now, playerId, { x, y, inflict: swingInflict });
+      applyDamage(n, res.dmg, now, playerId, { x, y, amass: attackerMass, inflict: swingInflict });
+      dealtToEnemies += res.dmg;
       if (res.crit && broadcastCb)
         broadcastCb({
           type: 'combat',
@@ -2639,6 +2967,19 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           targetPlayer: null,
         });
     }
+    // The swing connected with at least one enemy: tell the attacker so their hit
+    // juice fires (client gates on byPlayer === local). Broadcast to all like the
+    // crit/miss events; everyone else ignores it. `dmg` scales the shake.
+    if (dealtToEnemies > 0 && broadcastCb)
+      broadcastCb({
+        type: 'combat',
+        evt: 'hit',
+        x: Math.round(x),
+        y: Math.round(y),
+        byPlayer: playerId,
+        targetPlayer: null,
+        dmg: dealtToEnemies,
+      });
 
     // Vehicles (traffic cars + Entity Manager `vehicle` flag) are attackable too,
     // under the SAME PK rules (canHurt): a PKer can wreck any vehicle, a non-PKer
@@ -2707,7 +3048,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           t.id,
           res.dmg,
           playerId,
-          knockbackPlayerSpot(t.x, t.y, x, y, res.dmg),
+          knockbackPlayerSpot(t.x, t.y, x, y, res.dmg, {
+            amass: attackerMass,
+            vmass: massOf(t),
+          }),
           swingInflict
         );
         if (res.crit && broadcastCb)
@@ -2755,11 +3099,17 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         // in one tick teleported (the client warps on a door and sends the new
         // coords). Recorded into recentWarps with an expiry; enemies chasing that
         // player follow it through for WARP_FOLLOW_MS, not just this one tick.
+        // `playerMoved` also captures NORMAL walking (0 < step ≤ WARP_DELTA) so the
+        // player↔player plow only shoves while the heavier player is actually
+        // moving into someone — not as a static repulsion aura (see pushPlayers).
+        const playerMoved = new Set();
         for (const p of players) {
           if (p.editor) continue; // parked editor avatar isn't warping; never chase it
           const prev = prevPlayerPos.get(p.id);
           const guarded = now < (respawnGuard.get(p.id) || 0); // mid respawn window
-          if (!guarded && prev && Math.hypot(p.x - prev.x, p.y - prev.y) > WARP_DELTA) {
+          const stepDist = prev ? Math.hypot(p.x - prev.x, p.y - prev.y) : 0;
+          if (stepDist > PLAYER_MOVE_EPS && stepDist <= WARP_DELTA) playerMoved.add(p.id);
+          if (!guarded && prev && stepDist > WARP_DELTA) {
             // Resolve which doorway the player stepped through (its last pre-warp
             // position sits on the trigger) so chasers can walk to it and warp.
             recentWarps.set(p.id, {
@@ -2838,7 +3188,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             // Never let two bodies stay stacked: nudge apart if this tick ended
             // overlapping another actor. Enemies + townsfolk only — cars are meant
             // to plow THROUGH actors, not separate from them.
-            if (n.kind === 'enemy' || n.kind === 'person') unstack(n);
+            if (n.kind === 'enemy' || n.kind === 'person') {
+              unstack(n);
+              pushFromPlayers(n, players); // a heavier player plows this actor aside
+            }
           } else if (n.roam && n.mode !== 'patrol') {
             // Off-station with no player nearby (the target fled far): keep
             // ticking so it finishes heading back to spawn instead of freezing
@@ -2846,6 +3199,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             tickEnemy(n, players, now, onEnemyHit, recentWarps);
           }
         }
+        // Player↔player walk-push: heavier players shove lighter ones off the spot
+        // they're standing on (e.g. clearing a blocked doorway). Runs once per tick
+        // after actor movement, using this tick's movement set.
+        pushPlayers(players, playerMoved);
         // Ground-drop pickup: first player within reach claims each drop. The
         // host owns inventory/cash and decides if it can be taken (bag room);
         // accepted -> remove + broadcast, refused (bag full) -> leave it.
@@ -3005,11 +3362,16 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     /** Resolve a player's melee swing (server-authoritative). */
     handleAttack,
 
+    // Offense PSI never reaches into another room: like melee/enemy sensing, a
+    // candidate is skipped if a wall (wallBetween) OR a door seam (doorBetween)
+    // sits between the caster and it — the door check catches room boundaries
+    // whose gap has no solid wall, which the client's room crop hides anyway.
     /**
      * Offense PSI strike: damage the nearest LIVE enemy within `range` px of
-     * (x,y) that has line of sight (no wall between), crediting `killerPlayerId`
-     * for XP/loot on a kill. Knockback flings it away from the caster. Returns
-     * the struck enemy's {x,y} (for the projectile target), or null if none.
+     * (x,y) that's in the SAME room (no wall or door seam between), crediting
+     * `killerPlayerId` for XP/loot on a kill. Knockback flings it away from the
+     * caster. Returns the struck enemy's {x,y} (for the projectile target), or
+     * null if none.
      */
     psiStrike(x, y, range, dmg, killerPlayerId, inflict) {
       let best = null;
@@ -3017,7 +3379,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       for (const n of enemies) {
         if (n.dead) continue;
         const d = Math.hypot(n.x - x, n.y - y);
-        if (d <= bestD && !wallBetween(x, y, n.x, n.y)) {
+        if (d <= bestD && !wallBetween(x, y, n.x, n.y) && !doorBetween(x, y, n.x, n.y)) {
           bestD = d;
           best = n;
         }
@@ -3032,8 +3394,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     /**
      * Multi-target offense PSI (ROM target "row"/"all", e.g. PSI Fire, Thunder,
      * Flash, Starstorm, Rockin): the bolt PENETRATES and hits EVERY live enemy
-     * within `range` px of (x,y) that has line of sight — not just the nearest.
-     * Each takes the full damage + the PSI's status inflict, element-scaled by
+     * within `range` px of (x,y) in the SAME room — not just the nearest (a wall
+     * or door seam between caster and enemy spares it, so casts never cross into
+     * the next room). Each takes the full damage + the PSI's status inflict, scaled by
      * its own ROM resist. Returns the NEAREST struck enemy's {x,y} for the
      * projectile animation target, or null if nothing was hit.
      */
@@ -3044,7 +3407,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       for (const n of enemies) {
         if (n.dead) continue;
         const d = Math.hypot(n.x - x, n.y - y);
-        if (d <= range && !wallBetween(x, y, n.x, n.y)) {
+        if (d <= range && !wallBetween(x, y, n.x, n.y) && !doorBetween(x, y, n.x, n.y)) {
           applyDamage(n, dmg || 0, now, killerPlayerId, { x, y, inflict: inflict || [] });
           if (d < nearD) {
             nearD = d;
@@ -3053,6 +3416,69 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         }
       }
       return near ? { x: Math.round(near.x), y: Math.round(near.y) } : null;
+    },
+
+    /**
+     * Cone/shotgun offense PSI (e.g. PSI Fire): spray from (x,y) in unit-ish
+     * direction (ux,uy) — PSI_DIR diagonals are ~0.7 so we normalize. The cone is
+     * narrow at the muzzle (`halfWidth`) and FANS OUT with distance (`spread` px
+     * of half-width gained per px forward), so the allowed side-offset at a given
+     * `along` is `halfWidth + spread*along`. Every live enemy inside that cone,
+     * within `length` forward and in the SAME room (no wall/door seam between),
+     * takes the full damage + status inflict (element-scaled by its resist).
+     * Returns the array of struck {x,y} (empty if it hit nothing).
+     */
+    psiStrikeLine(x, y, ux, uy, length, halfWidth, spread, dmg, killerPlayerId, inflict) {
+      const mag = Math.hypot(ux, uy) || 1;
+      const fx = ux / mag;
+      const fy = uy / mag; // forward unit
+      const now = Date.now();
+      const struck = [];
+      for (const n of enemies) {
+        if (n.dead) continue;
+        const ex = n.x - x;
+        const ey = n.y - y;
+        const along = ex * fx + ey * fy; // distance forward along the beam
+        if (along < 0 || along > length) continue;
+        const perp = Math.abs(ex * -fy + ey * fx); // perpendicular offset
+        if (perp > halfWidth + (spread || 0) * along) continue; // cone widens forward
+        if (wallBetween(x, y, n.x, n.y) || doorBetween(x, y, n.x, n.y)) continue;
+        applyDamage(n, dmg || 0, now, killerPlayerId, { x, y, inflict: inflict || [] });
+        struck.push({ x: Math.round(n.x), y: Math.round(n.y) });
+      }
+      return struck;
+    },
+
+    /**
+     * Random-strike offense PSI (e.g. PSI Thunder): from the live enemies within
+     * `range` px of (x,y) in the SAME room (no wall/door seam between), pick up to `count` AT RANDOM
+     * and strike each for the full damage + status inflict. Stronger tiers pass a
+     * higher `count` (more bolts). Returns the array of struck {x,y} (empty if no
+     * enemy is in range) so the caller can drop a bolt FX on each.
+     */
+    psiStrikeBolts(x, y, range, count, dmg, killerPlayerId, inflict) {
+      const now = Date.now();
+      const cands = [];
+      for (const n of enemies) {
+        if (n.dead) continue;
+        if (Math.hypot(n.x - x, n.y - y) > range) continue;
+        if (wallBetween(x, y, n.x, n.y) || doorBetween(x, y, n.x, n.y)) continue;
+        cands.push(n);
+      }
+      // Fisher–Yates shuffle, then take the first `count` (Math.random is fine —
+      // this is the live game host, not a deterministic workflow script).
+      for (let i = cands.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const t = cands[i];
+        cands[i] = cands[j];
+        cands[j] = t;
+      }
+      const struck = [];
+      for (const n of cands.slice(0, Math.max(0, count))) {
+        applyDamage(n, dmg || 0, now, killerPlayerId, { x, y, inflict: inflict || [] });
+        struck.push({ x: Math.round(n.x), y: Math.round(n.y) });
+      }
+      return struck;
     },
 
     /** World pixel bounds {w, h} — the host clamps player positions to these. */
@@ -3102,6 +3528,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       fs.unwatchFile(OVERRIDES_PATH, reloadPlacements);
       fs.unwatchFile(ENEMY_OV_PATH, reloadEnemies);
       fs.unwatchFile(CAR_OV_PATH, reloadTraffic);
+      fs.unwatchFile(ROOMS_OV_PATH, reloadRooms);
       fs.unwatchFile(COLLISION_OV_PATH, loadCollisionWithOverrides);
       fs.unwatchFile(path.join(assetsDir, DOORS_FILE), loadDoorTriggers);
       fs.unwatchFile(DOORS_OV_PATH, loadDoorTriggers);

@@ -2,23 +2,6 @@
   "version": 1,
   "vehicles": [
     {
-      "id": "v_npc_16_1199_0",
-      "name": "taxi-1",
-      "sprite": 206,
-      "w": 48,
-      "h": 32,
-      "speed": 1,
-      "loop": true,
-      "enabled": true,
-      "hp": 80,
-      "damage": 14,
-      "dir": 0,
-      "waypoints": [
-        [4128, 160],
-        [4320, 160]
-      ]
-    },
-    {
       "id": "v_npc_135_175_0",
       "name": "camper-van-1",
       "sprite": 208,

@@ -10,13 +10,14 @@ import { loadJSON } from './AssetLoader';
 import { loadSpriteGroup, getSpriteGroupMeta } from './SpriteManager';
 import { NPC, NPCKind } from './NPC';
 import { spawnDamageNumber } from './Emitter';
-import { triggerHitstop, addShake, FLASH_MS } from './Juice';
+import { FLASH_MS } from './Juice';
 import { playEventSfxAt } from './SfxEvents';
 import { Direction, POSES } from '../types';
 import type { NpcUpdate } from './Network';
 import { createInterpolator } from './RemoteInterp';
 import { loadShops, shopStoreForNpc } from './Shop';
-import type { EntityCol } from './EntityStats';
+import { DEFAULT_ENTITY_STATS, DEFAULT_BEHAVIOR_RANGES } from './EntityStats';
+import type { EntityCol, EntityProps, EntityPropsOverride } from './EntityStats';
 import { hasFlag } from './PlayerFlags';
 import { loadGifts, tagGift, giftAdditions, GIFT_SPRITE_CLOSED } from './Gifts';
 
@@ -43,6 +44,10 @@ export interface RawNPC {
   kind: NPCKind;
   /** NPC config id keying npc_text.json (present only when it has dialogue). */
   t?: number;
+  /** Sparse PER-INSTANCE property override (Placement tool). Folded in by
+   *  resolveProps over the sprite-group/kind defaults. Absent fields inherit.
+   *  KEEP IN SYNC with server/npcSim.js (reads `r.props`). */
+  props?: EntityPropsOverride;
 }
 
 /**
@@ -111,28 +116,61 @@ const cars: NPC[] = [];
 
 interface EnemyConfig {
   enemySpriteGroups?: number[];
-  // per-entity stats (Entity Manager); client needs hp + the optional collision
-  // box override (col), which wins over the kind default for ANY entity.
-  entities?: Record<string, { hp?: number; col?: EntityCol }>;
-  spawners?: {
+  // per-entity stats (Entity Manager). The full shared shape is stored; the
+  // client only READS hp (health bar) + col (collision), but carries the rest
+  // so the cascade stays faithful and future use is one field away.
+  entities?: Record<string, EntityPropsOverride>;
+  // Spawners carry the shared shape inline (their instance-override layer) plus
+  // spawn-rate/placement extras.
+  spawners?: (EntityPropsOverride & {
     sprite: number;
     x: number;
     y: number;
     poolSize?: number;
-    hp?: number;
     enabled?: boolean;
-  }[];
+  })[];
 }
 
 // ROM-derived enemy catalog (tools/extract_enemies.py -> assets/map/enemies.json):
 // the DEFAULTS layer of per-entity stats. Merged UNDER the authored entities.
 // KEEP merge order IN SYNC with server/npcSim.js: DEFAULT < catalog < authored.
 interface EnemyCatalog {
-  bySprite?: Record<string, { hp?: number; col?: EntityCol }>;
+  bySprite?: Record<string, EntityPropsOverride>;
 }
-// Effective per-entity stats, sprite -> {hp,col}: catalog overlaid by authored
-// entities. Built in loadNPCs; the client uses hp (health bars) and col.
-const entityDefs = new Map<number, { hp?: number; col?: EntityCol }>();
+// Effective per-entity stats, sprite -> props: catalog overlaid by authored
+// entities. Built in loadNPCs; the client reads hp (health bars) and col.
+const entityDefs = new Map<number, EntityPropsOverride>();
+
+// Resolve the SHARED entity props through the cascade — kind default ->
+// sprite-group entity table -> instance override (a placement's `props` OR a
+// spawner). This is the CLIENT SUBSET: the client only consumes hp (health-bar
+// denominator) and col (collision), so it resolves just those two. The instance
+// layer wins. KEEP order + defaults IN SYNC with server/npcSim.js resolveProps.
+function resolveProps(
+  kind: NPCKind,
+  sprite: number,
+  over?: EntityPropsOverride
+): { hp: number; col?: EntityCol } {
+  const o = over ?? {};
+  const ent = entityDefs.get(sprite);
+  const hp =
+    kind === 'enemy'
+      ? (o.hp ?? ent?.hp ?? enemyDefaultHp)
+      : kind === 'car'
+        ? (o.hp ?? VEHICLE_DEFAULT_HP)
+        : (o.hp ?? 0);
+  const col = o.col ?? ent?.col;
+  return { hp, col };
+}
+
+/** Resolved sprite-group + kind baseline for a sprite, WITHOUT the per-instance
+ *  layer — the inherited values an editor shows as placeholders. Reuses the
+ *  already-merged entityDefs (ROM catalog + authored), so no extra loading. */
+export function entityBaseline(kind: NPCKind, sprite: number): EntityProps {
+  const ent = entityDefs.get(sprite) ?? {};
+  const hp = kind === 'enemy' ? (ent.hp ?? enemyDefaultHp) : (ent.hp ?? DEFAULT_ENTITY_STATS.hp);
+  return { ...DEFAULT_ENTITY_STATS, ...DEFAULT_BEHAVIOR_RANGES, ...ent, hp };
+}
 
 // Exact per-direction collision boxes for vehicles (tools/extract_vehicle_colboxes.py
 // -> sprites/colboxes.json): spriteId -> dir (0-7) -> box. A car collides by the
@@ -143,24 +181,24 @@ let carColBoxes: Record<string, Record<string, EntityCol>> = {};
 // (enemy_spawns.json entities[*].col) — top priority when present.
 const entityCols = new Map<number, EntityCol>();
 
-export interface Vehicle {
+// A vehicle shares the common EntityProps base (hp/damage/speed/col/… resolve
+// through the same cascade — see resolveProps) and ADDS its vehicle-only extras
+// below. So `hp`/`damage`/`speed` are inherited from EntityPropsOverride: hp →
+// VEHICLE_HP, damage → VEHICLE_DAMAGE, speed → 1 (a route ×multiplier, NOT px/tick
+// — see EntityProps.speed). The extras are the route + collision box.
+export interface Vehicle extends EntityPropsOverride {
   id: string;
   name: string;
   sprite: number;
   /** Collision box (px), derived from the sprite size when authored. */
   w?: number;
   h?: number;
-  speed: number;
   loop: boolean;
   enabled: boolean;
   /** Facing (0-7) for a PARKED car (1 waypoint). Driving cars derive it from the
    *  route, so it's only authored/used when there's no route. Omitted → South. */
   dir?: number;
   waypoints: [number, number][];
-  /** Max HP — a car is attackable (PK rules). Omitted → server VEHICLE_HP. */
-  hp?: number;
-  /** Collide damage dealt to a foe the car plows. Omitted → server VEHICLE_DAMAGE. */
-  damage?: number;
   /** textId keying npc_text.json — a vehicle can be talkable like any NPC. */
   t?: number | null;
 }
@@ -320,9 +358,9 @@ export async function loadNPCs(): Promise<void> {
   let id = npcsById.length;
   for (const sp of enemyCfg.spawners ?? []) {
     if (sp.enabled === false) continue; // disabled spawner: no pool (server skips it too)
-    // maxHp drives the health bar; it lives per-entity (ROM catalog + Entity
-    // Manager), with a legacy per-spawner hp fallback.
-    const maxHp = entityDefs.get(sp.sprite)?.hp ?? sp.hp ?? enemyDefaultHp;
+    // maxHp drives the health bar — resolved through the cascade (the spawner is
+    // the instance-override layer for the enemies it prints).
+    const maxHp = resolveProps('enemy', sp.sprite, sp).hp;
     for (let i = 0; i < (sp.poolSize ?? 0); i++) {
       const npc = new NPC(sp.x, sp.y, sp.sprite, Direction.N, 'enemy', null);
       npc.applyHp(0, maxHp);
@@ -344,7 +382,7 @@ export async function loadNPCs(): Promise<void> {
     // the server never re-faces); a driving car is re-faced by npc_update deltas.
     const face = (v.dir ?? Direction.S) as Direction;
     const car = new NPC(sx, sy, v.sprite, face, 'car', v.t ?? null);
-    const maxHp = v.hp && v.hp > 0 ? v.hp : VEHICLE_DEFAULT_HP;
+    const maxHp = resolveProps('car', v.sprite, v).hp;
     car.applyHp(maxHp, maxHp);
     npcsById[id++] = car;
     cars.push(car);
@@ -374,7 +412,7 @@ function buildStaticNpcs(raw: RawNPC[], overrides: NpcOverrides | null): (NPC | 
     const kind: NPCKind = r.kind === 'enemy' || enemySpriteSet.has(r.sprite) ? 'enemy' : r.kind;
     const npc = new NPC(r.x, r.y, r.sprite, r.dir as Direction, kind, r.t ?? null);
     if (kind === 'enemy') {
-      const hp = entityDefs.get(r.sprite)?.hp ?? enemyDefaultHp;
+      const hp = resolveProps('enemy', r.sprite, r.props).hp;
       npc.applyHp(hp, hp);
     }
     // Shop clerks (by ROM config id) carry the store they sell — Game.tryTalk
@@ -440,18 +478,6 @@ export async function reloadNpcsLive(): Promise<void> {
   for (const car of cars) npcsById[id++] = car;
 }
 
-// Epoch-ms of the local player's last swing. Enemy-hit juice (hitstop/shake)
-// only fires within ATTACK_CREDIT_MS of it, so townsfolk defending themselves or
-// other players hitting nearby enemies don't rattle YOUR screen when you're not
-// fighting. The white flash still plays for every hit — it's harmless cosmetic.
-let lastLocalAttackAt = 0;
-const ATTACK_CREDIT_MS = 400; // swing + travel window a hit is credited to your attack
-
-/** Stamp that the local player just swung (called from Game on a started attack). */
-export function noteLocalAttack(): void {
-  lastLocalAttackAt = Date.now();
-}
-
 /** Apply authoritative enemy HP (welcome snapshot + on-damage deltas). */
 export function applyNpcHp(rows: [number, number, number][]): void {
   for (const [id, hp, maxHp] of rows) {
@@ -465,15 +491,11 @@ export function applyNpcHp(rows: [number, number, number][]): void {
       const dmg = prev - hp;
       const now = Date.now();
       spawnDamageNumber(npc.x, npc.y, dmg);
-      // Flash the struck sprite white — always; it's harmless cosmetic feedback.
+      // Flash the struck sprite white — always; it's harmless cosmetic feedback for
+      // every hit, ours or not. The freeze + shake juice is NOT fired here: it rides
+      // a server-confirmed 'hit' combat event (Game.onCombat) so only YOUR landed
+      // swings rattle your screen — never an off-screen brawl during your air-swing.
       npc.flashUntil = now + FLASH_MS;
-      // Freeze + shake only when this is plausibly OUR hit (we swung recently).
-      // Otherwise townsfolk/other players fighting nearby would shake your screen
-      // while you're just walking through.
-      if (now - lastLocalAttackAt < ATTACK_CREDIT_MS) {
-        triggerHitstop(2);
-        addShake(Math.min(0.5, 0.18 + dmg * 0.02));
-      }
     }
     // Died/hidden: clear its interp buffer so a later respawn (which teleports
     // it back to its spawn point) starts fresh instead of gliding across town.

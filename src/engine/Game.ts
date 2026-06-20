@@ -17,7 +17,7 @@ import {
 } from './Input';
 import { loadMapData, getSector, getDrawTilesetId } from './MapManager';
 import { loadDoors, getDoorAt, getStairAt, getStairExit, DoorData } from './DoorManager';
-import { setActiveRoomFromPoint } from './Rooms';
+import { setActiveRoomFromPoint, loadRegionRooms } from './Rooms';
 import {
   loadNPCs,
   getNearbyNPCs,
@@ -27,7 +27,6 @@ import {
   applyNpcStatus,
   applyNpcEquip,
   applyGiftFlagStates,
-  noteLocalAttack,
   getNpcDialogue,
   interpolateNpcs,
   liveNpcForKey,
@@ -84,10 +83,11 @@ import { loadCustomTiles } from './CustomTiles';
 import { getEquipped, setEquipped, setEquippedFromServer } from './Equipment';
 import {
   loadMusicMap,
-  loadMusicAreas,
   initMusic,
   updateMusic,
   playCharSelectMusic,
+  armCharSelectAudioUnlock,
+  disarmCharSelectAudioUnlock,
   playSfx,
 } from './MusicManager';
 import {
@@ -113,7 +113,6 @@ import {
   renderMenu,
   renderHotbarOverlay,
   triggerHotbarSlot,
-  syncWeaponHotbar,
   setHotbar,
   autoHotbarNewItems,
   openShop,
@@ -121,7 +120,8 @@ import {
   openAtmMenu,
   applyDadReport,
 } from './MenuManager';
-import { renderXpBar } from './XpBar';
+import { renderXpBar, XP_BAR_BOTTOM } from './XpBar';
+import { preloadSwirl, swirlReady, drawSwirl } from './SwirlTransition';
 import {
   initDialogue,
   openDialogue,
@@ -238,6 +238,9 @@ export class Game {
   private pendingDoor: DoorData | null = null;
   private waitingForSectors = false;
   private doorSuppressed = false;
+  // Transition visual: 'fade' = plain black (doors), 'swirl' = EB battle-swirl
+  // mask (event warps, when its frames are loaded — else falls back to fade).
+  private transitionStyle: 'fade' | 'swirl' = 'fade';
   // Event runtime (EVENT_MANAGER.md): latest broadcast event UI state + the id of
   // the event the LOCAL player is currently inside (null when not in one).
   private eventStates: EventStateWire[] = [];
@@ -282,7 +285,10 @@ export class Game {
       loadSongNameOverrides(), // admin song renames win over baked titles
       loadCharacterSelect(),
       loadMusicMap(),
-      loadMusicAreas(), // authored music regions (overrides/music.json)
+      loadRegionRooms(), // region rooms (DB 'rooms' doc) — THE runtime bgm source now
+      // music.json is no longer loaded at boot: its areas were seeded into the
+      // 'rooms' doc and a room's `bgm` drives playback (with hysteresis). The Sound
+      // Manager still loads music.json itself for live authoring/preview.
       loadSfxEvents(), // authored event→sfx assignments (overrides/sfx_events.json)
       loadCombatJuice(), // authored combat-number feel (overrides/combat_juice.json)
       loadFont(0), // regular EB dialogue font (chat input, command menu)
@@ -336,6 +342,10 @@ export class Game {
     // The slot list spawns a chosen/created character into the game via playCharacter.
     initStartScreen();
     setStartScreenPlayHandler((char) => void this.playCharacter(char));
+    // Unlock audio + naming music on the FIRST interaction anywhere on the
+    // char-select / start screen — incl. the DOM account overlay, whose button
+    // clicks never reach the canvas input path. Disarmed when the game starts.
+    armCharSelectAudioUnlock();
     initNameplates(); // preload the EB font used for in-world name/level tags
     // Corner level-up icon → opens the spend pentagon. The server validates the
     // spend; sendSpendPoints only requests it.
@@ -394,6 +404,7 @@ export class Game {
 
   private async startGame(opts: StartOpts = {}) {
     this.phase = 'loading';
+    disarmCharSelectAudioUnlock(); // leaving char-select — stop the naming-music gesture hook
     this.loadBaseline = imageLoadProgress(); // boot loading-bar baseline
     const appearance = opts.appearance ?? null;
 
@@ -472,10 +483,11 @@ export class Game {
       getEquipped: (slot) => getEquipped(slot),
       equip: (slot, id) => {
         setEquipped(slot, id);
-        if (slot === 'weapon') {
-          this.player.heldItemId = id;
-          syncWeaponHotbar(id); // an equipped weapon always lives in a hot slot
-        }
+        // Equipping a weapon is self-contained: it sets the held sprite and the
+        // server applies its offense. The quick-select hotbar is OPTIONAL and
+        // separate — it's only for switching between weapons you've parked there,
+        // so equipping never forces the weapon onto a slot.
+        if (slot === 'weapon') this.player.heldItemId = id;
         sendEquip(slot, id);
         if (id) playEventSfx('equip'); // only on equip, not take-off
       },
@@ -571,14 +583,13 @@ export class Game {
           // Weapon swing-rate multiplier (server-authoritative) scales the local
           // swing-pose duration so a fast weapon animates as fast as it resolves.
           this.player.attackSpeed = attackSpeed && attackSpeed > 0 ? attackSpeed : 1;
-          syncWeaponHotbar(slots.weapon ?? null); // show the saved weapon on the hotbar
         },
         onHotbar: (slots) => {
-          // Restore the saved quick-select layout (incl. an assigned PSI), then
-          // make sure the equipped weapon still occupies a slot — a save from
-          // before hotbar persistence won't include it.
+          // Restore the saved quick-select layout exactly as the player left it
+          // (incl. an assigned PSI). The hotbar is independent of what's equipped —
+          // the equipped weapon shows its own green ring on the Equip screen / on
+          // a slot only if the player parked it there.
           setHotbar(slots);
-          syncWeaponHotbar(this.player.heldItemId);
         },
         onNpcUpdate: (rows) => {
           applyNpcUpdates(rows);
@@ -760,10 +771,22 @@ export class Game {
             if (rp) rp.downed = false;
           }
         },
-        onPsiCast: (id, _casterId, x, y, tx, ty) => {
+        onPsiCast: (id, _casterId, x, y, tx, ty, hits, beams) => {
           // Server-driven (everyone incl. the caster): play the effect, flying
           // caster (x,y) → target (tx,ty) for projectile-delivery PSI.
-          spawnPsiFx(id, x, y, tx, ty);
+          if (beams && beams.length) {
+            // `beams` (Fire cone) — spray a fan of projectiles from the caster,
+            // one per pellet, so the cast reads as a shotgun blast.
+            for (const b of beams) spawnPsiFx(id, x, y, b.tx, b.ty);
+          } else if (hits && hits.length) {
+            // `hits` (Thunder bolts) — strike EACH enemy with its own bolt that
+            // falls from above onto it (projectile-delivery anims need travel to
+            // read; a zero-length cast would flash and vanish).
+            const DROP = 140; // px above the enemy each bolt starts
+            for (const h of hits) spawnPsiFx(id, h.x, h.y - DROP, h.x, h.y);
+          } else {
+            spawnPsiFx(id, x, y, tx, ty);
+          }
         },
         onItemUse: (_id, item, x, y) => {
           // Another player used a consumable — play its "use" animation on them
@@ -799,21 +822,29 @@ export class Game {
         },
         onEventState: (events) => {
           this.eventStates = events;
+          // Preload the battle-swirl as soon as a countdown is visible, so its
+          // frames are cached by the time the warp fires (~5s lead).
+          if (events.some((e) => e.phase === 'arming')) preloadSwirl();
         },
         onEventWarp: (x, y, dir, eventId) => {
-          // Server-driven warp into/out of an event room — reuse the door fade.
+          // Server-driven warp into/out of an event room — EarthBound battle-swirl
+          // wipe to black, teleport at full black, swirl back to reveal. Falls back
+          // to the plain door fade if the swirl frames aren't loaded yet.
           this.myEventId = eventId;
-          this.startTransition({
-            destX: x,
-            destY: y,
-            destDir: this._dirToDoorIdx(dir),
-            sfx: 'door-open',
-            worldX: 0,
-            worldY: 0,
-            type: 'door',
-            style: 0,
-            key: '',
-          } as DoorData);
+          this.startTransition(
+            {
+              destX: x,
+              destY: y,
+              destDir: this._dirToDoorIdx(dir),
+              sfx: 'door-open',
+              worldX: 0,
+              worldY: 0,
+              type: 'door',
+              style: 0,
+              key: '',
+            } as DoorData,
+            swirlReady() ? 'swirl' : 'fade'
+          );
         },
         onPlayerStats: (id, stats, leveled, gained) => {
           if (id !== this.localPlayerId) {
@@ -843,9 +874,20 @@ export class Game {
           this.pointsAlloc = alloc;
           setLevelUpPoints(points);
         },
-        onCombat: (evt, x, y, byPlayer, targetPlayer) => {
+        onCombat: (evt, x, y, byPlayer, targetPlayer, dmg) => {
           // Crit/miss events: floating SMAAAASH!/MISS text for everyone, plus the
           // right SFX for the LOCAL player (see SfxEvents / ARCHITECTURE combat).
+          if (evt === 'hit') {
+            // Server-confirmed: a swing of YOURS connected with an enemy. Hit juice
+            // (freeze + shake, scaled by damage) fires only here — never off a raw
+            // enemy-HP drop — so swinging at air can't be rattled by some off-screen
+            // brawl, and only the attacker feels their own landed blow.
+            if (byPlayer === this.localPlayerId) {
+              triggerHitstop(2);
+              addShake(Math.min(0.5, 0.18 + dmg * 0.02));
+            }
+            return;
+          }
           if (evt === 'crit') {
             spawnCritText(x, y);
             // SMAAAASH! — a crit you dealt or took gets an extra-heavy punch on top
@@ -1143,9 +1185,10 @@ export class Game {
     }
   }
 
-  private startTransition(door: DoorData) {
+  private startTransition(door: DoorData, style: 'fade' | 'swirl' = 'fade') {
     this.transitioning = true;
     this.transitionAlpha = 0;
+    this.transitionStyle = style;
     this.pendingDoor = door;
     // Prefetch the destination's visible sectors NOW, during the fade-out — so by
     // the time the screen is black the tiles are usually already in, and we fade
@@ -1434,7 +1477,6 @@ export class Game {
     // is sent to the server, which resolves the hit (server-authoritative damage).
     if (isAttackPressed() && this.player.attack()) {
       sendAttack(this.player.x, this.player.y, this.player.direction);
-      noteLocalAttack(); // credit incoming enemy-HP drops to us → hit juice fires
       playEventSfx('player-attack');
     }
     // 1/2 = trigger the quick-select slot during overworld play (brandish a
@@ -1663,6 +1705,21 @@ export class Game {
     return true;
   }
 
+  /** Predicate: does a world point's tile belong to the current room? Damage
+   *  numbers arc DOWN under gravity, so one spawned in the room packed above us
+   *  would fall across the seam and render over our tiles — past the spatial
+   *  clip. renderEmitters gates each popup on its spawn origin with this so it
+   *  stays in the room it was born in. null in the overworld (no rooms). */
+  private _roomOriginGate(): ((x: number, y: number) => boolean) | undefined {
+    const room = this.camera.roomBounds;
+    if (!room) return undefined;
+    return (x: number, y: number) => {
+      const col = Math.floor(x / TILE_SIZE);
+      const row = Math.floor(y / TILE_SIZE);
+      return room.tiles.has(row * MAP_WIDTH_TILES + col);
+    };
+  }
+
   private tryTalk(): void {
     // Reach is measured along the facing direction, not as a radius around a
     // single probe point. A shop clerk's anchor sits a full counter-depth
@@ -1867,20 +1924,24 @@ export class Game {
       }
     }
 
-    // Local player's event-timer HUD (screen-anchored, top-center) while inside.
+    // Local player's event-timer HUD: top-center, stacked directly UNDER the XP
+    // bar (anchored to its bottom edge so the two never overlap), while inside.
     if (this.myEventId) {
       const mine = this.eventStates.find((e) => e.id === this.myEventId && e.phase === 'active');
       if (mine) {
-        ctx.font = 'bold 12px monospace';
+        ctx.save();
+        ctx.font = 'bold 9px monospace';
         ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
         const label = `${mine.name}  ${this._fmtTime(mine.timerMs ?? 0)}`;
+        const x = SCREEN_WIDTH / 2;
+        const y = XP_BAR_BOTTOM + 3; // small gap below the bar
         ctx.lineWidth = 3;
         ctx.strokeStyle = 'rgba(0,0,0,0.85)';
-        ctx.strokeText(label, SCREEN_WIDTH / 2, 14);
+        ctx.strokeText(label, x, y);
         ctx.fillStyle = '#c9b0ff';
-        ctx.fillText(label, SCREEN_WIDTH / 2, 14);
-        ctx.lineWidth = 1;
-        ctx.textAlign = 'left';
+        ctx.fillText(label, x, y);
+        ctx.restore();
       } else {
         this.myEventId = null; // event ended (or we were ejected) — clear the HUD
       }
@@ -1943,7 +2004,7 @@ export class Game {
       const clipped = this._pushRoomClip();
       renderPsiFx(this.ctx, this.camera);
       renderItemFx(this.ctx, this.camera);
-      renderEmitters(this.ctx, this.camera);
+      renderEmitters(this.ctx, this.camera, this._roomOriginGate());
       renderChat(this.ctx, this.camera, this.player, this.remotePlayers);
       if (clipped) this.ctx.restore();
     }
@@ -1964,10 +2025,16 @@ export class Game {
     // NPC dialogue window, above bubbles but below the fade and menu.
     renderDialogue(this.ctx);
 
-    // Draw fade overlay during transitions
+    // Draw transition overlay (door fade or event battle-swirl) during warps.
     if (this.transitionAlpha > 0) {
-      this.ctx.fillStyle = `rgba(0, 0, 0, ${this.transitionAlpha})`;
-      this.ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+      if (this.transitionStyle === 'swirl' && swirlReady()) {
+        // Swirl mask multiplies over the frame: alpha 0→1 eats to black, then
+        // 1→0 reveals (the in-phase replays the same frames in reverse).
+        drawSwirl(this.ctx, this.transitionAlpha);
+      } else {
+        this.ctx.fillStyle = `rgba(0, 0, 0, ${this.transitionAlpha})`;
+        this.ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+      }
       // If the destination prefetch outran the fade (slow connection), show a
       // progress bar on the black instead of an indefinite wait. Usually the
       // prefetch is already done by now, so this never appears.

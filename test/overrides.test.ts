@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { EnemySpawnsSchema } from '../src/data/overrideSchemas';
+import { EnemySpawnsSchema, NpcOverridesSchema } from '../src/data/overrideSchemas';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const readJson = (rel: string) => JSON.parse(readFileSync(resolve(root, rel), 'utf8'));
@@ -46,6 +46,20 @@ describe('editor save channel allowlist', () => {
 
     const missing = [...saved].filter((f) => !allow.has(f)).sort();
     expect(missing, `saveOverride targets missing from OVERRIDE_ALLOW: ${missing}`).toHaveLength(0);
+  });
+});
+
+describe('public/overrides/npcs.json', () => {
+  it('matches the NpcOverrides schema (incl. per-instance props)', () => {
+    let data: unknown;
+    try {
+      data = readJson('public/overrides/npcs.json');
+    } catch {
+      return; // no authored placements yet — nothing to validate
+    }
+    const result = NpcOverridesSchema.safeParse(data);
+    if (!result.success) throw new Error(JSON.stringify(result.error.issues, null, 2));
+    expect(result.success).toBe(true);
   });
 });
 

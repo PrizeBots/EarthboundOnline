@@ -44,6 +44,7 @@ const OVERRIDE_ALLOW = new Set([
   'events.json', // Event Manager — authored event triggers/rooms (trigger circle, entrance/exit warps, end conditions)
   'psi.json', // PSI Manager — per-move tuning (pp/power/range/status), merged client + server
   'psi_folders.json', // PSI Manager — folder layout + move→folder assignment
+  'source_folders.json', // Source Assets — authored category display-name overrides (id→name)
 ]);
 const SAVE_BODY_LIMIT = 8 * 1024 * 1024; // sprite overrides carry data URLs
 
@@ -252,6 +253,31 @@ function gameServerPlugin() {
         }
       } catch (e) {
         console.warn('[editor] places import skipped:', e);
+      }
+
+      // One-time seed of region rooms from the authored music areas (the proven
+      // rectangle→song model). Each MusicArea {name,x,y,w,h,song} becomes a
+      // bgm-only overworld Room {regions:[rect], bgm:song}, carrying its name as
+      // the label so nothing is lost. Only runs if the DB has no rooms doc yet;
+      // after that the Room Manager owns it. Parity: #rooms == #music areas.
+      try {
+        if (!store.getWorldDoc('rooms')) {
+          const f = path.join(OVERRIDES_DIR, 'music.json');
+          if (fs.existsSync(f)) {
+            const areas = JSON.parse(fs.readFileSync(f, 'utf8'))?.areas ?? [];
+            const rooms = areas.map((a: any, i: number) => ({
+              id: `bgm_${i}`,
+              label: a.name ?? `BGM ${i}`,
+              type: 'overworld',
+              regions: [{ x: a.x, y: a.y, w: a.w, h: a.h }],
+              bgm: a.song,
+            }));
+            store.putWorldDoc('rooms', { version: 1, rooms }, Date.now());
+            console.log(`[editor] seeded ${rooms.length} region rooms from music.json (world_docs)`);
+          }
+        }
+      } catch (e) {
+        console.warn('[editor] rooms seed skipped:', e);
       }
 
       // editorApi: mount the dev editor's /api/world/* persistence routes. ONLY

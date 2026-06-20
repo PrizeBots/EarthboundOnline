@@ -10,7 +10,7 @@ import {
   itemPixelsFromImage,
   setItemSpriteData,
 } from '../../engine/Items';
-import { saveOverride } from '../saveOverride';
+import { saveOverride, loadOverride } from '../saveOverride';
 import { entityManagerTool } from './EntityManagerTool';
 import { itemManagerTool } from './ItemManagerTool';
 
@@ -47,6 +47,10 @@ class SourceAssetsTool implements EditorTool {
   private byFolder = new Map<string, RomAsset[]>();
   private desktop: FolderDesktop | null = null;
   private images = new Map<string, HTMLImageElement>(); // file -> loaded (thumb cache)
+  // Authored category display-name overrides (id -> custom name) — pure metadata,
+  // persisted to overrides/source_folders.json. Lets the admin rename the ROM
+  // source categories without touching the staged ROM tree.
+  private folderNameOv = new Map<string, string>();
   private panel: HTMLDivElement | null = null;
   private detailEl: HTMLDivElement | null = null;
   private selected: string | null = null;
@@ -71,6 +75,11 @@ class SourceAssetsTool implements EditorTool {
       this.index = { categories: [], assets: [] };
       this.shell?.toast('No ROM sources staged — run tools/copy_rom_sources.py', true);
     }
+    // Authored category renames (id -> name). 404 / absent → no renames.
+    const ov = await loadOverride<{ names?: Record<string, string> }>('source_folders.json').catch(
+      () => null
+    );
+    this.folderNameOv = new Map(Object.entries(ov?.names ?? {}));
     this.byId.clear();
     this.byFolder.clear();
     for (const a of this.index.assets) {
@@ -84,20 +93,34 @@ class SourceAssetsTool implements EditorTool {
     this.desktop?.open();
   }
 
-  /** Read-only store: categories ARE the folders; assets live in them. */
+  /** Category display name: authored override (id -> name) over the ROM base. */
+  private categoryName(id: string): string {
+    return this.folderNameOv.get(id) ?? this.index.categories.find((c) => c.id === id)?.name ?? id;
+  }
+
+  /**
+   * Store over the ROM source tree. The TREE itself is read-only (you can't add/
+   * move/delete ROM categories), but category DISPLAY NAMES are editable and
+   * persist to overrides/source_folders.json.
+   */
   private store(): FolderDesktopStore {
     const folders = (): FolderDesktopFolder[] =>
-      this.index.categories.map((c) => ({ id: c.id, name: c.name, parent: null }));
+      this.index.categories.map((c) => ({ id: c.id, name: this.categoryName(c.id), parent: null }));
     return {
       foldersWithParent: (parent) => (parent === null ? folders() : []),
       folderOf: (id) => this.byId.get(id)?.folder ?? null,
       itemsInFolder: (parent) =>
         parent === null ? [] : (this.byFolder.get(parent) ?? []).map((a) => a.id),
-      folderName: (id) => id,
+      folderName: (id) => this.categoryName(id),
       childCount: (folderId) => this.byFolder.get(folderId)?.length ?? 0,
-      // View-only — the ROM source tree isn't editable here.
+      // The ROM source tree's STRUCTURE isn't editable — only category names are.
       addFolder: () => '',
-      renameFolder: () => {},
+      renameFolder: (id, name) => {
+        const base = this.index.categories.find((c) => c.id === id)?.name ?? id;
+        const next = name.trim();
+        if (next && next !== base) this.folderNameOv.set(id, next);
+        else this.folderNameOv.delete(id); // back to the ROM default — drop the override
+      },
       deleteFolder: () => {},
       assignTo: () => {},
       setParent: () => false,
@@ -132,7 +155,13 @@ class SourceAssetsTool implements EditorTool {
         this.selected = id;
         this.refreshDetail();
       },
-      onSave: () => {}, // nothing to persist — read-only
+      onSave: () => {
+        // Persist the category-name overrides (id -> name); pure metadata.
+        void saveOverride('source_folders.json', {
+          version: 1,
+          names: Object.fromEntries(this.folderNameOv),
+        });
+      },
       toast: (m, err) => this.shell?.toast(m, err),
     });
   }

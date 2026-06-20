@@ -224,10 +224,18 @@ function parseHex(s: string): [number, number, number] | null {
   return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
 }
 
-/** Draw all live popups in world space. Call inside the camera/zoom transform. */
+/** Draw all live popups in world space. Call inside the camera/zoom transform.
+ *
+ *  `inRoom` (optional) gates each popup by the tile its SPAWN ORIGIN sits in: in
+ *  interiors, rooms are packed edge-to-edge, and a damage number arcs DOWN under
+ *  gravity — so a hit in the room above would otherwise fall across the seam and
+ *  render inside this room (the spatial clip can't stop it, the number is now
+ *  genuinely over our tiles). Gating on the origin keeps a popup in the room it
+ *  was born in. Pass null/undefined in the overworld (no rooms). */
 export function renderEmitters(
   ctx: CanvasRenderingContext2D,
-  camera: { x: number; y: number }
+  camera: { x: number; y: number },
+  inRoom?: (x: number, y: number) => boolean
 ): void {
   if (popups.length === 0) return;
   const t = now();
@@ -238,6 +246,8 @@ export function renderEmitters(
   for (const pass of [false, true]) {
     for (const p of popups) {
       if (p.top !== pass) continue;
+      // Stay in the room we were born in — never fall across a packed seam.
+      if (inRoom && !inRoom(p.x0, p.y0)) continue;
       const age = t - p.born;
       const ts = age / 1000; // seconds
       const prog = Math.min(1, age / p.life); // 0..1 over the lifetime

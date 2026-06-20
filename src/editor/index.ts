@@ -13,6 +13,7 @@ import { sourceAssetsTool } from './tools/SourceAssetsTool';
 import { soundTool } from './tools/SoundTool';
 import { combatTool } from './tools/CombatTool';
 import { roomBuilderTool } from './tools/RoomBuilderTool';
+import { roomManagerTool } from './tools/RoomManagerTool';
 import { eventManagerTool } from './tools/EventManagerTool';
 import { registerEditorTool, registerSaveHandler } from './registry';
 import { saveOverride } from './saveOverride';
@@ -50,6 +51,7 @@ export function initEditorTools(context: EditorContext): EditorHooks {
   registerEditorTool(soundTool);
   registerEditorTool(combatTool);
   registerEditorTool(roomBuilderTool);
+  registerEditorTool(roomManagerTool);
   registerEditorTool(eventManagerTool);
   for (const t of PLANNED) registerEditorTool({ ...t, status: 'wip' });
 

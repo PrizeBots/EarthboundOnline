@@ -331,36 +331,39 @@ export function equipSelectRowAt(px: number, py: number, itemCount: number, curs
   return listRowAt(equipSelectLayout(itemCount, cursor), px, py);
 }
 
-// --- PSI menu (canon-style): a TAB BAR (Offense/Recover/Assist/Other), a FAMILY
-// list under it, and — when a family is opened — a TIER popup to the right (α/β/
-// γ/Ω/Σ). All three sit to the right of the command grid. The tab bar and family
-// list share one column width so they line up; the tier popup hangs off the right.
+// --- PSI menu (canon-style): a TAB BAR (Offense/Recover/Assist/Other) across the
+// top, the FAMILY list under it, and — when a family is opened — a TIER popup to
+// its right (α/β/γ/Ω/Σ). The whole cluster is pinned UNDER the command window (so
+// that stays visible, as in EB) and MUST fit inside the 256×224 canvas: the tab bar
+// sizes to its own content (clamped to the canvas), the family list to ITS narrower
+// content, and the tier popup is clamped to the right edge.
 const PSI_TAB_GAP = 6;
 const PSI_MARK_W = 8; // room for the ▸ "has more tiers" marker on a family row
+const PSI_MARGIN = 8; // clear margin kept at the screen's right edge
 
-/** Top-left anchor of the PSI cluster (right of the command window). */
+/** Top-left anchor of the PSI cluster (just below the command window). */
 function psiAnchor(): { x: number; y: number } {
-  const cmd = commandLayout();
-  return { x: cmd.winX + cmd.winW + 4, y: cmd.winY };
+  // Top-left corner (the command grid is hidden behind the PSI screen). Top-
+  // anchored so the family list is tall enough to show a whole tab without scrolling.
+  return { x: PSI_MARGIN, y: PSI_MARGIN };
 }
 
-/** Shared inner width of the tab bar + family list (so they align). */
-function psiSharedInnerW(): number {
-  const tabsW = PSI_TABS.reduce(
+/** Tab-bar inner width: the four tab labels laid out in a row with gaps. */
+function psiTabsInnerW(): number {
+  return PSI_TABS.reduce(
     (s, c, i) => s + measureText(PSI_CATEGORY_LABEL[c], FONT_ID) + (i ? PSI_TAB_GAP : 0),
     0
   );
-  const famW =
-    CURSOR_W + Math.max(...PSI_FAMILIES.map((f) => measureText(f.family, FONT_ID))) + PSI_MARK_W;
-  return Math.max(tabsW, famW);
 }
 
-/** Outer width shared by the tab bar + family list windows. */
-function psiClusterWinW(): number {
-  return psiSharedInnerW() + PADDING * 2 + BORDER * 2 + SCROLLBAR_W + 2;
+/** Family-list inner width: widest family name + cursor + the ▸ marker. */
+function psiFamilyInnerW(): number {
+  return (
+    CURSOR_W + Math.max(...PSI_FAMILIES.map((f) => measureText(f.family, FONT_ID))) + PSI_MARK_W
+  );
 }
 
-/** The tab-bar window + each tab's clickable cell. */
+/** The tab-bar window + each tab's clickable cell (one row, clamped to canvas). */
 export function psiTabLayout(): {
   winX: number;
   winY: number;
@@ -369,7 +372,10 @@ export function psiTabLayout(): {
   cells: Cell[];
 } {
   const a = psiAnchor();
-  const winW = psiClusterWinW();
+  const winW = Math.min(
+    SCREEN_WIDTH - a.x - PSI_MARGIN,
+    psiTabsInnerW() + PADDING * 2 + BORDER * 2
+  );
   const winH = ITEM_H + PADDING * 2 + BORDER * 2;
   const cells: Cell[] = [];
   let cx = a.x + BORDER + PADDING;
@@ -392,12 +398,13 @@ export function psiTabAt(px: number, py: number): number {
   return -1;
 }
 
-/** The family list for a tab (scrolls if a tab has many families). */
+/** The family list for a tab — its own (narrow) width; scrolls if a tab is tall. */
 export function psiFamilyLayout(tab: PsiCategory, cursor = 0): ListLayout {
   const tb = psiTabLayout();
   const winY = tb.winY + tb.winH + 2;
+  const winW = psiFamilyInnerW() + PADDING * 2 + BORDER * 2 + SCROLLBAR_W + 2;
   const n = familiesInTab(tab).length;
-  return scrollList(tb.winX, winY, tb.winW, n, cursor);
+  return scrollList(tb.winX, winY, winW, n, cursor);
 }
 
 /** Family index under a point for the given tab, or -1. */
@@ -420,7 +427,11 @@ export function psiTierLayout(tab: PsiCategory, familyCursor: number, tierCursor
   const winX = list.winX + list.winW + 4;
   const labels = fam ? fam.moves.map((m) => psiTierRowLabel(m)) : [''];
   const innerW = Math.max(40, CURSOR_W + Math.max(...labels.map((l) => measureText(l, FONT_ID))));
-  const winW = innerW + PADDING * 2 + BORDER * 2 + SCROLLBAR_W + 2;
+  // Clamp so the popup never runs off the canvas right edge.
+  const winW = Math.min(
+    SCREEN_WIDTH - winX - PSI_MARGIN,
+    innerW + PADDING * 2 + BORDER * 2 + SCROLLBAR_W + 2
+  );
   const n = fam ? fam.moves.length : 1;
   return scrollList(winX, list.winY, winW, n, tierCursor);
 }

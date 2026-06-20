@@ -1,7 +1,49 @@
 {
-  "17": { "crit": 8, "dodge": 0, "attackSpeed": 1.15 },
-  "64": { "crit": 0, "dodge": 6 },
-  "88": { "heal": 6 },
-  "89": { "heal": 10 },
-  "90": { "heal": 50 }
+  "17": {
+    "crit": 8,
+    "dodge": 0,
+    "attackSpeed": 1.15
+  },
+  "36": {
+    "ranged": true,
+    "range": 130
+  },
+  "41": {
+    "ranged": true,
+    "range": 200
+  },
+  "64": {
+    "crit": 0,
+    "dodge": 6
+  },
+  "88": {
+    "heal": 6
+  },
+  "89": {
+    "heal": 10
+  },
+  "90": {
+    "heal": 50
+  },
+  "108": {
+    "buffs": [
+      {
+        "stat": "offense",
+        "amount": 10,
+        "durationMs": 60000
+      }
+    ]
+  },
+  "129": {
+    "revive": 60
+  },
+  "130": {
+    "revive": 9999
+  },
+  "207": {
+    "healPp": 500
+  },
+  "252": {
+    "revive": 9999
+  }
 }

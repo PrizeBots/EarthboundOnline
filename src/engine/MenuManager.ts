@@ -543,22 +543,6 @@ function hotbarEligible(id: string): boolean {
   return !eq || eq.slot === 'weapon';
 }
 
-/**
- * Make the equipped weapon quick-selectable: if it's not already on the hotbar,
- * drop it into the first EMPTY slot, else swap out an OLD weapon (you only carry
- * one). It NEVER evicts a consumable/PSI the player deliberately placed — if both
- * slots are full of non-weapons, the weapon just isn't on the bar until a slot
- * frees up (the player's layout wins). Call whenever the equipped weapon changes.
- * Non-evicting is also what keeps a saved PSI intact when this runs on restore.
- */
-export function syncWeaponHotbar(weaponId: string | null): void {
-  if (!weaponId || hotbar.includes(weaponId)) return;
-  const empty = hotbar.indexOf(null);
-  const weaponSlot = hotbar.findIndex((id) => id !== null && itemEquip(id)?.slot === 'weapon');
-  const target = empty !== -1 ? empty : weaponSlot; // -1 = full of non-weapons → leave it
-  if (target !== -1) hotbar[target] = weaponId;
-}
-
 // Pointer drag/drop. Goods: drag a row to a hotbar box to assign it, or release
 // on the same row to use/equip it. PSI: drag a move onto a box to quick-cast it.
 // Press/release use their own Input latches, distinct from clicks. (Equipping is
@@ -1290,8 +1274,7 @@ function renderMenuBody(ctx: CanvasRenderingContext2D, view: MenuView): void {
     return;
   }
   if (menuState === 'psi') {
-    renderCommand(ctx, view); // command grid stays visible behind the PSI list
-    renderPsi(ctx, view);
+    renderPsi(ctx, view); // its own top-left screen (tab bar + family list + tier popup)
     return;
   }
   if (menuState === 'shop' || menuState === 'shop_buy' || menuState === 'shop_sell') {

@@ -16,8 +16,11 @@ import {
   Vehicle,
   CarTraffic,
   liveNpcForKey,
+  entityBaseline,
 } from '../../engine/NPCManager';
 import { NPCKind } from '../../engine/NPC';
+import type { EntityPropsOverride } from '../../engine/EntityStats';
+import { EntityPropsForm, PropFieldDesc } from '../components/EntityPropsForm';
 import { DoorOverrides, EditorDoor, getEditorDoorBase, loadDoors } from '../../engine/DoorManager';
 import { DOOR_SFX, DEFAULT_DOOR_SFX, normalizeDoorSfx } from '../../engine/DoorSfx';
 import { playSfx } from '../../engine/MusicManager';
@@ -73,6 +76,22 @@ interface NpcEntry {
   dir: number;
   kind: NPCKind;
   t: number | null;
+  /** Sparse per-instance property override (folded over sprite-group/kind). */
+  props: EntityPropsOverride;
+}
+
+/** Normalize a placement's stored kind for the NPC tab (cars live in the
+ *  traffic list, not here). Preserves person + enemy; everything else is a prop. */
+function npcKind(k: string | undefined): NPCKind {
+  return k === 'person' ? 'person' : k === 'enemy' ? 'enemy' : 'prop';
+}
+
+/** Shallow value-equality for sparse prop overrides (numeric/scalar fields). */
+function propsEqual(a: EntityPropsOverride, b: EntityPropsOverride): boolean {
+  const ak = Object.keys(a) as (keyof EntityPropsOverride)[];
+  const bk = Object.keys(b) as (keyof EntityPropsOverride)[];
+  if (ak.length !== bk.length) return false;
+  return ak.every((k) => a[k] === b[k]);
 }
 
 interface DoorEntry {
@@ -151,6 +170,7 @@ class PlacementTool implements EditorTool {
   private fields = new Map<string, HTMLInputElement | HTMLSelectElement>();
   private thumb: HTMLCanvasElement | null = null;
   private spritePicker: SpritePicker | null = null;
+  private propsForm: EntityPropsForm | null = null;
   private requestedSheets = new Set<number>();
 
   // --- lifecycle -----------------------------------------------------------
@@ -209,8 +229,9 @@ class PlacementTool implements EditorTool {
         y: v.y,
         sprite: v.sprite,
         dir: v.dir,
-        kind: v.kind === 'person' ? 'person' : 'prop',
+        kind: npcKind(v.kind),
         t: v.t ?? null,
+        props: { ...(v.props ?? {}) },
       });
     }
     for (const a of npcOv?.additions ?? []) {
@@ -222,8 +243,9 @@ class PlacementTool implements EditorTool {
         y: a.y,
         sprite: a.sprite,
         dir: a.dir,
-        kind: a.kind === 'person' ? 'person' : 'prop',
+        kind: npcKind(a.kind),
         t: a.t ?? null,
+        props: { ...(a.props ?? {}) },
       });
     }
 
@@ -275,25 +297,30 @@ class PlacementTool implements EditorTool {
         if (!e.deleted) additions!.push(this.npcToRaw(e));
         continue;
       }
-      const b = this.npcBase.get(e.k)!;
       if (e.deleted) edits![e.k] = null;
-      else if (
-        e.x !== b.x ||
-        e.y !== b.y ||
-        e.sprite !== b.sprite ||
-        e.dir !== b.dir ||
-        e.kind !== b.kind ||
-        e.t !== (b.t ?? null)
-      ) {
+      else if (this.isNpcEdited(e)) {
         edits![e.k] = this.npcToRaw(e);
       }
     }
     return { version: 1, edits, additions };
   }
 
+  /** Set or clear (value === undefined) one per-instance prop on the selected
+   *  NPC. Undoable + auto-saved like every other field, via mutate('props'). */
+  private setProp(key: PropFieldDesc['key'], value: number | undefined): void {
+    const e = this.selNpc;
+    if (!e) return;
+    const next: EntityPropsOverride = { ...e.props };
+    if (value === undefined) delete next[key];
+    else next[key] = value;
+    if (propsEqual(next, e.props)) return; // no-op (re-typed same value)
+    this.mutate('props', e, { props: next }, 'npcs');
+  }
+
   private npcToRaw(e: NpcEntry): Omit<RawNPC, 'k'> {
     const r: Omit<RawNPC, 'k'> = { x: e.x, y: e.y, sprite: e.sprite, dir: e.dir, kind: e.kind };
     if (e.t !== null) r.t = e.t;
+    if (Object.keys(e.props).length) r.props = { ...e.props };
     return r;
   }
 
@@ -776,6 +803,7 @@ class PlacementTool implements EditorTool {
       dir: Direction.S,
       kind,
       t: null,
+      props: {},
     };
     this.shell!.run({
       label: `add ${kind}`,
@@ -1252,6 +1280,7 @@ class PlacementTool implements EditorTool {
     this.fields.clear();
     this.thumb = null;
     this.spritePicker = null;
+    this.propsForm = null;
     for (const b of this.panel.querySelectorAll<HTMLButtonElement>('button[data-tab]')) {
       const on = b.dataset.tab === this.mode;
       b.style.color = on ? '#e8a33d' : '#cde';
@@ -1404,6 +1433,11 @@ class PlacementTool implements EditorTool {
       const t = v.trim() === '' ? null : num(v);
       if (t === null || !Number.isNaN(t)) apply('text id', { t });
     });
+
+    // Per-instance property override (blank = inherited from the sprite-group /
+    // kind defaults). Only for real NPCs — a car's stats live in car_traffic.json.
+    this.propsForm = new EntityPropsForm({ onChange: (key, value) => this.setProp(key, value) });
+    form.appendChild(this.propsForm.el);
 
     const actions = document.createElement('div');
     actions.style.cssText =
@@ -1692,6 +1726,14 @@ class PlacementTool implements EditorTool {
       if (nameEl) {
         nameEl.textContent = sprite != null ? (getSpriteName(sprite) ?? '(unnamed sprite)') : '';
       }
+      // Per-instance properties: only for a selected NPC (not a car — its stats
+      // are authored in the Traffic Editor). Hidden for nothing-selected too.
+      this.propsForm?.update(
+        !veh && e
+          ? { kind: e.kind, baseline: entityBaseline(e.kind, e.sprite), override: e.props }
+          : null
+      );
+
       // "Edit entity →" only for enemy NPCs; "Edit route in Traffic →" only for cars.
       const editBtn = this.panel.querySelector<HTMLButtonElement>('[data-role=edit-entity]');
       if (editBtn) editBtn.style.display = !veh && e?.kind === 'enemy' ? '' : 'none';
@@ -1748,7 +1790,8 @@ class PlacementTool implements EditorTool {
       e.sprite !== b.sprite ||
       e.dir !== b.dir ||
       e.kind !== b.kind ||
-      e.t !== (b.t ?? null)
+      e.t !== (b.t ?? null) ||
+      !propsEqual(e.props, b.props ?? {})
     );
   }
 }

@@ -50,7 +50,7 @@ let folderCounter = 0;
 
 // PSI Manager — the master library of every PSI move, organized like the Item
 // Manager: a file-explorer "desktop" of tiles (the move's cast-animation icon)
-// in category folders (Recover / Offense / Ailment / Assist). The right panel
+// in category folders (Offense / Recover / Assist / Other). The right panel
 // tunes every property (PP, power, range, status inflicts, revive…) into
 // overrides/psi.json — the SAME file the server merges (gameHost _loadPsi) and
 // the client base layers (PsiTuning). "Edit animation →" hands off to the Sprite
@@ -202,6 +202,15 @@ class PsiManagerTool implements EditorTool {
     const baseVal = !!(psiBase(id) as Record<string, unknown> | undefined)?.[key];
     if (val === baseVal) delete ov[key];
     else (ov[key] as boolean) = val;
+    this.prune(id);
+  }
+
+  /** Set the offense targeting shape; matching the base value reverts (clears). */
+  private setShape(id: string, val: 'radius' | 'line' | 'bolts'): void {
+    const ov = this.ovOf(id);
+    const baseVal = psiBase(id)?.shape ?? 'radius';
+    if (val === baseVal) delete ov.shape;
+    else ov.shape = val;
     this.prune(id);
   }
 
@@ -474,12 +483,57 @@ class PsiManagerTool implements EditorTool {
       this.mkNumRow('damage', ov.damage, base.damage ?? 0, 0, undefined, false, (v) =>
         this.setNum(id, 'damage', v)
       );
-      this.mkNumRow('range px', ov.range, base.range ?? 240, 16, 640, false, (v) =>
-        this.setNum(id, 'range', v)
+      // Targeting shape decides which reach fields are relevant.
+      const eff = effectivePsi(id, this.overrides);
+      const shape = eff?.shape ?? 'radius';
+      this.mkSelectRow(
+        'shape',
+        shape,
+        [
+          { value: 'radius', label: 'Radius (circle)' },
+          { value: 'line', label: 'Line (forward beam)' },
+          { value: 'bolts', label: 'Bolts (random)' },
+        ],
+        base.shape ?? 'radius',
+        (v) => {
+          this.setShape(id, v);
+          this.refreshStats(); // swap in the fields for the new shape
+        }
       );
-      this.mkCheckRow('hits all in range', effectivePsi(id, this.overrides)?.multi ?? false, (on) =>
-        this.setBool(id, 'multi', on)
-      );
+      if (shape === 'line') {
+        this.mkNumRow('length px', ov.length, base.length ?? 240, 16, 1024, false, (v) =>
+          this.setNum(id, 'length', v)
+        );
+        this.mkNumRow('muzzle ½w', ov.width, base.width ?? 32, 4, 512, false, (v) =>
+          this.setNum(id, 'width', v)
+        );
+        this.mkNumRow('spread', ov.spread, base.spread ?? 0, 0, 4, true, (v) =>
+          this.setNum(id, 'spread', v)
+        );
+        const note = document.createElement('div');
+        note.textContent =
+          'Cone shoots the way you face; spread = ½-width gained per px forward (0 = straight beam).';
+        note.style.cssText = 'color:#667;font-size:10px;margin-left:62px;';
+        this.statsEl.appendChild(note);
+      } else if (shape === 'bolts') {
+        this.mkNumRow('bolts', ov.bolts, base.bolts ?? 1, 1, 32, false, (v) =>
+          this.setNum(id, 'bolts', v)
+        );
+        this.mkNumRow('range px', ov.range, base.range ?? 520, 16, 1024, false, (v) =>
+          this.setNum(id, 'range', v)
+        );
+        const note = document.createElement('div');
+        note.textContent = 'Strikes that many RANDOM enemies within range.';
+        note.style.cssText = 'color:#667;font-size:10px;margin-left:62px;';
+        this.statsEl.appendChild(note);
+      } else {
+        this.mkNumRow('range px', ov.range, base.range ?? 240, 16, 640, false, (v) =>
+          this.setNum(id, 'range', v)
+        );
+        this.mkCheckRow('hits all in range', eff?.multi ?? false, (on) =>
+          this.setBool(id, 'multi', on)
+        );
+      }
       this.buildInflictEditor(id);
     } else if ((effectivePsi(id, this.overrides)?.inflict?.length ?? 0) > 0 || base.range) {
       // Ailment-style assist (Hypnosis/Paralysis/Brainshock): a status inflicter,
@@ -641,6 +695,34 @@ class PsiManagerTool implements EditorTool {
       cur === undefined ? 'using base value' : 'overridden — clear the field to revert to base';
     rev.style.cssText = `color:${cur === undefined ? '#667' : this.accent};font-size:10px;`;
     row.appendChild(rev);
+    this.statsEl!.appendChild(row);
+  }
+
+  private mkSelectRow<T extends string>(
+    label: string,
+    cur: T,
+    opts: { value: T; label: string }[],
+    base: T,
+    onSet: (v: T) => void
+  ): void {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;';
+    const l = document.createElement('span');
+    l.textContent = label;
+    l.style.cssText = 'width:62px;color:#9fb8cc;';
+    row.appendChild(l);
+    const sel = document.createElement('select');
+    sel.style.cssText =
+      'flex:1;min-width:0;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
+    for (const o of opts) {
+      const opt = document.createElement('option');
+      opt.value = o.value;
+      opt.textContent = o.label + (o.value === base ? ' (base)' : '');
+      if (o.value === cur) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    sel.onchange = () => onSet(sel.value as T);
+    row.appendChild(sel);
     this.statsEl!.appendChild(row);
   }
 

@@ -28,6 +28,7 @@ export interface Trigger {
     item?: number; // item:acquired
     enemy?: number; // enemy:defeated — sprite-group id
     sector?: number; // area:entered
+    room?: string; // room:enter / room:exit — the Room id
   };
   /** All of these player flags must be SET for the trigger to fire. */
   require?: number[];
@@ -61,6 +62,9 @@ function matchesTarget(t: Trigger, e: GameEvent): boolean {
       return t.on.enemy == null || t.on.enemy === e.enemy;
     case 'area:entered':
       return t.on.sector == null || t.on.sector === e.sector;
+    case 'room:enter':
+    case 'room:exit':
+      return t.on.room == null || t.on.room === e.room;
   }
 }
 

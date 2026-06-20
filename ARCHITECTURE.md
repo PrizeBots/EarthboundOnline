@@ -285,8 +285,13 @@ focusItem })`) to the Sprite Editor's Item mode. The Sprite Editor's item list
   drawn in EVERY open menu state: drag a **Goods** row onto a box (the new
   `isPointerDown`/`consumePointerPress`/`consumePointerRelease` Input latches; a
   press-then-release on the same row is a plain use), and number keys **1–2** or
-  a click trigger a slot — toggle-equip gear into its slot, or use a consumable.
-  Hotbar slots + equipped gear are in-memory (more slots + a save system are
+  a click trigger a slot — equip the parked weapon into its slot, or use a
+  consumable. The hotbar is **independent of and optional to** equipping: it's a
+  quick-switch shelf for weapons you park there (a slot whose weapon is currently
+  worn shows a green ring), NOT where a weapon must live to be equipped. Equipping
+  from the Equip/Goods screens never touches the bar; only acquiring a new
+  weapon/consumable auto-fills an EMPTY slot (`autoHotbarNewItems`). Hotbar slots +
+  equipped gear are in-memory (more slots + a save system are
   TODO). The equip model lives once in `GameHost` (`server/gameHost.js`).
 - **Wallet.ts + money window** — the server-authoritative money ($). Every
   player joins with $1000; the balance ships in `welcome` and every `money`
@@ -518,13 +523,25 @@ Enemy is a third NPC kind, **selectable per placement** in the Placement Editor
 `npcSim` (server) apply the SAME rule (`isEnemyPlacement`), so they never
 disagree.
 
-**Stat layering (single source of truth).** Per-entity combat stats resolve as
-`DEFAULT_ENTITY_STATS < enemies.json (ROM catalog) < enemy_spawns.json entities
-(authored)`. `tools/extract_enemies.py` builds the catalog keyed by sprite id
-(the ROM "Overworld Sprite" field IS our sprite id — direct equality); the
-authored `entities` layer (Entity Manager) stores only hand-tuned changes. Both
-client and server build the same merged `entityDefs` (keep `buildEntityDefs` in
-sync). The catalog feeds **stats only** — it does NOT auto-classify its 77
+**Stat layering (the cascade).** Every placed entity draws from one shared
+property shape (`EntityProps`, `src/engine/EntityStats.ts`) resolved through a
+single cascade by `resolveProps` — mirrored in `server/npcSim.js` and
+`src/engine/NPCManager.ts` (KEEP IN SYNC):
+
+    kind default  ->  sprite-group entity table  ->  instance override
+
+The **sprite-group** layer is itself `DEFAULT_ENTITY_STATS < enemies.json (ROM
+catalog) < enemy_spawns.json entities (authored, Entity Manager)`, merged into
+`entityDefs` (keep `buildEntityDefs` in sync). The **instance** layer is the
+per-thing override that WINS over the sprite group: a placement's sparse
+`props` (npcs.json, authored in the **Placement** tool's properties panel — the
+shared `EntityPropsForm` component), or a **spawner**'s own fields (the Enemy
+Spawner panel uses the same `EntityPropsForm`; blank = inherit the entity's
+stats, and overrides save flat on the spawner so `resolveProps` reads them), or
+a **vehicle**'s inline fields. So two spawners — or two placed enemies — of the
+same sprite can differ in hp/aggro/chase/roam/etc., while anything left unset
+inherits. `tools/extract_enemies.py` builds the catalog keyed by sprite id
+(the ROM "Overworld Sprite" field IS our sprite id — direct equality). The catalog feeds **stats only** — it does NOT auto-classify its 77
 sprites as hostile (that stays the explicit kind / legacy list), so adding ROM
 enemies never silently turns existing NPCs aggressive. Static (placed) enemies
 now read full per-entity stats, same as the spawner pool — a placed and a
@@ -566,17 +583,48 @@ hurt townsperson shows its bar while the local player always sees its own.
 the server stays authoritative for HP/death. **Knockback** is server-computed
 (`npcSim.knockbackPlayerSpot`, collision-clamped) and broadcast as a landing
 spot; the local player eases to it over a few frames (`Player.knockTo`) so the
-camera glides instead of teleporting. The **juice trio** lives in `Juice.ts`, a
+camera glides instead of teleporting.
+
+**Weight class (level-driven push + knockback).** Every actor and player has a
+`mass` derived from its level (`massOf` in `npcSim.js`: `1 + level*MASS_PER_LEVEL`,
+or an authored per-entity `mass` override — the Entity Manager field is a TODO).
+Mass feeds two server-authoritative behaviors, both of which reduce to the OLD
+behavior at equal mass so a fair same-level fight is unchanged — only a level GAP
+creates asymmetry: **(1) Knockback** distance (still damage-proportional) is scaled
+by the attacker/victim mass ratio (`massKnockScale`, clamped `[0.15, 2]` then back
+under `KB_MAX`): a much-heavier attacker flings a light victim toward the cap, a
+much-lighter attacker barely budges a heavy one — so a weak enemy chipping a
+high-level player moves them almost nothing. Attacker mass is threaded through
+`applyDamage`/`handleAttack` (`atk.amass`, `opts.amass/vmass`). **(2) Walk-push:**
+the anti-stack `unstack` is now inverse-mass weighted (the lighter body yields
+more; equal mass = the old 50/50), and `pushFromPlayers` lets a HEAVIER player
+walking into a lower-mass actor shove it aside — a small capped per-tick nudge
+(`PLOW_STEP`/`PLOW_STEP_MAX`), NOT a knockback impulse, so sustained contact slides
+the actor smoothly out of the way (the "plow through the level-2 townsfolk blocking
+the shop" case). Both share `slideApart`, which clamps the slide against walls so
+nothing is shoved through one. Equal/lighter players don't plow — the normal mutual
+block stands. **Player↔player** walk-push (`pushPlayers`) extends this to other
+players (clearing a low-level crowd off a doorway): players live on the host, not in
+`actors`, so the sim computes a wall-clamped landing spot (`knockbackPlayerSpot`, no
+damage) and hands it to the host via `onPlayerShoveCb` → `GameHost.shovePlayer` (the
+SAME path the vehicle plow uses; the client honors the `player_push` hint). It's
+gated on the heavier player actually MOVING this tick (`playerMoved`), so a resting
+player isn't a permanent repulsion aura — you push through people as you walk.
+
+The **juice trio** lives in `Juice.ts`, a
 module-level singleton (like `Emitter`) any hit-detector can poke: **hitstop**
 (`Game.update` skips the world sim for a few frames while the freeze holds —
 render still runs), **screen shake** (decaying trauma → camera offset applied
 around the world/overlay draws in `Game.render`, restored before the HUD), and a
 per-sprite **hit flash** (`Entity.flashUntil` → `drawSprite`'s `flash` arg paints
 a white silhouette via a scratch-canvas `source-atop` tint). Triggers: enemy hits
-fire from `NPCManager.applyNpcHp` but only credit shake/hitstop when the local
-player swung within `ATTACK_CREDIT_MS` (`noteLocalAttack`) — so townsfolk or other
-players hitting nearby enemies flash the sprite but don't rattle your screen while
-you're just walking through. Player hits fire from `Game`'s `onPlayerHp` (heavier
+flash the struck sprite from `NPCManager.applyNpcHp` (always — harmless on anyone's
+hit), but the shake/hitstop juice rides a **server-confirmed `hit` combat event**:
+`npcSim.handleAttack` sums the damage a swing actually dealt to enemies and, if it
+connected, broadcasts `{evt:'hit', byPlayer, dmg}`; `Game.onCombat` fires the juice
+only when `byPlayer` is the local player. So a swing at empty air can't be rattled
+by some off-screen brawl, and townsfolk/other players hitting nearby enemies flash
+the sprite but never shake your screen. Player hits fire from `Game`'s `onPlayerHp` (heavier
 — taking a hit outweighs landing one), and crits add an extra punch in `onCombat`
 only when the local player dealt or took it. Weapon **attack speed** (`equip_stats.json`
 `attackSpeed`, server-authoritative) scales both the swing cooldown and the
@@ -628,19 +676,41 @@ the over-head countdown, and the owner's closing **vignette**.
 PARTY-target: the client enters a **target picker** (rings on valid targets, `Z`=
 self, click an ally, `Esc`) and sends `use_psi` with a `targetId`; the server routes
 heal/cure/revive to that target (or self) and validates range (`PSI_HEAL_RANGE`).
-Offense PSI still auto-strikes the nearest enemy. Healing γ/Ω revive (γ half HP,
-Ω full), Lifeup heals. (Full multi-tier roster + per-character learn-by-level
-gating remains a backlog content/system task.)
+Offense PSI auto-targets (no manual aim) but its FOOTPRINT depends on the move's
+`shape`: **radius** (default) hits the nearest enemy, or every enemy in `range`
+when `multi` (Rockin'/Starstorm/Flash); **line** (PSI Fire) sprays a forward CONE
+in the caster's facing direction — a shotgun narrow at the muzzle (`±width`) that
+FANS OUT with distance (allowed side-offset = `width + spread*along`) out to
+`length` ahead; both `length` and `spread` climb steeply per tier (`psiStrikeLine`),
+and the cast carries a `beams[]` fan of projectile endpoints so the client sprays a
+shotgun of FX; **bolts** (PSI Thunder) zaps `bolts` RANDOM live enemies within
+`range`, more bolts per tier (`psiStrikeBolts`, the `psi_cast` carries a `hits[]`
+so the client drops a strike FX on each). Every shape is ROOM-SCOPED: a candidate is skipped if a wall
+(`wallBetween`) OR a door seam (`doorBetween`) sits between caster and enemy — the
+same barrier melee/enemy-sensing use — so no PSI ever reaches into the next room
+(the client's room crop would hide the attacker anyway). Healing γ/Ω revive (γ half
+HP, Ω full), Lifeup heals. (Full multi-tier
+roster + per-character learn-by-level gating remains a backlog content/system task.)
+
+**PSI roster.** The full canon set — **52 abilities** across 17 families and all
+their tiers (α/β/γ/Ω/Σ) — is the base on each side, BUILT from one compact family
+spec (`PSI_FAMILY_SPECS`) rather than 52 literals, so the two sides stay in sync
+(server `gameHost.js` + client `src/engine/PsiTuning.ts`). Each move's id matches
+the ROM PSI catalog id (`PsiCatalog`) AND its `overrides/psi_anim.json` animation
+key, so cast FX resolve exactly and higher tiers reuse the family's authored art
+(no per-tier pixels). The four canon types — `offense`/`recover`/`assist`/`other`
+— are the menu's tabs. The PSI command menu is canon-style: a **tab bar** →
+**family list** → **tier popup** (`menu/layout.ts` + `menu/render.ts`); Enter
+casts the highlighted tier, number keys 1-6 (or drag) equip it to a hotbar slot.
 
 **PSI tuning (mod layer).** Every move's stats — PP, heal, damage, range, `multi`,
-`reviveFrac`, `cures`, status `inflict` — live in a base table on each side
-(server `gameHost.js` `PSI_BASE`, client `src/engine/PsiTuning.ts` `PSI_BASE`,
-re-exported as the menu's `PSI_ABILITIES` so there's no duplicate list). The
-**PSI Manager** tool (`src/editor/tools/PsiManagerTool.ts`) layers authored tuning
-on top via **`overrides/psi.json`** (`{ version, moves: { <id>: {…} } }`) — the
-SAME file the server merges (`GameHost._loadPsi`, read at startup → `this.PSI`,
-like `equip_stats`) and the client mirrors (`effectivePsi`). It's a FolderDesktop
-library (category folders Recover/Offense/Ailment/Assist, persisted to
+`reviveFrac`, `cures`, status `inflict` — live in the base table on each side
+(`PSI_BASE`, re-exported as the menu's `PSI_ABILITIES` so there's no duplicate
+list). The **PSI Manager** tool (`src/editor/tools/PsiManagerTool.ts`) layers
+authored tuning on top via **`overrides/psi.json`** (`{ version, moves: { <id>:
+{…} } }`) — the SAME file the server merges (`GameHost._loadPsi`, read at startup
+→ `this.PSI`, like `equip_stats`) and the client mirrors (`effectivePsi`). It's a
+FolderDesktop library (category folders Offense/Recover/Assist/Other, persisted to
 `overrides/psi_folders.json`) whose tiles show each move's cast-animation icon;
 the right panel tunes the fields and an **"Edit animation →"** button hands off to
 the Sprite Editor's PSI mode (`openSpriteEditor({ focusPsi })`, which authors
@@ -711,10 +781,11 @@ chased `targetId` jumped while it's within `WARP_FOLLOW_RANGE` of the doorway
 and the door is pushed onto its `warpStack`. A locked chase has **no home leash**
 — the enemy pursues relentlessly wherever the target goes; it gives up only when
 the target passes `giveUpRange` (hysteresis: acquire at `detectRange`, drop at
-the larger give-up distance) or it dies, then it paths home. Both radii are
-per-SPAWNER fields tunable in the Enemy Spawner tool ("aggro" / "chase"), so two
-spawners of the same sprite can differ; they default to `DETECT_RANGE` /
-`GIVE_UP_RANGE`. (Placement enemies, which have no spawner, use the defaults.) A respawn-teleport also jumps the (full-HP)
+the larger give-up distance) or it dies, then it paths home. Both radii (plus
+`wanderRadius`) resolve through the cascade above: defaults `DETECT_RANGE` /
+`GIVE_UP_RANGE` / 256, overridable per-spawner (Enemy Spawner tool "aggro" /
+"chase" / "roam") OR per-placement (Placement tool's properties panel), so two
+spawners — or two placed enemies — of the same sprite can differ. A respawn-teleport also jumps the (full-HP)
 player to spawn, indistinguishable from a door warp, so the host calls
 `npcSim.noteRespawn(id)` to exempt that one jump. On losing the target the enemy
 switches to `return`: it retraces its `warpStack` (warping back out at each
@@ -847,11 +918,22 @@ wire new doors to it.
 - **Extendable map.** New rooms are stamped into an "interiors band" appended
   BELOW the overworld; the plane grows in HEIGHT only (width fixed at 256, so all
   row-major indexing is unchanged). `MAP_HEIGHT_TILES`/`MAP_HEIGHT_SECTORS` in
-  `types.ts` are live bindings set by `MapManager.loadMapData` from the data;
-  `server/npcSim.js` derives `mapHTiles` the same way. Width-fixed means copying a
-  room's tile _values_ into a band region whose sectors share the source's
-  tilesetId/paletteId reproduces rendering AND collision (collision is keyed by
-  tile ARRANGEMENT, not position).
+  `types.ts` are live bindings set by `MapManager.loadMapData` from the data.
+  Width-fixed means copying a room's tile _values_ into a band region whose
+  sectors share the source's tilesetId/paletteId reproduces rendering AND
+  collision (collision is keyed by tile ARRANGEMENT, not position).
+- **Server MUST stamp the band too.** The band is NOT baked into `tiles.json`
+  (that stays the 320-tile ROM overworld) — it's assembled at load from
+  `overrides/rooms.json`. The client does this in `MapManager.buildCustomRoomBand`;
+  `server/npcSim.js` mirrors it in `buildRoomBand()` (grows `tiles`/`sectors`,
+  re-derives `mapHTiles`, registers composite tiles for `blocked()`), file-watched
+  on `rooms.json` (2s poll → re-stamp + `reloadPlacements` so `indoor` re-derives).
+  This is load-bearing: a placement below the base height that the server doesn't
+  stamp reads as out-of-bounds **solid** in `blocked()`, so any enemy/NPC in a
+  custom room can neither sense players (`canSense`) nor wander — it freezes in
+  place while the client (player movement is client-side) walks the room fine.
+  Custom-room composite cells (id ≥ `COMPOSITE_BASE`) carry per-source-minitile
+  collision, mirrored from `Collision.ts` `compositeRow` in `npcSim.compositeByte`.
 - **Registry.** `src/engine/Rooms.ts` loads `rooms.json`
   (`{id,label,town,type,rect,spawn}`), maps a point→room, and tracks the active
   room (`Game.updateRoomBounds`). The editor's **Places** column

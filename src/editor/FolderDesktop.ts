@@ -57,6 +57,7 @@ export class FolderDesktop {
 
   private cells = new Map<string, HTMLDivElement>();
   private dragPayload: DragPayload | null = null;
+  private renamingFolder: string | null = null; // folder id whose label is being edited in place
 
   private marquee: HTMLDivElement | null = null;
   private marqueeStart = { x: 0, y: 0 };
@@ -283,12 +284,55 @@ export class FolderDesktop {
     icon.style.cssText =
       'width:94px;height:94px;display:flex;align-items:center;justify-content:center;font-size:52px;' +
       'line-height:1;flex:none;background:#0c1014;border-radius:4px;pointer-events:none;';
-    const lbl = document.createElement('div');
-    lbl.textContent = `${f.name} (${this.cfg.store.childCount(f.id)})`;
-    lbl.style.cssText =
-      'font-size:9px;color:#e8c14e;text-align:center;width:100%;overflow:hidden;' +
-      'text-overflow:ellipsis;white-space:nowrap;pointer-events:none;';
-    tile.append(icon, lbl);
+    // Label — editable IN PLACE (no modal). Double-click the name, or hit the
+    // toolbar Rename button, to turn it into an input right here in the tile.
+    let labelEl: HTMLElement;
+    if (this.renamingFolder === f.id) {
+      const input = document.createElement('input');
+      input.value = f.name;
+      input.style.cssText =
+        'font-size:9px;color:#e8c14e;background:#0c1014;border:1px solid #e8c14e;border-radius:3px;' +
+        'text-align:center;width:100%;box-sizing:border-box;outline:none;';
+      // Don't let clicks/keys bubble to the tile (select/open) or the editor shell.
+      input.onclick = (e) => e.stopPropagation();
+      input.ondblclick = (e) => e.stopPropagation();
+      input.onkeyup = (e) => e.stopPropagation();
+      input.onkeydown = (e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          this.commitRename(f.id, input.value);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          this.renamingFolder = null;
+          this.render();
+        }
+      };
+      input.onblur = () => {
+        if (this.renamingFolder === f.id) this.commitRename(f.id, input.value);
+      };
+      // Focus + select after it mounts.
+      setTimeout(() => {
+        input.focus();
+        input.select();
+      }, 0);
+      tile.draggable = false;
+      labelEl = input;
+    } else {
+      const lbl = document.createElement('div');
+      lbl.textContent = `${f.name} (${this.cfg.store.childCount(f.id)})`;
+      lbl.style.cssText =
+        'font-size:9px;color:#e8c14e;text-align:center;width:100%;overflow:hidden;' +
+        'text-overflow:ellipsis;white-space:nowrap;';
+      // Double-click the name to rename in place; single clicks still bubble to
+      // the tile (select). stopPropagation keeps it from opening the folder.
+      lbl.ondblclick = (e) => {
+        e.stopPropagation();
+        this.beginRename(f.id);
+      };
+      labelEl = lbl;
+    }
+    tile.append(icon, labelEl);
     tile.onclick = () => {
       this.selFolder = this.selFolder === f.id ? null : f.id;
       this.render();
@@ -390,17 +434,29 @@ export class FolderDesktop {
     this.render();
   }
 
+  // Toolbar Rename → start editing the selected folder's label in place.
   private renameFolder(): void {
     if (!this.selFolder) {
       this.cfg.toast?.('Click a folder to select it first', true);
       return;
     }
-    const f = this.allFolders().find((x) => x.id === this.selFolder);
-    if (!f) return;
-    const name = window.prompt('Rename folder:', f.name);
-    if (name == null) return;
-    this.cfg.store.renameFolder(f.id, name);
-    this.cfg.onSave();
+    this.beginRename(this.selFolder);
+  }
+
+  private beginRename(id: string): void {
+    this.selFolder = id;
+    this.renamingFolder = id;
+    this.render(); // makeFolderTile now draws an input for this folder
+  }
+
+  private commitRename(id: string, value: string): void {
+    this.renamingFolder = null;
+    const f = this.allFolders().find((x) => x.id === id);
+    const name = value.trim();
+    if (f && name && name !== f.name) {
+      this.cfg.store.renameFolder(id, name);
+      this.cfg.onSave();
+    }
     this.render();
   }
 

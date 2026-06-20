@@ -23,6 +23,10 @@ const BAR_W = 120;
 const BAR_H = 6;
 const TOP = 4; // margin from the top edge
 
+// Bottom edge of the bar in logical screen coords — so other top-center HUD
+// elements (e.g. the event timer) can stack right beneath it.
+export const XP_BAR_BOTTOM = TOP + BAR_H;
+
 export function renderXpBar(ctx: CanvasRenderingContext2D): void {
   const st = getStatus();
   const span = expCost(st.level);

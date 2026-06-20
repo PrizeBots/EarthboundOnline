@@ -1,8 +1,10 @@
 # Room System — Cleanup & Refactor Plan
 
-> Status: **PLAN / pre-build.** This doc is the design we agreed to before writing
-> code. It is the foundation for shops-by-room, hotels/healing, save rooms, and
-> the future scripting system. Update it as the build lands.
+> Status: **IN BUILD.** Phases 0, 1, 3 are LANDED (parity core: one merged room
+> registry, 505 region rooms seeded from music with parity verified, music folded
+> onto room `bgm` with hysteresis preserved). Phase 2 (Room Manager tool) and
+> Phases 4–6 (shop/hospital/hotel/scripting) are the remaining feature builds.
+> This doc is the design + the running record; update it as each phase lands.
 
 ## TL;DR
 
@@ -13,6 +15,22 @@ every other system a _consumer_ of it (camera crop, music, Places navigator, sho
 hotels, scripting). The Sound Manager's "rectangle → song" model is the proven
 pattern we mirror; in fact **music becomes just one Room property**, which is the
 "every room plays one BGM" parity we want.
+
+---
+
+## Guiding principle: lossless parity
+
+This is a **consolidation, not a redesign** — the bar is that the unified system reproduces
+everything the four old systems did, with **zero information lost** in migration:
+
+- Every `MusicArea` (song + region + name) → a room. Verify by count before retiring `music.json`.
+- Every custom room (`rooms.json`) → unchanged geometry + identity.
+- Every Places node (door-derived, manual override, `roomId` link) → preserved.
+- Every camera crop behavior → still produced by the flood-fill (untouched).
+
+Old files retire **only after** a parity check proves their data survived in the new home. If
+in doubt, carry a field forward (even into `meta`) rather than drop it. "Bring it to parity,
+lose nothing" is the success test for Phases 0–3.
 
 ---
 
@@ -72,6 +90,14 @@ in one coherent move.
 - **Music folds in:** `updateMusic()` reads `activeRoom.bgm` instead of its own rectangle
   lookup. The ~507 music areas **seed** the initial room library (instant map coverage +
   every region already carries a song → bgm).
+  - ⚠️ **Port the hysteresis or music regresses.** `areaForPoint` is sticky
+    (`EDGE_MARGIN`, current-area-wins-until-clearly-left, `MusicManager.ts:75-87`) to stop
+    songs flipping when you brush a seam. `setActiveRoomFromPoint`/`roomAt` have **no**
+    hysteresis (instant first-match switch). The room→bgm resolver MUST carry the sticky
+    logic forward. Acceptance test for Phase 3: **no song flip when hugging a room seam.**
+  - **`bgm: null` = fall back to the sector's ROM `musicId`** (today's floor in
+    `updateMusic`, `MusicManager.ts:499`). Keep that fallback when `music.json` retires —
+    null means "inherit ROM default," not silence.
 - **Camera flood-fill crop stays** as a _visual_ mechanism only (it's good at irregular
   shapes + occlusion). Rooms provide _identity + data + bgm_, not the pixel crop. This
   **decouples room identity from the fragile collision flood-fill.**
@@ -111,7 +137,7 @@ interface RoomBase {
   town?: string | null; // navigator grouping
   regions: RoomRect[]; // one or more rects (L-shaped rooms = multiple)
   spawn?: { x: number; y: number; dir: number };
-  bgm?: number | null; // SPC song number — THE per-room BGM (null = inherit/silence)
+  bgm?: number | null; // SPC song number — THE per-room BGM (null = inherit sector musicId)
 }
 
 type Room =
@@ -135,9 +161,98 @@ Notes:
 
 Rooms live in the DB as the `'rooms'` world doc (via `/api/world/rooms`), consistent with
 Places (its navigator) and shippable/synced like real content. Requires adding `'rooms'` to
-`WORLD_DOC_ALLOW` (`server/authApi.js:38`). The existing `overrides/rooms.json` is migrated
-into the doc once, then retired. Music's `overrides/music.json` is **superseded** by room
-`bgm` (read once during seeding, then retired).
+`WORLD_DOC_ALLOW` (`server/authApi.js:38`, currently `['places', 'stamps']`).
+
+> ⚠️ **`overrides/rooms.json` does NOT retire — it is a different file than we assumed.**
+> `rooms.json` is owned by **RoomBuilderTool** and carries heavy **band geometry**
+> (`tiles[]`, `composites`, `bandX/Y`); `MapManager.buildCustomRoomBand()` stamps those
+> tiles into the appended map band and is the **only** caller of `setRoomList()`
+> (`MapManager.ts:146`). It stays as-is. The new DB `'rooms'` doc is the **identity +
+> props overlay** (id → name/type/bgm/region/type-fields), a _separate_ layer merged onto
+> the custom-room defs by id (see "Reconciliation" below). Music's `overrides/music.json`
+> is **superseded** by room `bgm` (read once during seeding, then retired) — but the
+> per-sector `musicId` fallback in `updateMusic` stays as the floor (`MusicManager.ts:499`).
+
+---
+
+## Reconciliation — custom rooms vs region rooms (READ BEFORE Phase 0)
+
+The plan above writes as if `Rooms.ts` were a free-standing metadata registry. It is not:
+today it is the **output of physically-stamped interior geometry**. There are really
+**two kinds of room** and the refactor must hold both, merged:
+
+- **Custom rooms** (existing): net-new authored interiors stamped into the map band by
+  RoomBuilderTool. Geometry lives in `overrides/rooms.json`; `RoomDef.rect` is derived
+  from `bandX*32`. Source of truth for these stays `rooms.json`.
+- **Region rooms** (new): identity + typed props over arbitrary map regions (overworld
+  bgm zones, ROM interiors). Source of truth is the DB `'rooms'` doc.
+
+**Merge model (decide here, build in Phase 0):** the registry that `roomAt()` scans is the
+**union** of (a) custom-room defs from `buildCustomRoomBand()` and (b) region rooms from
+the `'rooms'` doc, joined by `id`. A `'rooms'`-doc entry whose `id` matches a custom room
+**augments** it (adds type/bgm/props to the band geometry); an entry with no band match is
+a standalone region room. **`setRoomList()` must merge, not replace** — today it's called
+once by the band builder; the Room Manager's live push has to combine both sources or it
+will clobber the custom rooms (and vice-versa).
+
+**Overlap resolution:** `roomAt` returns the _first_ containing rect; music's `areaForPoint`
+returns the _last_ (topmost) + sticky. With overlapping regions (a shop inside an overworld
+bgm zone) array order is nondeterministic. Define precedence explicitly —
+**most-specific / smallest-area wins** (or an explicit priority field) — not list order.
+
+### RoomBuilderTool already creates and names custom rooms — don't make a third editor
+
+The Room Manager is **not** the only tool touching `label`/`town`/`type`. RoomBuilderTool
+already does, and it's the _creator_ of custom rooms. Today:
+
+- A new custom room is born with `label: "Room N"`, **`town: 'custom'`, `type: 'custom'`**
+  (`RoomBuilderTool.ts:951-953, 1215-1217`). Note `'custom'` is **not** a valid `RoomType`
+  in the new union — migration must remap it (→ `'other'`).
+- **Naming is RoomBuilder's flow:** double-click a room in its list → `startInlineRename`
+  → `room.label = name`, persisted to `rooms.json` (`:1285, :1895`).
+- **Geometry is edited in RoomBuilder** via corner-handle resize (`:504-512`), driven by
+  `bandX/bandY/w/h`. A custom room's `rect` is _derived_ from that — it is NOT a free rect.
+
+This forces two ownership rules (decision #9 below):
+
+| Field set                          | Owner / source of truth                                       | Editor                                                                                                |
+| ---------------------------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `id`, band geometry, `spawn`       | `rooms.json` (custom rooms only)                              | **RoomBuilder** (create/resize)                                                                       |
+| `label`, `town`                    | `rooms.json` for custom rooms; `'rooms'` doc for region rooms | created in RoomBuilder; **re-editable in Room Manager** (writes back to whichever doc owns that room) |
+| `type`, `bgm`, type-specific props | DB `'rooms'` doc (overlay)                                    | **Room Manager** only                                                                                 |
+
+### Places sync — every place/room represented, nothing duplicated
+
+The Places outline (`LocationNav`) is built from THREE sources today and the refactor must
+keep all three, merged losslessly:
+
+1. **Door-derived tree** — town→building→room from the door graph (ROM shops/houses).
+2. **Manual overrides** (`PlacesDoc`) — hand-edited nodes + `roomId` links.
+3. **Injected rooms** — `injectInstancedRooms()` lists every registry room under a synthetic
+   "Custom Rooms (N)" building per town (`LocationNav.ts:1564`).
+
+Parity rules for the merged registry:
+
+- **Dedup via `roomId`.** When seeding mints a region room for a ROM interior that is already
+  a door node, **link them by `roomId`** (the field already exists, `LocNode.roomId`) — one
+  entry, not a door node _and_ a registry room. Seeding must set `roomId` on the matching door
+  node, not create a parallel entry.
+- **Segregate overworld bgm zones** under a collapsed "BGM Zones (N)" node per town, separate
+  from "Custom Rooms" and door-derived interiors. `injectInstancedRooms` (or its successor)
+  splits registry rooms by `type`: `overworld` → BGM group, everything else → places.
+- **Nothing dropped.** Custom rooms, ROM door nodes, manual overrides, and all 507 bgm zones each
+  resolve to exactly one outline entry. The navigator is the proof every room is accounted for.
+
+Consequences for the Room Manager spec:
+
+- **Don't let Room Manager redraw custom-room regions.** Drawing/moving/resizing rects is for
+  **region rooms only**. A custom room's geometry stays RoomBuilder-owned (editing a rect here
+  would desync from the stamped tiles). The Manager shows custom-room geometry read-only.
+- **Room Manager must be able to re-type any room,** including the `type:'custom'` custom rooms
+  RoomBuilder mints — that's how a built interior becomes a `shop`/`hotel`/`hospital`.
+- **RoomBuilder should stop pretending `type:'custom'` is meaningful.** Either drop the
+  hardcoded `type` at creation (let it default to `'other'`/untyped) or leave it as a
+  placeholder the Manager overrides. Don't have two tools writing conflicting `type` values.
 
 ---
 
@@ -150,7 +265,13 @@ A new editor tool (`src/editor/tools/RoomManagerTool.ts`), modeled on `SoundTool
 - **Edit properties** in a panel: `name`, `type` (dropdown), **`bgm`** (reuse the Sound
   Manager's `createSpritePicker` song dropdown + ▶ Test), and **type-conditional fields**
   (shop → store picker; hotel → cost / heal / bedroom-warp / wake-bgm; bedroom → save toggle).
-- **Edit region(s)** on the map like music areas: draw / move / resize rects, snap to grid.
+- **Edit region(s)** on the map like music areas: draw / move / resize rects, snap to grid —
+  **for region rooms only.** Custom rooms (authored in RoomBuilder) show their geometry
+  **read-only** here; their size/shape is edited in RoomBuilder (corner-handle resize), since
+  the rect is derived from the stamped tile band. (See Reconciliation → RoomBuilder.)
+- **Re-type any room,** including the `type:'custom'` custom rooms RoomBuilder mints — assigning
+  `shop`/`hotel`/`hospital`/etc. is how a built interior gains behavior. `label`/`town` edits
+  here write back to whichever doc owns the room (custom → `rooms.json`, region → `'rooms'` doc).
 - **Live + auto-save** through the shell (`markDirty('rooms')`), pushing the working set into
   the engine immediately (`setRoomList(...)`) so the crop/music/behavior update without reboot
   (fixes today's "reboot to reload rooms" gap).
@@ -182,6 +303,9 @@ The room refactor _is_ the bottom layer of scripting:
 
 - **Triggers:** `room:enter` / `room:exit` events on the existing **EventBus**, plus
   interaction-in-room. These join the **FlagTriggers** spine already built for quests.
+  - **New work:** the `GameEvent` union only has `area:entered` (sector) today
+    (`EventBus.ts:21-31`). Phase 0 must add the typed `room:enter` / `room:exit` variants
+    and FlagTriggers match support — small, but it's net-new, not free.
 - **Data:** room `type` + typed props are the parameters a behavior reads.
 - **Behaviors:** a small registry of `type → behavior` (hotel-sleep, hospital-heal,
   shop-open). The hotel sequence is the proof-of-concept; once it works as a hand-written
@@ -199,20 +323,35 @@ So: **rooms now → behaviors next → authored scripts after.** Each step ships
   _shrinks_ w.r.t. rooms: it keeps painting walls/priority; the flood-fill crop keeps working
   for visuals. No painter refactor required.
 - **Combat / loot / PSI** — untouched.
-- **The networking model** — rooms are client-resolved like music today; no new server sim.
-  (Server only needs the `world_docs 'rooms'` endpoint if we pick the DB option.)
+- **The networking model** — room _resolution_ (which room am I in, crop, music) is
+  client-side like music today; no new server sim for that. Server adds the
+  `world_docs 'rooms'` endpoint only.
+  - ⚠️ **But room _effects_ that touch HP/PP/money must be server-authoritative.**
+    Hotel-heal, hospital-heal, shop purchase, and save-room restore are exactly the values
+    a client must not own (trivial cheat) — and the EventBus doc already names the server as
+    the future flag-write owner. PSI/loot already route server-side; hotel/hospital/save
+    follow that pattern (client triggers the behavior, server validates + applies the
+    mutation). Phases 4–5 are NOT pure-client. Resolution client-side, effects server-side.
 
 ---
 
 ## Migration & seeding (how we populate the library cheaply)
 
-1. **Seed from music areas.** Convert each `MusicArea {x,y,w,h,song}` → a `Room {regions:[rect],
-bgm:song, type:'overworld'/'other'}`. Instant map-wide coverage + bgm already set. A
-   one-time script (`tools/seed_rooms_from_music.py` or an in-editor "Import music areas"
-   button) writes the initial `rooms` doc.
-2. **Door-derived interiors → rooms.** Reuse LocationNav's door-graph (it already finds
-   building/room landings) to mint interior rooms with sensible `town` + a guessed `type` from
-   sign text ("DRUGSTORE" → shop, "HOTEL" → hotel, "HOSPITAL" → hospital).
+1. **Door-derived interiors → rooms FIRST.** Reuse LocationNav's door-graph (it already
+   finds building/room landings) to mint interior rooms with sensible `town` + a guessed
+   `type` from sign text ("DRUGSTORE" → shop, "HOTEL" → hotel, "HOSPITAL" → hospital). This
+   is high-value, low-count, and navigator-worthy — do it before the music dump.
+2. **Seed from music areas (every one → a room, nothing dropped).** Convert each
+   `MusicArea {x,y,w,h,song}` → a `Room {regions:[rect], bgm:song, type:'overworld'}`. Carry
+   the area `name` over as the room `label` so no info is lost. A one-time script
+   (`tools/seed_rooms_from_music.py` or an in-editor "Import music areas" button) writes these
+   into the `rooms` doc. **Parity check:** assert `#rooms-with-bgm == #music-areas` and every
+   area's `song` survived before retiring `music.json`.
+   - **Segregate, don't hide.** ~507 overworld zones must stay represented (parity), but can't
+     drown the real places. Group them under a **collapsed "BGM Zones (N)" node** per town in
+     the navigator (parallel to "Custom Rooms"), not interleaved with interiors. Everything is
+     reachable; the meaningful places stay on top. _Promoting_ a zone to a real place
+     (interior/shop/hotel) is a Room Manager action that moves it out of the BGM group.
 3. **Backfill types** in the Room Manager by hand for the few that matter first (Onett's shops
    - hotel) — enough to build & test the hotel sequence end-to-end.
 
@@ -220,13 +359,23 @@ bgm:song, type:'overworld'/'other'}`. Instant map-wide coverage + bgm already se
 
 ## Phased build order
 
-- **Phase 0 — Cleanup/scaffolding.** Extend `RoomDef` → `Room` (regions[] + typed props),
-  add `room:enter`/`room:exit` events to `setActiveRoomFromPoint`, decide persistence.
-- **Phase 1 — Registry + seed.** Seed rooms from music areas; load at boot; live `setRoomList`.
-- **Phase 2 — Room Manager tool.** Select/edit/region-draw/bgm/type-conditional panels +
-  auto-save (the parity-with-Sound-Manager deliverable).
-- **Phase 3 — Music fold-in.** `updateMusic` reads `activeRoom.bgm`; retire `music.json` after
-  one migration pass. (This is the literal "one BGM per room" milestone.)
+- **Phase 0 — Cleanup/scaffolding. ✅ DONE.** `RoomDef` extended (`regions[]`, `bgm`, optional
+  `rect`, `RoomType`); `Rooms.ts` is a dual-source merged registry (`setRoomList` custom +
+  `setRegionRooms` region, neither clobbers the other); `roomAt` uses smallest-area-wins;
+  `room:enter`/`room:exit` added to `GameEvent` + emitted from `setActiveRoomFromPoint`;
+  FlagTriggers matches `room`; `'rooms'` added to `WORLD_DOC_ALLOW`.
+- **Phase 1 — Registry + seed. ✅ DONE.** `vite.config` seeds the `'rooms'` doc from `music.json`
+  once (505 rooms, parity verified); boot calls `loadRegionRooms()` → `setRegionRooms()`.
+- **Phase 2 — Room Manager tool. ✅ DONE (needs click-test).** `RoomManagerTool.ts`, registered
+  in the hub. Select from a list or click-on-map; draw/move/resize region rects (snap to tile
+  grid); edit name/town/type (dropdown) + bgm (song picker + ▶ Test) + type-conditional fields
+  (shop storeId, hospital healCost, hotel cost/wakeBgm/warp, bedroom save-point). Edits push
+  live via `setRegionRooms` + auto-save to the `'rooms'` doc. Scope: edits REGION rooms;
+  re-typing custom rooms via the overlay is a deferred follow-up.
+- **Phase 3 — Music fold-in. ✅ DONE.** `updateMusic` resolves bgm from the active room (sticky
+  hysteresis ported via `pointInRoom` + `EDGE_MARGIN`), sector `musicId` as the floor. Boot no
+  longer loads `music.json`; the Sound Manager uses it only for live authoring/preview
+  (`setMusicAuthoring`). The literal "one BGM per room" milestone.
 - **Phase 4 — Shop/Hospital binding.** `shop.storeId` opens the store; hospital heal flow.
 - **Phase 5 — Hotel sequence (first script).** The sleep→heal→warp→wake behavior, fully
   data-driven from the room.
@@ -247,6 +396,26 @@ Each phase is independently shippable; Phases 0–3 are the "clean up + parity" 
 3. **Region model → authored `rects[]`.** ✅ ADOPTED (recommended; revisit if a real interior
    resists rect coverage). Flood-fill stays for the visual crop only.
 4. **Shop trigger → keep clerk + add room.** ✅ ADOPTED (additive, no regressions).
+5. **Custom rooms vs region rooms → merge, don't replace.** ✅ DECIDED. `rooms.json` (band
+   geometry) stays RoomBuilder's; DB `'rooms'` doc is the props overlay; `roomAt()` scans
+   the union joined by `id`; `setRoomList()` merges both sources. (See Reconciliation.)
+6. **Music hysteresis → carried into the room resolver.** ✅ DECIDED. The sticky
+   `EDGE_MARGIN` behavior moves with bgm; "no song flip at a seam" is a Phase 3 acceptance test.
+7. **Room effects (heal/pay/save) → server-authoritative.** ✅ DECIDED. Resolution stays
+   client-side; HP/PP/money mutations route through the server like PSI/loot. Phases 4–5.
+8. **Overlap precedence → most-specific (smallest area) wins,** not list order.
+9. **RoomBuilder stays the custom-room creator/namer; Room Manager owns type/bgm/props.**
+   ✅ DECIDED. No third name editor: RoomBuilder creates + names + resizes band geometry;
+   Room Manager assigns `type`/`bgm`/type-fields (overlay) and can re-type custom rooms but
+   shows their geometry read-only. Migrate custom rooms' `type:'custom'` → `'other'`. (See
+   Reconciliation → RoomBuilder.)
+10. **One label field per room — editable from either tool.** ✅ DECIDED. RoomBuilder and Room
+    Manager both rename; both write the _same_ stored field (the room's home doc), never a
+    shadow copy. Rename anywhere, no divergence.
+11. **Lossless parity, verified.** ✅ DECIDED. Every music area, custom room, and Places node maps
+    to exactly one entry in the new system; overworld bgm zones are **segregated (collapsed
+    "BGM Zones" group), not hidden**; ROM interiors dedup via `roomId`. Old files retire only
+    after a count/parity check.
 
 ```
 

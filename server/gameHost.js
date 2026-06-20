@@ -116,8 +116,10 @@ const PK_LOCK_MS = 5 * 60 * 1000;
 // (src/engine/PsiTuning.ts PSI_FAMILY_SPECS — same ids/pp/effect fields). Each
 // move's id matches the ROM PSI catalog id AND its psi_anim.json animation key.
 // Heal/cure/revive are PARTY-target; Healing γ/Ω also REVIVE a downed ally
-// (γ = partial HP, Ω = full HP) — canon (item help text, data_56). `multi` = ROM
-// row/all (hits every enemy in range). assist buffs/Magnet/Teleport effects
+// (γ = partial HP, Ω = full HP) — canon (item help text, data_56). Offense
+// targeting depends on `shape`: 'radius' (default; `multi` = every enemy in it),
+// 'line' (Fire — a forward beam, `length`×`±width`), or 'bolts' (Thunder — zap
+// `bolts` random enemies in `range`). assist buffs/Magnet/Teleport effects
 // aren't wired yet — they just play their animation + spend PP.
 const GREEK = { alpha: 'α', beta: 'β', gamma: 'γ', omega: 'Ω', sigma: 'Σ' };
 const PSI_FAMILY_SPECS = [
@@ -136,7 +138,16 @@ const PSI_FAMILY_SPECS = [
     target: 'enemy',
     tiers: ['alpha', 'beta', 'gamma', 'omega'],
     pp: [6, 12, 20, 42],
-    effect: (i) => ({ damage: [14, 30, 60, 130][i], range: 240, multi: true }),
+    // Shotgun cone: narrow muzzle, fanning WIDER with distance + per tier, and
+    // reaching further — so α is a short jet and Ω sweeps a whole arc of a room.
+    // End half-width = width + spread*length → ~45 / 94 / 183 / 339 px by tier.
+    effect: (i) => ({
+      damage: [14, 30, 60, 130][i],
+      shape: 'line',
+      length: [160, 240, 340, 460][i],
+      width: [16, 22, 30, 40][i],
+      spread: [0.18, 0.3, 0.45, 0.65][i],
+    }),
   },
   {
     stem: 'psi_freeze',
@@ -152,7 +163,13 @@ const PSI_FAMILY_SPECS = [
     target: 'enemy',
     tiers: ['alpha', 'beta', 'gamma', 'omega'],
     pp: [3, 7, 16, 20],
-    effect: (i) => ({ damage: [16, 34, 70, 100][i], range: 300, multi: true }),
+    // Random strikes: stronger tiers zap MORE enemies (and for more) on screen.
+    effect: (i) => ({
+      damage: [16, 34, 70, 100][i],
+      shape: 'bolts',
+      bolts: [2, 3, 5, 8][i],
+      range: 520,
+    }),
   },
   {
     stem: 'psi_flash',
@@ -454,6 +471,8 @@ class GameHost {
     this._statusTimer = null;
     // Gift-override file watcher handle (set in start()).
     this._giftsWatchPath = null;
+    // Shop-override (equip_stats.json) file watcher handle (set in start()).
+    this._shopsWatchPath = null;
   }
 
   static _readSpawn(root) {
@@ -587,6 +606,29 @@ class GameHost {
     } catch {
       /* watch unavailable — gifts still load at startup */
     }
+
+    // Hot-reload the shop catalog (prices, heals, gear stats) when the Item Manager
+    // saves overrides/equip_stats.json (dev), so a price/effect edit applies WITHOUT
+    // a server restart — the buy handler reads cost from GOODS, which is otherwise
+    // built once at boot (the desync that made an edited item un-buyable). Rebuild
+    // GOODS/storeHas and refresh every connected player's equipped-gear stats so a
+    // weapon/armor edit lands live too. Polling watcher (cross-platform).
+    this._shopsWatchPath = path.join(this._root, 'public', 'overrides', 'equip_stats.json');
+    try {
+      fs.watchFile(this._shopsWatchPath, { interval: 1500 }, () => {
+        try {
+          const { goods, storeHas, startingInventory } = loadShops(this._assetsDir);
+          this.GOODS = goods;
+          this.storeHas = storeHas;
+          this.STARTING_INVENTORY = startingInventory;
+          for (const entry of this.players.values()) this.recomputeEquipStats(entry);
+        } catch (e) {
+          console.warn('[shops] hot-reload failed; keeping previous catalog', e);
+        }
+      });
+    } catch {
+      /* watch unavailable — shop edits still apply on restart */
+    }
   }
 
   // Per-tick player status upkeep: apply due DoT, drop worn-off statuses, and
@@ -679,6 +721,7 @@ class GameHost {
     this._eventTimer = null;
     if (this.eventRuntime) this.eventRuntime.stop();
     if (this._giftsWatchPath) fs.unwatchFile(this._giftsWatchPath);
+    if (this._shopsWatchPath) fs.unwatchFile(this._shopsWatchPath);
     this._giftsWatchPath = null;
   }
 
@@ -1566,7 +1609,8 @@ class GameHost {
           critChanceFromLuck(entry.luck),
           entry.attackSpeed || 1,
           entry.weaponInflict,
-          entry.weaponRange || 0
+          entry.weaponRange || 0,
+          entry.level || 1
         );
         break;
       }
@@ -1812,10 +1856,22 @@ class GameHost {
         const itemId = String(msg.item);
         const def = GOODS[itemId];
         // Real item, stocked by that store, affordable, room in the bag. Price is
-        // the catalog's, never the client's.
-        if (!def || !this.storeHas(store, itemId)) break;
-        if (entry.inventory.length >= MAX_SLOTS) break;
-        if (entry.money < def.cost) break;
+        // the catalog's, never the client's. Reject with a notice (not a silent
+        // drop) so the client shows WHY a buy failed instead of a false "Bought!".
+        if (!def || !this.storeHas(store, itemId)) {
+          entry._ws.send(JSON.stringify({ type: 'notice', text: "That's not for sale here." }));
+          break;
+        }
+        if (entry.inventory.length >= MAX_SLOTS) {
+          entry._ws.send(
+            JSON.stringify({ type: 'notice', code: 'bag_full', text: 'Your bag is full!' })
+          );
+          break;
+        }
+        if (entry.money < def.cost) {
+          entry._ws.send(JSON.stringify({ type: 'notice', text: 'Not enough money.' }));
+          break;
+        }
         entry.money -= def.cost;
         entry.spentSinceCall = (entry.spentSinceCall | 0) + def.cost; // for Dad's report
         entry.inventory.push(itemId);
@@ -1941,6 +1997,12 @@ class GameHost {
         // (self or ally) for heal/cure/revive; the struck enemy for offense PSI.
         let tx = Math.round((support ? target : entry).x);
         let ty = Math.round((support ? target : entry).y);
+        // Multi-spot offense (Thunder bolts): every struck enemy's {x,y}, so the
+        // client drops a strike FX on each (single-projectile casts leave it null).
+        let hits = null;
+        // Fan of projectile endpoints (Fire cone): one {tx,ty} per pellet, so the
+        // client sprays a shotgun of FX from the caster (null = single projectile).
+        let beams = null;
         if (def.reviveFrac) {
           // Revive the downed ally to a fraction of their max HP (γ half, Ω full).
           this._reviveDowned(target, Math.ceil(target.maxHp * def.reviveFrac));
@@ -1962,29 +2024,90 @@ class GameHost {
           this._broadcastPlayerStatus(target);
         }
         if (def.damage || def.inflict) {
-          // Server picks the target(s) — it owns enemy positions. A single-target
-          // PSI hits the nearest live enemy in range with line of sight; a multi
-          // PSI (ROM "row"/"all": Fire, Thunder, Flash, Starstorm, Rockin) hits
-          // EVERY enemy in range. Damage + knockback + the PSI's status inflict
-          // (each element-scaled by the enemy's resist) resolve in the sim. The
-          // returned spot is the nearest hit, used as the projectile anim target.
-          const strike = def.multi ? this.npcSim.psiStrikeAll : this.npcSim.psiStrike;
-          const hit = strike.call(
-            this.npcSim,
-            entry.x,
-            entry.y,
-            def.range || 240,
-            def.damage || 0,
-            playerId,
-            def.inflict
-          );
-          if (hit) {
-            tx = hit.x;
-            ty = hit.y;
+          // Server picks the target(s) — it owns enemy positions. Damage +
+          // knockback + the PSI's status inflict (each element-scaled by the
+          // enemy's resist) resolve in the sim. Targeting depends on def.shape:
+          //   'line'  (Fire)   — a forward CONE (shotgun): every enemy in a
+          //                      length-deep wedge that fans out per `spread`. The
+          //                      anim sprays a FAN of projectiles (`beams`) across
+          //                      the cone so it reads as a shotgun, not one shot.
+          //   'bolts' (Thunder)— `bolts` RANDOM live enemies in range, each its
+          //                      own strike. `hits` carries every struck spot so
+          //                      the client drops a bolt FX on each.
+          //   else (radius)    — nearest enemy in range, or every one if `multi`.
+          const v = PSI_DIR[entry.direction] || [0, 1];
+          if (def.shape === 'line') {
+            const len = def.length || def.range || 240;
+            const spread = def.spread || 0;
+            this.npcSim.psiStrikeLine(
+              entry.x,
+              entry.y,
+              v[0],
+              v[1],
+              len,
+              def.width || 32,
+              spread,
+              def.damage || 0,
+              playerId,
+              def.inflict
+            );
+            // Spray a fan of projectiles across the cone (more pellets the wider
+            // it spreads). The half-angle matches the cone edge (atan of spread);
+            // each pellet flies from the caster to a point on the far arc.
+            const mag = Math.hypot(v[0], v[1]) || 1;
+            const fx = v[0] / mag;
+            const fy = v[1] / mag;
+            const half = Math.atan(spread); // cone half-angle (0 → straight beam)
+            const pellets = Math.max(1, Math.min(9, 1 + Math.round(spread * 10)));
+            beams = [];
+            for (let p = 0; p < pellets; p++) {
+              const a = pellets === 1 ? 0 : -half + (2 * half * p) / (pellets - 1);
+              const rx = fx * Math.cos(a) - fy * Math.sin(a);
+              const ry = fx * Math.sin(a) + fy * Math.cos(a);
+              beams.push({
+                tx: Math.round(entry.x + rx * len),
+                ty: Math.round(entry.y + ry * len),
+              });
+            }
+            // Center pellet is also the primary (tx,ty) for back-compat clients.
+            tx = Math.round(entry.x + fx * len);
+            ty = Math.round(entry.y + fy * len);
+          } else if (def.shape === 'bolts') {
+            const struck = this.npcSim.psiStrikeBolts(
+              entry.x,
+              entry.y,
+              def.range || 520,
+              def.bolts || 1,
+              def.damage || 0,
+              playerId,
+              def.inflict
+            );
+            if (struck.length) {
+              hits = struck;
+              tx = struck[0].x;
+              ty = struck[0].y;
+            } else {
+              tx = Math.round(entry.x + v[0] * 96);
+              ty = Math.round(entry.y + v[1] * 96);
+            }
           } else {
-            const v = PSI_DIR[entry.direction] || [0, 1];
-            tx = Math.round(entry.x + v[0] * 96);
-            ty = Math.round(entry.y + v[1] * 96);
+            const strike = def.multi ? this.npcSim.psiStrikeAll : this.npcSim.psiStrike;
+            const hit = strike.call(
+              this.npcSim,
+              entry.x,
+              entry.y,
+              def.range || 240,
+              def.damage || 0,
+              playerId,
+              def.inflict
+            );
+            if (hit) {
+              tx = hit.x;
+              ty = hit.y;
+            } else {
+              tx = Math.round(entry.x + v[0] * 96);
+              ty = Math.round(entry.y + v[1] * 96);
+            }
           }
         }
         // PP changed — push updated stats so the caster's PSI bar redraws.
@@ -2005,6 +2128,8 @@ class GameHost {
           y: Math.round(entry.y),
           tx,
           ty,
+          ...(hits ? { hits } : {}),
+          ...(beams ? { beams } : {}),
         });
         break;
       }

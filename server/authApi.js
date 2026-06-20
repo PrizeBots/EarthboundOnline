@@ -35,7 +35,7 @@ const publicAccount = (a) => ({ id: a.id, username: a.username, createdAt: a.cre
 
 // World documents the local editor persists to the DB (the Places outline; more
 // editor overrides can follow). Allow-list — only known doc names are valid.
-const WORLD_DOC_ALLOW = new Set(['places', 'stamps']);
+const WORLD_DOC_ALLOW = new Set(['places', 'stamps', 'rooms']);
 
 // Loopback check — the editor's world-doc routes are dev/localhost only, so even
 // when mounted they refuse non-loopback callers.

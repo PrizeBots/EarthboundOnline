@@ -7,7 +7,15 @@ import { getSpriteName } from '../../engine/SpriteNames';
 import { createSpritePicker, drawSpriteGroupThumb, SpritePicker } from '../../engine/SpritePicker';
 import { checkCollision } from '../../engine/Collision';
 import { loadNPCs } from '../../engine/NPCManager';
-import { EntityDefs, EntityStats, entityStatsFor } from '../../engine/EntityStats';
+import {
+  EntityDefs,
+  EntityStats,
+  EntityProps,
+  EntityPropsOverride,
+  DEFAULT_ENTITY_STATS,
+} from '../../engine/EntityStats';
+import { EntityPropsForm, SPAWNER_STAT_FIELDS } from '../components/EntityPropsForm';
+import { loadJSON } from '../../engine/AssetLoader';
 import { entityManagerTool } from './EntityManagerTool';
 import { saveOverride, loadOverride } from '../saveOverride';
 import { registerSaveHandler } from '../registry';
@@ -32,9 +40,11 @@ const FOOT_OY = -8;
 const SEALED_MIN_CELLS = 60;
 const FLOOD_CAP = 600;
 
-// A spawner now holds only PLACEMENT/spawn-rate fields. Combat stats (hp, level,
-// xp, damage, attack rate, speed) moved to the Entity Manager — they're defined
-// per ENTITY (sprite group) and shown read-only here for the selected sprite.
+// A spawner holds PLACEMENT/spawn-rate fields PLUS an optional sparse combat
+// override (`props`). The override is the instance layer over the entity (sprite
+// group) "mother" stats: blank fields inherit the entity's stats, a typed value
+// overrides them for THIS spawner only. The server's resolveProps reads the
+// override fields flat off the spawner object, so they're spread flat on save.
 interface Spawner {
   name: string;
   sprite: number;
@@ -47,6 +57,10 @@ interface Spawner {
   spawnIntervalMs: number;
   respawnDelayMs: number;
   enabled: boolean;
+  // Sparse per-spawner combat override (hp/level/xp/damage/atk cd/speed/atk px).
+  // Empty = inherit the entity's stats wholesale. Spread flat into the saved
+  // spawner JSON so npcSim's resolveProps(over=spawner) picks them up.
+  props: EntityPropsOverride;
   // Derived validity (recomputed on place / move / position edit), not saved.
   solid?: boolean;
   reach?: number;
@@ -59,7 +73,7 @@ interface EnemyFile {
   spawners?: (Partial<Spawner> & Partial<EntityStats>)[]; // legacy files may still carry per-spawner stats
 }
 
-const DEFAULTS: Omit<Spawner, 'name' | 'x' | 'y'> = {
+const DEFAULTS: Omit<Spawner, 'name' | 'x' | 'y' | 'props'> = {
   sprite: 284,
   wanderRadius: 600,
   detectRange: 220, // KEEP IN SYNC with npcSim DETECT_RANGE
@@ -119,9 +133,14 @@ class EnemySpawnerTool implements EditorTool {
   private shell: EditorShellApi | null = null;
   private spawners: Spawner[] = [];
   private spriteGroupExtras: number[] = []; // hostile sprites not tied to a spawner
-  // Per-entity stats (Entity Manager's domain). Loaded for the read-only display
-  // on the selected spawner; round-tripped untouched on save.
+  // Per-entity stats (Entity Manager's domain). These are the "mother" stats a
+  // spawner inherits; round-tripped untouched on save and shown as the inherited
+  // placeholders under each spawner's combat override.
   private entities: EntityDefs = {};
+  // Canon ROM enemy catalog (enemies.json bySprite) — the stat baseline beneath
+  // the authored `entities` table, mirrored from the Entity Manager so the
+  // inherited stats shown here MATCH what the mother entity shows there.
+  private catalogStats: Record<string, Partial<EntityStats>> = {};
   private sel: Spawner | null = null;
   private placing = false;
   private dragging = false;
@@ -192,22 +211,10 @@ class EnemySpawnerTool implements EditorTool {
         .catch(() => null);
     }
     this.entities = { ...(cfg?.entities ?? {}) };
+    await this.loadCatalog();
     const spawnerSprites = new Set<number>();
     this.spawners = (cfg?.spawners ?? []).map((s) => {
       const sprite = s.sprite ?? DEFAULTS.sprite;
-      // Migrate legacy per-spawner stats into the per-entity table (once) so
-      // existing tuning isn't lost when those fields move to the Entity Manager.
-      if (!this.entities[String(sprite)] && this.hasLegacyStats(s)) {
-        this.entities[String(sprite)] = {
-          ...entityStatsFor(this.entities, sprite),
-          ...(s.hp != null && { hp: s.hp }),
-          ...(s.xp != null && { xp: s.xp }),
-          ...(s.level != null && { level: s.level }),
-          ...(s.damage != null && { damage: s.damage }),
-          ...(s.attackCooldownMs != null && { attackCooldownMs: s.attackCooldownMs }),
-          ...(s.speed != null && { speed: s.speed }),
-        };
-      }
       const sp: Spawner = {
         name: s.name ?? 'spawner',
         sprite,
@@ -220,6 +227,8 @@ class EnemySpawnerTool implements EditorTool {
         spawnIntervalMs: s.spawnIntervalMs ?? DEFAULTS.spawnIntervalMs,
         respawnDelayMs: s.respawnDelayMs ?? DEFAULTS.respawnDelayMs,
         enabled: s.enabled !== false,
+        // Gather the flat combat fields the file carries into the sparse override.
+        props: this.readOverride(s),
       };
       spawnerSprites.add(sp.sprite);
       this.revalidate(sp);
@@ -229,15 +238,42 @@ class EnemySpawnerTool implements EditorTool {
     this.spriteGroupExtras = (cfg?.enemySpriteGroups ?? []).filter((id) => !spawnerSprites.has(id));
   }
 
-  private hasLegacyStats(s: Partial<EntityStats>): boolean {
-    return (
-      s.hp != null ||
-      s.xp != null ||
-      s.level != null ||
-      s.damage != null ||
-      s.attackCooldownMs != null ||
-      s.speed != null
-    );
+  /** Load the canon ROM enemy catalog as the stat baseline beneath `entities`,
+   *  mirroring EntityManagerTool so inherited stats match what it shows. */
+  private async loadCatalog(): Promise<void> {
+    const cat = await loadJSON<{
+      bySprite?: Record<string, { hp?: number; xp?: number; level?: number; damage?: number }>;
+    }>('/assets/map/enemies.json').catch(() => null);
+    this.catalogStats = {};
+    for (const [k, v] of Object.entries(cat?.bySprite ?? {})) {
+      const cs: Partial<EntityStats> = {};
+      if (typeof v?.hp === 'number') cs.hp = v.hp;
+      if (typeof v?.xp === 'number') cs.xp = v.xp;
+      if (typeof v?.level === 'number') cs.level = v.level;
+      if (typeof v?.damage === 'number') cs.damage = v.damage;
+      this.catalogStats[k] = cs;
+    }
+  }
+
+  /** Pull a spawner's sparse combat override out of its flat saved fields (only
+   *  the keys the form/server honor — see SPAWNER_STAT_FIELDS / resolveProps). */
+  private readOverride(s: Partial<EntityStats>): EntityPropsOverride {
+    const o: EntityPropsOverride = {};
+    for (const f of SPAWNER_STAT_FIELDS) {
+      const v = s[f.key] as number | undefined;
+      if (v != null) o[f.key] = v;
+    }
+    return o;
+  }
+
+  /** Inherited "mother" stats for a sprite: DEFAULT < canon catalog < authored
+   *  entity table — the SAME effective values the Entity Manager shows. */
+  private baselineFor(sprite: number): EntityProps {
+    return {
+      ...DEFAULT_ENTITY_STATS,
+      ...this.catalogStats[String(sprite)],
+      ...this.entities[String(sprite)],
+    } as EntityProps;
   }
 
   private revalidate(sp: Spawner): void {
@@ -277,6 +313,9 @@ class EnemySpawnerTool implements EditorTool {
         spawnIntervalMs: s.spawnIntervalMs,
         respawnDelayMs: s.respawnDelayMs,
         enabled: s.enabled,
+        // Sparse combat override, flat so npcSim's resolveProps(over=spawner)
+        // reads it. Empty = nothing written, spawner inherits the entity stats.
+        ...s.props,
       })),
     };
     await saveOverride('enemy_spawns.json', file);
@@ -307,6 +346,7 @@ class EnemySpawnerTool implements EditorTool {
         name: this.nextName(),
         x: Math.round(p.x),
         y: Math.round(p.y),
+        props: {}, // fresh per-spawner override (starts fully inherited)
       };
       this.revalidate(sp);
       this.spawners.push(sp);
@@ -803,8 +843,9 @@ class EnemySpawnerTool implements EditorTool {
       'Respawn delay in seconds after an enemy dies before its slot refills toward the cap.'
     );
 
-    // Entity stats — READ-ONLY here; they live per-entity in the Entity Manager.
-    this.addEntityReadout(form, s.sprite);
+    // Combat stats — EDITABLE per-spawner override. Blank inherits the entity's
+    // ("mother") stats; a typed value overrides it for this spawner only.
+    this.addEntityOverride(form, s);
 
     // validity readout
     const status = document.createElement('div');
@@ -820,40 +861,36 @@ class EnemySpawnerTool implements EditorTool {
     this.mkBtn('Delete spawner', () => this.deleteSelected(), form);
   }
 
-  /** Read-only display of the selected sprite's entity stats + a jump to edit them. */
-  private addEntityReadout(form: HTMLElement, sprite: number): void {
-    const head = document.createElement('div');
-    head.textContent = `entity #${sprite} stats (read-only)`;
-    head.style.cssText =
-      'margin-top:4px;color:#b06de8;font-size:10px;letter-spacing:1px;border-top:1px solid #2a3540;padding-top:5px;';
-    form.appendChild(head);
+  /** Editable per-spawner combat override. Each field is BLANK when inherited
+   *  (placeholder = the entity's "mother" stat) and overrides for this spawner
+   *  only when typed. A jump to the shared entity stays available below. */
+  private addEntityOverride(form: HTMLElement, s: Spawner): void {
+    const propsForm = new EntityPropsForm({
+      fields: SPAWNER_STAT_FIELDS,
+      onChange: (key, value) => {
+        if (value === undefined) delete s.props[key];
+        else (s.props as Record<string, number>)[key] = value;
+        this.shell?.markDirty('enemies');
+        // Re-render so the set/inherited styling (label colour + ✕ reset) updates.
+        propsForm.update({
+          kind: 'enemy',
+          baseline: this.baselineFor(s.sprite),
+          override: s.props,
+        });
+      },
+    });
+    propsForm.update({ kind: 'enemy', baseline: this.baselineFor(s.sprite), override: s.props });
+    form.appendChild(propsForm.el);
 
-    const e = entityStatsFor(this.entities, sprite);
-    const rows: [string, string][] = [
-      ['HP', String(e.hp)],
-      ['level', String(e.level)],
-      ['XP', String(e.xp)],
-      ['damage', String(e.damage)],
-      ['atk cd', `${e.attackCooldownMs / 1000}s`],
-      ['speed', String(e.speed)],
-    ];
-    const grid = document.createElement('div');
-    grid.style.cssText =
-      'display:grid;grid-template-columns:auto auto;gap:1px 10px;color:#9fb8cc;font-size:11px;';
-    for (const [k, v] of rows) {
-      const kl = document.createElement('span');
-      kl.textContent = k;
-      kl.style.color = '#778';
-      const vl = document.createElement('span');
-      vl.textContent = v;
-      grid.append(kl, vl);
-    }
-    form.appendChild(grid);
+    const note = document.createElement('div');
+    note.textContent = `blank = inherits entity #${s.sprite} (the shared "mother" stats)`;
+    note.style.cssText = 'color:#667;font-size:9px;';
+    form.appendChild(note);
 
     this.mkBtn(
-      'Edit entity →',
+      'Edit shared entity →',
       () => {
-        entityManagerTool.requestEntity(sprite);
+        entityManagerTool.requestEntity(s.sprite);
         this.shell?.openTool('entity-manager');
       },
       form

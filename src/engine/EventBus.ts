@@ -28,7 +28,12 @@ export type GameEvent =
   // An enemy died. `enemy` = the enemy's sprite-group id (its type).
   | { type: 'enemy:defeated'; enemy: number }
   // The player crossed into a new sector. `sector` = sector id.
-  | { type: 'area:entered'; sector: number };
+  | { type: 'area:entered'; sector: number }
+  // The player entered a room region. `room` = the stable Room id ("world" =
+  // overworld). Fired by Rooms.setActiveRoomFromPoint on change.
+  | { type: 'room:enter'; room: string }
+  // The player left a room region. `room` = the Room id they left.
+  | { type: 'room:exit'; room: string };
 
 export type GameEventType = GameEvent['type'];
 

@@ -4,6 +4,14 @@
     "dodge": 0,
     "attackSpeed": 1.15
   },
+  "36": {
+    "ranged": true,
+    "range": 130
+  },
+  "41": {
+    "ranged": true,
+    "range": 200
+  },
   "64": {
     "crit": 0,
     "dodge": 6
@@ -32,15 +40,11 @@
   "130": {
     "revive": 9999
   },
+  "207": {
+    "healPp": 500,
+    "cost": 5
+  },
   "252": {
     "revive": 9999
-  },
-  "36": {
-    "ranged": true,
-    "range": 130
-  },
-  "41": {
-    "ranged": true,
-    "range": 200
   }
 }

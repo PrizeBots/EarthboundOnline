@@ -955,7 +955,8 @@ export class LocationNav {
     if (node.roomId) {
       const room = listRooms().find((r) => r.id === node.roomId);
       if (room) {
-        this.goTo(room.spawn?.x ?? room.rect.x, room.spawn?.y ?? room.rect.y);
+        const b = room.rect ?? room.regions?.[0] ?? { x: 0, y: 0 };
+        this.goTo(room.spawn?.x ?? b.x, room.spawn?.y ?? b.y);
         return;
       }
     }
@@ -1570,7 +1571,8 @@ function injectInstancedRooms(tree: LocNode[], rooms: RoomJson[]): LocNode[] {
   }
   for (const [town, list] of byTown) {
     let tnode = tree.find((n) => n.townKey === town);
-    const at = (r: RoomJson) => ({ x: r.spawn?.x ?? r.rect.x, y: r.spawn?.y ?? r.rect.y });
+    const box = (r: RoomJson) => r.rect ?? r.regions?.[0] ?? { x: 0, y: 0, w: 0, h: 0 };
+    const at = (r: RoomJson) => ({ x: r.spawn?.x ?? box(r).x, y: r.spawn?.y ?? box(r).y });
     if (!tnode) {
       const a = at(list[0]);
       tnode = {

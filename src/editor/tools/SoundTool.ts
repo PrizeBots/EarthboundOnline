@@ -4,6 +4,7 @@ import { SECTOR_TILES_X, SECTOR_TILES_Y, TILE_SIZE } from '../../types';
 import {
   MusicArea,
   setMusicAreas,
+  setMusicAuthoring,
   previewSong,
   stopMusic,
   stopAllSounds,
@@ -115,6 +116,7 @@ class SoundTool implements EditorTool {
     // audible. deactivate() restores the editor's edit-in-silence state.
     setMusicMuted(false);
     setSfxMuted(false);
+    setMusicAuthoring(true); // music areas drive preview while this tool is open
     registerSaveHandler('music', () => this.save());
     registerSaveHandler('sfx_events', () => this.saveSfx());
     this.sfxMap = getSfxEventMap(); // defaults + any loaded overrides
@@ -128,6 +130,7 @@ class SoundTool implements EditorTool {
 
   deactivate(): void {
     stopAllSounds(); // drop any music/sfx preview before leaving the tool
+    setMusicAuthoring(false); // hand bgm resolution back to rooms
     setMusicMuted(true); // restore the editor's edit-in-silence state
     setSfxMuted(true);
     this.panel?.remove();
@@ -151,6 +154,7 @@ class SoundTool implements EditorTool {
       this.shell?.toast(`Couldn't load music areas: ${e}`, true);
       return;
     }
+    setMusicAreas(this.areas); // push working set so the authoring preview resolves
     this.refreshList();
     this.rebuildForm();
   }

@@ -95,7 +95,7 @@
       "y": 11288,
       "sprite": 153,
       "dir": 0,
-      "kind": "prop"
+      "kind": "enemy"
     },
     {
       "x": 352,
@@ -212,7 +212,22 @@
       "y": 1704,
       "sprite": 85,
       "dir": 0,
-      "kind": "person"
+      "kind": "person",
+      "t": 900010
+    },
+    {
+      "x": 4152,
+      "y": 160,
+      "sprite": 206,
+      "dir": 6,
+      "kind": "prop"
+    },
+    {
+      "x": 7760,
+      "y": 336,
+      "sprite": 429,
+      "dir": 0,
+      "kind": "prop"
     }
   ]
 }

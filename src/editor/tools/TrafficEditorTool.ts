@@ -3,9 +3,11 @@ import { Camera } from '../../engine/Camera';
 import { Direction } from '../../types';
 import { drawSprite, loadSpriteGroup, getSpriteGroupMeta } from '../../engine/SpriteManager';
 import { loadNPCs, Vehicle, CarTraffic } from '../../engine/NPCManager';
+import type { EntityProps } from '../../engine/EntityStats';
 import { saveOverride, loadOverride } from '../saveOverride';
 import { registerSaveHandler } from '../registry';
 import { dialogueTool } from './DialogueTool';
+import { EntityPropsForm, VEHICLE_PROP_FIELDS } from '../components/EntityPropsForm';
 
 // Traffic Editor (EDITOR_TOOLS.md). Place vehicles and draw each one's waypoint
 // route; the server drives the car along it (server/npcSim.js), facing its
@@ -78,6 +80,7 @@ class TrafficEditorTool implements EditorTool {
   private fields = new Map<string, HTMLInputElement>();
   private addBtn: HTMLButtonElement | null = null;
   private thumb: HTMLCanvasElement | null = null;
+  private propsForm: EntityPropsForm | null = null;
 
   activate(shell: EditorShellApi): void {
     this.shell = shell;
@@ -641,34 +644,20 @@ class TrafficEditorTool implements EditorTool {
     form.appendChild(this.thumb);
     this.drawThumb();
 
-    const speedIn = this.mkInput(form, 'speed', 'speed', (val) => {
-      const n = parseFloat(val);
-      if (!Number.isNaN(n)) {
-        v.speed = Math.max(0.1, n);
+    // Shared property form: speed (route ×multiplier), HP (the car is attackable
+    // under PK rules), and plow damage. Blank = inherited from the vehicle
+    // defaults. Same control set the Entity Manager / Placement tools use.
+    this.propsForm = new EntityPropsForm({
+      fields: VEHICLE_PROP_FIELDS,
+      onChange: (key, value) => {
+        if (value === undefined) delete v[key];
+        else (v as unknown as Record<string, number>)[key] = value;
         this.shell?.markDirty('traffic');
-      }
+        this.refreshVehicleProps(v);
+      },
     });
-    speedIn.value = String(v.speed);
-
-    // HP — the car is attackable (PK rules); this is its max health.
-    const hpIn = this.mkInput(form, 'hp', 'HP', (val) => {
-      const n = parseInt(val, 10);
-      if (!Number.isNaN(n)) {
-        v.hp = Math.max(1, n);
-        this.shell?.markDirty('traffic');
-      }
-    });
-    hpIn.value = String(v.hp ?? VEHICLE_DEFAULT_HP);
-
-    // damage — what the car deals to a foe (enemy / PKer) it plows.
-    const dmgIn = this.mkInput(form, 'damage', 'damage', (val) => {
-      const n = parseInt(val, 10);
-      if (!Number.isNaN(n)) {
-        v.damage = Math.max(0, n);
-        this.shell?.markDirty('traffic');
-      }
-    });
-    dmgIn.value = String(v.damage ?? VEHICLE_DEFAULT_DAMAGE);
+    form.appendChild(this.propsForm.el);
+    this.refreshVehicleProps(v);
 
     // loop + enabled toggles
     const loopRow = this.mkRow(form, 'loop');
@@ -825,6 +814,16 @@ class TrafficEditorTool implements EditorTool {
     r.appendChild(l);
     parent.appendChild(r);
     return r;
+  }
+
+  /** Push a vehicle's inherited defaults + its inline overrides into the form. */
+  private refreshVehicleProps(v: Vehicle): void {
+    const baseline = {
+      hp: VEHICLE_DEFAULT_HP,
+      damage: VEHICLE_DEFAULT_DAMAGE,
+      speed: 1,
+    } as EntityProps;
+    this.propsForm?.update({ kind: 'car', baseline, override: v });
   }
 
   private mkInput(

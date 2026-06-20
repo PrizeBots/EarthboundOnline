@@ -39,8 +39,18 @@ export interface PsiMove {
   anim: string; // PsiAnim catalog id whose authored frames play on cast
   heal?: number; // HP restored to the target (recover)
   damage?: number; // HP struck off the enemy (offense)
-  range?: number; // px reach for offense/ailment
-  multi?: boolean; // ROM row/all — hit EVERY enemy in range
+  range?: number; // px reach for offense/ailment (radius / bolts candidate pool)
+  multi?: boolean; // ROM row/all — hit EVERY enemy in range (radius shape)
+  // Offense targeting SHAPE (default 'radius' = circle around the caster):
+  //   'line'  — a beam in the facing direction (Fire): hits everything in a
+  //             forward rectangle `length` long and `±width` wide.
+  //   'bolts' — strike `bolts` RANDOM live enemies within `range` (Thunder).
+  shape?: 'radius' | 'line' | 'bolts';
+  length?: number; // line shape: forward reach px
+  width?: number; // line shape: half-width px AT THE MUZZLE (narrow start)
+  spread?: number; // line shape: half-width GAINED per px forward — the cone fans
+  //                   out shotgun-style, wider per tier (0 = a straight beam)
+  bolts?: number; // bolts shape: how many random in-range enemies are struck
   reviveFrac?: number; // revive a downed ally to this fraction of max HP
   cures?: boolean; // clear the target's status conditions
   inflict?: PsiInflict[]; // status procs on the enemy
@@ -88,7 +98,10 @@ export function tierLabel(t: PsiTier): string {
 // Manager edits them via psi.json. Animations for every id already exist in
 // public/overrides/psi_anim.json, so no art is needed per tier.
 const PSI_FAMILY_SPECS: PsiFamilySpec[] = [
-  // ---- Offense (strike the nearest enemy; multi = ROM row/all → every enemy) ----
+  // ---- Offense ----------------------------------------------------------------
+  // Targeting differs by `shape` (see PsiMove): Rockin'/Starstorm/Flash hit a
+  // RADIUS (multi = every enemy in it); Fire shoots a forward LINE that lengthens
+  // and widens per tier; Thunder strikes random enemies (more BOLTS per tier).
   {
     stem: 'psi',
     family: "PSI Rockin'",
@@ -105,7 +118,16 @@ const PSI_FAMILY_SPECS: PsiFamilySpec[] = [
     target: 'enemy',
     tiers: ['alpha', 'beta', 'gamma', 'omega'],
     pp: [6, 12, 20, 42],
-    effect: (_t, i) => ({ damage: [14, 30, 60, 130][i], range: 240, multi: true }),
+    // Shotgun cone: narrow muzzle, fanning WIDER with distance + per tier, and
+    // reaching further — so α is a short jet and Ω sweeps a whole arc of a room.
+    // End half-width = width + spread*length → ~45 / 94 / 183 / 339 px by tier.
+    effect: (_t, i) => ({
+      damage: [14, 30, 60, 130][i],
+      shape: 'line',
+      length: [160, 240, 340, 460][i],
+      width: [16, 22, 30, 40][i],
+      spread: [0.18, 0.3, 0.45, 0.65][i],
+    }),
   },
   {
     stem: 'psi_freeze',
@@ -123,7 +145,13 @@ const PSI_FAMILY_SPECS: PsiFamilySpec[] = [
     target: 'enemy',
     tiers: ['alpha', 'beta', 'gamma', 'omega'],
     pp: [3, 7, 16, 20],
-    effect: (_t, i) => ({ damage: [16, 34, 70, 100][i], range: 300, multi: true }),
+    // Random strikes: stronger tiers zap MORE enemies (and for more) on screen.
+    effect: (_t, i) => ({
+      damage: [16, 34, 70, 100][i],
+      shape: 'bolts',
+      bolts: [2, 3, 5, 8][i],
+      range: 520,
+    }),
   },
   {
     stem: 'psi_flash',

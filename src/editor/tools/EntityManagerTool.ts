@@ -16,7 +16,9 @@ import {
   DEFAULT_ENTITY_STATS,
   CombatPersonality,
   COMBAT_PERSONALITY_OPTIONS,
+  EntityProps,
 } from '../../engine/EntityStats';
+import { EntityPropsForm, ENTITY_STAT_FIELDS, FieldKey } from '../components/EntityPropsForm';
 import { loadJSON } from '../../engine/AssetLoader';
 import { Direction } from '../../types';
 import { saveOverride, loadOverride } from '../saveOverride';
@@ -57,28 +59,7 @@ interface FoldersFile {
 // being re-parented. Set on dragstart, consumed on drop.
 type DragPayload = { type: 'entities' } | { type: 'folder'; id: string };
 
-// UI field descriptors. `scale` shows/edits a ms value in seconds; `float`
-// keeps fractional precision (speed); the rest are clamped positive integers.
-// Numeric stat fields only (col is edited separately, in the collision section).
-const STAT_FIELDS: {
-  key: Exclude<keyof EntityStats, 'col' | 'combat'>;
-  label: string;
-  min: number;
-  max?: number;
-  scale?: number;
-  float?: boolean;
-}[] = [
-  { key: 'hp', label: 'HP', min: 1 },
-  { key: 'level', label: 'level', min: 1 },
-  { key: 'xp', label: 'XP', min: 0 },
-  { key: 'damage', label: 'damage', min: 0 },
-  { key: 'attackCooldownMs', label: 'atk cd s', min: 50, scale: 1000 },
-  { key: 'speed', label: 'speed', min: 0.1, float: true },
-  { key: 'attackRange', label: 'atk px', min: 1 },
-  // Crit/dodge are percent points (0..100); the server rolls them /100.
-  { key: 'crit', label: 'crit %', min: 0, max: 100 },
-  { key: 'dodge', label: 'dodge %', min: 0, max: 100 },
-];
+// Combat-stat fields now come from the shared EntityPropsForm (ENTITY_STAT_FIELDS).
 
 // Collision-box preview geometry. The sprite is drawn at COL_SCALE with its
 // feet at (COL_ANCHOR_X, COL_FEET_Y); the box overlay maps with the same anchor.
@@ -112,7 +93,7 @@ class EntityManagerTool implements EditorTool {
   private panel: HTMLDivElement | null = null;
   private headerEl: HTMLDivElement | null = null;
   private formEl: HTMLDivElement | null = null;
-  private fields = new Map<string, HTMLInputElement>();
+  private propsForm: EntityPropsForm | null = null;
   private picker: SpritePicker | null = null;
   private nameInput: HTMLInputElement | null = null;
 
@@ -281,30 +262,43 @@ class EntityManagerTool implements EditorTool {
     return cfg;
   }
 
-  /** Stats shown/edited for a sprite: DEFAULT < canon ROM catalog < authored
-   *  overrides — the SAME precedence npcSim/NPCManager apply at runtime, so the
-   *  editor reflects what actually spawns (canon hp/xp/level/damage for real EB
-   *  enemies) instead of bare defaults. */
-  private statsFor(sprite: number): EntityStats {
-    return {
-      ...DEFAULT_ENTITY_STATS,
-      ...this.catalogStats[String(sprite)],
-      ...this.entities[String(sprite)],
-    };
+  /** The inherited baseline shown as placeholders: DEFAULT < canon ROM catalog,
+   *  WITHOUT the authored entry (that's the override the form edits). */
+  private baselineFor(sprite: number): EntityProps {
+    return { ...DEFAULT_ENTITY_STATS, ...this.catalogStats[String(sprite)] } as EntityProps;
   }
 
-  private setStat(sprite: number, key: keyof EntityStats, val: number): void {
-    const cur = this.statsFor(sprite);
-    this.entities[String(sprite)] = { ...cur, [key]: val };
+  /** Push the current sprite's baseline + sparse override into the props form. */
+  private refreshPropsForm(): void {
+    this.propsForm?.update({
+      kind: 'enemy', // ENTITY_STAT_FIELDS aren't kind-filtered; kind is unused here
+      baseline: this.baselineFor(this.sprite),
+      override: this.entities[String(this.sprite)] ?? {},
+    });
+  }
+
+  /** Set (or clear, value === undefined) ONE authored stat — SPARSE: the entry
+   *  holds only deltas from the baseline, so untouched fields keep inheriting
+   *  (ROM catalog updates flow through). Drops an emptied entry entirely. */
+  private setProp(sprite: number, key: FieldKey, value: number | undefined): void {
+    const k = String(sprite);
+    const e: EntityStats = { ...(this.entities[k] ?? {}) };
+    if (value === undefined) delete e[key];
+    else e[key] = value;
+    if (Object.keys(e).length) this.entities[k] = e;
+    else delete this.entities[k];
     this.shell?.markDirty('entities');
+    this.refreshPropsForm();
   }
 
   // Set (or clear, with '') the townsfolk combat personality for a sprite group.
   private setCombat(sprite: number, val: CombatPersonality | ''): void {
-    const next: EntityStats = { ...this.statsFor(sprite) };
+    const k = String(sprite);
+    const next: EntityStats = { ...(this.entities[k] ?? {}) };
     if (val) next.combat = val;
     else delete next.combat;
-    this.entities[String(sprite)] = next;
+    if (Object.keys(next).length) this.entities[k] = next;
+    else delete this.entities[k];
     this.shell?.markDirty('entities');
   }
 
@@ -968,26 +962,19 @@ class EntityManagerTool implements EditorTool {
   private rebuildForm(): void {
     if (!this.formEl || !this.headerEl) return;
     this.formEl.innerHTML = '';
-    this.fields.clear();
     this.headerEl.textContent = `${getSpriteName(this.sprite) ?? `#${this.sprite}`}  ·  entity #${this.sprite}`;
     if (this.nameInput) this.nameInput.value = getSpriteName(this.sprite) ?? '';
 
-    const stats = this.statsFor(this.sprite);
-    for (const f of STAT_FIELDS) {
-      const shown = f.scale ? stats[f.key] / f.scale : stats[f.key];
-      const i = this.mkInput(this.formEl, f.key, f.label, (v) => {
-        const n = parseFloat(v);
-        if (Number.isNaN(n)) return;
-        let val = f.scale
-          ? Math.max(f.min, Math.round(n * f.scale))
-          : f.float
-            ? Math.max(f.min, n)
-            : Math.max(f.min, Math.round(n));
-        if (f.max != null) val = Math.min(f.max, val);
-        this.setStat(this.sprite, f.key, val);
-      });
-      i.value = String(shown);
-    }
+    // Combat stats via the shared form. Baseline = DEFAULT < canon ROM catalog
+    // (what's inherited); the authored entry holds only the deltas. Editing the
+    // sprite-group layer here is the SAME control set as the Placement / Spawner
+    // forms, just a different baseline + target.
+    this.propsForm = new EntityPropsForm({
+      fields: ENTITY_STAT_FIELDS,
+      onChange: (key, value) => this.setProp(this.sprite, key, value),
+    });
+    this.formEl.appendChild(this.propsForm.el);
+    this.refreshPropsForm();
 
     // Combat personality dropdown — how this entity's townsfolk maneuver when an
     // enemy is near (server-driven; see npcSim). Unassigned = seeded mix.
@@ -1037,11 +1024,12 @@ class EntityManagerTool implements EditorTool {
 
   /** Set (or clear, with null) the manual box override for a sprite group. */
   private setCol(sprite: number, col: EntityCol | null): void {
-    const cur = this.statsFor(sprite);
-    const next: EntityStats = { ...cur };
+    const k = String(sprite);
+    const next: EntityStats = { ...(this.entities[k] ?? {}) };
     if (col) next.col = col;
     else delete next.col;
-    this.entities[String(sprite)] = next;
+    if (Object.keys(next).length) this.entities[k] = next;
+    else delete this.entities[k];
     this.shell?.markDirty('entities');
   }
 
@@ -1260,28 +1248,6 @@ class EntityManagerTool implements EditorTool {
     b.onclick = fn;
     parent.appendChild(b);
     return b;
-  }
-
-  private mkInput(
-    parent: HTMLElement,
-    name: string,
-    label: string,
-    onChange: (v: string) => void
-  ): HTMLInputElement {
-    const r = document.createElement('div');
-    r.style.cssText = 'display:flex;align-items:center;gap:6px;';
-    const l = document.createElement('span');
-    l.textContent = label;
-    l.style.cssText = 'width:56px;color:#9fb8cc;';
-    r.appendChild(l);
-    const i = document.createElement('input');
-    i.style.cssText =
-      'width:72px;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
-    i.onchange = () => onChange(i.value);
-    r.appendChild(i);
-    parent.appendChild(r);
-    this.fields.set(name, i);
-    return i;
   }
 }
 
