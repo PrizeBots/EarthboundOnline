@@ -644,8 +644,8 @@ export function drawStrip(): void {
     drawFramesGrid(cells, Math.min(cells.length, 6)); // flipbook, wraps after 6 across
     return;
   }
-  if (S.editMode === 'entity') {
-    drawFramesGrid(entityStripCells(), 1); // the single entity frame
+  if (S.editMode === 'entity' || S.editMode === 'stamp') {
+    drawFramesGrid(entityStripCells(), 1); // the single entity/stamp frame
     return;
   }
   if (S.viewOnly) {
@@ -809,7 +809,7 @@ function drawEntitySheetPanel(): void {
 }
 
 export function drawSheetPanel(): void {
-  if (S.editMode === 'entity') {
+  if (S.editMode === 'entity' || S.editMode === 'stamp') {
     drawEntitySheetPanel();
     return;
   }

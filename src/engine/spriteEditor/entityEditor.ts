@@ -23,7 +23,7 @@ const MAX_PALETTE = 48; // pick-list cap; the buffer itself stays full RGBA
 const MAX_DIM = 256; // scale guard — keep frames sane
 
 /** Distinct opaque colors in a frame → a palette (index 0 = transparent). */
-function extractPalette(
+export function extractPalette(
   ctx: CanvasRenderingContext2D,
   w: number,
   h: number

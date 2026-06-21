@@ -96,6 +96,22 @@ own hand-painted pixels), so the entity no longer depends on the ROM source. Rea
 via the Sprite Editor's CHARACTER dropdown ("Custom entities" section) or Entity
 Manager's "Edit sprite →" (`openSpriteEditor({focusChar})`).
 
+**Editing a tile stamp (Sprite Editor `stamp` mode).** Room Builder stamps are
+cleanable in the Sprite Editor — a 5th `EditMode` that REUSES the entity buffer
+surface (single variable-size buffer + extracted `S.palette` + the shared
+`pixelCanvas` engine). It renders the stamp to pixels (`Stamps.renderStampToCanvas`),
+and on save slices the buffer back into 8×8 custom-tile minitiles
+(`Stamps.applyEditedPixels` → `CustomTiles` `mintCustomTile`/`setCustomTile`),
+OVERWRITING the same stamp in place (reusing its tile ids so repeated autosaves
+don't orphan tiles); a fully-transparent 8×8 block becomes an empty ref so it
+drops out when painted (the floor shows through). Persists `custom_tiles.json`
+(via the editor save channel) + the stamp library (DB). A **Stamp** mode button
+opens a thumbnail browser of the whole library; Room Builder's stamp ✎ hands off
+via `openSpriteEditor({focusStamp})` (the SAME standardized wiring as
+`focusItem`/`focusPsi`/`focusChar`). The stamp library itself is the shared
+`src/engine/Stamps.ts` service (one source of truth — Room Builder and the editor
+both read/write it; Room Builder's `this.stamps`/`folders` are accessors over it).
+
 The event-flag state for the open world lives in `src/world_flags.json` — the
 single source of truth shared by `apply_map_changes.py`, `extract_npcs.py`,
 `eb_dialogue.py`, and the engine's DoorManager. Change a flag there and re-run

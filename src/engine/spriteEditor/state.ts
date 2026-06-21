@@ -112,6 +112,15 @@ export const S = {
   entityNote: null as HTMLDivElement | null,
   entityScaleInput: null as HTMLInputElement | null,
 
+  // --- Stamp-cleanup mode (Room Builder tile stamp) — reuses the entity buffer
+  //     surface (entityCanvas/entityW/H/Undo + S.palette); only load/save/picker
+  //     differ. Saving slices back into custom-tile minitiles, overwriting the
+  //     stamp in place (see stampEditor.ts).
+  stampEditId: '' as string, // active Room Builder stamp id
+  stampRow: null as HTMLDivElement | null, // the stamp UI (library list + note)
+  stampNote: null as HTMLDivElement | null,
+  stampListHost: null as HTMLDivElement | null,
+
   // --- PSI-animation-editing mode (48x48 frames, variable count) ---
   psiEditId: '' as string, // active PSI ability id (from psi.json)
   psiDelivery: 'target' as 'caster' | 'target' | 'projectile',

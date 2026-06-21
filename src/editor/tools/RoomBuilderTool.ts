@@ -9,19 +9,20 @@ import {
 } from '../../engine/MapManager';
 import { drawTile, drawMinitile, loadAtlas } from '../../engine/TilesetManager';
 import { COMPOSITE_BASE, isComposite, packRef, unpackRef } from '../../engine/CompositeTiles';
-import {
-  customRef,
-  customRefId,
-  isCustomRef,
-  mintCustomTile,
-  customTilesDoc,
-  drawCustomMinitile,
-} from '../../engine/CustomTiles';
-import { openTilePixelEditor } from '../TilePixelEditor';
+import { customRefId, isCustomRef, drawCustomMinitile } from '../../engine/CustomTiles';
 import { primeJSONCache } from '../../engine/AssetLoader';
 import { TILE_SIZE, MINITILE_SIZE, SECTOR_TILES_X, SECTOR_TILES_Y, SectorMeta } from '../../types';
 import { saveOverride, loadOverride } from '../saveOverride';
-import { loadWorldDoc, saveWorldDoc } from '../../engine/Auth';
+import {
+  Stamp,
+  StampFolder,
+  getStamps,
+  getStampFolders,
+  setStamps,
+  setStampFolders,
+  loadStamps,
+  saveStamps,
+} from '../../engine/Stamps';
 import {
   addFurnitureSprite,
   customSpritesDoc,
@@ -29,6 +30,7 @@ import {
 } from '../../engine/CustomSprites';
 import { setEntityCol } from '../../engine/NPCManager';
 import { EntityCol, EntityPropsOverride } from '../../engine/EntityStats';
+import { openSpriteEditor } from '../../engine/spriteEditor';
 import { placementTool } from './PlacementTool';
 
 // Room Builder — author CUSTOM rooms that don't exist in the ROM, stamped into an
@@ -61,32 +63,8 @@ interface CustomRoomsDoc {
   rooms: CustomRoom[];
 }
 
-interface Stamp {
-  id: string;
-  label: string;
-  w: number; // bounding size in TILES (for layout/thumbnail)
-  h: number;
-  tilesetId: number;
-  paletteId: number;
-  tiles: number[]; // arrangement-grid stamp (w*h), empty for minitile stamps
-  // Minitile stamp: a grid of 8x8 pieces (sub-tile). refs are packed minitile
-  // refs (−1 = empty), mw*mh row-major.
-  mini?: boolean;
-  mw?: number;
-  mh?: number;
-  refs?: number[];
-  folder?: string; // parent folder id; absent = Uncategorized
-}
-// A named parent folder stamps can be dragged into (organisation only).
-interface StampFolder {
-  id: string;
-  name: string;
-}
-interface StampsDoc {
-  version: number;
-  stamps: Stamp[];
-  folders?: StampFolder[];
-}
+// Stamp / StampFolder now live in the shared engine/Stamps service (single source
+// of truth, shared with the Sprite Editor's stamp-cleanup mode).
 
 // What you paint with: a single arrangement from the palette, or a sampled stamp.
 type Brush =
@@ -123,8 +101,20 @@ class RoomBuilderTool implements EditorTool {
 
   // rooms / data
   private rooms: CustomRoom[] = [];
-  private stamps: Stamp[] = [];
-  private folders: StampFolder[] = [];
+  // Stamps/folders proxy the shared engine/Stamps service (one source of truth so
+  // edits in the Sprite Editor's stamp mode reflect here, and vice versa).
+  private get stamps(): Stamp[] {
+    return getStamps();
+  }
+  private set stamps(v: Stamp[]) {
+    setStamps(v);
+  }
+  private get folders(): StampFolder[] {
+    return getStampFolders();
+  }
+  private set folders(v: StampFolder[]) {
+    setStampFolders(v);
+  }
   private collapsedFolders = new Set<string>(); // in-memory collapse state
 
   // brush + paint
@@ -228,24 +218,10 @@ class RoomBuilderTool implements EditorTool {
 
   private async reloadData(): Promise<void> {
     try {
-      // Only overwrite the in-memory lists when a load actually succeeds — a null
-      // result (404 / a dev-server restart window) keeps what we already have so
-      // the stamp library / room list never blanks out from under the user.
-      // Stamps live in the DB now (world_docs / GET /api/world/stamps) so the
-      // library follows you across sessions. One-time migrate from the legacy
-      // overrides/stamps.json the first time the DB has nothing.
-      let sdoc = await loadWorldDoc<StampsDoc>('stamps');
-      if (!sdoc?.stamps?.length && !sdoc?.folders?.length) {
-        const legacy = await loadOverride<StampsDoc>('stamps.json');
-        if (legacy?.stamps?.length) {
-          sdoc = legacy;
-          this.stamps = legacy.stamps;
-          this.folders = legacy.folders ?? [];
-          await this.persistStamps(); // copy into the DB going forward
-        }
-      }
-      if (sdoc?.stamps) this.stamps = sdoc.stamps;
-      if (sdoc?.folders) this.folders = sdoc.folders;
+      // Stamps live in the shared engine/Stamps service (DB-backed, legacy
+      // overrides/stamps.json fallback). loadStamps() refreshes the canonical
+      // lists that this.stamps/this.folders proxy — shared with the Sprite Editor.
+      await loadStamps();
       const rdoc = await loadOverride<CustomRoomsDoc>('rooms.json');
       if (rdoc?.rooms) this.rooms = rdoc.rooms;
 
@@ -1218,136 +1194,23 @@ class RoomBuilderTool implements EditorTool {
     this.updateBrushUi();
   }
 
-  /** Persist the stamp library (stamps + folders) to the DB. */
+  /** Persist the stamp library (stamps + folders) to the DB via the shared service. */
   private async persistStamps(): Promise<void> {
-    await saveWorldDoc('stamps', { version: 2, stamps: this.stamps, folders: this.folders });
+    await saveStamps();
   }
 
-  // ── pixel editing (Path B) ───────────────────────────────────────────────
-  /** Copy a stamp into the pixel editor; saving mints custom tiles + a new stamp. */
-  private async editStampPixels(s: Stamp): Promise<void> {
-    const pxW = s.mini ? (s.mw ?? 1) * MINITILE_SIZE : s.w * TILE_SIZE;
-    const pxH = s.mini ? (s.mh ?? 1) * MINITILE_SIZE : s.h * TILE_SIZE;
-
-    // Make sure every source atlas is loaded before we read pixels.
-    if (s.mini) {
-      const combos = new Set(
-        (s.refs ?? [])
-          .filter((n) => n >= 0 && !isCustomRef(n))
-          .map((n) => {
-            const r = unpackRef(n);
-            return `${r.ts},${r.pal}`;
-          })
-      );
-      await Promise.all(
-        [...combos].map((k) => {
-          const [ts, pal] = k.split(',').map(Number);
-          return loadAtlas(ts, pal);
-        })
-      );
-    } else {
-      await loadAtlas(s.tilesetId, s.paletteId);
-    }
-
-    const cv = document.createElement('canvas');
-    cv.width = pxW;
-    cv.height = pxH;
-    const c = cv.getContext('2d');
-    if (!c) return;
-    if (s.mini) {
-      const mw = s.mw ?? 1;
-      const mh = s.mh ?? 1;
-      const refs = s.refs ?? [];
-      for (let ly = 0; ly < mh; ly++) {
-        for (let lx = 0; lx < mw; lx++) {
-          const n = refs[ly * mw + lx] ?? -1;
-          if (n < 0) continue;
-          if (isCustomRef(n))
-            drawCustomMinitile(c, customRefId(n), lx * MINITILE_SIZE, ly * MINITILE_SIZE);
-          else {
-            const r = unpackRef(n);
-            drawMinitile(c, r.ts, r.pal, r.arr, r.mi, lx * MINITILE_SIZE, ly * MINITILE_SIZE);
-          }
-        }
-      }
-    } else {
-      for (let ly = 0; ly < s.h; ly++) {
-        for (let lx = 0; lx < s.w; lx++) {
-          drawTile(
-            c,
-            s.tilesetId,
-            s.paletteId,
-            s.tiles[ly * s.w + lx] ?? 0,
-            lx * TILE_SIZE,
-            ly * TILE_SIZE
-          );
-        }
-      }
-    }
-
-    const img = c.getImageData(0, 0, pxW, pxH);
-    openTilePixelEditor({
-      width: pxW,
-      height: pxH,
-      initial: img.data,
-      title: `Edit "${s.label}" → new stamp`,
-      onSave: (rgba) => void this.saveEditedStamp(s, pxW, pxH, rgba),
+  // ── pixel editing → Sprite Editor ────────────────────────────────────────
+  /** Open a stamp in the full Sprite Editor (Stamp mode) to clean it up / erase
+   *  its background. Saving there overwrites this same stamp in place; on return
+   *  we reload so the library thumbnails reflect the edit. */
+  private openStampInEditor(s: Stamp): void {
+    void openSpriteEditor({
+      focusStamp: s.id,
+      // The editor edits the SAME stamp object (shared engine/Stamps array) in
+      // place and persists in the background, so just re-render the thumbnails on
+      // return — no racy DB reload needed.
+      onCancel: () => this.refreshLibrary(),
     });
-  }
-
-  /** Slice an edited bitmap into 8x8 custom tiles and add a new stamp using them. */
-  private async saveEditedStamp(
-    src: Stamp,
-    W: number,
-    H: number,
-    rgba: Uint8ClampedArray
-  ): Promise<void> {
-    const mw = W / 8;
-    const mh = H / 8;
-    const refs: number[] = new Array(mw * mh);
-    for (let ty = 0; ty < mh; ty++) {
-      for (let tx = 0; tx < mw; tx++) {
-        const px = new Array<number>(256);
-        for (let y = 0; y < 8; y++) {
-          for (let x = 0; x < 8; x++) {
-            const si = ((ty * 8 + y) * W + (tx * 8 + x)) * 4;
-            const di = (y * 8 + x) * 4;
-            px[di] = rgba[si];
-            px[di + 1] = rgba[si + 1];
-            px[di + 2] = rgba[si + 2];
-            px[di + 3] = rgba[si + 3];
-          }
-        }
-        refs[ty * mw + tx] = customRef(mintCustomTile(px));
-      }
-    }
-
-    const stamp: Stamp = {
-      id: `stamp_${Date.now().toString(36)}`,
-      label: `${src.label} (edit)`,
-      w: Math.ceil(mw / 4),
-      h: Math.ceil(mh / 4),
-      tilesetId: 0,
-      paletteId: 0,
-      tiles: [],
-      mini: true,
-      mw,
-      mh,
-      refs,
-      folder: src.folder,
-    };
-    this.stamps.push(stamp);
-    try {
-      await saveOverride('custom_tiles.json', customTilesDoc()); // shipped → renders in-game
-      await this.persistStamps();
-    } catch (e) {
-      this.shell?.toast(`Save failed: ${e}`, true);
-      this.stamps.pop();
-      return;
-    }
-    this.refreshLibrary();
-    this.setBrushStamp(stamp);
-    this.shell?.toast(`Saved edited stamp (${mw}x${mh} tiles) — paint it into a room`);
   }
 
   // ── folders ─────────────────────────────────────────────────────────────
@@ -2032,12 +1895,12 @@ class RoomBuilderTool implements EditorTool {
     cell.appendChild(del);
     const edit = document.createElement('div');
     edit.textContent = '✎';
-    edit.title = 'Copy & edit pixels → new stamp';
+    edit.title = 'Edit pixels in the Sprite Editor (clean up / erase background)';
     edit.style.cssText =
       'position:absolute;top:1px;left:3px;color:#9fe3a0;font-size:11px;cursor:pointer;';
     edit.onclick = (e) => {
       e.stopPropagation();
-      void this.editStampPixels(s);
+      this.openStampInEditor(s);
     };
     cell.appendChild(edit);
     return cell;

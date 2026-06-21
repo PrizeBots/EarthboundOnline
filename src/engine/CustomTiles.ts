@@ -89,6 +89,15 @@ export function mintCustomTile(px: number[]): number {
   return id;
 }
 
+/** Overwrite an existing custom tile's pixels in place (re-editing a stamp reuses
+ *  its tile ids instead of minting new ones, so repeated saves don't accumulate
+ *  orphans). No-op for an unknown id. */
+export function setCustomTile(id: number, px: number[]): void {
+  if (!pixels.has(id)) return;
+  pixels.set(id, px.slice());
+  rendered.delete(id);
+}
+
 /** Serialize the whole library for saving to overrides/custom_tiles.json. */
 export function customTilesDoc(): CustomTilesDoc {
   return {

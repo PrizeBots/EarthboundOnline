@@ -99,17 +99,24 @@ export interface EditorDoor {
 export interface StairData {
   worldX: number;
   worldY: number;
-  dx: -1 | 1; // diagonal step vector
-  dy: -1 | 1;
+  dx: -1 | 0 | 1; // diagonal step vector (0,0 when nowhere — Game infers it)
+  dy: -1 | 0 | 1;
+  // EB `StairDirection.NOWHERE` (0x8000): the escalator's FAR landing end, which
+  // carries no encoded diagonal. It's still a real ride entry (it carries you
+  // back into the ramp), so Game infers the diagonal from the ramp geometry +
+  // the player's heading at ride start instead of from a fixed vector.
+  nowhere?: boolean;
 }
 
-// StairDirection value -> diagonal unit vector.
+// StairDirection value -> diagonal unit vector. NOWHERE (0x8000) is absent on
+// purpose — it has no fixed diagonal and is handled separately (see nowhere).
 const STAIR_DIR_VEC: Record<number, { dx: -1 | 1; dy: -1 | 1 }> = {
   0x000: { dx: -1, dy: -1 }, // NW
   0x100: { dx: 1, dy: -1 }, // NE
   0x200: { dx: -1, dy: 1 }, // SW
   0x300: { dx: 1, dy: 1 }, // SE
 };
+const STAIR_NOWHERE = 0x8000;
 
 // Raw JSON format from extraction
 interface RawDoor {
@@ -235,14 +242,20 @@ export async function loadDoors(): Promise<void> {
     const oy = Math.floor(idx / DOOR_GRID_COLS) * AREA_MT;
     for (const d of area) {
       if (d.type === 'stair') {
-        const vec = STAIR_DIR_VEC[d.direction ?? -1];
-        if (!vec) continue; // NOWHERE / invalid direction
-        stairsByArea[idx].push({
-          worldX: (ox + d.x) * MINITILE_SIZE + MINITILE_SIZE / 2,
-          worldY: (oy + d.y) * MINITILE_SIZE + MINITILE_SIZE / 2,
-          dx: vec.dx,
-          dy: vec.dy,
-        });
+        const dir = d.direction ?? -1;
+        const worldX = (ox + d.x) * MINITILE_SIZE + MINITILE_SIZE / 2;
+        const worldY = (oy + d.y) * MINITILE_SIZE + MINITILE_SIZE / 2;
+        if (dir === STAIR_NOWHERE) {
+          // Far-landing end: a real ride trigger whose diagonal Game infers from
+          // the ramp + player heading. Without this the (solid) escalator steps
+          // have no ride to cross them and the player gets stuck (Twoson dept
+          // store: the up/down escalator landings were dead — bugs.md).
+          stairsByArea[idx].push({ worldX, worldY, dx: 0, dy: 0, nowhere: true });
+          continue;
+        }
+        const vec = STAIR_DIR_VEC[dir];
+        if (!vec) continue; // invalid direction
+        stairsByArea[idx].push({ worldX, worldY, dx: vec.dx, dy: vec.dy });
         continue;
       }
       if (d.type !== 'door') continue;

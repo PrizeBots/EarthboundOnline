@@ -70,7 +70,8 @@ export function activeBuffer(): {
   if (S.editMode === 'psi') {
     return { canvas: S.psiCanvas!, ctx: S.psiCtx!, undo: S.psiUndo, w: PSI_W, h: PSI_H };
   }
-  if (S.editMode === 'entity') {
+  // 'stamp' reuses the entity buffer surface (single variable-size frame).
+  if (S.editMode === 'entity' || S.editMode === 'stamp') {
     return {
       canvas: S.entityCanvas!,
       ctx: S.entityCtx!,
@@ -85,7 +86,7 @@ export function activeBuffer(): {
 /** True for the modes whose colors come from the EXTRACTED image palette
  *  (S.palette): the cast sheet and custom entities. Item/PSI use ITEM_PALETTE. */
 function usesImagePalette(): boolean {
-  return S.editMode === 'char' || S.editMode === 'entity';
+  return S.editMode === 'char' || S.editMode === 'entity' || S.editMode === 'stamp';
 }
 
 /** CSS color for a palette index in the active mode, or null for transparent. */

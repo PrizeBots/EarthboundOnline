@@ -1351,6 +1351,20 @@
       "spawnIntervalMs": 3500,
       "respawnDelayMs": 9000,
       "enabled": true
+    },
+    {
+      "name": "spawner-98",
+      "sprite": 388,
+      "x": 2762,
+      "y": 1232,
+      "wanderRadius": 200,
+      "detectRange": 220,
+      "giveUpRange": 560,
+      "poolSize": 4,
+      "maxActive": 1,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "enabled": true
     }
   ]
 }

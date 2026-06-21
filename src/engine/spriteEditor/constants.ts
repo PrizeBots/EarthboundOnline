@@ -72,7 +72,11 @@ export type Tool = 'pencil' | 'eraser' | 'eyedrop' | 'fill' | 'select' | 'move' 
 // engine's "buffer surface" path (see pixelCanvas.activeBuffer); only dims, the
 // palette source, and the persist target differ. 'entity' uses the extracted
 // image palette (S.palette) like 'char'; item/psi use the fixed ITEM_PALETTE.
-export type EditMode = 'char' | 'item' | 'psi' | 'entity';
+// 'stamp' is a Room Builder tile-stamp opened for pixel cleanup. Like 'entity'
+// it's a single variable-size buffer painted through the shared engine with the
+// EXTRACTED image palette; on save it slices back into 8×8 custom-tile minitiles
+// and overwrites the stamp in place (see stampEditor.ts).
+export type EditMode = 'char' | 'item' | 'psi' | 'entity' | 'stamp';
 
 // A pixel-rect selection within the active target (region-local coords). When
 // set, fill / transforms / copy act on it; otherwise they act on the whole frame.
@@ -367,6 +371,8 @@ export interface SpriteEditorCallbacks {
   focusPsi?: string;
   /** Open in Character mode on this sprite group id (Entity Manager handoff). */
   focusChar?: number;
+  /** Open in Stamp mode editing this Room Builder tile stamp (Room Builder handoff). */
+  focusStamp?: string;
 }
 
 // ---------------------------------------------------------------------------

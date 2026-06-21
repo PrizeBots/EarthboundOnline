@@ -116,15 +116,9 @@ function loadShops(assetsDir) {
     };
   }
 
-  // Starter items on join. Cookie is the original starter; the Cracked bat
-  // (weapon, +4 off) and Cheap bracelet (arms, +5 def) are TEMPORARY dev grants
-  // so equip/combat is testable without shopping first — remove before launch
-  // (players should buy their gear). See TODO.md.
-  const COOKIE_ID = '88';
-  const DEV_GEAR = ['17', '64']; // DEV: remove before launch — Cracked bat, Cheap bracelet
+  // Starter items on join: none. Players begin with an empty bag and buy their
+  // own gear. (Previously granted a Cookie + dev Cracked bat / Cheap bracelet.)
   const startingInventory = [];
-  if (goods[COOKIE_ID]) startingInventory.push(COOKIE_ID);
-  for (const id of DEV_GEAR) if (goods[id]) startingInventory.push(id);
 
   /** Is `item` (any id type) stocked by `store`? */
   function storeHas(store, item) {

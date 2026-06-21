@@ -1289,6 +1289,41 @@ export class Game {
   }
 
   /**
+   * Infer a ride diagonal for a NOWHERE escalator landing (no encoded
+   * direction). The escalator ramp is the only walkable diagonal corridor out
+   * of the landing, so we probe the four diagonals one minitile from the foot
+   * point and keep the OPEN ones (the ramp continues that way). When both ends
+   * of the ramp read open (the trigger sits mid-ramp), the player's heading
+   * breaks the tie: ride the open diagonal they're walking INTO. Returns null
+   * when nothing open lines up with their heading — they're just passing the
+   * landing, so let normal walking handle it. (dx,dy mirror rideStep's frame.)
+   */
+  private inferStairDir(): { dx: -1 | 1; dy: -1 | 1 } | null {
+    const footY = this.player.y - MINITILE_SIZE / 2;
+    const diags: Array<{ dx: -1 | 1; dy: -1 | 1 }> = [
+      { dx: -1, dy: -1 },
+      { dx: 1, dy: -1 },
+      { dx: -1, dy: 1 },
+      { dx: 1, dy: 1 },
+    ];
+    const open = diags.filter(
+      (d) => !isSolidAtPoint(this.player.x + d.dx * MINITILE_SIZE, footY + d.dy * MINITILE_SIZE)
+    );
+    if (open.length === 0) return null;
+    const [vx, vy] = DIR_VECTORS[this.player.direction];
+    let best: { dx: -1 | 1; dy: -1 | 1 } | null = null;
+    let bestDot = 0; // strictly heading into the ramp (dot > 0) to start a ride
+    for (const d of open) {
+      const dot = d.dx * vx + d.dy * vy;
+      if (dot > bestDot) {
+        bestDot = dot;
+        best = d;
+      }
+    }
+    return best;
+  }
+
+  /**
    * Advance an active escalator/stairway ride one frame. EB escalators are a
    * walkable diagonal ramp bounded by SOLID at each landing strip; the ramp is
    * too narrow (and corner-connected) for normal foot-box movement, so we glide
@@ -1657,22 +1692,38 @@ export class Game {
     if (this.stairSuppressed) {
       if (!stair) this.stairSuppressed = false;
     } else if (stair && this.player.moving) {
-      // Glide the ramp, then warp through the shaft's floor door to the next
-      // level. The shaft is already the active room crop, so leave it alone;
-      // updateRide bypasses collision to cross the narrow diagonal.
-      const exit = getStairExit(this.player.x, this.player.y, stair.dy);
-      this.riding = { dx: stair.dx, dy: stair.dy, dist: 0, exit };
-      // Reveal BOTH floors (and the ramp between) for the duration of the ride.
-      // EB stacks floors as separate room-crop regions joined only by the solid
-      // ramp, so the source-floor crop leaves the destination floor (and the
-      // down-ramp) black — you ride into a black void and can't see the landing
-      // (bugs.md, dept-store escalators). Only when there's no warp door: a
-      // door-warp ride fades to its destination, so leave that path alone.
-      if (!exit) {
-        const ride = this.computeRideBounds(stair.dx, stair.dy);
-        if (ride) this.camera.roomBounds = ride;
+      // A NOWHERE landing carries no encoded diagonal — infer it from the ramp
+      // and the player's heading. If they're not actually walking into a ramp,
+      // skip the ride and let normal movement handle it (no stuck, no bounce).
+      let dx = stair.dx;
+      let dy = stair.dy;
+      if (stair.nowhere) {
+        // null = not heading into the ramp; dx/dy stay 0 and the ride is skipped
+        // below (fall through to the door check), so the player just walks past.
+        const inferred = this.inferStairDir();
+        if (inferred) {
+          dx = inferred.dx;
+          dy = inferred.dy;
+        }
       }
-      return;
+      if (!(dx === 0 && dy === 0)) {
+        // Glide the ramp, then warp through the shaft's floor door to the next
+        // level. The shaft is already the active room crop, so leave it alone;
+        // updateRide bypasses collision to cross the narrow diagonal.
+        const exit = getStairExit(this.player.x, this.player.y, dy);
+        this.riding = { dx, dy, dist: 0, exit };
+        // Reveal BOTH floors (and the ramp between) for the duration of the ride.
+        // EB stacks floors as separate room-crop regions joined only by the solid
+        // ramp, so the source-floor crop leaves the destination floor (and the
+        // down-ramp) black — you ride into a black void and can't see the landing
+        // (bugs.md, dept-store escalators). Only when there's no warp door: a
+        // door-warp ride fades to its destination, so leave that path alone.
+        if (!exit) {
+          const ride = this.computeRideBounds(dx, dy);
+          if (ride) this.camera.roomBounds = ride;
+        }
+        return;
+      }
     }
 
     // Suppress doors until player has fully left all trigger zones

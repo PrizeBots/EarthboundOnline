@@ -56,6 +56,8 @@ import {
   drawItemPreview,
 } from './itemEditor';
 import { loadEntityIntoBuffer, commitEntityEdit, persistEntity } from './entityEditor';
+import { loadStampIntoBuffer, persistStamp, rebuildStampList } from './stampEditor';
+import { loadStamps, getStamps } from '../Stamps';
 import { updateWalker, drawTestPane, finishTestPointer } from './testWalker';
 import { buildPsiBuffer, rebuildPsiPicker, loadPsiIntoBuffer, drawPsiPreview } from './psiEditor';
 import { loadPsiCatalog, listPsi } from '../PsiCatalog';
@@ -89,6 +91,7 @@ export async function openSpriteEditor(callbacks: SpriteEditorCallbacks = {}): P
   await loadSavedItems(); // restore saved item edits before seeding the buffer
   await loadPsiCatalog(); // PSI ability list for the editor's PSI mode
   await loadPsiAnims(); // any authored PSI animations (overrides/psi_anim.json)
+  await loadStamps(); // Room Builder tile-stamp library for the editor's Stamp mode
   if (callbacks.focusItem) S.itemEditId = callbacks.focusItem; // Item Manager handoff
   // Make sure itemEditId is a real, selectable item in some category (the module
   // default is a legacy seed id). If it isn't, fall back to the first item in the
@@ -121,6 +124,10 @@ export async function openSpriteEditor(callbacks: SpriteEditorCallbacks = {}): P
     // cast/vehicle group → Character mode.
     if (callbacks.focusChar >= CUSTOM_GROUP_BASE) await selectEntity(callbacks.focusChar);
     else await loadGroupIntoEditor(callbacks.focusChar);
+  } else if (callbacks.focusStamp) {
+    // Room Builder handoff: clean up a tile stamp. setEditMode('stamp') loads it.
+    S.stampEditId = callbacks.focusStamp;
+    setEditMode('stamp');
   }
   window.addEventListener('keydown', onKeyDown, true);
   window.addEventListener('keyup', onKeyUp, true);
@@ -168,6 +175,10 @@ export function closeSpriteEditor(): void {
   S.entityRow = null;
   S.entityNote = null;
   S.entityScaleInput = null;
+  S.stampRow = null;
+  S.stampNote = null;
+  S.stampListHost = null;
+  S.stampEditId = '';
   S.charNote = null;
   S.nameInput = null;
   S.copyNote = null;
@@ -268,11 +279,12 @@ export function setEditMode(m: EditMode): void {
   // from that dropdown). In Item/PSI mode it's irrelevant clutter — hide it.
   if (S.charRow) S.charRow.style.display = m === 'char' || m === 'entity' ? 'flex' : 'none';
   // Mirror toggle applies to any directional sprite — character, entity, or item;
-  // only PSI (no facing) hides it.
-  if (S.mirrorRow) S.mirrorRow.style.display = m === 'psi' ? 'none' : 'flex';
+  // PSI (no facing) and stamps (flat tiles) hide it.
+  if (S.mirrorRow) S.mirrorRow.style.display = m === 'psi' || m === 'stamp' ? 'none' : 'flex';
   if (S.itemRow) S.itemRow.style.display = m === 'item' ? 'flex' : 'none';
   if (S.psiRow) S.psiRow.style.display = m === 'psi' ? 'flex' : 'none';
   if (S.entityRow) S.entityRow.style.display = m === 'entity' ? 'flex' : 'none';
+  if (S.stampRow) S.stampRow.style.display = m === 'stamp' ? 'flex' : 'none';
   if (m === 'item') {
     S.colorIndex = 1;
     S.itemTab = tabForItem(S.itemEditId); // open on the tab holding the current item
@@ -284,6 +296,14 @@ export function setEditMode(m: EditMode): void {
     S.walkerItem = null;
     rebuildPsiPicker();
     if (S.psiEditId) loadPsiIntoBuffer(S.psiEditId);
+  } else if (m === 'stamp') {
+    S.walkerItem = null;
+    rebuildStampList();
+    const list = getStamps();
+    if (!S.stampEditId || !list.some((s) => s.id === S.stampEditId)) {
+      S.stampEditId = list[0]?.id ?? '';
+    }
+    if (S.stampEditId) void loadStampIntoBuffer(S.stampEditId).then(rebuildStampList);
   } else if (m === 'char') {
     S.walkerItem = null;
     // Returning to Character mode while the selection is a custom entity (or the
@@ -348,6 +368,16 @@ function persistGroup(quiet: boolean): void {
     persistEntity();
     setSaveStatus('saved');
     if (!quiet) flashSaved('💾 Entity sprite saved');
+    return;
+  }
+  if (S.editMode === 'stamp') {
+    setSaveStatus('saving');
+    void persistStamp()
+      .then(() => {
+        setSaveStatus('saved');
+        if (!quiet) flashSaved('💾 Stamp saved');
+      })
+      .catch(() => setSaveStatus('error'));
     return;
   }
   if (!sheetReady()) return;

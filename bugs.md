@@ -103,8 +103,24 @@ warping}` on transition start/end (`Network.sendWarpState`, wired in
   (no regression).
 - **Known follow-ups:** the ride trigger window is small (`STAIR_TRIGGER = 5`),
   so a sloppy diagonal approach can still walk past an escalator without starting
-  the ride; and escalator triggers with raw `direction = 0x8000` are skipped by
-  `STAIR_DIR_VEC` (meaning unknown — not yet decoded). Neither blocks the fix.
+  the ride.
+
+### Half the dept-store escalators dead — stuck on the steps (FIXED 2026-06-20)
+
+- **Symptom:** only the "bottom" Twoson dept-store escalator worked; stepping onto
+  the others (in prod) left the player stuck on the steps, unable to move.
+- **Root cause:** EB escalator triggers come in pairs — one end carries the
+  travel `direction` (NW/NE/SW/SE), the FAR landing is `StairDirection.NOWHERE`
+  (`0x8000`). `STAIR_DIR_VEC` had no `0x8000` entry, so `DoorManager` dropped
+  every NOWHERE trigger. The escalator steps are SOLID (the ride is what crosses
+  them), so a landing with no ride = stuck. (All 6 Twoson dept-store escalators
+  are `type:3` escalators; their landing ends are NOWHERE.)
+- **Fix:** keep NOWHERE triggers (`DoorManager`, `StairData.nowhere`) and infer
+  their diagonal at ride start (`Game.inferStairDir`): probe the 4 diagonals one
+  minitile out, keep the OPEN (ramp) ones, and pick the one the player is walking
+  INTO (heading · diagonal > 0). No open diagonal lines up with the heading →
+  no ride, the player just walks past. Reuses the same `isSolidAtPoint` ramp test
+  the ride already uses; the inferred `dy` drives `getStairExit`/`computeRideBounds`.
 
 ### Black box over shop counters (Twoson dept-store 3F register) (FIXED 2026-06-14)
 

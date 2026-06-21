@@ -348,6 +348,7 @@ function buildToolPanel(): HTMLDivElement {
     ['char', 'Character'],
     ['item', 'Item'],
     ['psi', 'PSI'],
+    ['stamp', 'Stamp'],
   ];
   for (const [m, label] of modes) {
     const btn = document.createElement('button');
@@ -538,6 +539,24 @@ function buildToolPanel(): HTMLDivElement {
   entityHint.style.cssText = 'color:#9ab;font-size:10px;line-height:1.4;';
   S.entityRow.appendChild(entityHint);
   div.appendChild(S.entityRow);
+
+  // STAMP mode UI — the Room Builder tile-stamp library + a note. Clicking a
+  // thumbnail opens that stamp for cleanup; saving overwrites it in place.
+  S.stampRow = document.createElement('div');
+  S.stampRow.style.cssText = 'display:none;flex-direction:column;gap:5px;';
+  S.stampNote = document.createElement('div');
+  S.stampNote.style.cssText = 'color:#9fd;font-size:10px;min-height:12px;';
+  S.stampRow.appendChild(S.stampNote);
+  const stampHint = document.createElement('div');
+  stampHint.textContent =
+    'Pick a stamp to clean up · ⌫ erase the background · auto-saves over the same stamp';
+  stampHint.style.cssText = 'color:#9ab;font-size:10px;line-height:1.4;';
+  S.stampRow.appendChild(stampHint);
+  S.stampListHost = document.createElement('div');
+  S.stampListHost.style.cssText =
+    'display:flex;flex-wrap:wrap;gap:6px;max-height:200px;overflow:auto;padding:2px;';
+  S.stampRow.appendChild(S.stampListHost);
+  div.appendChild(S.stampRow);
 
   const tools: [Tool, string][] = [
     ['pencil', '1/Q ✏ Pencil'],
