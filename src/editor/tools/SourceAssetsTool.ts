@@ -266,6 +266,7 @@ class SourceAssetsTool implements EditorTool {
     open.textContent = '↗ Open full image';
     open.style.cssText =
       'font:11px monospace;padding:2px 7px;cursor:pointer;border-radius:3px;background:#1d2530;color:#cde;border:1px solid #3a4a5a;align-self:flex-start;';
+    open.title = 'Open the raw ROM graphic in a new tab at full resolution.';
     open.onclick = () => window.open(`${BASE}${a.file}`, '_blank');
     this.detailEl.appendChild(open);
 
@@ -278,15 +279,31 @@ class SourceAssetsTool implements EditorTool {
     head.textContent = 'CREATE FROM THIS ASSET';
     head.style.cssText = 'color:#4ec9b0;font-size:11px;letter-spacing:0.5px;';
     actions.appendChild(head);
-    this.mkBtn('➕ New Entity from this', () => this.openCreateForm(a, 'entity', actions), actions);
-    this.mkBtn('➕ New Item from this', () => this.openCreateForm(a, 'item', actions), actions);
+    this.mkBtn(
+      '➕ New Entity from this',
+      () => this.openCreateForm(a, 'entity', actions),
+      actions,
+      'Mint a standalone custom entity sprite group from this graphic and open it in the Entity Manager.'
+    );
+    this.mkBtn(
+      '➕ New Item from this',
+      () => this.openCreateForm(a, 'item', actions),
+      actions,
+      'Mint a custom item using this graphic as its 16x16 held art and open it in the Item Manager.'
+    );
     this.detailEl.appendChild(actions);
   }
 
   /** A small accent button (matches the panel chrome). */
-  private mkBtn(label: string, fn: () => void, parent: HTMLElement): HTMLButtonElement {
+  private mkBtn(
+    label: string,
+    fn: () => void,
+    parent: HTMLElement,
+    tip?: string
+  ): HTMLButtonElement {
     const b = document.createElement('button');
     b.textContent = label;
+    if (tip) b.title = tip;
     b.style.cssText =
       'font:11px monospace;padding:4px 8px;cursor:pointer;border-radius:3px;text-align:left;' +
       'background:#11302b;color:#4ec9b0;border:1px solid #2f6f63;';
@@ -310,6 +327,8 @@ class SourceAssetsTool implements EditorTool {
     const base = (a.file.split('/').pop() ?? a.id).replace(/\.png$/i, '');
     input.value = base;
     input.placeholder = 'name';
+    input.title =
+      kind === 'entity' ? 'Display name for the new entity.' : 'Display name for the new item.';
     input.style.cssText =
       'font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:3px 6px;';
     host.appendChild(input);
@@ -329,9 +348,15 @@ class SourceAssetsTool implements EditorTool {
           }
         );
       },
-      row
+      row,
+      kind === 'entity' ? 'Create the entity with this name.' : 'Create the item with this name.'
     );
-    this.mkBtn('Cancel', () => this.refreshDetail(), row);
+    this.mkBtn(
+      'Cancel',
+      () => this.refreshDetail(),
+      row,
+      'Discard and go back to the asset detail.'
+    );
     host.appendChild(row);
     input.focus();
     input.select();

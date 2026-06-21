@@ -33,15 +33,57 @@ const MINITILE = 8;
 type PaintTool = 'solid' | 'prilo' | 'prihi' | 'clear' | 'stamp' | 'eyedrop' | 'rect' | 'hide';
 // Hotkeys avoid WASD/arrows (camera pan) and 1-4 (grid toggles) — the active
 // tool consumes the key before the shell pans, so a movement key would be stolen.
-const TOOL_DEFS: { id: PaintTool; label: string; key: string }[] = [
-  { id: 'solid', label: 'F Solid', key: 'f' }, // NOT 's' — that pans the camera down
-  { id: 'prilo', label: 'L Pri-lo', key: 'l' },
-  { id: 'prihi', label: 'H Pri-hi', key: 'h' },
-  { id: 'clear', label: 'C Clear', key: 'c' },
-  { id: 'eyedrop', label: 'E Eyedrop', key: 'e' },
-  { id: 'stamp', label: 'X Stamp', key: 'x' },
-  { id: 'rect', label: 'T Rect', key: 't' },
-  { id: 'hide', label: 'G Behind', key: 'g' }, // 0x40: minitile redraws in FRONT of you + hides you behind it (for BG buildings)
+const TOOL_DEFS: { id: PaintTool; label: string; key: string; tip: string }[] = [
+  // NOT 's' — that pans the camera down
+  {
+    id: 'solid',
+    label: 'F Solid',
+    key: 'f',
+    tip: 'F: paint the solid-wall bit 0x80 — blocks movement (hold + drag to paint).',
+  },
+  {
+    id: 'prilo',
+    label: 'L Pri-lo',
+    key: 'l',
+    tip: 'L: paint priority-low 0x01 — your lower half draws behind this tile’s foreground art.',
+  },
+  {
+    id: 'prihi',
+    label: 'H Pri-hi',
+    key: 'h',
+    tip: 'H: paint priority-high 0x02 — your whole body draws behind this tile’s foreground art.',
+  },
+  {
+    id: 'clear',
+    label: 'C Clear',
+    key: 'c',
+    tip: 'C: clear the cell — wipes all collision/priority bits back to 0.',
+  },
+  {
+    id: 'eyedrop',
+    label: 'E Eyedrop',
+    key: 'e',
+    tip: 'E: eyedropper — pick the clicked cell’s byte into the stamp, then switch to Stamp.',
+  },
+  {
+    id: 'stamp',
+    label: 'X Stamp',
+    key: 'x',
+    tip: 'X: stamp — paint the exact byte picked with the eyedropper onto cells.',
+  },
+  {
+    id: 'rect',
+    label: 'T Rect',
+    key: 't',
+    tip: 'T: rectangle — drag to fill/clear a box of cells with the solid bit.',
+  },
+  // 0x40: minitile redraws in FRONT of you + hides you behind it (for BG buildings)
+  {
+    id: 'hide',
+    label: 'G Behind',
+    key: 'g',
+    tip: 'G: toggle Behind 0x40 — redraws this tile in front of you so you hide behind BG buildings (leaves solid/priority bits intact).',
+  },
 ];
 const BIT: Record<string, number> = { solid: 0x80, prilo: 0x01, prihi: 0x02 };
 // "Behind"/Hide is a MODIFIER bit, orthogonal to the mutually-exclusive type
@@ -520,6 +562,7 @@ class CollisionTool implements EditorTool {
       const b = document.createElement('button');
       b.textContent = def.label;
       b.dataset.tool = def.id;
+      b.title = def.tip;
       b.style.cssText =
         'font:10px monospace;padding:2px 6px;cursor:pointer;border-radius:3px;' +
         'background:#1d2530;color:#cde;border:1px solid #3a4a5a;';
@@ -530,9 +573,10 @@ class CollisionTool implements EditorTool {
     const opts = document.createElement('div');
     opts.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;';
     this.panel.appendChild(opts);
-    const mk = (label: string, fn: () => void, accent = false) => {
+    const mk = (label: string, fn: () => void, tip?: string, accent = false) => {
       const b = document.createElement('button');
       b.textContent = label;
+      if (tip) b.title = tip;
       b.style.cssText =
         'font:10px monospace;padding:2px 6px;cursor:pointer;border-radius:3px;' +
         (accent
@@ -542,9 +586,17 @@ class CollisionTool implements EditorTool {
       opts.appendChild(b);
       return b;
     };
-    mk('Brush (B)', () => this.onKey('b'));
-    mk('Art (M)', () => this.onKey('m'));
-    mk('Room@cursor (R)', () => this.onKey('r'));
+    mk('Brush (B)', () => this.onKey('b'), 'Cycle brush size 1→2→4 minitiles (8px each).');
+    mk(
+      'Art (M)',
+      () => this.onKey('m'),
+      'Toggle a dark overlay that dims the map art so collision tints read clearly.'
+    );
+    mk(
+      'Room@cursor (R)',
+      () => this.onKey('r'),
+      'Recompute the room-crop preview at the cursor (cyan = walkable minitiles).'
+    );
 
     // Legend
     const legend = document.createElement('div');
@@ -565,9 +617,10 @@ class CollisionTool implements EditorTool {
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;gap:6px;border-top:1px solid #243;padding-top:7px;';
     this.panel.appendChild(actions);
-    const mkAction = (label: string, fn: () => void, accent = false) => {
+    const mkAction = (label: string, fn: () => void, tip?: string, accent = false) => {
       const b = document.createElement('button');
       b.textContent = label;
+      if (tip) b.title = tip;
       b.style.cssText =
         'font:11px monospace;padding:3px 8px;cursor:pointer;border-radius:3px;' +
         (accent
@@ -576,7 +629,11 @@ class CollisionTool implements EditorTool {
       b.onclick = fn;
       actions.appendChild(b);
     };
-    mkAction('Verify rooms', () => void this.runVerifier('rooms'));
+    mkAction(
+      'Verify rooms',
+      () => void this.runVerifier('rooms'),
+      'Run the room-crop verifier against the painted collision (takes a minute).'
+    );
     // No Save button — edits auto-save via the shell (registered 'collision'
     // handler); npcSim re-applies the override ~2s after the write.
 

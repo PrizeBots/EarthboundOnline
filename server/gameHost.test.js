@@ -472,6 +472,50 @@ check('input sim ignores a stale / replayed seq (no double-processing)', () => {
   });
 }
 
+// Server-authoritative escalator ride: the diagonal glide across the solid steps
+// is client-driven, so the server trusts the client's landing — but ONLY when the
+// player's authoritative position is actually on a stair trigger (anti-cheat).
+{
+  const sim = host.npcSim;
+  let stairPos = null;
+  outer: for (let y = 0; y < host.WORLD.h; y += 8) {
+    for (let x = 0; x < host.WORLD.w; x += 8) {
+      if (sim.stairAt(x, y)) {
+        stairPos = { x, y };
+        break outer;
+      }
+    }
+  }
+  if (stairPos) {
+    check('ride_warp honors the client landing when ON a stair (no movement freeze)', () => {
+      const p = host.players.get(aliceId);
+      p.editor = false;
+      p.warping = false;
+      p.x = stairPos.x;
+      p.y = stairPos.y;
+      alice.clear();
+      alice.recv({ type: 'ride_warp', x: 4321, y: 8765 });
+      assert.strictEqual(p.x, 4321, 'moved to the client landing X');
+      assert.strictEqual(p.y, 8765, 'moved to the client landing Y');
+      // Must NOT raise the warp shield: an open ride has no fade to clear it, and a
+      // raised shield freezes server-side movement (the "stuck at top" bug).
+      assert(!p.warping, 'open ride must not freeze the player with a warp shield');
+    });
+  }
+
+  check('ride_warp is rejected when NOT on a stair (snapped back)', () => {
+    const p = host.players.get(aliceId);
+    p.editor = false;
+    p.x = -88888; // nowhere near any stair
+    p.y = -88888;
+    alice.clear();
+    alice.recv({ type: 'ride_warp', x: 4321, y: 8765 });
+    assert.strictEqual(p.x, -88888, 'no warp without a stair under us');
+    const pos = alice.last('pos');
+    assert(pos && pos.x === -88888, 'server re-asserted the authoritative position');
+  });
+}
+
 // ===================== 3. Door-transition shield =====================
 // While a player is mid door-fade its client freezes (no moves), so the server
 // must ignore enemy hits on the motionless ghost until the fade ends.

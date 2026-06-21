@@ -16,7 +16,14 @@ import {
   flushKeys,
 } from './Input';
 import { loadMapData, getSector, getDrawTilesetId } from './MapManager';
-import { loadDoors, getDoorAt, getStairAt, getStairExit, DoorData } from './DoorManager';
+import {
+  loadDoors,
+  getDoorAt,
+  getStairAt,
+  getStairExit,
+  getStairLanding,
+  DoorData,
+} from './DoorManager';
 import { setActiveRoomFromPoint, loadRegionRooms } from './Rooms';
 import {
   loadNPCs,
@@ -26,6 +33,7 @@ import {
   applyNpcHp,
   applyNpcStatus,
   applyNpcEquip,
+  applyNpcDeath,
   applyGiftFlagStates,
   getNpcDialogue,
   interpolateNpcs,
@@ -55,6 +63,7 @@ import {
   sendPosition,
   sendInput,
   sendUseDoor,
+  sendRideWarp,
   sendEditorTeleport,
   sendEquip,
   sendAttack,
@@ -126,6 +135,7 @@ import {
   renderHotbarOverlay,
   renderMoneyOverlay,
   triggerHotbarSlot,
+  triggerHotbarConsumable,
   setHotbar,
   autoHotbarNewItems,
   openShop,
@@ -168,15 +178,13 @@ import {
   spawnMissText,
   spawnLootText,
   spawnNoticeText,
+  spawnMortalText,
 } from './Emitter';
+import { noteHealthDamage, HpHolder } from './HealthRoll';
 import { triggerHitstop, tickHitstop, addShake, tickShake, FLASH_MS } from './Juice';
 import { initPsiFx, updatePsiFx, renderPsiFx, spawnPsiFx } from './PsiFx';
-import {
-  spawnProjectile,
-  endProjectile,
-  updateProjectiles,
-  renderProjectiles,
-} from './Projectiles';
+import { spawnProjectile, endProjectile, updateProjectiles } from './Projectiles';
+import { updateDeathFx } from './DeathFx';
 import { updateItemFx, renderItemFx, spawnItemFx } from './ItemFx';
 import { setDrops, addDrop, removeDrop } from './DropManager';
 import { playEventSfx, loadSfxEvents } from './SfxEvents';
@@ -273,7 +281,15 @@ export class Game {
   // Active escalator/stairway ride: the player glides this diagonal along the
   // walkable ramp; on reaching the end we warp through `exit` to the next floor
   // (null = no floor door found, just stop and re-crop in place).
-  private riding: { dx: number; dy: number; dist: number; exit: DoorData | null } | null = null;
+  private riding: {
+    dx: number;
+    dy: number;
+    dist: number;
+    exit: DoorData | null;
+    landing: { x: number; y: number } | null; // paired ROM trigger = exact stop
+    sameFloor: boolean; // start & landing share one room — never touch the crop
+    leftStart: boolean; // glided clear of the start trigger (arm the arrival check)
+  } | null = null;
   private stairSuppressed = false;
   private talkingNpc: NPC | null = null;
   // Status input-lock deadline (ms epoch) for the LOCAL player — set when an
@@ -313,6 +329,7 @@ export class Game {
       loadFont(0), // regular EB dialogue font (chat input, command menu)
       loadFont(1), // Mr. Saturn font (backlogged chat option)
       loadFont(4), // small 8px battle font (speech bubbles)
+      loadFont('credits'), // fixed-width EB credits font (KO "give up" prompt)
       loadWindowStyle(0),
     ]);
 
@@ -631,11 +648,16 @@ export class Game {
         onNpcEquip: (rows) => {
           applyNpcEquip(rows);
         },
+        onNpcDeath: (id, dx, dy, force) => {
+          applyNpcDeath(id, dx, dy, force);
+        },
         onPlayerHp: (id, hp, maxHp, dmg, heal) => {
           if (id === this.localPlayerId) {
             this.player.hp = hp;
             this.player.maxHp = maxHp;
             if (dmg > 0) {
+              // Roll the bar: hold the pre-hit fill, flash the lost chunk, drain it.
+              noteHealthDamage(this.player, hp + dmg, performance.now());
               spawnOwnDamageNumber(this.player.x, this.player.y, dmg); // red — only we see our own
               this.player.hurt(); // flinch pose; broadcast to others via sendPosition
               // Impact juice: YOU got hit — flash, freeze, and a heavier shake
@@ -654,6 +676,7 @@ export class Game {
               rp.hp = hp;
               rp.maxHp = maxHp;
               if (dmg > 0) {
+                noteHealthDamage(rp as HpHolder, hp + dmg, performance.now());
                 spawnDamageNumber(rp.x, rp.y, dmg);
                 rp.flashUntil = Date.now() + FLASH_MS; // blink, but no shake/freeze — not our hit
               }
@@ -784,11 +807,14 @@ export class Game {
             this.player.downedTotalMs = ms;
             this.player.giveUpProgress = 0;
             this.player.moving = false;
+            // KO'd + knocked over → the dramatic banner, seen by everyone.
+            spawnMortalText(this.player.x, this.player.y);
           } else {
             const rp = this.remotePlayers.get(id);
             if (rp) {
               rp.downed = true;
               rp.downedUntil = until;
+              spawnMortalText(rp.x, rp.y);
             }
           }
         },
@@ -1338,23 +1364,60 @@ export class Game {
     r.dist += this.player.rideStep(r.dx, r.dy);
     this.camera.follow(this.player.x, this.player.y);
 
-    // Look one minitile ahead from the foot point along the ramp direction.
+    // Once we've glided clear of the trigger we started on, arm the arrival check
+    // (so the start trigger under our feet can't end the ride at frame 1).
+    if (!r.leftStart && r.dist > MINITILE_SIZE) r.leftStart = true;
+
+    // PRIMARY stop: glided onto the PAIRED landing trigger. We use getStairAt —
+    // the exact same detector that STARTS a ride — so if a ride can start here it
+    // can stop here; robust to the tiny start-position offset that a pure
+    // distance-to-precomputed-landing check can miss (the Twoson overshoot).
+    const onTrigger = r.leftStart ? getStairAt(this.player.x, this.player.y) : null;
+    // Secondary: within a tile of the precomputed landing (covers a landing whose
+    // trigger box we'd skim past between frames at high ride speed).
+    const nearLanding =
+      !!r.landing &&
+      r.leftStart &&
+      Math.abs(this.player.x - r.landing.x) <= MINITILE_SIZE &&
+      Math.abs(this.player.y - r.landing.y) <= MINITILE_SIZE;
+    const atLanding = !!onTrigger || nearLanding;
+
+    // Fallback stop (ramps with no paired trigger, or a bad infer): the tile ahead
+    // along the ramp is solid, or we've run the runaway guard.
     const footY = this.player.y - MINITILE_SIZE / 2;
     const aheadSolid = isSolidAtPoint(
       this.player.x + r.dx * MINITILE_SIZE,
       footY + r.dy * MINITILE_SIZE
     );
-    if (aheadSolid || r.dist >= RIDE_MAX) {
+    if (atLanding || aheadSolid || r.dist >= RIDE_MAX) {
+      // Snap exactly onto the landing trigger so we settle cleanly on its tile.
+      const snap = onTrigger
+        ? { x: onTrigger.worldX, y: onTrigger.worldY }
+        : nearLanding
+          ? r.landing
+          : null;
+      if (snap) {
+        this.player.x = snap.x;
+        this.player.y = snap.y;
+      }
       const exit = r.exit;
       this.riding = null;
       this.stairSuppressed = true;
       this.player.moving = false;
+      this.player.endRide(); // re-enable reconciliation, drop glide-queued inputs
       if (exit) {
-        // Warp to the next floor — the fade transition reveals it fully.
+        // Warp to the next floor — the fade transition reveals it fully. Tell the
+        // server the landing (it still thinks we're at the escalator's foot) so
+        // post-warp inputs simulate from there instead of reconciling us back.
+        sendRideWarp(exit.destX, exit.destY);
         this.startTransition(exit);
       } else {
-        // No floor door (open-floor bank) — just re-crop/re-seal in place.
-        this.updateRoomBounds(this.player.x, this.player.y);
+        // No floor door. Resync the server to where the glide left us (reconcile
+        // fix). Re-crop ONLY for a true floor change — a same-floor dept-store
+        // hop never left its room, so its crop is still correct and re-cropping it
+        // is exactly what blacked the player out / sealed them (bugs.md).
+        sendRideWarp(this.player.x, this.player.y);
+        if (!r.sameFloor) this.updateRoomBounds(this.player.x, this.player.y);
       }
     }
   }
@@ -1550,6 +1613,7 @@ export class Game {
     updateEmitters();
     updatePsiFx(); // PSI cast animations advance even while a menu/dialogue is up
     updateProjectiles(); // ranged-weapon shots fly + retire on the same cadence
+    updateDeathFx(); // slain bodies tumble + bounce + fade on the same cadence
     updateItemFx(); // item-use animations (eating a Cookie, etc.) advance too
 
     // Remote players + server NPCs/enemies keep gliding even while menus/
@@ -1644,10 +1708,14 @@ export class Game {
       return;
     }
 
-    // Downed (KO): can't act except "give up the ghost" (hold Down/Space/touch ~2s).
-    // Movement, talk, attack and hotbar are all suppressed until revived or dead.
+    // Downed (KO): can't act except "give up the ghost" (hold Down/Space/touch ~2s)
+    // OR claw back up with a last-ditch healing/revive item on the hotbar — the EB
+    // "heal before the counter runs out" survival window. Movement, talk, attack
+    // and weapon/PSI hotbar slots stay suppressed until revived or dead.
     if (this.player.downed) {
       this._updateGiveUp();
+      const slot = consumeHotbarSlot();
+      if (slot >= 0) triggerHotbarConsumable(slot);
       return;
     }
 
@@ -1711,14 +1779,34 @@ export class Game {
         // level. The shaft is already the active room crop, so leave it alone;
         // updateRide bypasses collision to cross the narrow diagonal.
         const exit = getStairExit(this.player.x, this.player.y, dy);
-        this.riding = { dx, dy, dist: 0, exit };
-        // Reveal BOTH floors (and the ramp between) for the duration of the ride.
-        // EB stacks floors as separate room-crop regions joined only by the solid
+        // The exact stop: the paired trigger at the other end of the ramp (every
+        // ROM stairway/escalator has one). updateRide ends the glide right there
+        // instead of guessing from "is the tile ahead solid" (which overshoots a
+        // dept-store stairway that lands on open floor — the reported bug).
+        const landing = getStairLanding(this.player.x, this.player.y, dx as -1 | 1, dy as -1 | 1);
+        // Same-floor ride? (dept-store stairways hop 2–8 tiles within ONE room).
+        // If the landing is already inside the room we're standing in, the ride
+        // never changes floors, so we must NOT touch the camera crop — re-cropping
+        // a room we never left is what blacked out / sealed the player at the top
+        // (bugs.md). Only a TRUE floor change (landing in a different/!cropped
+        // region) gets the reveal-both-floors union + re-crop below.
+        const cur = this.camera.roomBounds;
+        const landTile = landing
+          ? Math.floor(landing.y / TILE_SIZE) * MAP_WIDTH_TILES + Math.floor(landing.x / TILE_SIZE)
+          : -1;
+        const sameFloor =
+          !!landing && (cur ? cur.tiles.has(landTile) : !computeRoomBounds(landing.x, landing.y));
+        this.riding = { dx, dy, dist: 0, exit, landing, sameFloor, leftStart: false };
+        // Suppress server reconciliation for the glide — the server doesn't know
+        // we're riding, so its (stale) pos ACKs would yank us back to the foot.
+        this.player.riding = true;
+        // Reveal BOTH floors (and the ramp between) for a TRUE floor change. EB
+        // stacks floors as separate room-crop regions joined only by the solid
         // ramp, so the source-floor crop leaves the destination floor (and the
         // down-ramp) black — you ride into a black void and can't see the landing
-        // (bugs.md, dept-store escalators). Only when there's no warp door: a
-        // door-warp ride fades to its destination, so leave that path alone.
-        if (!exit) {
+        // (bugs.md, dept-store escalators). Door-warp rides fade to their dest, so
+        // leave that path alone; same-floor rides keep their existing crop.
+        if (!exit && !sameFloor) {
           const ride = this.computeRideBounds(dx, dy);
           if (ride) this.camera.roomBounds = ride;
         }
@@ -2196,7 +2284,6 @@ export class Game {
       this.ctx.save();
       this.ctx.scale(this.camera.zoom, this.camera.zoom);
       renderPsiFx(this.ctx, this.camera);
-      renderProjectiles(this.ctx, this.camera);
       renderItemFx(this.ctx, this.camera);
       renderEmitters(this.ctx, this.camera);
       renderChat(this.ctx, this.camera, this.player, this.remotePlayers);
@@ -2208,7 +2295,6 @@ export class Game {
       // the black shroud instead of bleeding numbers/FX through it.
       const clipped = this._pushRoomClip();
       renderPsiFx(this.ctx, this.camera);
-      renderProjectiles(this.ctx, this.camera);
       renderItemFx(this.ctx, this.camera);
       renderEmitters(this.ctx, this.camera, this._roomOriginGate());
       renderChat(this.ctx, this.camera, this.player, this.remotePlayers);

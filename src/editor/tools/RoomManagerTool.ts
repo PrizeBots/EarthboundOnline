@@ -480,20 +480,34 @@ class RoomManagerTool implements EditorTool {
     title.textContent = 'ROOM MANAGER';
     title.style.cssText = 'color:#5ad0e8;font-weight:bold;letter-spacing:1px;flex:1;';
     header.appendChild(title);
-    this.mkBtn('■ Stop', () => stopMusic(), header, true);
+    this.mkBtn('■ Stop', () => stopMusic(), header, true, 'Stop the music preview.');
     this.panel.appendChild(header);
 
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
-    this.mkBtn('+ New room (N)', () => this.startPlacing('room'), actions);
-    this.mkBtn('+ Region', () => this.startPlacing('region'), actions);
+    this.mkBtn(
+      '+ New room (N)',
+      () => this.startPlacing('room'),
+      actions,
+      false,
+      'Draw a box to create a new room (shortcut: N).'
+    );
+    this.mkBtn(
+      '+ Region',
+      () => this.startPlacing('region'),
+      actions,
+      false,
+      'Draw another rect to add to the selected room (a room can span several regions).'
+    );
     this.panel.appendChild(actions);
 
     const snapRow = document.createElement('label');
     snapRow.style.cssText = 'display:flex;align-items:center;gap:6px;color:#9fb8cc;font-size:11px;';
+    snapRow.title = 'On = snap new/edited region rects to the 32px tile grid.';
     const snapCb = document.createElement('input');
     snapCb.type = 'checkbox';
     snapCb.checked = this.snap;
+    snapCb.title = 'On = snap new/edited region rects to the 32px tile grid.';
     snapCb.onchange = () => (this.snap = snapCb.checked);
     snapRow.append(snapCb, document.createTextNode('snap to tile grid (32px)'));
     this.panel.appendChild(snapRow);
@@ -578,7 +592,8 @@ class RoomManagerTool implements EditorTool {
         this.pushLive();
         this.refreshList();
       },
-      150
+      150,
+      'Display name for this room (blank defaults to "Room").'
     );
     nameIn.value = room.label;
 
@@ -589,15 +604,21 @@ class RoomManagerTool implements EditorTool {
         room.town = v.trim() || undefined;
         this.pushLive();
       },
-      120
+      120,
+      'Optional town this room belongs to (blank = none).'
     );
     townIn.value = room.town ?? '';
 
     // Type dropdown — drives the conditional fields below.
-    const typeRow = this.mkRow(form, 'type');
+    const typeRow = this.mkRow(
+      form,
+      'type',
+      'Room kind; drives behavior and the type-specific fields shown below.'
+    );
     const typeSel = document.createElement('select');
     typeSel.style.cssText =
       'font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;flex:1;';
+    typeSel.title = 'Room kind; drives behavior and the type-specific fields shown below.';
     for (const t of ROOM_TYPES) {
       const o = document.createElement('option');
       o.value = t;
@@ -614,7 +635,11 @@ class RoomManagerTool implements EditorTool {
     typeRow.appendChild(typeSel);
 
     // BGM picker (parity with the Sound Manager's song dropdown).
-    const bgmRow = this.mkRow(form, 'bgm');
+    const bgmRow = this.mkRow(
+      form,
+      'bgm',
+      'Music for this room; "(inherit sector)" leaves the ROM sector musicId in charge.'
+    );
     const picker = createSpritePicker({
       sections: [{ values: [BGM_NONE, ...listSongs().map((s) => String(s.song))] }],
       initial: room.bgm != null ? String(room.bgm) : BGM_NONE,
@@ -632,8 +657,14 @@ class RoomManagerTool implements EditorTool {
     this.bgmPicker = picker;
 
     const audRow = this.mkRow(form, '');
-    this.mkBtn('▶ Test', () => room.bgm && previewSong(room.bgm), audRow);
-    this.mkBtn('■ Stop', () => stopMusic(), audRow);
+    this.mkBtn(
+      '▶ Test',
+      () => room.bgm && previewSong(room.bgm),
+      audRow,
+      false,
+      "Audition this room's bgm."
+    );
+    this.mkBtn('■ Stop', () => stopMusic(), audRow, false, 'Stop the music preview.');
 
     // Type-conditional props.
     this.buildTypeFields(form, room);
@@ -642,7 +673,11 @@ class RoomManagerTool implements EditorTool {
     const rc = this.activeRegion();
     if (rc) {
       const regCount = room.regions?.length ?? 1;
-      const regLabel = this.mkRow(form, 'region');
+      const regLabel = this.mkRow(
+        form,
+        'region',
+        "Which of this room's region rects is being edited (current / total)."
+      );
       const span = document.createElement('span');
       span.textContent = `${this.selRegion + 1} / ${regCount}`;
       span.style.cssText = 'color:#9fb8cc;';
@@ -651,29 +686,39 @@ class RoomManagerTool implements EditorTool {
         form,
         'x',
         () => rc.x,
-        (n) => (rc.x = Math.round(n))
+        (n) => (rc.x = Math.round(n)),
+        'Left edge of this region in world pixels.'
       );
       this.numField(
         form,
         'y',
         () => rc.y,
-        (n) => (rc.y = Math.round(n))
+        (n) => (rc.y = Math.round(n)),
+        'Top edge of this region in world pixels.'
       );
       this.numField(
         form,
         'w',
         () => rc.w,
-        (n) => (rc.w = Math.max(TILE_SIZE, Math.round(n)))
+        (n) => (rc.w = Math.max(TILE_SIZE, Math.round(n))),
+        'Width in pixels (min one tile = 32px).'
       );
       this.numField(
         form,
         'h',
         () => rc.h,
-        (n) => (rc.h = Math.max(TILE_SIZE, Math.round(n)))
+        (n) => (rc.h = Math.max(TILE_SIZE, Math.round(n))),
+        'Height in pixels (min one tile = 32px).'
       );
     }
 
-    this.mkBtn('Delete', () => this.deleteSelected(), form);
+    this.mkBtn(
+      'Delete',
+      () => this.deleteSelected(),
+      form,
+      false,
+      'Delete the active region, or the whole room if it has only one region.'
+    );
   }
 
   /** Render the fields that only matter for the room's current type. */
@@ -684,7 +729,8 @@ class RoomManagerTool implements EditorTool {
           form,
           'storeId',
           () => room.storeId,
-          (n) => (room.storeId = n)
+          (n) => (room.storeId = n),
+          'Shop catalog id this store sells from (blank = none).'
         );
         break;
       case 'hospital':
@@ -692,7 +738,8 @@ class RoomManagerTool implements EditorTool {
           form,
           'healCost',
           () => room.healCost,
-          (n) => (room.healCost = n)
+          (n) => (room.healCost = n),
+          'Money charged to fully heal here (blank = default).'
         );
         break;
       case 'hotel':
@@ -700,32 +747,43 @@ class RoomManagerTool implements EditorTool {
           form,
           'cost',
           () => room.cost,
-          (n) => (room.cost = n)
+          (n) => (room.cost = n),
+          'Money charged for a stay (blank = default).'
         );
         this.numFieldOpt(
           form,
           'wakeBgm',
           () => room.wakeBgm,
-          (n) => (room.wakeBgm = n)
+          (n) => (room.wakeBgm = n),
+          'Song id played on waking up (blank = none).'
         );
         this.numFieldOpt(
           form,
           'warp x',
           () => room.bedroomWarp?.x,
-          (n) => (room.bedroomWarp = { ...(room.bedroomWarp ?? { x: 0, y: 0, dir: 0 }), x: n ?? 0 })
+          (n) =>
+            (room.bedroomWarp = { ...(room.bedroomWarp ?? { x: 0, y: 0, dir: 0 }), x: n ?? 0 }),
+          'World-pixel X to warp the player to on check-in (blank = 0).'
         );
         this.numFieldOpt(
           form,
           'warp y',
           () => room.bedroomWarp?.y,
-          (n) => (room.bedroomWarp = { ...(room.bedroomWarp ?? { x: 0, y: 0, dir: 0 }), y: n ?? 0 })
+          (n) =>
+            (room.bedroomWarp = { ...(room.bedroomWarp ?? { x: 0, y: 0, dir: 0 }), y: n ?? 0 }),
+          'World-pixel Y to warp the player to on check-in (blank = 0).'
         );
         break;
       case 'bedroom': {
-        const row = this.mkRow(form, 'save pt');
+        const row = this.mkRow(
+          form,
+          'save pt',
+          'On = sleeping here saves the game (a save point).'
+        );
         const cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.checked = !!room.isSaveRoom;
+        cb.title = 'On = sleeping here saves the game (a save point).';
         cb.onchange = () => {
           room.isSaveRoom = cb.checked;
           this.pushLive();
@@ -742,7 +800,8 @@ class RoomManagerTool implements EditorTool {
     form: HTMLElement,
     label: string,
     get: () => number,
-    set: (n: number) => void
+    set: (n: number) => void,
+    tip?: string
   ): void {
     const i = this.mkInput(
       form,
@@ -753,7 +812,8 @@ class RoomManagerTool implements EditorTool {
         set(n);
         this.pushLive();
       },
-      64
+      64,
+      tip
     );
     i.value = String(get());
   }
@@ -763,7 +823,8 @@ class RoomManagerTool implements EditorTool {
     form: HTMLElement,
     label: string,
     get: () => number | undefined,
-    set: (n: number | undefined) => void
+    set: (n: number | undefined) => void,
+    tip?: string
   ): void {
     const i = this.mkInput(
       form,
@@ -779,7 +840,8 @@ class RoomManagerTool implements EditorTool {
         }
         this.pushLive();
       },
-      64
+      64,
+      tip
     );
     const cur = get();
     i.value = cur == null ? '' : String(cur);
@@ -817,7 +879,8 @@ class RoomManagerTool implements EditorTool {
     label: string,
     fn: () => void,
     parent: HTMLElement,
-    accent = false
+    accent = false,
+    tip?: string
   ): HTMLButtonElement {
     const b = document.createElement('button');
     b.textContent = label;
@@ -826,17 +889,21 @@ class RoomManagerTool implements EditorTool {
       (accent
         ? 'background:#123338;color:#5ad0e8;border:1px solid #5ad0e8;'
         : 'background:#1d2530;color:#cde;border:1px solid #3a4a5a;');
+    if (tip) b.title = tip;
     b.onclick = fn;
     parent.appendChild(b);
     return b;
   }
 
-  private mkRow(parent: HTMLElement, label: string): HTMLDivElement {
+  private mkRow(parent: HTMLElement, label: string, tip?: string): HTMLDivElement {
     const r = document.createElement('div');
     r.style.cssText = 'display:flex;align-items:center;gap:6px;';
     const l = document.createElement('span');
     l.textContent = label;
-    l.style.cssText = 'width:52px;color:#9fb8cc;flex:none;';
+    l.style.cssText =
+      'width:52px;color:#9fb8cc;flex:none;' +
+      (tip ? 'cursor:help;border-bottom:1px dotted #4a5a6a;' : '');
+    if (tip) l.title = tip;
     r.appendChild(l);
     parent.appendChild(r);
     return r;
@@ -846,13 +913,15 @@ class RoomManagerTool implements EditorTool {
     parent: HTMLElement,
     label: string,
     onChange: (v: string) => void,
-    width = 64
+    width = 64,
+    tip?: string
   ): HTMLInputElement {
-    const r = this.mkRow(parent, label);
+    const r = this.mkRow(parent, label, tip);
     const i = document.createElement('input');
     i.style.cssText =
       `width:${width}px;font:11px monospace;background:#0c1014;color:#cde;` +
       'border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
+    if (tip) i.title = tip;
     i.onchange = () => onChange(i.value);
     r.appendChild(i);
     return i;

@@ -384,10 +384,17 @@ class DialogueTool implements EditorTool {
     hint.style.cssText = 'color:#778;font-size:10px;';
     this.panel.appendChild(hint);
 
-    this.mkBtn('+ New dialogue', () => this.requestEntry(this.mintTextId()), this.panel, true);
+    this.mkBtn(
+      '+ New dialogue',
+      () => this.requestEntry(this.mintTextId()),
+      this.panel,
+      true,
+      'Create a new empty dialogue entry (mints the next free authored textId).'
+    );
 
     this.searchEl = document.createElement('input');
     this.searchEl.placeholder = 'search id or text…';
+    this.searchEl.title = 'Filter the entry list by textId or page text.';
     this.searchEl.style.cssText =
       'font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;' +
       'border-radius:3px;padding:3px 6px;';
@@ -483,7 +490,9 @@ class DialogueTool implements EditorTool {
           const r = e.refs[0];
           this.shell?.context.teleport(r.x, r.y);
         },
-        this.formEl
+        this.formEl,
+        false,
+        'Teleport the camera to the first NPC that speaks this dialogue.'
       );
     }
 
@@ -513,6 +522,7 @@ class DialogueTool implements EditorTool {
 
       const ta = document.createElement('textarea');
       ta.value = page;
+      ta.title = 'One dialogue box of text; newlines force line breaks, edits auto-save.';
       ta.rows = Math.min(4, Math.max(2, page.split('\n').length));
       ta.style.cssText =
         'font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;' +
@@ -541,7 +551,9 @@ class DialogueTool implements EditorTool {
         this.shell?.markDirty('dialogue');
         this.rebuildForm();
       },
-      addRow
+      addRow,
+      false,
+      'Append another dialogue box (page) to this entry.'
     );
     this.mkBtn(
       'Revert to base',
@@ -555,7 +567,9 @@ class DialogueTool implements EditorTool {
         this.refreshList();
         this.rebuildForm();
       },
-      addRow
+      addRow,
+      false,
+      'Discard your edits and restore the original ROM-decoded text.'
     );
     this.formEl.appendChild(addRow);
 
@@ -563,10 +577,10 @@ class DialogueTool implements EditorTool {
     const pvLabel = document.createElement('div');
     pvLabel.style.cssText =
       'display:flex;align-items:center;gap:8px;color:#778;font-size:10px;margin-top:2px;';
-    this.mkBtn('◀', () => this.flipPage(-1), pvLabel);
+    this.mkBtn('◀', () => this.flipPage(-1), pvLabel, false, 'Preview the previous page.');
     this.pageLabel = document.createElement('span');
     pvLabel.appendChild(this.pageLabel);
-    this.mkBtn('▶', () => this.flipPage(1), pvLabel);
+    this.mkBtn('▶', () => this.flipPage(1), pvLabel, false, 'Preview the next page.');
     this.formEl.appendChild(pvLabel);
 
     this.preview = document.createElement('canvas');
@@ -618,9 +632,16 @@ class DialogueTool implements EditorTool {
 
   // --- helper ---------------------------------------------------------------------------
 
-  private mkBtn(label: string, fn: () => void, parent: HTMLElement, accent = false): void {
+  private mkBtn(
+    label: string,
+    fn: () => void,
+    parent: HTMLElement,
+    accent = false,
+    tip?: string
+  ): void {
     const b = document.createElement('button');
     b.textContent = label;
+    if (tip) b.title = tip;
     b.style.cssText =
       'font:11px monospace;padding:2px 9px;cursor:pointer;border-radius:3px;' +
       (accent

@@ -453,6 +453,7 @@ class EntityManagerTool implements EditorTool {
     head.appendChild(title);
     const search = document.createElement('input');
     search.placeholder = 'search all id or name…';
+    search.title = 'Filter every entity by sprite id or name; blank shows the folder view.';
     search.style.cssText =
       'flex:1;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:3px 6px;';
     search.oninput = () => {
@@ -462,6 +463,7 @@ class EntityManagerTool implements EditorTool {
     head.appendChild(search);
     const close = document.createElement('button');
     close.textContent = '✕';
+    close.title = 'Close the entity desktop.';
     close.style.cssText =
       'font:12px monospace;padding:2px 9px;cursor:pointer;border-radius:3px;background:#1d2530;color:#cde;border:1px solid #3a4a5a;';
     close.onclick = () => this.closeBrowser();
@@ -472,9 +474,27 @@ class EntityManagerTool implements EditorTool {
     this.toolbarEl = document.createElement('div');
     this.toolbarEl.style.cssText =
       'display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid #2a2438;flex-wrap:wrap;';
-    this.mkBtn('+ New Folder', () => this.newFolder(), this.toolbarEl);
-    this.mkBtn('✎ Rename', () => this.renameFolder(), this.toolbarEl);
-    this.mkBtn('🗑 Delete', () => this.deleteFolder(), this.toolbarEl);
+    this.mkBtn(
+      '+ New Folder',
+      () => this.newFolder(),
+      this.toolbarEl,
+      false,
+      'Create a new folder inside the current location.'
+    );
+    this.mkBtn(
+      '✎ Rename',
+      () => this.renameFolder(),
+      this.toolbarEl,
+      false,
+      'Rename the selected folder (click a folder tile first).'
+    );
+    this.mkBtn(
+      '🗑 Delete',
+      () => this.deleteFolder(),
+      this.toolbarEl,
+      false,
+      'Delete the selected folder; its contents move up to the parent.'
+    );
     this.mkBtn(
       '⚙ Auto-organize',
       () => {
@@ -482,7 +502,9 @@ class EntityManagerTool implements EditorTool {
         this.renderGrid();
         this.shell?.toast('Filed all unsorted entities into the base folders');
       },
-      this.toolbarEl
+      this.toolbarEl,
+      false,
+      'File every unsorted entity into the base category folders (manual placements untouched).'
     );
     this.breadcrumbEl = document.createElement('div');
     this.breadcrumbEl.style.cssText =
@@ -892,12 +914,20 @@ class EntityManagerTool implements EditorTool {
     this.panel.appendChild(this.picker.el);
 
     // Toggle for the large center-panel entity desktop (folders + drag-organize).
-    this.mkBtn('🖥 Open entity desktop (center)', () => this.toggleBrowser(), this.panel);
+    this.mkBtn(
+      '🖥 Open entity desktop (center)',
+      () => this.toggleBrowser(),
+      this.panel,
+      false,
+      'Show/hide the big center gallery of every entity, organized into folders.'
+    );
 
     // Hand off to the Sprite Editor on the selected entity's sprite group (same
     // shortcut the Item Manager has for held-item art). Opens in Character mode.
     const editSprite = document.createElement('button');
     editSprite.textContent = '✎ Edit sprite in Sprite Editor →';
+    editSprite.title =
+      'Open the selected entity’s sprite group in the Sprite Editor (Character mode).';
     editSprite.style.cssText =
       'font:11px monospace;padding:3px 8px;cursor:pointer;border-radius:3px;' +
       'background:#3a2e10;color:#d8a23a;border:1px solid #d8a23a;';
@@ -910,12 +940,17 @@ class EntityManagerTool implements EditorTool {
     // mechanism as the Sprite/Placement editors). Save-all persists names.json.
     const nameRow = document.createElement('div');
     nameRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
+    const nameTip =
+      'Display-name override for this entity; blank reverts to the default. Auto-saves to names.json.';
     const nameLbl = document.createElement('span');
     nameLbl.textContent = 'name';
-    nameLbl.style.cssText = 'width:56px;color:#9fb8cc;';
+    nameLbl.title = nameTip;
+    nameLbl.style.cssText =
+      'width:56px;color:#9fb8cc;cursor:help;border-bottom:1px dotted #4a5a6a;';
     nameRow.appendChild(nameLbl);
     this.nameInput = document.createElement('input');
     this.nameInput.placeholder = '(default)';
+    this.nameInput.title = nameTip;
     this.nameInput.style.cssText =
       'flex:1;min-width:0;font:11px monospace;background:#0c1014;color:#cde;' +
       'border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
@@ -967,13 +1002,17 @@ class EntityManagerTool implements EditorTool {
 
     // Combat personality dropdown — how this entity's townsfolk maneuver when an
     // enemy is near (server-driven; see npcSim). Unassigned = seeded mix.
+    const combatTip =
+      'How this entity’s townsfolk maneuver when an enemy is near (server-driven); blank = seeded default mix.';
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:6px;';
     const lbl = document.createElement('span');
     lbl.textContent = 'combat';
-    lbl.style.cssText = 'width:56px;color:#9fb8cc;';
+    lbl.title = combatTip;
+    lbl.style.cssText = 'width:56px;color:#9fb8cc;cursor:help;border-bottom:1px dotted #4a5a6a;';
     row.appendChild(lbl);
     const sel = document.createElement('select');
+    sel.title = combatTip;
     sel.style.cssText =
       'flex:1;min-width:0;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
     const current = this.entities[String(this.sprite)]?.combat ?? '';
@@ -1035,12 +1074,24 @@ class EntityManagerTool implements EditorTool {
     // Direction stepper (preview which facing's box to show).
     const dirRow = document.createElement('div');
     dirRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
-    this.mkBtn('◀', () => this.stepDir(-1), dirRow);
+    this.mkBtn(
+      '◀',
+      () => this.stepDir(-1),
+      dirRow,
+      false,
+      'Preview the previous facing’s collision box.'
+    );
     const dirLbl = document.createElement('span');
     dirLbl.dataset.role = 'col-dir';
     dirLbl.style.cssText = 'flex:1;text-align:center;color:#cde;';
     dirRow.appendChild(dirLbl);
-    this.mkBtn('▶', () => this.stepDir(1), dirRow);
+    this.mkBtn(
+      '▶',
+      () => this.stepDir(1),
+      dirRow,
+      false,
+      'Preview the next facing’s collision box.'
+    );
     this.colSection.appendChild(dirRow);
 
     // Preview canvas (sprite + box overlay; drag to edit when overriding).
@@ -1055,6 +1106,12 @@ class EntityManagerTool implements EditorTool {
     this.colSection.appendChild(this.colCanvas);
 
     // Numeric fields for the override box.
+    const COL_TIPS: Record<keyof EntityCol, string> = {
+      w: 'Collision box width in pixels (min 2); setting it overrides the per-direction art box for all facings.',
+      h: 'Collision box height in pixels (min 2); setting it overrides the per-direction art box for all facings.',
+      offX: 'Horizontal offset of the box from the sprite’s feet anchor, in pixels (+ = right).',
+      offY: 'Vertical offset of the box from the sprite’s feet anchor, in pixels (+ = down).',
+    };
     const grid = document.createElement('div');
     grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:4px 8px;';
     for (const k of ['w', 'h', 'offX', 'offY'] as (keyof EntityCol)[]) {
@@ -1062,9 +1119,12 @@ class EntityManagerTool implements EditorTool {
       row.style.cssText = 'display:flex;align-items:center;gap:4px;';
       const l = document.createElement('span');
       l.textContent = k;
-      l.style.cssText = 'width:30px;color:#9fb8cc;font-size:11px;';
+      l.title = COL_TIPS[k];
+      l.style.cssText =
+        'width:30px;color:#9fb8cc;font-size:11px;cursor:help;border-bottom:1px dotted #4a5a6a;';
       row.appendChild(l);
       const i = document.createElement('input');
+      i.title = COL_TIPS[k];
       i.style.cssText =
         'width:48px;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
       i.onchange = () => {
@@ -1090,7 +1150,9 @@ class EntityManagerTool implements EditorTool {
         this.refreshColSection();
         this.shell?.toast('Box reset to the exact per-direction art bounds');
       },
-      btnRow
+      btnRow,
+      false,
+      'Clear the manual box override and use the exact per-direction bounds from the art.'
     );
     this.colSection.appendChild(btnRow);
 
@@ -1225,10 +1287,12 @@ class EntityManagerTool implements EditorTool {
     label: string,
     fn: () => void,
     parent: HTMLElement,
-    accent = false
+    accent = false,
+    tip?: string
   ): HTMLButtonElement {
     const b = document.createElement('button');
     b.textContent = label;
+    if (tip) b.title = tip;
     b.style.cssText =
       'font:11px monospace;padding:2px 7px;cursor:pointer;border-radius:3px;' +
       (accent

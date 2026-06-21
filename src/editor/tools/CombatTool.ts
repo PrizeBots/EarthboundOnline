@@ -30,29 +30,158 @@ interface NumDial {
   max: number;
   step: number;
   group: string;
+  tip: string;
 }
 
 const NUM_DIALS: NumDial[] = [
   // Number size (magnitude scaling): min at 1 dmg → max at the cap value
-  { key: 'numScaleMin', label: 'min size', min: 0.3, max: 2, step: 0.05, group: 'Number size' },
-  { key: 'numScaleMax', label: 'max size', min: 1, max: 4, step: 0.05, group: 'Number size' },
-  { key: 'numScaleCap', label: 'max at dmg', min: 50, max: 9999, step: 1, group: 'Number size' },
+  {
+    key: 'numScaleMin',
+    label: 'min size',
+    min: 0.3,
+    max: 2,
+    step: 0.05,
+    group: 'Number size',
+    tip: 'Font scale (×) of a 1-damage number — the smallest hit.',
+  },
+  {
+    key: 'numScaleMax',
+    label: 'max size',
+    min: 1,
+    max: 4,
+    step: 0.05,
+    group: 'Number size',
+    tip: 'Font scale (×) at the cap damage — the biggest hit.',
+  },
+  {
+    key: 'numScaleCap',
+    label: 'max at dmg',
+    min: 50,
+    max: 9999,
+    step: 1,
+    group: 'Number size',
+    tip: 'Damage amount at which a number reaches max size (scales between min and max below this).',
+  },
   // Motion (arc launch + fall + fade)
-  { key: 'launchVy', label: 'pop-up speed', min: 0, max: 300, step: 5, group: 'Motion' },
-  { key: 'gravity', label: 'gravity', min: 0, max: 1200, step: 20, group: 'Motion' },
-  { key: 'launchVx', label: 'h. spread', min: 0, max: 120, step: 5, group: 'Motion' },
-  { key: 'spawnJitter', label: 'spawn jitter', min: 0, max: 20, step: 1, group: 'Motion' },
-  { key: 'lifetime', label: 'lifetime ms', min: 300, max: 2000, step: 50, group: 'Motion' },
-  { key: 'fade', label: 'fade ms', min: 50, max: 1000, step: 25, group: 'Motion' },
+  {
+    key: 'launchVy',
+    label: 'pop-up speed',
+    min: 0,
+    max: 300,
+    step: 5,
+    group: 'Motion',
+    tip: 'Initial upward launch speed of a number (px/s) — how high it pops.',
+  },
+  {
+    key: 'gravity',
+    label: 'gravity',
+    min: 0,
+    max: 1200,
+    step: 20,
+    group: 'Motion',
+    tip: 'Downward acceleration pulling a number back down (px/s²).',
+  },
+  {
+    key: 'launchVx',
+    label: 'h. spread',
+    min: 0,
+    max: 120,
+    step: 5,
+    group: 'Motion',
+    tip: 'Random horizontal launch speed (px/s) so stacked numbers fan apart.',
+  },
+  {
+    key: 'spawnJitter',
+    label: 'spawn jitter',
+    min: 0,
+    max: 20,
+    step: 1,
+    group: 'Motion',
+    tip: 'Random spawn-position offset (px) so simultaneous numbers don’t overlap.',
+  },
+  {
+    key: 'lifetime',
+    label: 'lifetime ms',
+    min: 300,
+    max: 2000,
+    step: 50,
+    group: 'Motion',
+    tip: 'How long a damage number stays on screen (ms) before it’s removed.',
+  },
+  {
+    key: 'fade',
+    label: 'fade ms',
+    min: 50,
+    max: 1000,
+    step: 25,
+    group: 'Motion',
+    tip: 'Duration of the fade-out at the end of a number’s life (ms).',
+  },
   // Crit burst (SMAAAASH!)
-  { key: 'critScaleFrom', label: 'start size', min: 0.2, max: 2, step: 0.05, group: 'Crit burst' },
-  { key: 'critScaleTo', label: 'climax size', min: 1, max: 4, step: 0.05, group: 'Crit burst' },
-  { key: 'critLife', label: 'life ms', min: 400, max: 2500, step: 50, group: 'Crit burst' },
+  {
+    key: 'critScaleFrom',
+    label: 'start size',
+    min: 0.2,
+    max: 2,
+    step: 0.05,
+    group: 'Crit burst',
+    tip: 'Font scale (×) the crit “SMAAAASH!” text starts at before it bursts.',
+  },
+  {
+    key: 'critScaleTo',
+    label: 'climax size',
+    min: 1,
+    max: 4,
+    step: 0.05,
+    group: 'Crit burst',
+    tip: 'Font scale (×) the crit text grows to at its climax.',
+  },
+  {
+    key: 'critLife',
+    label: 'life ms',
+    min: 400,
+    max: 2500,
+    step: 50,
+    group: 'Crit burst',
+    tip: 'How long the crit burst text stays on screen (ms).',
+  },
   // Heal float (rise + sine sway + fade)
-  { key: 'healRise', label: 'rise speed', min: 0, max: 80, step: 2, group: 'Heal float' },
-  { key: 'healWobbleAmp', label: 'sway px', min: 0, max: 24, step: 1, group: 'Heal float' },
-  { key: 'healWobbleHz', label: 'sway speed', min: 0, max: 5, step: 0.1, group: 'Heal float' },
-  { key: 'healLife', label: 'life ms', min: 400, max: 2500, step: 50, group: 'Heal float' },
+  {
+    key: 'healRise',
+    label: 'rise speed',
+    min: 0,
+    max: 80,
+    step: 2,
+    group: 'Heal float',
+    tip: 'Steady upward drift speed of a heal number (px/s).',
+  },
+  {
+    key: 'healWobbleAmp',
+    label: 'sway px',
+    min: 0,
+    max: 24,
+    step: 1,
+    group: 'Heal float',
+    tip: 'Side-to-side sway amplitude of a rising heal number (px).',
+  },
+  {
+    key: 'healWobbleHz',
+    label: 'sway speed',
+    min: 0,
+    max: 5,
+    step: 0.1,
+    group: 'Heal float',
+    tip: 'Side-to-side sway frequency of a heal number (Hz).',
+  },
+  {
+    key: 'healLife',
+    label: 'life ms',
+    min: 400,
+    max: 2500,
+    step: 50,
+    group: 'Heal float',
+    tip: 'How long a heal number stays on screen (ms).',
+  },
   // Big-hit color ramp
   {
     key: 'bigHitThreshold',
@@ -61,16 +190,21 @@ const NUM_DIALS: NumDial[] = [
     max: 99,
     step: 1,
     group: 'Big-hit ramp',
+    tip: 'Damage at which a hit counts as “big” and ramps toward the big-hit color.',
   },
 ];
 
-const COLOR_DIALS: { key: keyof CombatJuice; label: string }[] = [
-  { key: 'colDamage', label: 'damage' },
-  { key: 'colOwnDamage', label: 'your hurt' },
-  { key: 'colHeal', label: 'heal' },
-  { key: 'colCrit', label: 'crit text' },
-  { key: 'colMiss', label: 'miss' },
-  { key: 'colBigHit', label: 'big-hit ramp' },
+const COLOR_DIALS: { key: keyof CombatJuice; label: string; tip: string }[] = [
+  { key: 'colDamage', label: 'damage', tip: 'Color of damage numbers you deal to enemies.' },
+  { key: 'colOwnDamage', label: 'your hurt', tip: 'Color of damage numbers when YOU take a hit.' },
+  { key: 'colHeal', label: 'heal', tip: 'Color of heal numbers.' },
+  { key: 'colCrit', label: 'crit text', tip: 'Color of the crit “SMAAAASH!” burst text.' },
+  { key: 'colMiss', label: 'miss', tip: 'Color of the MISS text.' },
+  {
+    key: 'colBigHit',
+    label: 'big-hit ramp',
+    tip: 'Target color big damage numbers ramp toward (above the big-hit threshold).',
+  },
 ];
 
 // Group display order (matches the NUM_DIALS groups; colors render last).
@@ -161,7 +295,13 @@ class CombatTool implements EditorTool {
     title.textContent = 'COMBAT FEEL';
     title.style.cssText = 'color:#e8794a;font-weight:bold;letter-spacing:1px;flex:1;';
     header.appendChild(title);
-    this.mkBtn('Reset', () => this.resetAll(), header, true);
+    this.mkBtn(
+      'Reset',
+      () => this.resetAll(),
+      header,
+      true,
+      'Restore all combat-feel values to defaults.'
+    );
     this.panel.appendChild(header);
 
     const sub = document.createElement('div');
@@ -172,15 +312,29 @@ class CombatTool implements EditorTool {
     // Test buttons — fire sample popups at the camera center.
     const tests = document.createElement('div');
     tests.style.cssText = 'display:flex;gap:5px;flex-wrap:wrap;';
-    this.mkBtn('▶ Hits', () => this.testVolley(), tests);
-    this.mkBtn('▶ Crit', () => this.testCrit(), tests);
+    this.mkBtn(
+      '▶ Hits',
+      () => this.testVolley(),
+      tests,
+      false,
+      'Fire a spread of sample damage numbers (5→9999) at the view center.'
+    );
+    this.mkBtn(
+      '▶ Crit',
+      () => this.testCrit(),
+      tests,
+      false,
+      'Fire a sample crit burst + big number at the view center.'
+    );
     this.mkBtn(
       '▶ Heal',
       () => {
         const p = this.testPoint();
         spawnHealNumber(p.x, p.y, 30);
       },
-      tests
+      tests,
+      false,
+      'Fire a sample heal number at the view center.'
     );
     this.mkBtn(
       '▶ Your hurt',
@@ -188,7 +342,9 @@ class CombatTool implements EditorTool {
         const p = this.testPoint();
         spawnOwnDamageNumber(p.x, p.y, 18);
       },
-      tests
+      tests,
+      false,
+      'Fire a sample “you got hit” damage number at the view center.'
     );
     this.mkBtn(
       '▶ Miss',
@@ -196,7 +352,9 @@ class CombatTool implements EditorTool {
         const p = this.testPoint();
         spawnMissText(p.x, p.y);
       },
-      tests
+      tests,
+      false,
+      'Fire a sample MISS text at the view center.'
     );
     this.panel.appendChild(tests);
 
@@ -209,7 +367,7 @@ class CombatTool implements EditorTool {
 
     // Colors.
     this.panel.appendChild(this.mkGroupHeader('Colors'));
-    for (const c of COLOR_DIALS) this.mkColor(c.key, c.label);
+    for (const c of COLOR_DIALS) this.mkColor(c.key, c.label, c.tip);
 
     this.shell!.panelHost.appendChild(this.panel);
   }
@@ -251,7 +409,9 @@ class CombatTool implements EditorTool {
     row.style.cssText = 'display:flex;align-items:center;gap:6px;';
     const label = document.createElement('span');
     label.textContent = d.label;
-    label.style.cssText = 'width:92px;flex:none;color:#9fb8cc;font-size:11px;';
+    label.title = d.tip;
+    label.style.cssText =
+      'width:92px;flex:none;color:#9fb8cc;font-size:11px;cursor:help;border-bottom:1px dotted #4a5a6a;';
     row.appendChild(label);
 
     const slider = document.createElement('input');
@@ -260,6 +420,7 @@ class CombatTool implements EditorTool {
     slider.max = String(d.max);
     slider.step = String(d.step);
     slider.value = String(this.juice[d.key] as number);
+    slider.title = d.tip;
     slider.style.cssText = 'flex:1;min-width:0;accent-color:#e8794a;cursor:pointer;';
 
     const readout = document.createElement('span');
@@ -280,11 +441,15 @@ class CombatTool implements EditorTool {
   }
 
   private mkBigHitToggle(): HTMLLabelElement {
+    const tip =
+      'When on, damage above the big-hit threshold ramps its color toward the big-hit color.';
     const row = document.createElement('label');
+    row.title = tip;
     row.style.cssText =
       'display:flex;align-items:center;gap:6px;color:#9fb8cc;font-size:11px;cursor:pointer;';
     const cb = document.createElement('input');
     cb.type = 'checkbox';
+    cb.title = tip;
     cb.checked = this.juice.bigHitRamp;
     cb.onchange = () => {
       this.juice.bigHitRamp = cb.checked;
@@ -295,17 +460,21 @@ class CombatTool implements EditorTool {
     return row;
   }
 
-  private mkColor(key: keyof CombatJuice, label: string): void {
+  private mkColor(key: keyof CombatJuice, label: string, tip?: string): void {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:6px;';
     const lbl = document.createElement('span');
     lbl.textContent = label;
-    lbl.style.cssText = 'width:92px;flex:none;color:#9fb8cc;font-size:11px;';
+    if (tip) lbl.title = tip;
+    lbl.style.cssText =
+      'width:92px;flex:none;color:#9fb8cc;font-size:11px;' +
+      (tip ? 'cursor:help;border-bottom:1px dotted #4a5a6a;' : '');
     row.appendChild(lbl);
 
     const picker = document.createElement('input');
     picker.type = 'color';
     picker.value = this.juice[key] as string;
+    if (tip) picker.title = tip;
     picker.style.cssText =
       'width:34px;height:20px;flex:none;background:#0c1014;border:1px solid #3a4a5a;' +
       'border-radius:3px;padding:0;cursor:pointer;';
@@ -331,10 +500,12 @@ class CombatTool implements EditorTool {
     label: string,
     fn: () => void,
     parent: HTMLElement,
-    accent = false
+    accent = false,
+    tip?: string
   ): HTMLButtonElement {
     const b = document.createElement('button');
     b.textContent = label;
+    if (tip) b.title = tip;
     b.style.cssText =
       'font:11px monospace;padding:2px 8px;cursor:pointer;border-radius:3px;' +
       (accent

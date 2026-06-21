@@ -523,15 +523,17 @@ function equipPsiToSlot(move: PsiMove, slot: number): void {
 /** Trigger a hotbar slot. Weapon → swap to / equip it; consumable → use it
  *  (cookie, etc.); PSI → cast it. Equipping never toggles off — an already-worn
  *  weapon just stays equipped, so the key reads as "make this my weapon". */
-function activateSlot(i: number): void {
+function activateSlot(i: number, consumableOnly = false): void {
   const id = hotbar[i];
   if (!id) return;
   if (isPsiEntry(id)) {
+    if (consumableOnly) return; // KO'd: PSI is locked, only a consumable can save you
     usePsi(id.slice(PSI_TAG.length));
     return;
   }
   const eq = itemEquip(id);
   if (eq?.slot === 'weapon') {
+    if (consumableOnly) return; // KO'd: can't brandish a weapon while down
     equipToggle(id); // swap to this weapon
     return;
   }
@@ -547,6 +549,13 @@ function activateSlot(i: number): void {
  *  it during overworld play (the old G "cycle weapon" key is gone). */
 export function triggerHotbarSlot(n: number): void {
   activateSlot(n);
+}
+
+/** Trigger hotbar slot `n` but ONLY if it's a consumable — used while KO'd, when
+ *  a last-ditch healing/revive item is the one thing you're allowed to use to
+ *  claw back up (weapons + PSI stay locked). The server re-validates + revives. */
+export function triggerHotbarConsumable(n: number): void {
+  activateSlot(n, true);
 }
 
 /** Hotbar-eligible = a weapon (held/brandished) or a consumable (non-gear).

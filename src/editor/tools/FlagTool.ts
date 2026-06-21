@@ -300,7 +300,13 @@ class FlagTool implements EditorTool {
     const form = this.formEl!;
     const top = document.createElement('div');
     top.style.cssText = 'display:flex;gap:6px;';
-    this.mkBtn('+ New flag', () => this.newFlag(), top, true);
+    this.mkBtn(
+      '+ New flag',
+      () => this.newFlag(),
+      top,
+      true,
+      'Create a new player flag (id auto-minted at 900000+).'
+    );
     this.mkSearch(top);
     form.appendChild(top);
 
@@ -314,7 +320,9 @@ class FlagTool implements EditorTool {
           this.refreshList();
           this.shell?.toast('Player flags cleared');
         },
-        form
+        form,
+        false,
+        'Clear every player flag on YOUR character (live, for testing).'
       );
       return;
     }
@@ -335,7 +343,9 @@ class FlagTool implements EditorTool {
         this.dirtyFlags();
         this.refreshList();
       },
-      form
+      form,
+      false,
+      'Flag identifier; spaces become underscores.'
     );
 
     // Scope + default (player flags only).
@@ -345,6 +355,7 @@ class FlagTool implements EditorTool {
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = !!fl.default;
+      cb.title = 'Whether this flag starts SET for brand-new characters.';
       cb.style.accentColor = '#c678dd';
       cb.onchange = () => {
         fl.default = cb.checked;
@@ -362,7 +373,8 @@ class FlagTool implements EditorTool {
         this.dirtyFlags();
       },
       form,
-      true
+      true,
+      'Optional note describing what this flag tracks.'
     );
 
     const usedBy = this.triggers.filter((t) => this.trigRefsFlag(t, fl.id));
@@ -374,13 +386,25 @@ class FlagTool implements EditorTool {
     }
 
     if (fl.scope === 'player') {
-      this.mkBtn('Delete flag', () => this.deleteFlag(fl.id), form);
+      this.mkBtn(
+        'Delete flag',
+        () => this.deleteFlag(fl.id),
+        form,
+        false,
+        'Remove this flag from the catalog.'
+      );
     }
   }
 
   private renderTriggerForm(): void {
     const form = this.formEl!;
-    this.mkBtn('+ New trigger', () => this.newTrigger(), form, true);
+    this.mkBtn(
+      '+ New trigger',
+      () => this.newTrigger(),
+      form,
+      true,
+      'Create a new rule that flips flags when an event fires.'
+    );
 
     const t = this.triggers.find((x) => x.id === this.selTrig);
     if (!t) {
@@ -406,39 +430,65 @@ class FlagTool implements EditorTool {
       this.rebuildForm();
       this.refreshList();
     };
-    form.appendChild(this.labeled('WHEN', evSel));
+    form.appendChild(this.labeled('WHEN', evSel, 'The in-game event that fires this trigger.'));
 
     // Target (depends on event).
     form.appendChild(this.targetControl(t));
 
     // Flag lists.
     form.appendChild(
-      this.flagListField('REQUIRE (all set)', t.require ?? [], (ids) => {
-        t.require = ids.length ? ids : undefined;
-        this.dirtyTriggers();
-      })
+      this.flagListField(
+        'REQUIRE (all set)',
+        t.require ?? [],
+        (ids) => {
+          t.require = ids.length ? ids : undefined;
+          this.dirtyTriggers();
+        },
+        'Trigger only fires if ALL these flags are set.'
+      )
     );
     form.appendChild(
-      this.flagListField('REQUIRE CLEAR (all unset)', t.requireClear ?? [], (ids) => {
-        t.requireClear = ids.length ? ids : undefined;
-        this.dirtyTriggers();
-      })
+      this.flagListField(
+        'REQUIRE CLEAR (all unset)',
+        t.requireClear ?? [],
+        (ids) => {
+          t.requireClear = ids.length ? ids : undefined;
+          this.dirtyTriggers();
+        },
+        'Trigger only fires if ALL these flags are clear.'
+      )
     );
     form.appendChild(
-      this.flagListField('SET', t.set ?? [], (ids) => {
-        t.set = ids.length ? ids : undefined;
-        this.dirtyTriggers();
-        this.refreshList();
-      })
+      this.flagListField(
+        'SET',
+        t.set ?? [],
+        (ids) => {
+          t.set = ids.length ? ids : undefined;
+          this.dirtyTriggers();
+          this.refreshList();
+        },
+        'Flags to set when this trigger fires.'
+      )
     );
     form.appendChild(
-      this.flagListField('CLEAR', t.clear ?? [], (ids) => {
-        t.clear = ids.length ? ids : undefined;
-        this.dirtyTriggers();
-      })
+      this.flagListField(
+        'CLEAR',
+        t.clear ?? [],
+        (ids) => {
+          t.clear = ids.length ? ids : undefined;
+          this.dirtyTriggers();
+        },
+        'Flags to clear when this trigger fires.'
+      )
     );
 
-    this.mkBtn('Delete trigger', () => this.deleteTrigger(t.id), form);
+    this.mkBtn(
+      'Delete trigger',
+      () => this.deleteTrigger(t.id),
+      form,
+      false,
+      'Remove this trigger.'
+    );
   }
 
   /** The target picker/input for a trigger's event type. */
@@ -447,11 +497,16 @@ class FlagTool implements EditorTool {
     if (ev.target === 'text') {
       const wrap = this.labeled(
         'NPC textId',
-        this.numInput(t.on.text, (n) => {
-          t.on.text = n;
-          this.dirtyTriggers();
-          this.refreshList();
-        })
+        this.numInput(
+          t.on.text,
+          (n) => {
+            t.on.text = n;
+            this.dirtyTriggers();
+            this.refreshList();
+          },
+          'The dialogue textId whose completion fires this trigger.'
+        ),
+        'The dialogue textId whose completion fires this trigger.'
       );
       wrap.appendChild(this.hint('Tip: talk to the NPC in-world; the console logs textId=NNN.'));
       return wrap;
@@ -459,11 +514,16 @@ class FlagTool implements EditorTool {
     if (ev.target === 'sector') {
       return this.labeled(
         'sector id',
-        this.numInput(t.on.sector, (n) => {
-          t.on.sector = n;
-          this.dirtyTriggers();
-          this.refreshList();
-        })
+        this.numInput(
+          t.on.sector,
+          (n) => {
+            t.on.sector = n;
+            this.dirtyTriggers();
+            this.refreshList();
+          },
+          'The map sector id the player must enter to fire this trigger.'
+        ),
+        'The map sector id the player must enter to fire this trigger.'
       );
     }
     if (ev.target === 'item') {
@@ -481,7 +541,7 @@ class FlagTool implements EditorTool {
         searchPlaceholder: 'search item…',
       });
       if (t.on.item == null && ids[0]) t.on.item = Number(ids[0]);
-      return this.labeled('item', picker.el);
+      return this.labeled('item', picker.el, 'The item whose acquisition fires this trigger.');
     }
     // enemy (sprite group)
     const groups = listSpriteGroupIds().map(String);
@@ -498,21 +558,29 @@ class FlagTool implements EditorTool {
       searchPlaceholder: 'search enemy sprite…',
     });
     if (t.on.enemy == null && groups[0]) t.on.enemy = Number(groups[0]);
-    return this.labeled('enemy sprite', picker.el);
+    return this.labeled(
+      'enemy sprite',
+      picker.el,
+      'The enemy sprite group whose defeat fires this trigger.'
+    );
   }
 
   /** Chip list + "add" dropdown for a set of player-flag ids. */
   private flagListField(
     label: string,
     ids: number[],
-    onChange: (ids: number[]) => void
+    onChange: (ids: number[]) => void,
+    tip?: string
   ): HTMLElement {
     const current = [...ids];
     const wrap = document.createElement('div');
     wrap.style.cssText = 'display:flex;flex-direction:column;gap:3px;';
     const lbl = document.createElement('div');
     lbl.textContent = label;
-    lbl.style.cssText = 'color:#778;font-size:10px;letter-spacing:1px;';
+    lbl.style.cssText =
+      'color:#778;font-size:10px;letter-spacing:1px;' +
+      (tip ? 'cursor:help;border-bottom:1px dotted #4a5a6a;display:inline-block;' : '');
+    if (tip) lbl.title = tip;
     wrap.appendChild(lbl);
 
     const chips = document.createElement('div');
@@ -542,6 +610,7 @@ class FlagTool implements EditorTool {
     wrap.appendChild(chips);
 
     const add = document.createElement('select');
+    add.title = 'Add a player flag to this list.';
     add.style.cssText = this.inputCss();
     const ph = document.createElement('option');
     ph.value = '';
@@ -656,12 +725,18 @@ class FlagTool implements EditorTool {
     );
   }
 
-  private labeled(label: string, control: HTMLElement): HTMLDivElement {
+  private labeled(label: string, control: HTMLElement, tip?: string): HTMLDivElement {
     const wrap = document.createElement('div');
     wrap.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
     const l = document.createElement('div');
     l.textContent = label;
-    l.style.cssText = 'color:#778;font-size:10px;letter-spacing:1px;';
+    l.style.cssText =
+      'color:#778;font-size:10px;letter-spacing:1px;' +
+      (tip ? 'cursor:help;border-bottom:1px dotted #4a5a6a;display:inline-block;' : '');
+    if (tip) {
+      l.title = tip;
+      control.title = tip;
+    }
     wrap.append(l, control);
     return wrap;
   }
@@ -680,10 +755,15 @@ class FlagTool implements EditorTool {
     return d;
   }
 
-  private numInput(value: number | undefined, onChange: (n: number) => void): HTMLInputElement {
+  private numInput(
+    value: number | undefined,
+    onChange: (n: number) => void,
+    tip?: string
+  ): HTMLInputElement {
     const i = document.createElement('input');
     i.type = 'number';
     i.value = value != null ? String(value) : '';
+    if (tip) i.title = tip;
     i.style.cssText = this.inputCss();
     i.oninput = () => {
       const n = Number(i.value);
@@ -697,19 +777,21 @@ class FlagTool implements EditorTool {
     value: string,
     onChange: (v: string) => void,
     parent: HTMLElement,
-    multiline = false
+    multiline = false,
+    tip?: string
   ): void {
     const ctl = multiline ? document.createElement('textarea') : document.createElement('input');
     ctl.value = value;
     ctl.style.cssText = this.inputCss() + (multiline ? 'resize:vertical;' : '');
     if (multiline) (ctl as HTMLTextAreaElement).rows = 2;
     ctl.oninput = () => onChange(ctl.value);
-    parent.appendChild(this.labeled(label, ctl));
+    parent.appendChild(this.labeled(label, ctl, tip));
   }
 
   private mkSearch(parent: HTMLElement): void {
     const i = document.createElement('input');
     i.placeholder = 'search…';
+    i.title = 'Filter the list by flag name or id.';
     i.style.cssText = this.inputCss() + 'flex:1;';
     i.oninput = () => {
       this.filter = i.value;
@@ -718,9 +800,16 @@ class FlagTool implements EditorTool {
     parent.appendChild(i);
   }
 
-  private mkBtn(label: string, fn: () => void, parent: HTMLElement, accent = false): void {
+  private mkBtn(
+    label: string,
+    fn: () => void,
+    parent: HTMLElement,
+    accent = false,
+    tip?: string
+  ): void {
     const b = document.createElement('button');
     b.textContent = label;
+    if (tip) b.title = tip;
     b.style.cssText =
       'font:11px monospace;padding:3px 9px;cursor:pointer;border-radius:3px;' +
       (accent

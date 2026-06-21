@@ -35,22 +35,34 @@ function gridIndexFor(code: number): number {
   return g >= 0 && g < 128 ? g : -1;
 }
 
+// A font id is either a number (the ROM dialogue/battle fonts → `font_N.png` +
+// `font_N_widths.json`) or a string name (an extracted font sheet kept under its
+// own name, e.g. 'credits' → `credits.png`). The credits font is FIXED-WIDTH in
+// the ROM — it has no widths table — so `widths` is null and every glyph advances
+// by the cell width.
+export type FontId = number | string;
+
 interface FontData {
   image: HTMLImageElement;
-  widths: number[];
+  widths: number[] | null; // null = fixed-width font (advance = cellW)
   cellW: number;
   cellH: number;
 }
 
-const fontCache = new Map<number, FontData>();
+const fontCache = new Map<FontId, FontData>();
 
-export async function loadFont(fontId: number = 1): Promise<void> {
+function fontBase(fontId: FontId): string {
+  return typeof fontId === 'number' ? `font_${fontId}` : fontId;
+}
+
+export async function loadFont(fontId: FontId = 1): Promise<void> {
   if (fontCache.has(fontId)) return;
 
-  const [image, widths] = await Promise.all([
-    loadImage(`/assets/fonts/font_${fontId}.png`),
-    loadJSON<number[]>(`/assets/fonts/font_${fontId}_widths.json`),
-  ]);
+  const base = fontBase(fontId);
+  const image = await loadImage(`/assets/fonts/${base}.png`);
+  // Per-char advance widths are optional: numeric ROM fonts ship a table; a
+  // fixed-width sheet (credits) has none, so a missing file degrades to null.
+  const widths = await loadJSON<number[]>(`/assets/fonts/${base}_widths.json`).catch(() => null);
 
   fontCache.set(fontId, {
     image,
@@ -61,7 +73,7 @@ export async function loadFont(fontId: number = 1): Promise<void> {
 }
 
 /** Line height (cell height) of a loaded font; 16 if not loaded yet. */
-export function getLineHeight(fontId: number): number {
+export function getLineHeight(fontId: FontId): number {
   return fontCache.get(fontId)?.cellH ?? 16;
 }
 
@@ -74,7 +86,7 @@ export function drawText(
   text: string,
   x: number,
   y: number,
-  fontId: number = 1,
+  fontId: FontId = 1,
   tracking: number = 1
 ): void {
   const font = fontCache.get(fontId);
@@ -106,7 +118,8 @@ export function drawText(
     const sx = col * cellW;
     const sy = row * cellH;
 
-    const charWidth = widths[gridIndex] ?? cellW;
+    // Fixed-width font (no widths table): every glyph advances by the cell width.
+    const charWidth = widths ? (widths[gridIndex] ?? cellW) : cellW;
     if (charWidth === 255) continue; // undefined character
 
     ctx.drawImage(image, sx, sy, cellW, cellH, cursorX, y, cellW, cellH);
@@ -119,7 +132,7 @@ export function drawText(
 /**
  * Measure the pixel width of a string with the given font.
  */
-export function measureText(text: string, fontId: number = 1, tracking: number = 1): number {
+export function measureText(text: string, fontId: FontId = 1, tracking: number = 1): number {
   const font = fontCache.get(fontId);
   if (!font) return text.length * 8;
 
@@ -127,7 +140,7 @@ export function measureText(text: string, fontId: number = 1, tracking: number =
   for (let i = 0; i < text.length; i++) {
     const gridIndex = gridIndexFor(text.charCodeAt(i));
     if (gridIndex < 0) continue;
-    const charWidth = font.widths[gridIndex] ?? font.cellW;
+    const charWidth = font.widths ? (font.widths[gridIndex] ?? font.cellW) : font.cellW;
     if (charWidth === 255) continue;
     w += charWidth + tracking;
   }

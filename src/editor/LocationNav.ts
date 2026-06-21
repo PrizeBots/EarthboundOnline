@@ -1,6 +1,12 @@
 import { loadJSON } from '../engine/AssetLoader';
 import { loadWorldDoc, saveWorldDoc } from '../engine/Auth';
-import { getSector, getSectorForTile, getTileAt } from '../engine/MapManager';
+import { getSector, getTileAt } from '../engine/MapManager';
+import {
+  regionAt,
+  sectorAtPx,
+  REGION_ORDER as TOWN_ORDER,
+  REGION_LABEL as TOWN_LABEL,
+} from '../engine/Regions';
 import { listRooms, RoomDef } from '../engine/Rooms';
 import {
   loadAtlas,
@@ -44,53 +50,9 @@ const ROOM_MERGE_PX = 56;
 // An NPC counts toward / can name the room whose dest it is closest to.
 const ROOM_ATTACH_PX = 160;
 
-// Named regions. Only the 6 "Town Map Image" towns are tagged per-sector in the
-// ROM (sectors.json `town`); every other area (Winters, Dalaam, the desert…) is
-// placed by EarthBound's PSI-teleport destination table — authentic ROM names +
-// coordinates (eb_project/psi_teleport_dest_table.yml). Coords are in 8px units;
-// tile = coord / 4. The 6 town anchors reuse the ROM `town` keys so they merge
-// with the per-sector labels; the rest introduce new keys. Any place not inside
-// a ROM town is grouped by its NEAREST anchor — a clean Voronoi outline grounded
-// in real teleport centers.
-interface RegionAnchor {
-  key: string;
-  tx: number; // tile coord
-  ty: number;
-}
-const REGION_ANCHORS: RegionAnchor[] = [
-  { key: 'onett', tx: 63, ty: 46 },
-  { key: 'twoson', tx: 44, ty: 205 },
-  { key: 'threed', tx: 173, ty: 281 },
-  { key: 'dusty', tx: 40, ty: 312 },
-  { key: 'saturn', tx: 8, ty: 243 },
-  { key: 'fourside', tx: 95, ty: 126 },
-  { key: 'winters', tx: 15, ty: 72 },
-  { key: 'summers', tx: 138, ty: 88 },
-  { key: 'dalaam', tx: 142, ty: 112 },
-  { key: 'scaraba', tx: 38, ty: 131 },
-  { key: 'deepdark', tx: 176, ty: 224 },
-  { key: 'tenda', tx: 141, ty: 222 },
-  { key: 'underworld', tx: 81, ty: 87 },
-];
-
-// Display order (rough EB story progression) + pretty labels.
-const TOWN_ORDER = REGION_ANCHORS.map((a) => a.key);
-const TOWN_LABEL: Record<string, string> = {
-  onett: 'Onett',
-  twoson: 'Twoson',
-  threed: 'Threed',
-  dusty: 'Dusty Dunes',
-  saturn: 'Saturn Valley',
-  fourside: 'Fourside',
-  winters: 'Winters',
-  summers: 'Summers',
-  dalaam: 'Dalaam',
-  scaraba: 'Scaraba',
-  deepdark: 'Deep Darkness',
-  tenda: 'Tenda Village',
-  underworld: 'Lost Underworld',
-  other: 'Other / Interiors',
-};
+// Named regions (anchors, labels, display order) + regionAt/sectorAtPx now live
+// in engine/Regions.ts — the shared source of truth for town/area attribution,
+// also used by the Enemy Spawner's by-area list grouping.
 
 interface RawDoor {
   x: number;
@@ -215,9 +177,7 @@ function placeFromSign(text: string): string | undefined {
 }
 
 // ── sector helpers ───────────────────────────────────────────────────────────
-function sectorAtPx(px: number, py: number) {
-  return getSectorForTile(Math.floor(px / TILE_SIZE), Math.floor(py / TILE_SIZE));
-}
+// regionAt + sectorAtPx are imported from engine/Regions (shared source of truth).
 function isInteriorPx(px: number, py: number): boolean {
   const s = sectorAtPx(px, py);
   return !!s && !!(s.indoor || s.dungeon);
@@ -230,28 +190,6 @@ function roomKindPx(px: number, py: number): Room['kind'] {
 }
 function sectorIndexPx(px: number, py: number): number {
   return Math.floor(py / SECTOR_H) * MAP_WIDTH_SECTORS + Math.floor(px / SECTOR_W);
-}
-/**
- * Region a world point belongs to: the ROM `town` label when present (the 6
- * Town Map Image towns, authoritative), otherwise the nearest PSI-teleport
- * anchor. Door-stitched regions are spatially separated, so nearest-anchor is a
- * reliable partition for everything the ROM doesn't tag.
- */
-function regionAt(px: number, py: number): string {
-  const s = sectorAtPx(px, py);
-  if (s?.town) return s.town;
-  const tx = Math.floor(px / TILE_SIZE);
-  const ty = Math.floor(py / TILE_SIZE);
-  let best = 'other';
-  let bd = Infinity;
-  for (const a of REGION_ANCHORS) {
-    const d = (tx - a.tx) ** 2 + (ty - a.ty) ** 2;
-    if (d < bd) {
-      bd = d;
-      best = a.key;
-    }
-  }
-  return best;
 }
 function roomNoun(kind: Room['kind']): string {
   return kind === 'dungeon' ? 'Dungeon' : kind === 'plain' ? 'Area' : 'Room';

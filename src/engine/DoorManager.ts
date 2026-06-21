@@ -358,6 +358,57 @@ export function getStairAt(px: number, py: number): StairData | null {
 }
 
 /**
+ * The PAIRED landing of an escalator/stairway ride. EB stairway/escalator triggers
+ * come in pairs: each end carries the diagonal that points at its partner, so the
+ * ride runs trigger-to-trigger. We march out along the ride diagonal from the
+ * start trigger and return the FIRST other stair trigger we pass over — that's the
+ * exact landing where the ride must stop (every directional trigger in the ROM has
+ * one). Far more reliable than "stop when the tile ahead is solid": a dept-store
+ * stairway lands on open floor (no wall), so the solid test would never fire and
+ * the ride overshoots. Returns null if nothing pairs (then the caller falls back
+ * to the solid/runaway-cap stop). startX/startY = the ride's feet position.
+ */
+export function getStairLanding(
+  startX: number,
+  startY: number,
+  dx: -1 | 1,
+  dy: -1 | 1
+): { x: number; y: number } | null {
+  const STEP = MINITILE_SIZE;
+  const MAX_STEPS = 64; // the longest ROM ramp is ~31 minitiles; 64 is generous
+  for (let s = 1; s <= MAX_STEPS; s++) {
+    const px = startX + dx * STEP * s;
+    const py = startY + dy * STEP * s;
+    const ax = Math.floor(px / DOOR_AREA_PX);
+    const ay = Math.floor(py / DOOR_AREA_PX);
+    for (let oy = -1; oy <= 1; oy++) {
+      for (let ox = -1; ox <= 1; ox++) {
+        const cx = ax + ox;
+        const cy = ay + oy;
+        if (cx < 0 || cy < 0 || cx >= DOOR_GRID_COLS) continue;
+        const idx = cy * DOOR_GRID_COLS + cx;
+        if (idx < 0 || idx >= stairsByArea.length) continue;
+        for (const stair of stairsByArea[idx]) {
+          // Skip the start trigger itself (and anything still touching it).
+          if (
+            Math.abs(stair.worldX - startX) <= STAIR_TRIGGER &&
+            Math.abs(stair.worldY - startY) <= STAIR_TRIGGER
+          )
+            continue;
+          if (
+            Math.abs(stair.worldX - px) <= STAIR_TRIGGER + 1 &&
+            Math.abs(stair.worldY - py) <= STAIR_TRIGGER + 1
+          ) {
+            return { x: stair.worldX, y: stair.worldY };
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * The floor-change door an escalator/stairway delivers you to. EB escalators
  * are a short connecting SHAFT (solid-bounded walkable region) with a `door`
  * warp at the end that teleports to the next floor's map region. We flood the

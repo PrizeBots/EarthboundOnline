@@ -5,6 +5,7 @@ One atlas per (mapTileset, paletteIndex) combination.
 """
 
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -14,6 +15,104 @@ from coilsnake.model.common.blocks import Rom
 from coilsnake.model.eb.map_tilesets import EbTileset, EbMapPalette
 from coilsnake.model.eb.table import eb_table_from_offset
 from coilsnake.util.eb.pointer import from_snes_address
+
+from palette_anim import combo_animations
+from tile_anim import tile_animations
+
+# Graphics tilesets whose TILE-GRAPHIC animation we bake (the dept-store escalators).
+# TODO (TODO2.md): the rest of EB's tile animations — water/waterfalls on draw
+# tilesets 0,1,5,6,7,8,16,17,18,19.
+ESCALATOR_DRAW_TS = {12, 13}
+
+TILE_SIZE = 32
+MINI_SIZE = 8
+ATLAS_COLS = 32
+
+
+def render_atlas(tileset, pal_colors, mt_remap=None):
+    """Render one (tileset, palette) into BG + FG atlas images.
+
+    `pal_colors` = list[6] of list[16] of (r, g, b, a) — the resolved subpalette
+    colors. `mt_remap` (optional) = {minitileIdx: substituteIdx} that swaps which
+    minitile GRAPHICS a BG cell draws — used for tile-graphic animation frames
+    (escalator steps etc.); the FG layer is untouched (animation is BG-only).
+    Returns (bg_img, fg_img, has_fg). Used for the static atlas and each
+    palette/tile animation frame."""
+    atlas_w = ATLAS_COLS * TILE_SIZE  # 1024
+    atlas_h = ATLAS_COLS * TILE_SIZE
+    bg_img = Image.new("RGBA", (atlas_w, atlas_h), (0, 0, 0, 0))
+    bg_pixels = bg_img.load()
+    fg_img = Image.new("RGBA", (atlas_w, atlas_h), (0, 0, 0, 0))
+    fg_pixels = fg_img.load()
+    has_fg = False
+
+    for arr_idx in range(1024):
+        arrangement = tileset.arrangements[arr_idx]
+        if arrangement is None:
+            continue
+
+        atlas_x = (arr_idx % ATLAS_COLS) * TILE_SIZE
+        atlas_y = (arr_idx // ATLAS_COLS) * TILE_SIZE
+
+        for cy in range(4):
+            for cx in range(4):
+                cell_val = arrangement[cy][cx]
+
+                # Decode 16-bit SNES tilemap entry: vhopppnn nnnnnnnn
+                mt_index = cell_val & 0x3FF         # bits 0-9: tile number
+                sub_pal = (cell_val >> 10) & 0x7    # bits 10-12: palette
+                flip_h = bool(cell_val & 0x4000)    # bit 14: h-flip
+                flip_v = bool(cell_val & 0x8000)    # bit 15: v-flip
+
+                # SNES BG palette slots 0-1 are reserved (UI/text)
+                # EbMapPalette subpalettes 0-5 map to SNES slots 2-7
+                pal_idx = max(0, sub_pal - 2)
+                sp = pal_colors[pal_idx] if pal_idx < len(pal_colors) else pal_colors[0]
+
+                # --- Background minitile (tile-animation frames swap which one) ---
+                bg_mt = mt_remap.get(mt_index, mt_index) if mt_remap else mt_index
+                if bg_mt < len(tileset.minitiles.tiles) and tileset.minitiles.tiles[bg_mt] is not None:
+                    minitile = tileset.minitiles.tiles[bg_mt]
+                    dx = atlas_x + cx * MINI_SIZE
+                    dy = atlas_y + cy * MINI_SIZE
+                    for py in range(8):
+                        for px in range(8):
+                            src_x = (7 - px) if flip_h else px
+                            src_y = (7 - py) if flip_v else py
+                            ci = minitile[src_y][src_x]
+                            color = sp[ci] if ci < len(sp) else (255, 0, 255, 255)
+                            bg_pixels[dx + px, dy + py] = color
+
+                # --- Foreground minitile (paired at index + 512) ---
+                if mt_index < 384:
+                    fg_index = mt_index + 512
+                    if fg_index < len(tileset.minitiles.tiles) and tileset.minitiles.tiles[fg_index] is not None:
+                        fg_minitile = tileset.minitiles.tiles[fg_index]
+                        dx = atlas_x + cx * MINI_SIZE
+                        dy = atlas_y + cy * MINI_SIZE
+                        for py in range(8):
+                            for px in range(8):
+                                src_x = (7 - px) if flip_h else px
+                                src_y = (7 - py) if flip_v else py
+                                ci = fg_minitile[src_y][src_x]
+                                if ci != 0:  # color 0 = transparent
+                                    has_fg = True
+                                    color = sp[ci] if ci < len(sp) else (255, 0, 255, 255)
+                                    fg_pixels[dx + px, dy + py] = color
+
+    return bg_img, fg_img, has_fg
+
+
+def colors_from_palette(palette):
+    """Resolve an EbMapPalette into the `pal_colors` shape render_atlas wants."""
+    pal_colors = []
+    for sub_idx in range(6):
+        sub = []
+        for c_idx in range(16):
+            color = palette.subpalettes[sub_idx][c_idx]
+            sub.append((color.r, color.g, color.b, 255))
+        pal_colors.append(sub)
+    return pal_colors
 
 # ROM constants
 GRAPHICS_PTR_TABLE = 0xEF105B
@@ -104,6 +203,15 @@ def main():
     for i in range(32):
         tileset_mapping.append(map_tileset_table[i][0])
 
+    # ROM palette animations (the "Flash Effect" combos), keyed by (mapTS, pal).
+    # Only the ~8 animated combos appear here; everything else renders static.
+    anims = combo_animations(rom)
+    print(f"Found {len(anims)} animated palette combos: {sorted(anims.keys())}")
+    # Tile-graphic animations (escalator steps), keyed by GRAPHICS (draw) tileset.
+    tile_anims = tile_animations(rom)
+    print(f"Tile animations on draw tilesets: {sorted(tile_anims.keys())} (baking {sorted(ESCALATOR_DRAW_TS)})")
+    anim_manifest = {}
+
     # Render atlases
     atlas_dir = OUT_DIR / "atlases"
     atlas_dir.mkdir(parents=True, exist_ok=True)
@@ -134,93 +242,68 @@ def main():
                 print(f"  WARNING: No palette for mapTS={map_ts_id} pal={pal_id}, skipping")
                 continue
 
-        print(f"  Rendering atlas: mapTS={map_ts_id} pal={pal_id} (drawTS={draw_ts_id})")
+        pal_anim = anims.get((map_ts_id, pal_id))  # palette cycling (water/lava/...)
+        tile_anim = tile_anims.get(draw_ts_id) if draw_ts_id in ESCALATOR_DRAW_TS else None
+        key = f"{map_ts_id}_{pal_id}"
 
-        # Build palette lookup: subpalette index -> 16 RGBA colors
-        # EbMapPalette has 6 subpalettes of 16 colors each
-        pal_colors = []
-        for sub_idx in range(6):
-            sub = []
-            for c_idx in range(16):
-                color = palette.subpalettes[sub_idx][c_idx]
-                # Color 0 in each subpalette is the BG color — render it solid
-                sub.append((color.r, color.g, color.b, 255))
-            pal_colors.append(sub)
-
-        # Render 1024 arrangements into a 32x32 grid atlas
-        TILE_SIZE = 32
-        MINI_SIZE = 8
-        ATLAS_COLS = 32
-        atlas_w = ATLAS_COLS * TILE_SIZE  # 1024
-        atlas_h = ATLAS_COLS * TILE_SIZE  # 1024
-
-        bg_img = Image.new("RGBA", (atlas_w, atlas_h), (0, 0, 0, 0))
-        bg_pixels = bg_img.load()
-        fg_img = Image.new("RGBA", (atlas_w, atlas_h), (0, 0, 0, 0))
-        fg_pixels = fg_img.load()
-        has_fg = False
-
-        for arr_idx in range(1024):
-            arrangement = tileset.arrangements[arr_idx]
-            if arrangement is None:
-                continue
-
-            atlas_x = (arr_idx % ATLAS_COLS) * TILE_SIZE
-            atlas_y = (arr_idx // ATLAS_COLS) * TILE_SIZE
-
-            for cy in range(4):
-                for cx in range(4):
-                    cell_val = arrangement[cy][cx]
-
-                    # Decode 16-bit SNES tilemap entry: vhopppnn nnnnnnnn
-                    mt_index = cell_val & 0x3FF         # bits 0-9: tile number
-                    sub_pal = (cell_val >> 10) & 0x7    # bits 10-12: palette
-                    flip_h = bool(cell_val & 0x4000)    # bit 14: h-flip
-                    flip_v = bool(cell_val & 0x8000)    # bit 15: v-flip
-
-                    # SNES BG palette slots 0-1 are reserved (UI/text)
-                    # EbMapPalette subpalettes 0-5 map to SNES slots 2-7
-                    pal_idx = max(0, sub_pal - 2)
-                    sp = pal_colors[pal_idx] if pal_idx < len(pal_colors) else pal_colors[0]
-
-                    # --- Background minitile ---
-                    if mt_index < len(tileset.minitiles.tiles) and tileset.minitiles.tiles[mt_index] is not None:
-                        minitile = tileset.minitiles.tiles[mt_index]
-                        dx = atlas_x + cx * MINI_SIZE
-                        dy = atlas_y + cy * MINI_SIZE
-
-                        for py in range(8):
-                            for px in range(8):
-                                src_x = (7 - px) if flip_h else px
-                                src_y = (7 - py) if flip_v else py
-                                ci = minitile[src_y][src_x]
-                                color = sp[ci] if ci < len(sp) else (255, 0, 255, 255)
-                                bg_pixels[dx + px, dy + py] = color
-
-                    # --- Foreground minitile (paired at index + 512) ---
-                    if mt_index < 384:
-                        fg_index = mt_index + 512
-                        if fg_index < len(tileset.minitiles.tiles) and tileset.minitiles.tiles[fg_index] is not None:
-                            fg_minitile = tileset.minitiles.tiles[fg_index]
-                            dx = atlas_x + cx * MINI_SIZE
-                            dy = atlas_y + cy * MINI_SIZE
-
-                            for py in range(8):
-                                for px in range(8):
-                                    src_x = (7 - px) if flip_h else px
-                                    src_y = (7 - py) if flip_v else py
-                                    ci = fg_minitile[src_y][src_x]
-                                    if ci != 0:  # color 0 = transparent
-                                        has_fg = True
-                                        color = sp[ci] if ci < len(sp) else (255, 0, 255, 255)
-                                        fg_pixels[dx + px, dy + py] = color
-
-        bg_img.save(str(atlas_dir / f"{map_ts_id}_{pal_id}.png"))
+        # Static atlas (the base palette). Always emitted — the fallback the renderer
+        # shows until animation frames stream in, and what every static combo uses.
+        base_colors = colors_from_palette(palette)
+        bg_img, fg_img, has_fg = render_atlas(tileset, base_colors)
+        bg_img.save(str(atlas_dir / f"{key}.png"))
         if has_fg:
-            fg_img.save(str(atlas_dir / f"{map_ts_id}_{pal_id}_fg.png"))
-            print(f"    -> has foreground layer")
+            fg_img.save(str(atlas_dir / f"{key}_fg.png"))
 
-    print(f"\nDone! Atlases saved to {atlas_dir}")
+        # Build the animation frame list. EB has TWO systems and a combo can use
+        # both (Fourside, 29_3): palette cycling swaps the colors, tile animation
+        # swaps which minitile graphics a cell draws (the moving escalator steps).
+        # Each frame is (colors, minitile_remap); we merge to lcm(frames) and use the
+        # tile delay when present (step motion is the visible thing).
+        frames = []  # (colors, mt_remap_or_None)
+        durations = []
+        if pal_anim and tile_anim:
+            pf, tf = len(pal_anim["frames"]), tile_anim["frames"]
+            count = pf * tf // math.gcd(pf, tf)
+            for k in range(count):
+                frames.append((pal_anim["frames"][k % pf], tile_anim["remaps"][k % tf]))
+                durations.append(tile_anim["delay"])
+            kind = f"palette+tile ({count}f)"
+        elif pal_anim:
+            frames = [(fc, None) for fc in pal_anim["frames"]]
+            durations = list(pal_anim["durations"])
+            kind = f"palette ({len(frames)}f)"
+        elif tile_anim:
+            frames = [(base_colors, tile_anim["remaps"][k]) for k in range(tile_anim["frames"])]
+            durations = [tile_anim["delay"]] * tile_anim["frames"]
+            kind = f"tile/escalator ({len(frames)}f)"
+        else:
+            kind = "static"
+
+        note = "" if kind == "static" else f"  [{kind}]"
+        print(f"  Rendering atlas: mapTS={map_ts_id} pal={pal_id} (drawTS={draw_ts_id}){note}")
+        if has_fg:
+            print("    -> has foreground layer")
+
+        # Bake one atlas per animation frame ({key}_f{k}.png). Frame 0 == the static
+        # atlas (seamless), so the renderer can swap to it without a visible jump.
+        if frames:
+            for k, (fc, rm) in enumerate(frames):
+                fbg, ffg, fhas_fg = render_atlas(tileset, fc, rm)
+                fbg.save(str(atlas_dir / f"{key}_f{k}.png"))
+                if fhas_fg:
+                    ffg.save(str(atlas_dir / f"{key}_f{k}_fg.png"))
+            anim_manifest[key] = {
+                "frames": len(frames),
+                "durations": durations,  # per-frame, in game frames @ 60Hz
+                "fg": has_fg,
+            }
+            print(f"    -> {len(frames)} animation frames, durations={durations}")
+
+    # Runtime manifest: which combos animate, frame counts, per-frame durations.
+    with open(atlas_dir / "anim.json", "w") as f:
+        json.dump({"version": 1, "frameRateHz": 60, "combos": anim_manifest}, f, indent=2)
+    print(f"\nWrote anim.json: {len(anim_manifest)} animated combos")
+    print(f"Done! Atlases saved to {atlas_dir}")
 
 
 if __name__ == "__main__":

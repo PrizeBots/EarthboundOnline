@@ -32,7 +32,8 @@ eb_project/  (CoilSnake decompile: scripts, NPC/door tables, music) ──┘   
    region metadata that drives the editor's location navigator.
 3. `tools/apply_map_changes.py` — bakes the open-world event state into
    `tiles.json` (the ROM's base map is the game-intro state)
-4. `tools/build_atlases.py` — pre-renders BG + FG tile atlases per palette
+4. `tools/build_atlases.py` — pre-renders BG + FG tile atlases per palette, plus
+   per-frame atlases + `anim.json` for EB's animated palettes (`tools/palette_anim.py`)
 5. `tools/extract_npcs.py` — NPC/prop placements (`npcs.json`) **and dialogue**
    (`npc_text.json`), see below
 6. `tools/extract_shops.py` — shop catalog + clerk→store map (`shops.json`)
@@ -143,6 +144,18 @@ sector load + room crop — use it from the console or verification scripts.
 
 - **Renderer / TilesetManager / MapManager** — EB's dual-layer system: BG atlas
   behind sprites, FG atlas in front, FG tiles depth-sorted with sprites.
+- **Animated tiles (palette animation)** — EB animates a few map palettes (the
+  "Flash Effect": Fire Spring lava, water, dept-store escalators, …) by cycling
+  the WHOLE palette through a short frame sequence. The frames + per-frame
+  durations are ROM data: `tools/palette_anim.py` reads the Palette Animation
+  Pointer Table (US 1.0 file `0x1FE4E1`) → secondary table → decompresses each
+  flagged combo's frames. `build_atlases.py` bakes one atlas per frame
+  (`{ts}_{pal}_f{k}.png`, +`_fg`) and writes `atlases/anim.json` (frame count +
+  durations @60Hz). `TilesetManager` loads the manifest, lazily pulls the frame
+  atlases when a combo's sector loads, and `drawTile`/`drawForegroundTile` swap to
+  the live frame on a shared wall clock. Only the ~8 animated combos cost extra
+  atlases; everything else renders the single static atlas. (On real SNES this is
+  a CGRAM palette write per frame — same model, baked into atlases for the browser.)
 - **Collision.ts** — minitile collision; byte bit 7 = solid, bits 0–1 = sprite
   priority: 0x01 = lower body behind FG (tall grass, counters), 0x02 = WHOLE
   body behind FG (canopies, behind signs; 0x03 = whole wins). There is NO
@@ -698,8 +711,11 @@ walls + weight-class solid actors, mirroring `Player.blocked`), and replies
 server spot for that seq, replay un-acked inputs) so prediction stays ahead with no
 rubber-band. **Doors are server-validated**: the client `sendUseDoor()` and the server
 (`case 'use_door'` → `npcSim.doorAt`) warps to the door's OWN dest only if the player is
-truly on it (`onWarp` → `Player.warpTo`); escalator/event warps still ride the legacy
-shielded `move`. **Remote players + NPCs/enemies/cars** are snapshot-interpolated
+truly on it (`onWarp` → `Player.warpTo`). **Escalators** glide the player diagonally
+client-side (`Player.rideStep`, bypasses collision); `Player.riding` suppresses
+reconciliation for the glide, and at ride end `sendRideWarp(x,y)` resyncs the server
+(`case 'ride_warp'`, gated by `npcSim.stairAt` = "actually on a stair", same trust as
+`move`/knockback). Event warps are server-initiated (`warpEventPlayer`). **Remote players + NPCs/enemies/cars** are snapshot-interpolated
 ~100-160ms back (`RemoteInterp.ts`). Server-authoritative REACTIONS to your actions (a
 walk-push, a melee knockback) are **predicted then reconciled** via a `predOff`
 displacement (`applyPredOffset`/`injectPredOffset`, decayed by `PRED_DECAY`) — injectors
@@ -708,8 +724,7 @@ displacement (`applyPredOffset`/`injectPredOffset`, decayed by `PRED_DECAY`) —
 movement-only (flash/hitstop/damage numbers stay server-confirmed). REMAINING: the
 server `move` handler is not yet GATED (walking is server-driven for honest clients but
 not yet _enforced_ — pending a playtest before locking `move` to editor/warp-shielded);
-escalator/event teleports aren't server-validated yet; lag-compensated hit resolution
-(server rewinds to the attacker's view) is future.
+lag-compensated hit resolution (server rewinds to the attacker's view) is future.
 
 **Status conditions + inflict model.** `server/status.js` is the single catalog +
 timer/immunity/DoT engine (paralysis, sleep, diamond, poison, …), shared by
@@ -744,8 +759,37 @@ them up in place) two ways, both server-validated so a bad/out-of-range attempt 
 refused without consuming anything: a **revive item** (`revive` HP; `use_item` with
 optional `targetId`, else nearest downed within `REVIVE_RANGE`) — canon Horn of
 life/Secret herb/Cup of Lifenoodles — or **revive PSI** (Healing γ/Ω `reviveFrac`).
+A downed player can also **self-rescue**: while down they may use a healing OR revive
+consumable on _themselves_ (`use_item`'s `entry.downed` branch routes any HP-restoring
+food through `_reviveDowned` to stand back up; non-healing items are refused). Client:
+the downed input branch fires only `triggerHotbarConsumable` (weapons/PSI stay locked).
+This is the EB "heal before the counter hits 0" survival window — the 30s KO is the
+grace, so a fast potion **prevents true death**.
 Client: `player_downed`/`player_revived` drive the laying render (90° rotation),
-the over-head countdown, and the owner's closing **vignette**.
+the over-head countdown, the owner's closing **vignette**, and a broadcast
+**`MORTAL DAMAGE!`** banner over the KO'd player (everyone sees it, on `player_downed`).
+
+**NPC death throw (`DeathFx.ts`).** When a combatant (enemy / townsperson / car)
+is killed, `applyDamage` broadcasts **`npc_death`** `{id, dx, dy, force}` — `(dx,dy)`
+is the unit heading away from the attacker, `force` the killing blow's damage (no
+`atk` ⇒ `0,0`, a poison/scripted kill that rotates in place). The client
+(`NPCManager.applyNpcDeath`) hands the slain actor's frozen visual to `DeathFx`,
+which plays a VISUAL-ONLY throw: a fast 90° rotate (the KO flip), a `force`-scaled
+backward fling, 1–2 hops, and a horizontal slide that **ricochets off solid tiles**
+(real `checkCollision` foot-box test — it bounces off walls, never clips through);
+once it stops bouncing it does a final **sink into the floor** (slides straight down
+past a fixed ground mask — no fade). The body feeds the Renderer's
+feet-Y sprite pass (`collectDeathSprites`) so it **respects layer depth sorting**
+like any sprite. Gated per entity by the class-level `Entity.rotateOnDeath` (default
+on; flipped off in code for kinds that shouldn't tumble — not a per-instance field).
+The batched `npc_hp` delta still hides the live slot; this is pure cosmetics over it.
+
+**Rolling HP bars (`HealthRoll.ts`).** Bars don't snap on a hit: every holder (player,
+remote, NPC) carries a `displayHp` that **lags** the authoritative `hp`. On damage
+`noteHealthDamage` holds the pre-hit fill, the lost chunk **flashes** (`pendColor`)
+behind the real fill for ~320ms, then **drains** in increments toward `hp` (`rollHealth`,
+advanced per-frame inside `drawHealthBar`); heals roll the fill back up. Pure
+presentation — `displayHp` never touches the simulation (death stays server-authoritative).
 
 **PSI targeting.** Support PSI (Lifeup/Healing/revive — `target:'ally'`) is
 PARTY-target: the client enters a **target picker** (rings on valid targets, `Z`=
@@ -805,7 +849,11 @@ of an instant hitbox, `handleAttack` **launches a projectile** that
 the launch broadcasts `projectile` (id, muzzle, unit dir, speed, dist, sprite) and the
 end broadcasts `proj_end` (id, impact point, hit?); the client (`src/engine/Projectiles.ts`,
 wired in `Game.ts`/`Network.ts`) only renders the flying shot + impact spark, and
-self-retires a shot that flew its full `dist` if `proj_end` is ever dropped. Aim is the
+self-retires a shot that flew its full `dist` if `proj_end` is ever dropped. Shots +
+sparks aren't a flat overlay — `collectProjectileSprites` hands them to the Renderer's
+feet-Y sprite pass (`y` = sort key) so they **respect layer depth sorting**: a shot
+behind a building/canopy or behind a sprite in front of it is occluded, not painted on
+top (any behind-FG priority hides the whole point-sized shot). Aim is the
 facing direction. Equippable guns/beams/slings (item ids 36–48, 50, 51, 215) are all
 tagged; one-shot battle items (Bazooka, Bottle rockets, sprays) have no equip slot and
 are out of this system.

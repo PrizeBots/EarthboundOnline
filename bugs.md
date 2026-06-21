@@ -20,6 +20,95 @@ Format:
 
 ## Fixed
 
+### Escalator ride overshoots the landing / can't get off (FIXED 2026-06-20)
+
+- **Symptom:** dept-store escalators (Twoson/Fourside) — the UP ride doesn't stop
+  at the top (keeps auto-walking past it), the DOWN ride won't let you off at the
+  bottom. "Super messed up."
+- **Root cause:** the ride stopped on "the minitile ahead along the ramp is SOLID."
+  But these are short, SAME-FLOOR stairway pairs (ROM door type 4) whose landing is
+  OPEN dept-store floor, not a wall — so the solid test never fired and the ride ran
+  to the 256px runaway cap, overshooting the landing (and dumping you onto the paired
+  trigger / into walls).
+- **Fix:** use the ROM's own pairing. Every directional stairway/escalator trigger
+  has a PARTNER trigger along its diagonal (verified: all 82 pair, distances 2–31
+  minitiles). `DoorManager.getStairLanding` marches the diagonal and returns that
+  paired trigger; `Game.updateRide` stops the glide exactly there (snaps onto it).
+  The old solid-ahead / runaway-cap stop stays as a fallback. Floor-changing rides
+  still warp via `getStairExit` on arrival.
+- **Follow-up (same-floor crop — "scene went black, stuck at top"):** the dept-store
+  stairways HOP 2–8 tiles within ONE room (start and landing share the same room
+  flood). The ride was still running the stacked-floor crop machinery
+  (`computeRideBounds` union at start, `updateRoomBounds` re-crop at the landing) on
+  them — and the re-crop's pocket-merge/door-reject logic could return a degenerate
+  region, blacking out the scene and sealing the player. Fix: detect `sameFloor` at
+  ride start (landing tile already inside the current room crop) and then NEVER touch
+  the camera crop for that ride. Only a TRUE floor change (landing in a different
+  region) gets the union + re-crop. Matches the symptom timing exactly (glide fine,
+  black only on arrival).
+- **Verified:** typecheck clean; ROM pairing audit 82/82; dept-store flood is one
+  shared room (start==landing==1526 mt). Needs an in-game ride check.
+- **Follow-up 2 (Twoson overshoot — "fly across the room into the wall"):** Twoson's
+  dept store (combo 20_1, drawTS 12) has LONG escalators (152px / 19 mt) whose ramp
+  is 100% WALKABLE (not solid steps). The solid-ahead fallback can never fire on a
+  walkable ramp, and the pure distance-to-precomputed-landing check could skim past
+  the trigger box → ran to the 256px cap. Fix: `updateRide` now stops using
+  `getStairAt` DURING the ride — the exact detector that STARTS a ride — armed once
+  we've glided clear of the start trigger (`leftStart`). If a ride can start on a
+  trigger it now reliably stops on its partner, regardless of ramp length/solidity.
+  Distance + solid + cap remain as fallbacks.
+- **Follow-up 3 (stuck at the top after the ride):** the server `ride_warp` raised
+  the warp shield (`entry.warping`, 8s). For a door warp the fade clears it, but an
+  open escalator ride has no fade — so it stayed up, and `_simPlayers` HOLDS a
+  warping player (ignores inputs), freezing the rider at the landing for 8s. Fix:
+  `ride_warp` no longer raises the shield (position is set directly — no speed-clamp
+  to dodge — and the client is immediately live). Door-exit rides still fade+shield
+  via their own `warp` message.
+
+### Escalator STEP animation is tile-graphic, not palette (OPEN — system not built)
+
+- **Finding:** the dept-store escalator STEPS animate via EB's _Tile Animation
+  Properties Table_ (ROM 0x2F126B unheadered; swaps minitile GRAPHICS in VRAM each
+  frame — escalators/conveyors/waterfalls), NOT the palette "Flash Effect" system.
+  Twoson tileset (drawTS 12) = 1 anim, 3 frames, delay 5; Fourside (drawTS 13) =
+  8 frames, delay 3. Many tilesets have these (water/waterfalls too).
+- **Status:** the palette-animation system (project_animated_tiles) is built and
+  correct, but it animates flash-effect palettes (water/lava + the 29_3 palette),
+  NOT the escalator step graphics. Animating the steps needs a SECOND system:
+  extract per-tileset animation graphics frames + bake per-frame minitile atlas
+  variants + swap in the renderer. Scoped, not yet built.
+
+### Escalators never stop — ride loops, server drags you back (FIXED 2026-06-20)
+
+- **Symptom:** Twoson dept-store escalator: stepping on it the player is moved
+  endlessly and never settles on the next floor (rides up, snaps back, repeats);
+  the player also looks stuck/jittery rather than gliding smoothly.
+- **Root cause:** the server-authoritative movement switch (commit `be483a1`).
+  The escalator ride glides the player diagonally **client-side only**
+  (`Player.rideStep`, bypasses collision); it sends no inputs, so the server's
+  authoritative position stays at the escalator's foot. Its stale `pos` ACKs then
+  `reconcile()` the client back down — and after a door-exit warp the next input
+  resimulates from the foot and yanks the player off the new floor. Net: an
+  endless tug-of-war, so the ride never reaches its `aheadSolid` stop.
+- **Fix:** make the escalator a _trusted, server-aware_ movement (same trust
+  model as `move`/knockback, gated so you can't warp anywhere):
+  1. `Player.riding` suppresses `reconcile()` for the duration of the glide.
+  2. At ride end the client sends `ride_warp {x,y}` (the landing, or the floor
+     door's dest); `Game.updateRide` calls it before the transition / re-crop.
+  3. Server `ride_warp` (gameHost) honors it ONLY when the player's authoritative
+     position is on an escalator (`npcSim.stairAt`, new — mirrors DoorManager's
+     stair load), then resyncs there + raises the warp shield. It does **not**
+     echo a `warp` (the client owns the visual, so the dest isn't revealed before
+     the fade).
+- **Escalator step animation (built 2026-06-20):** EB animates the dept-store
+  escalator steps (and water/lava/…) via palette cycling — the "Flash Effect"
+  system. Now extracted from ROM and rendered: `tools/palette_anim.py` +
+  per-frame atlases + `atlases/anim.json`, swapped on a clock in `TilesetManager`
+  (see ARCHITECTURE.md "Animated tiles"). The escalators are combo `29_3` (8
+  frames); the other 84 stair triggers are plain stairs EB never animated.
+- **Verified:** typecheck clean; server tests unchanged (53 pass / 7 pre-existing
+  shop-catalog fails, identical before/after). Needs an in-game ride check.
+
 ### NPCs don't respect room seals (OPEN, minor)
 
 - **Symptom (theoretical):** server-side NPC wander (`server/npcSim.js`) uses

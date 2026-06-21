@@ -450,7 +450,12 @@ class EventManagerTool implements EditorTool {
 
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;gap:6px;';
-    this.mkBtn('+ New event (N)', () => this.startPlacing(), actions);
+    this.mkBtn(
+      '+ New event (N)',
+      () => this.startPlacing(),
+      actions,
+      'Arm placement, then click the map to drop a new event trigger.'
+    );
     this.panel.appendChild(actions);
 
     this.listEl = document.createElement('div');
@@ -512,16 +517,26 @@ class EventManagerTool implements EditorTool {
     const ev = this.sel;
     if (!ev) return;
 
-    this.textRow('Name', ev.name, (v) => {
-      ev.name = v || ev.id;
-      this.shell?.markDirty('events');
-      this.refreshList();
-    });
-    this.checkRow('Enabled', ev.enabled, (v) => {
-      ev.enabled = v;
-      this.shell?.markDirty('events');
-      this.refreshList();
-    });
+    this.textRow(
+      'Name',
+      ev.name,
+      (v) => {
+        ev.name = v || ev.id;
+        this.shell?.markDirty('events');
+        this.refreshList();
+      },
+      'Display name for this event (blank falls back to its id).'
+    );
+    this.checkRow(
+      'Enabled',
+      ev.enabled,
+      (v) => {
+        ev.enabled = v;
+        this.shell?.markDirty('events');
+        this.refreshList();
+      },
+      'Whether this event is active (disabled events are drawn greyed out).'
+    );
 
     this.section('Start source');
     this.selectRow(
@@ -532,7 +547,8 @@ class EventManagerTool implements EditorTool {
         ev.trigger.start = v as StartKind;
         this.shell?.markDirty('events');
         this.rebuildForm();
-      }
+      },
+      'How the countdown arms: talking to an NPC, or walking into the circle.'
     );
     if (ev.trigger.start === 'dialogue') {
       const row = document.createElement('div');
@@ -543,7 +559,8 @@ class EventManagerTool implements EditorTool {
           this.placing = 'npc';
           this.shell?.toast('Click the NPC whose dialogue starts this event');
         },
-        row
+        row,
+        'Arm, then click the NPC whose dialogue arms this event (also anchors the circle).'
       );
       const tag = document.createElement('span');
       tag.textContent =
@@ -556,21 +573,29 @@ class EventManagerTool implements EditorTool {
     }
 
     this.section('Trigger circle');
-    this.numRow('Radius (px)', ev.trigger.radius, (v) => (ev.trigger.radius = v));
+    this.numRow(
+      'Radius (px)',
+      ev.trigger.radius,
+      (v) => (ev.trigger.radius = v),
+      'Radius of the start zone in pixels; players inside at countdown-zero get warped in.'
+    );
     this.numRow(
       'Min players',
       ev.trigger.minPlayers,
-      (v) => (ev.trigger.minPlayers = Math.max(1, v))
+      (v) => (ev.trigger.minPlayers = Math.max(1, v)),
+      'How many players must stand inside before the countdown arms (min 1).'
     );
     this.numRow(
       'Countdown (s)',
       ev.trigger.countdownMs / 1000,
-      (v) => (ev.trigger.countdownMs = v * 1000)
+      (v) => (ev.trigger.countdownMs = v * 1000),
+      'Seconds to count down once min players are inside before warping the group in.'
     );
     this.numRow(
       'Cooldown (s)',
       ev.trigger.cooldownMs / 1000,
-      (v) => (ev.trigger.cooldownMs = v * 1000)
+      (v) => (ev.trigger.cooldownMs = v * 1000),
+      'Seconds the event stays locked after it ends before it can re-arm.'
     );
 
     this.section('Warps');
@@ -578,14 +603,24 @@ class EventManagerTool implements EditorTool {
     this.warpRow('Exit', 'exit');
 
     this.section('Event room');
-    this.numRow('Event timer (s)', ev.eventTimerMs / 1000, (v) => (ev.eventTimerMs = v * 1000));
+    this.numRow(
+      'Event timer (s)',
+      ev.eventTimerMs / 1000,
+      (v) => (ev.eventTimerMs = v * 1000),
+      'In-room timer in seconds; drives the "timer expires" end condition.'
+    );
 
     this.section('End conditions (any fires)');
     for (const [type, label] of END_LABELS) {
-      this.checkRow(label, ev.end.includes(type), (v) => {
-        ev.end = v ? [...new Set([...ev.end, type])] : ev.end.filter((t) => t !== type);
-        this.shell?.markDirty('events');
-      });
+      this.checkRow(
+        label,
+        ev.end.includes(type),
+        (v) => {
+          ev.end = v ? [...new Set([...ev.end, type])] : ev.end.filter((t) => t !== type);
+          this.shell?.markDirty('events');
+        },
+        'Any active end condition ends the event and warps survivors to the exit.'
+      );
     }
   }
 
@@ -595,10 +630,16 @@ class EventManagerTool implements EditorTool {
     const w = ev[key];
 
     // Toggle row — whether this warp is set at all (either/both are optional).
-    const toggle = this.labelRow(label);
+    const toggle = this.labelRow(
+      label,
+      key === 'entrance'
+        ? 'Optional warp where the group lands in the event room.'
+        : 'Optional single exit every outcome (win/wipe/timeout) warps to.'
+    );
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = w.enabled;
+    cb.title = `Enable the ${label.toLowerCase()} warp (disabled warps aren't placed or drawn).`;
     cb.onchange = () => {
       w.enabled = cb.checked;
       this.shell?.markDirty('events');
@@ -616,10 +657,17 @@ class EventManagerTool implements EditorTool {
         this.placing = key;
         this.shell?.toast(`Click the map to set the ${label.toLowerCase()}`);
       },
-      row
+      row,
+      `Arm, then click the map to set the ${label.toLowerCase()} location.`
     );
-    this.mkBtn('Go to', () => this.shell?.goTo(w.x, w.y), row);
+    this.mkBtn(
+      'Go to',
+      () => this.shell?.goTo(w.x, w.y),
+      row,
+      `Jump the camera to the ${label.toLowerCase()}.`
+    );
     const dir = document.createElement('select');
+    dir.title = 'Facing direction the player arrives in at this warp.';
     dir.style.cssText =
       'font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;';
     for (const [v, name] of DIR_NAMES) {
@@ -650,10 +698,11 @@ class EventManagerTool implements EditorTool {
     this.formEl!.appendChild(s);
   }
 
-  private textRow(label: string, value: string, onChange: (v: string) => void): void {
-    const row = this.labelRow(label);
+  private textRow(label: string, value: string, onChange: (v: string) => void, tip?: string): void {
+    const row = this.labelRow(label, tip);
     const inp = document.createElement('input');
     inp.value = value;
+    if (tip) inp.title = tip;
     inp.style.cssText =
       'flex:1;min-width:0;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
     inp.oninput = () => onChange(inp.value);
@@ -661,11 +710,12 @@ class EventManagerTool implements EditorTool {
     this.formEl!.appendChild(row);
   }
 
-  private numRow(label: string, value: number, onChange: (v: number) => void): void {
-    const row = this.labelRow(label);
+  private numRow(label: string, value: number, onChange: (v: number) => void, tip?: string): void {
+    const row = this.labelRow(label, tip);
     const inp = document.createElement('input');
     inp.type = 'number';
     inp.value = String(value);
+    if (tip) inp.title = tip;
     inp.style.cssText =
       'width:70px;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
     inp.oninput = () => {
@@ -683,10 +733,12 @@ class EventManagerTool implements EditorTool {
     label: string,
     options: [string, string][],
     value: string,
-    onChange: (v: string) => void
+    onChange: (v: string) => void,
+    tip?: string
   ): void {
-    const row = this.labelRow(label);
+    const row = this.labelRow(label, tip);
     const sel = document.createElement('select');
+    if (tip) sel.title = tip;
     sel.style.cssText =
       'flex:1;min-width:0;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 3px;';
     for (const [v, name] of options) {
@@ -701,29 +753,38 @@ class EventManagerTool implements EditorTool {
     this.formEl!.appendChild(row);
   }
 
-  private checkRow(label: string, value: boolean, onChange: (v: boolean) => void): void {
-    const row = this.labelRow(label);
+  private checkRow(
+    label: string,
+    value: boolean,
+    onChange: (v: boolean) => void,
+    tip?: string
+  ): void {
+    const row = this.labelRow(label, tip);
     const inp = document.createElement('input');
     inp.type = 'checkbox';
     inp.checked = value;
+    if (tip) inp.title = tip;
     inp.onchange = () => onChange(inp.checked);
     row.appendChild(inp);
     this.formEl!.appendChild(row);
   }
 
-  private labelRow(label: string): HTMLDivElement {
+  private labelRow(label: string, tip?: string): HTMLDivElement {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:6px;';
     const l = document.createElement('span');
     l.textContent = label;
-    l.style.cssText = 'flex:1;color:#9ab;';
+    l.style.cssText =
+      'flex:1;color:#9ab;' + (tip ? 'cursor:help;border-bottom:1px dotted #4a5a6a;' : '');
+    if (tip) l.title = tip;
     row.appendChild(l);
     return row;
   }
 
-  private mkBtn(label: string, onClick: () => void, host: HTMLElement): void {
+  private mkBtn(label: string, onClick: () => void, host: HTMLElement, tip?: string): void {
     const b = document.createElement('button');
     b.textContent = label;
+    if (tip) b.title = tip;
     b.style.cssText =
       `background:${ACCENT}22;color:${ACCENT};border:1px solid ${ACCENT};border-radius:3px;` +
       'font:11px monospace;padding:3px 7px;cursor:pointer;white-space:nowrap;';

@@ -1361,6 +1361,9 @@ class GameHost {
     buffs.clearBuffs(p);
     this._sendPlayerBuffs(p);
     this.npcSim.noteRespawn(playerId); // exempt this teleport from enemy door-warp follow
+    // Dying inside an event drops you from its party so the end-of-event sweep
+    // won't yank you to the exit — you've just respawned at the spawn point above.
+    if (this.eventRuntime) this.eventRuntime.onPlayerDeath(playerId);
     this.broadcastAll({ type: 'player_respawn', id: playerId, x: p.x, y: p.y, dir: p.direction });
     this.broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: 0 });
     this._broadcastPlayerStatus(p);
@@ -1901,6 +1904,60 @@ class GameHost {
         break;
       }
 
+      // Escalator/stairway ride finished. The glide across the (solid) steps is
+      // client-driven — the server can't recompute the diagonal ramp + landing —
+      // so we trust the client's landing spot, but ONLY when its authoritative
+      // position is actually on a stair trigger (so it can't warp anywhere). Same
+      // movement-trust model as `move`/knockback, gated to a real escalator. The
+      // client owns its own visual warp, so we DON'T echo a `warp` (that would
+      // reveal the destination before the fade) — we just resync authority here.
+      case 'ride_warp': {
+        const entry = this.players.get(playerId);
+        if (!entry || entry.editor) break;
+        if (!this.npcSim.stairAt(entry.x, entry.y)) {
+          // Not on an escalator — reject and re-assert the authoritative position.
+          if (entry._ws)
+            entry._ws.send(
+              JSON.stringify({
+                type: 'pos',
+                x: entry.x,
+                y: entry.y,
+                direction: entry.direction,
+                frame: entry.frame,
+                seq: entry._ackSeq || 0,
+              })
+            );
+          break;
+        }
+        const tx = Math.round(Number(msg.x));
+        const ty = Math.round(Number(msg.y));
+        if (!Number.isFinite(tx) || !Number.isFinite(ty)) break;
+        entry.x = tx;
+        entry.y = ty;
+        // Do NOT raise the warp shield here. An open escalator ride has no fade to
+        // clear it, and while `warping` is set _simPlayers HOLDS the player (ignores
+        // inputs) — which froze the rider at the top for the 8s shield window
+        // ("stuck at the top of the escalator", bugs.md). The position is set
+        // directly (no speed-clamp to dodge) and the client is immediately live, so
+        // no shield is needed. A door-exit ride still fades + shields via its own
+        // 'warp' message, independent of this.
+        if (entry._inputs) entry._inputs.length = 0; // stale pre-ride inputs don't carry over
+        this.npcSim.noteRespawn(playerId); // exempt the floor jump from enemy door-warp follow
+        this.broadcastExcept(
+          {
+            type: 'player_move',
+            id: playerId,
+            x: tx,
+            y: ty,
+            direction: entry.direction,
+            frame: entry.frame,
+            pose: 'walk',
+          },
+          playerId
+        );
+        break;
+      }
+
       case 'attack': {
         const entry = this.players.get(playerId);
         if (!entry) break;
@@ -2023,7 +2080,9 @@ class GameHost {
 
       case 'use_item': {
         const entry = this.players.get(playerId);
-        if (!entry || entry.hp <= 0) break;
+        // Truly dead-and-gone (not a downed player) can't act; a DOWNED player is
+        // allowed through here for the one purpose of self-rescue (see below).
+        if (!entry || (entry.hp <= 0 && !entry.downed)) break;
         const itemId = typeof msg.itemId === 'string' ? msg.itemId : null;
         const def = itemId ? GOODS[itemId] : null;
         if (!def) break; // unknown id — ignore
@@ -2037,6 +2096,43 @@ class GameHost {
         // Equippable gear is NOT a consumable — "using" a weapon/armor must
         // never destroy it. It's equipped via the 'equip' path instead.
         if (def.equip) break;
+        // KO'd self-rescue: a downed player is knocked over (MORTAL DAMAGE) but can
+        // still claw back up — a healing OR revive consumable used on THEMSELVES
+        // stands them up before the KO window runs out (the EB "heal before the
+        // counter hits 0" save). Anything that can't restore HP is refused without
+        // being consumed; ally-revive (def.revive on someone else) is unaffected.
+        if (entry.downed) {
+          const restore = def.revive > 0 ? def.revive : def.heal > 0 ? def.heal : 0;
+          if (restore <= 0) {
+            entry._ws.send(
+              JSON.stringify({
+                type: 'notice',
+                text: 'You can only use a healing item while down!',
+              })
+            );
+            break;
+          }
+          this._reviveDowned(entry, restore);
+          entry.inventory.splice(slot, 1);
+          entry._ws.send(
+            JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) })
+          );
+          entry._ws.send(
+            JSON.stringify({ type: 'notice', text: `You used ${def.name} and got back up!` })
+          );
+          this.broadcastExcept(
+            {
+              type: 'item_use',
+              id: playerId,
+              item: itemId,
+              x: Math.round(entry.x),
+              y: Math.round(entry.y),
+            },
+            playerId
+          );
+          this._saveCharacter(playerId);
+          break;
+        }
         // Revive items (Horn of life / Secret herb / Cup of Lifenoodles) act on a
         // DOWNED ally, never the user (a downed player can't act). Resolve the
         // target: an explicit clicked targetId (must be downed AND within range),

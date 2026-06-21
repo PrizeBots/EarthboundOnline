@@ -343,7 +343,13 @@ class ItemManagerTool implements EditorTool {
     hint.style.cssText = 'color:#8a93a8;font-size:10px;line-height:1.4;';
     this.panel.appendChild(hint);
 
-    this.mkBtn('🖥 Open item desktop (center)', () => this.desktop?.toggle(), this.panel, true);
+    this.mkBtn(
+      '🖥 Open item desktop (center)',
+      () => this.desktop?.toggle(),
+      this.panel,
+      true,
+      'Show/hide the big center gallery of all items, organized into category folders.'
+    );
 
     this.detailsEl = document.createElement('div');
     this.detailsEl.style.cssText =
@@ -411,11 +417,17 @@ class ItemManagerTool implements EditorTool {
     this.statsEl.appendChild(propsTitle);
 
     // Name (override; placeholder = ROM name).
-    this.mkTextRow('name', ov.name, getItemName(id) ?? '', (v) => {
-      this.setName(id, v);
-      // Reflect the rename in the desktop labels without a reload.
-      this.desktop?.render();
-    });
+    this.mkTextRow(
+      'name',
+      ov.name,
+      getItemName(id) ?? '',
+      (v) => {
+        this.setName(id, v);
+        // Reflect the rename in the desktop labels without a reload.
+        this.desktop?.render();
+      },
+      'Display name override; blank reverts to the ROM name.'
+    );
 
     // Kind / equip slot. Changing it re-renders so the right combat rows show.
     this.mkSelectRow(
@@ -425,7 +437,8 @@ class ItemManagerTool implements EditorTool {
         value: o.value,
         label: o.value === '' ? `ROM default (${base ? base.slot : 'consumable'})` : o.label,
       })),
-      (v) => this.setSlot(id, v as '' | ItemSlot)
+      (v) => this.setSlot(id, v as '' | ItemSlot),
+      'Item kind / equip slot; "ROM default" clears the override, "Consumable" = no equip slot.'
     );
 
     // Users — who may equip/use this item (empty = anyone).
@@ -439,8 +452,15 @@ class ItemManagerTool implements EditorTool {
     this.statsEl.appendChild(title);
 
     // Cost (every item) + sell readout (half of effective cost).
-    this.mkNumRow('buy $', ov.cost, itemCost(id), 0, undefined, false, (v) =>
-      this.setOv(id, 'cost', v)
+    this.mkNumRow(
+      'buy $',
+      ov.cost,
+      itemCost(id),
+      0,
+      undefined,
+      false,
+      (v) => this.setOv(id, 'cost', v),
+      'Shop purchase price in $; blank reverts to the ROM cost. Sell price is half this.'
     );
     const sell = document.createElement('div');
     sell.textContent = `sell: $${formatMoney(sellPrice(id))}  (half of buy)`;
@@ -449,46 +469,118 @@ class ItemManagerTool implements EditorTool {
 
     if (slot !== 'none') {
       if (slot === 'weapon') {
-        this.mkNumRow('damage', ov.offense, base?.offense ?? 0, 0, undefined, false, (v) =>
-          this.setOv(id, 'offense', v)
+        this.mkNumRow(
+          'damage',
+          ov.offense,
+          base?.offense ?? 0,
+          0,
+          undefined,
+          false,
+          (v) => this.setOv(id, 'offense', v),
+          'Attack power added to the wielder on hit; blank reverts to the ROM value.'
         );
-        this.mkNumRow('atk speed', ov.attackSpeed, 1, 0.1, undefined, true, (v) =>
-          this.setOv(id, 'attackSpeed', v)
+        this.mkNumRow(
+          'atk speed',
+          ov.attackSpeed,
+          1,
+          0.1,
+          undefined,
+          true,
+          (v) => this.setOv(id, 'attackSpeed', v),
+          'Swing-rate multiplier (1 = normal, 2 = twice as fast); blank reverts to 1.'
         );
         // Ranged ("gun") weapon: fires a forward shot up to `range` px (a piercing
         // beam) instead of a melee swing. Off = melee.
-        this.mkCheckRow('ranged', !!ov.ranged, (on) => {
-          this.setBool(id, 'ranged', on);
-          this.refreshStats(); // show/hide the range row
-        });
+        this.mkCheckRow(
+          'ranged',
+          !!ov.ranged,
+          (on) => {
+            this.setBool(id, 'ranged', on);
+            this.refreshStats(); // show/hide the range row
+          },
+          'On = fires a forward piercing shot up to "range" px; off = melee swing.'
+        );
         if (ov.ranged) {
-          this.mkNumRow('range px', ov.range, 120, 16, 480, false, (v) =>
-            this.setOv(id, 'range', v)
+          this.mkNumRow(
+            'range px',
+            ov.range,
+            120,
+            16,
+            480,
+            false,
+            (v) => this.setOv(id, 'range', v),
+            'How far the shot travels, in pixels (16–480); blank uses the 120 px default.'
           );
         }
       } else {
-        this.mkNumRow('defense', ov.defense, base?.defense ?? 0, 0, undefined, false, (v) =>
-          this.setOv(id, 'defense', v)
+        this.mkNumRow(
+          'defense',
+          ov.defense,
+          base?.defense ?? 0,
+          0,
+          undefined,
+          false,
+          (v) => this.setOv(id, 'defense', v),
+          'Damage reduction granted while equipped; blank reverts to the ROM value.'
         );
       }
       // crit/dodge apply to any gear (percent points, 0..100).
-      this.mkNumRow('crit %', ov.crit, 0, 0, 100, false, (v) => this.setOv(id, 'crit', v));
-      this.mkNumRow('dodge %', ov.dodge, 0, 0, 100, false, (v) => this.setOv(id, 'dodge', v));
+      this.mkNumRow(
+        'crit %',
+        ov.crit,
+        0,
+        0,
+        100,
+        false,
+        (v) => this.setOv(id, 'crit', v),
+        'Critical-hit chance in percentage points (0–100); blank = 0 (no bonus).'
+      );
+      this.mkNumRow(
+        'dodge %',
+        ov.dodge,
+        0,
+        0,
+        100,
+        false,
+        (v) => this.setOv(id, 'dodge', v),
+        'Chance to dodge incoming hits in percentage points (0–100); blank = 0 (no bonus).'
+      );
       if (slot === 'weapon') this.buildInflictEditor(id, ov);
     } else {
       // Consumables: heal amount (HP restored on use). Base is 0 (effects aren't
       // decoded); authored heals live in equip_stats.json — same file the server
       // reads, so what you set here is exactly what the item heals in-game.
-      this.mkNumRow('heal HP', ov.heal, itemBaseHeal(id), 0, undefined, false, (v) =>
-        this.setOv(id, 'heal', v)
+      this.mkNumRow(
+        'heal HP',
+        ov.heal,
+        itemBaseHeal(id),
+        0,
+        undefined,
+        false,
+        (v) => this.setOv(id, 'heal', v),
+        'HP restored when this consumable is used; blank reverts to base. 0 = heals no HP.'
       );
-      this.mkNumRow('heal PP', ov.healPp, itemBaseHealPp(id), 0, undefined, false, (v) =>
-        this.setOv(id, 'healPp', v)
+      this.mkNumRow(
+        'heal PP',
+        ov.healPp,
+        itemBaseHealPp(id),
+        0,
+        undefined,
+        false,
+        (v) => this.setOv(id, 'healPp', v),
+        'PP restored when used; blank reverts to base. 0 = restores no PP.'
       );
       // Revive: used on a DOWNED ally (click them or stand close), restoring this
       // much HP. Big value = full revive (clamped to their max). 0 = not a revive.
-      this.mkNumRow('revive HP', ov.revive, itemBaseRevive(id), 0, undefined, false, (v) =>
-        this.setOv(id, 'revive', v)
+      this.mkNumRow(
+        'revive HP',
+        ov.revive,
+        itemBaseRevive(id),
+        0,
+        undefined,
+        false,
+        (v) => this.setOv(id, 'revive', v),
+        'HP restored to a downed ally on use (clamped to their max); 0 = not a revive item.'
       );
       const revNote = document.createElement('div');
       revNote.textContent = 'revive: use on a downed ally (click/near). Big = full HP.';
@@ -513,18 +605,22 @@ class ItemManagerTool implements EditorTool {
     min: number,
     max: number | undefined,
     float: boolean,
-    onSet: (v: number | undefined) => void
+    onSet: (v: number | undefined) => void,
+    tip?: string
   ): void {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:6px;';
     const l = document.createElement('span');
     l.textContent = label;
-    l.style.cssText = 'width:56px;color:#9fb8cc;';
+    l.style.cssText =
+      'width:56px;color:#9fb8cc;' + (tip ? 'cursor:help;border-bottom:1px dotted #4a5a6a;' : '');
+    if (tip) l.title = tip;
     row.appendChild(l);
     const i = document.createElement('input');
     i.type = 'number';
     i.value = cur === undefined ? '' : String(cur);
     i.placeholder = `${base}`;
+    if (tip) i.title = tip;
     i.style.cssText =
       'width:72px;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
     i.onchange = () => {
@@ -557,16 +653,19 @@ class ItemManagerTool implements EditorTool {
   }
 
   /** A labelled checkbox row (boolean override). */
-  private mkCheckRow(label: string, on: boolean, onSet: (v: boolean) => void): void {
+  private mkCheckRow(label: string, on: boolean, onSet: (v: boolean) => void, tip?: string): void {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:6px;';
     const l = document.createElement('span');
     l.textContent = label;
-    l.style.cssText = 'width:56px;color:#9fb8cc;';
+    l.style.cssText =
+      'width:56px;color:#9fb8cc;' + (tip ? 'cursor:help;border-bottom:1px dotted #4a5a6a;' : '');
+    if (tip) l.title = tip;
     row.appendChild(l);
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = on;
+    if (tip) cb.title = tip;
     cb.style.cursor = 'pointer';
     cb.onchange = () => onSet(cb.checked);
     row.appendChild(cb);
@@ -579,19 +678,23 @@ class ItemManagerTool implements EditorTool {
     label: string,
     cur: string | undefined,
     base: string,
-    onSet: (v: string) => void
+    onSet: (v: string) => void,
+    tip?: string
   ): void {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:6px;';
     const l = document.createElement('span');
     l.textContent = label;
-    l.style.cssText = 'width:56px;color:#9fb8cc;';
+    l.style.cssText =
+      'width:56px;color:#9fb8cc;' + (tip ? 'cursor:help;border-bottom:1px dotted #4a5a6a;' : '');
+    if (tip) l.title = tip;
     row.appendChild(l);
     const i = document.createElement('input');
     i.type = 'text';
     i.value = cur ?? '';
     i.placeholder = base;
     i.maxLength = 40;
+    if (tip) i.title = tip;
     i.style.cssText =
       'flex:1;min-width:0;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
     i.onchange = () => onSet(i.value);
@@ -605,15 +708,19 @@ class ItemManagerTool implements EditorTool {
     label: string,
     cur: string,
     options: { value: string; label: string }[],
-    onSet: (v: string) => void
+    onSet: (v: string) => void,
+    tip?: string
   ): void {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:6px;';
     const l = document.createElement('span');
     l.textContent = label;
-    l.style.cssText = 'width:56px;color:#9fb8cc;';
+    l.style.cssText =
+      'width:56px;color:#9fb8cc;' + (tip ? 'cursor:help;border-bottom:1px dotted #4a5a6a;' : '');
+    if (tip) l.title = tip;
     row.appendChild(l);
     const sel = document.createElement('select');
+    if (tip) sel.title = tip;
     sel.style.cssText =
       'flex:1;min-width:0;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
     for (const o of options) {
@@ -648,6 +755,7 @@ class ItemManagerTool implements EditorTool {
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = set.has(h.value);
+      cb.title = `Restrict equip/use to ${h.label}; none checked = anyone may use it.`;
       cb.onchange = () => {
         if (cb.checked) set.add(h.value);
         else set.delete(h.value);
@@ -693,6 +801,7 @@ class ItemManagerTool implements EditorTool {
         const r = document.createElement('div');
         r.style.cssText = 'display:flex;align-items:center;gap:4px;';
         const sel = document.createElement('select');
+        sel.title = 'Status ailment this weapon may inflict on hit.';
         sel.style.cssText =
           'flex:1;min-width:0;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
         for (const o of STATUS_OPTIONS) {
@@ -710,7 +819,7 @@ class ItemManagerTool implements EditorTool {
         const pct = document.createElement('input');
         pct.type = 'number';
         pct.value = String(entry.chance);
-        pct.title = 'proc chance %';
+        pct.title = 'Proc chance % (1–100), scaled by the target’s resistance.';
         pct.style.cssText =
           'width:48px;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
         pct.onchange = () => {
@@ -728,6 +837,7 @@ class ItemManagerTool implements EditorTool {
         r.appendChild(pctLbl);
         const del = document.createElement('button');
         del.textContent = '🗑';
+        del.title = 'Remove this status inflict.';
         del.style.cssText =
           'font:11px monospace;padding:1px 6px;cursor:pointer;border-radius:3px;background:#1d2530;color:#cde;border:1px solid #3a4a5a;';
         del.onclick = () => {
@@ -754,7 +864,9 @@ class ItemManagerTool implements EditorTool {
         commit();
         renderRows();
       },
-      wrap
+      wrap,
+      false,
+      'Add another status the weapon can inflict on hit.'
     );
     const hint = document.createElement('div');
     hint.textContent = 'Chance is scaled by the target’s resistance to that status.';
@@ -789,6 +901,7 @@ class ItemManagerTool implements EditorTool {
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = set.has(o.value);
+      cb.title = `Cure ${o.label} when this consumable is used.`;
       cb.onchange = () => {
         if (cb.checked) set.add(o.value);
         else set.delete(o.value);
@@ -809,7 +922,9 @@ class ItemManagerTool implements EditorTool {
         commit();
         this.refreshStats();
       },
-      row
+      row,
+      false,
+      'Check every status (cures all ailments).'
     );
     this.mkBtn(
       'None',
@@ -818,7 +933,9 @@ class ItemManagerTool implements EditorTool {
         commit();
         this.refreshStats();
       },
-      row
+      row,
+      false,
+      'Uncheck every status (cures nothing).'
     );
     wrap.appendChild(row);
     this.statsEl!.appendChild(wrap);
@@ -848,6 +965,7 @@ class ItemManagerTool implements EditorTool {
         const r = document.createElement('div');
         r.style.cssText = 'display:flex;align-items:center;gap:4px;';
         const sel = document.createElement('select');
+        sel.title = 'Which combat stat this consumable temporarily boosts.';
         sel.style.cssText =
           'flex:1;min-width:0;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
         for (const o of BUFF_STAT_OPTIONS) {
@@ -866,7 +984,7 @@ class ItemManagerTool implements EditorTool {
         const amt = document.createElement('input');
         amt.type = 'number';
         amt.value = String(entry.amount);
-        amt.title = 'stat bonus (+/-)';
+        amt.title = 'Stat bonus amount (negative values debuff).';
         amt.style.cssText =
           'width:48px;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
         amt.onchange = () => {
@@ -881,7 +999,7 @@ class ItemManagerTool implements EditorTool {
         const dur = document.createElement('input');
         dur.type = 'number';
         dur.value = String(Math.round(entry.durationMs / 1000));
-        dur.title = 'duration (seconds)';
+        dur.title = 'How long the buff lasts, in seconds (minimum 1).';
         dur.style.cssText =
           'width:48px;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
         dur.onchange = () => {
@@ -899,6 +1017,7 @@ class ItemManagerTool implements EditorTool {
 
         const del = document.createElement('button');
         del.textContent = '🗑';
+        del.title = 'Remove this stat buff.';
         del.style.cssText =
           'font:11px monospace;padding:1px 6px;cursor:pointer;border-radius:3px;background:#1d2530;color:#cde;border:1px solid #3a4a5a;';
         del.onclick = () => {
@@ -925,7 +1044,9 @@ class ItemManagerTool implements EditorTool {
         commit();
         renderRows();
       },
-      wrap
+      wrap,
+      false,
+      'Add a timed stat buff granted when the consumable is used.'
     );
     this.statsEl!.appendChild(wrap);
   }
@@ -934,10 +1055,12 @@ class ItemManagerTool implements EditorTool {
     label: string,
     fn: () => void,
     parent: HTMLElement,
-    accent = false
+    accent = false,
+    tip?: string
   ): HTMLButtonElement {
     const b = document.createElement('button');
     b.textContent = label;
+    if (tip) b.title = tip;
     b.style.cssText =
       'font:11px monospace;padding:4px 8px;cursor:pointer;border-radius:3px;' +
       (accent

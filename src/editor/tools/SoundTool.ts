@@ -510,14 +510,32 @@ class SoundTool implements EditorTool {
     title.textContent = 'SOUND MANAGER';
     title.style.cssText = 'color:#5ad0e8;font-weight:bold;letter-spacing:1px;flex:1;';
     header.appendChild(title);
-    this.mkBtn('■ Stop all', () => stopAllSounds(), header, true);
+    this.mkBtn(
+      '■ Stop all',
+      () => stopAllSounds(),
+      header,
+      true,
+      'Stop every music and SFX preview from either tab.'
+    );
     this.panel.appendChild(header);
 
     // Music | SFX tab switch.
     const tabs = document.createElement('div');
     tabs.style.cssText = 'display:flex;gap:4px;';
-    this.tabBtns.music = this.mkBtn('Music', () => this.switchMode('music'), tabs);
-    this.tabBtns.sfx = this.mkBtn('SFX', () => this.switchMode('sfx'), tabs);
+    this.tabBtns.music = this.mkBtn(
+      'Music',
+      () => this.switchMode('music'),
+      tabs,
+      false,
+      'Edit map music trigger areas (which song plays where).'
+    );
+    this.tabBtns.sfx = this.mkBtn(
+      'SFX',
+      () => this.switchMode('sfx'),
+      tabs,
+      false,
+      'Assign which sound each game event plays, and its volume.'
+    );
     this.panel.appendChild(tabs);
 
     // --- Music tab body ---
@@ -525,15 +543,24 @@ class SoundTool implements EditorTool {
     this.musicBody.style.cssText = 'display:flex;flex-direction:column;gap:7px;';
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
-    this.mkBtn('+ New area (N)', () => this.startPlacing(), actions);
+    this.mkBtn(
+      '+ New area (N)',
+      () => this.startPlacing(),
+      actions,
+      false,
+      'Draw a new music trigger box on the map (shortcut: N).'
+    );
     // No Save button — edits auto-save via the shell (registered handler).
     this.musicBody.appendChild(actions);
 
     const snapRow = document.createElement('label');
     snapRow.style.cssText = 'display:flex;align-items:center;gap:6px;color:#9fb8cc;font-size:11px;';
+    snapRow.title =
+      'On = snap new/edited areas to the 256×128px sector grid (the SNES music unit).';
     const snapCb = document.createElement('input');
     snapCb.type = 'checkbox';
     snapCb.checked = this.snap;
+    snapCb.title = 'On = snap new/edited areas to the 256×128px sector grid (the SNES music unit).';
     snapCb.onchange = () => (this.snap = snapCb.checked);
     snapRow.append(snapCb, document.createTextNode('snap to sector grid (64×32)'));
     this.musicBody.appendChild(snapRow);
@@ -590,7 +617,11 @@ class SoundTool implements EditorTool {
   private buildSfxBody(host: HTMLDivElement): void {
     // Sound library: a searchable dropdown of ALL sfx so you can audition any of
     // them directly, independent of which game event they're bound to.
-    const libRow = this.mkRow(host, 'library');
+    const libRow = this.mkRow(
+      host,
+      'library',
+      'Audition any sound in the game, independent of event assignments.'
+    );
     let libSel = listSfx()[0]?.id ?? 'none';
     const libPicker = createSpritePicker({
       sections: [{ values: listSfx().map((s) => s.id) }],
@@ -605,7 +636,7 @@ class SoundTool implements EditorTool {
     libPicker.el.style.flex = '1';
     libPicker.el.style.minWidth = '0';
     libRow.appendChild(libPicker.el);
-    this.mkBtn('▶', () => playSfx(libSel), libRow);
+    this.mkBtn('▶', () => playSfx(libSel), libRow, false, 'Play the selected sound.');
 
     const sub = document.createElement('div');
     sub.textContent =
@@ -664,8 +695,9 @@ class SoundTool implements EditorTool {
       });
       picker.el.style.flex = '1';
       picker.el.style.minWidth = '0';
+      picker.el.title = `Sound played for "${evt.label}"; pick to reassign.`;
       top.appendChild(picker.el);
-      this.mkBtn('▶', audition, top);
+      this.mkBtn('▶', audition, top, false, "Play this event's sound at its current volume.");
       card.appendChild(top);
 
       // Line 2: volume slider (0–100%) + live readout.
@@ -674,6 +706,7 @@ class SoundTool implements EditorTool {
       const volLbl = document.createElement('span');
       volLbl.textContent = 'vol';
       volLbl.style.cssText = 'width:120px;flex:none;color:#9fb8cc;font-size:11px;';
+      volLbl.title = "Playback loudness for this event's sound (0–100%, default 100%).";
       volRow.appendChild(volLbl);
 
       const slider = document.createElement('input');
@@ -682,6 +715,7 @@ class SoundTool implements EditorTool {
       slider.max = '100';
       slider.step = '5';
       slider.value = String(Math.round((this.sfxVolumes[evt.id] ?? 1) * 100));
+      slider.title = "Playback loudness for this event's sound (0–100%, default 100%).";
       slider.style.cssText = 'flex:1;min-width:0;accent-color:#5ad0e8;cursor:pointer;';
       const readout = document.createElement('span');
       readout.textContent = `${slider.value}%`;
@@ -770,11 +804,12 @@ class SoundTool implements EditorTool {
         this.shell?.markDirty('music');
         this.refreshList();
       },
-      120
+      120,
+      'Editor label for this music area (blank defaults to "area"); not shown in-game.'
     );
     nameIn.value = a.name;
 
-    const numField = (label: string, get: () => number, set: (n: number) => void) => {
+    const numField = (label: string, get: () => number, set: (n: number) => void, tip?: string) => {
       const i = this.mkInput(
         form,
         label,
@@ -784,7 +819,8 @@ class SoundTool implements EditorTool {
           set(n);
           this.shell?.markDirty('music');
         },
-        64
+        64,
+        tip
       );
       i.value = String(get());
       return i;
@@ -792,28 +828,36 @@ class SoundTool implements EditorTool {
     numField(
       'x',
       () => a.x,
-      (n) => (a.x = Math.round(n))
+      (n) => (a.x = Math.round(n)),
+      'Left edge of the area in world pixels.'
     );
     numField(
       'y',
       () => a.y,
-      (n) => (a.y = Math.round(n))
+      (n) => (a.y = Math.round(n)),
+      'Top edge of the area in world pixels.'
     );
     numField(
       'w',
       () => a.w,
-      (n) => (a.w = Math.max(SECTOR_W, Math.round(n)))
+      (n) => (a.w = Math.max(SECTOR_W, Math.round(n))),
+      'Width in pixels (min one sector = 256px).'
     );
     numField(
       'h',
       () => a.h,
-      (n) => (a.h = Math.max(SECTOR_H, Math.round(n)))
+      (n) => (a.h = Math.max(SECTOR_H, Math.round(n))),
+      'Height in pixels (min one sector = 128px).'
     );
 
     // Song picker — a searchable dropdown of real track titles (same component
     // as the other editor pickers, minus the sprite thumbnail). Type to filter
     // by song number or name; picking auditions the track.
-    const songRow = this.mkRow(form, 'song');
+    const songRow = this.mkRow(
+      form,
+      'song',
+      'The track that plays inside this area; picking one auditions it.'
+    );
     const picker = createSpritePicker({
       sections: [{ values: listSongs().map((s) => String(s.song)) }],
       initial: String(a.song),
@@ -833,12 +877,16 @@ class SoundTool implements EditorTool {
     this.songPicker = picker;
 
     const audRow = this.mkRow(form, '');
-    this.mkBtn('▶ Test', () => previewSong(a.song), audRow);
-    this.mkBtn('■ Stop', () => stopMusic(), audRow);
+    this.mkBtn('▶ Test', () => previewSong(a.song), audRow, false, "Audition this area's song.");
+    this.mkBtn('■ Stop', () => stopMusic(), audRow, false, 'Stop the music preview.');
 
     // Rename the SONG itself (global — like renaming an entity). Writes the
     // song-name override, which the dropdown/overlay/list all read back.
-    const renameRow = this.mkRow(form, 'rename');
+    const renameRow = this.mkRow(
+      form,
+      'rename',
+      'Rename the song itself globally (blank restores its default name); auto-saves song_names.json.'
+    );
     const renameIn = this.mkBareInput(
       renameRow,
       (v) => {
@@ -851,12 +899,19 @@ class SoundTool implements EditorTool {
           `Renamed song ${a.song} to "${name || '(default)'}" — auto-saving song_names.json`
         );
       },
-      150
+      150,
+      'Rename the song itself globally (blank restores its default name); auto-saves song_names.json.'
     );
     this.songNameInput = renameIn;
     this.syncSongName();
 
-    this.mkBtn('Delete area', () => this.deleteSelected(), form);
+    this.mkBtn(
+      'Delete area',
+      () => this.deleteSelected(),
+      form,
+      false,
+      'Remove this music area (the sectors fall back to their ROM musicId).'
+    );
   }
 
   private songPicker: SpritePicker | null = null;
@@ -887,7 +942,8 @@ class SoundTool implements EditorTool {
     label: string,
     fn: () => void,
     parent: HTMLElement,
-    accent = false
+    accent = false,
+    tip?: string
   ): HTMLButtonElement {
     const b = document.createElement('button');
     b.textContent = label;
@@ -896,17 +952,20 @@ class SoundTool implements EditorTool {
       (accent
         ? 'background:#123338;color:#5ad0e8;border:1px solid #5ad0e8;'
         : 'background:#1d2530;color:#cde;border:1px solid #3a4a5a;');
+    if (tip) b.title = tip;
     b.onclick = fn;
     parent.appendChild(b);
     return b;
   }
 
-  private mkRow(parent: HTMLElement, label: string): HTMLDivElement {
+  private mkRow(parent: HTMLElement, label: string, tip?: string): HTMLDivElement {
     const r = document.createElement('div');
     r.style.cssText = 'display:flex;align-items:center;gap:6px;';
     const l = document.createElement('span');
     l.textContent = label;
-    l.style.cssText = 'width:46px;color:#9fb8cc;';
+    l.style.cssText =
+      'width:46px;color:#9fb8cc;' + (tip ? 'cursor:help;border-bottom:1px dotted #4a5a6a;' : '');
+    if (tip) l.title = tip;
     r.appendChild(l);
     parent.appendChild(r);
     return r;
@@ -916,21 +975,24 @@ class SoundTool implements EditorTool {
     parent: HTMLElement,
     label: string,
     onChange: (v: string) => void,
-    width = 64
+    width = 64,
+    tip?: string
   ): HTMLInputElement {
-    const r = this.mkRow(parent, label);
-    return this.mkBareInput(r, onChange, width);
+    const r = this.mkRow(parent, label, tip);
+    return this.mkBareInput(r, onChange, width, tip);
   }
 
   private mkBareInput(
     parent: HTMLElement,
     onChange: (v: string) => void,
-    width = 64
+    width = 64,
+    tip?: string
   ): HTMLInputElement {
     const i = document.createElement('input');
     i.style.cssText =
       `width:${width}px;font:11px monospace;background:#0c1014;color:#cde;` +
       'border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
+    if (tip) i.title = tip;
     i.onchange = () => onChange(i.value);
     parent.appendChild(i);
     return i;

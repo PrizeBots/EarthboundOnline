@@ -366,6 +366,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       noteEditorExit: () => {},
       noteTeleport: () => {},
       wallBetween: () => false,
+      doorAt: () => null,
+      stairAt: () => false,
     };
   }
   // The ROM overworld is the base; the Room Manager's custom rooms are stamped
@@ -612,6 +614,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     return needSet === WORLD_SET_FLAGS.has(flag & 0x7fff);
   }
   let doorTriggers = []; // [{x, y}] feet positions that warp a body through
+  let stairTriggers = []; // [{x, y}] escalator/stairway trigger centers (ride gate)
 
   function loadDoorTriggers() {
     let raw;
@@ -630,10 +633,21 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     const edits = (ov && ov.edits) || {};
     const additions = (ov && ov.additions) || [];
     const out = [];
+    const stairs = [];
     raw.forEach((area, idx) => {
       const originX = (idx % DOOR_GRID_COLS) * DOOR_AREA_PX;
       const originY = Math.floor(idx / DOOR_GRID_COLS) * DOOR_AREA_PX;
       for (const d of area) {
+        // Escalator/stairway trigger (incl. NOWHERE far-landing): record its
+        // center so we can validate a player really is on an escalator before
+        // honoring their client-driven ride warp (mirror DoorManager stair load).
+        if (d.type === 'stair') {
+          stairs.push({
+            x: originX + d.x * MINITILE + MINITILE / 2,
+            y: originY + d.y * MINITILE + MINITILE / 2,
+          });
+          continue;
+        }
         if (d.type !== 'door') continue;
         if (!isDoorActive(d.flag || 0)) continue;
         const baseX = originX + d.x * MINITILE + MINITILE;
@@ -662,7 +676,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     for (const a of additions)
       out.push({ x: a.worldX, y: a.worldY + DOOR_FOOT_OFFSET, destX: a.destX, destY: a.destY });
     doorTriggers = out;
-    console.log(`[npcSim] loaded ${out.length} door triggers`);
+    stairTriggers = stairs;
+    console.log(`[npcSim] loaded ${out.length} door triggers, ${stairs.length} stair triggers`);
   }
   loadDoorTriggers();
   fs.watchFile(path.join(assetsDir, DOORS_FILE), { interval: 2000 }, loadDoorTriggers);
@@ -3073,6 +3088,24 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     if (target.hp <= 0) {
       target.hp = 0;
       target.dead = true;
+      // Death throw: tell clients which way the corpse should tumble + how hard.
+      // The body flies AWAY from the attacker (unit vector atk->target); `force`
+      // is the killing blow's damage (drives the rotate-and-bounce distance in
+      // DeathFx). No `atk` (poison / scripted kill) → 0,0 = rotate in place.
+      // Visual only; the batched npc_hp delta still hides the live sprite.
+      if (broadcastCb) {
+        let dx = atk ? target.x - atk.x : 0;
+        let dy = atk ? target.y - atk.y : 0;
+        const len = Math.hypot(dx, dy);
+        if (len > 0.001) {
+          dx /= len;
+          dy /= len;
+        } else {
+          dx = 0;
+          dy = 0;
+        }
+        broadcastCb({ type: 'npc_death', id: target.id, dx, dy, force: dmg });
+      }
       if (target.isEnemy) {
         target.respawnAt =
           now + (target.spawner ? target.spawner.respawnDelayMs || 9000 : STATIC_RESPAWN_MS);
@@ -3854,6 +3887,20 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
      *  Same triggers the chase AI uses (resolveDoor). */
     doorAt(x, y) {
       return resolveDoor(x, y);
+    },
+
+    /** True if (x,y) sits on an escalator/stairway trigger. The escalator ride
+     *  (gliding the player diagonally across the solid steps) is client-driven,
+     *  so we can't recompute the landing here — but we CAN confirm the player is
+     *  really on an escalator before honoring their ride warp, which gates
+     *  `ride_warp` to "actually on a stair" (anti-cheat). Lenient radius: the
+     *  authoritative position lags the visual a few px by ride start. */
+    stairAt(x, y) {
+      const R = 16;
+      for (const s of stairTriggers) {
+        if (Math.abs(s.x - x) <= R && Math.abs(s.y - y) <= R) return true;
+      }
+      return false;
     },
 
     /** Every live ground drop (wire shape), for a newly joining client. */

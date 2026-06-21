@@ -391,7 +391,13 @@ class PsiManagerTool implements EditorTool {
     hint.style.cssText = 'color:#8a93a8;font-size:10px;line-height:1.4;';
     this.panel.appendChild(hint);
 
-    this.mkBtn('🔮 Open PSI library (center)', () => this.desktop?.toggle(), this.panel, true);
+    this.mkBtn(
+      '🔮 Open PSI library (center)',
+      () => this.desktop?.toggle(),
+      this.panel,
+      true,
+      'Show/hide the big center gallery of all PSI moves, organized into category folders.'
+    );
 
     this.detailsEl = document.createElement('div');
     this.detailsEl.style.cssText =
@@ -451,18 +457,43 @@ class PsiManagerTool implements EditorTool {
     this.statsEl.appendChild(title);
 
     // Name (override; placeholder = base name) + PP (every move).
-    this.mkTextRow('name', ov.name, base.name, (v) => {
-      this.setName(id, v);
-      this.desktop?.render(); // reflect rename in tiles
-    });
-    this.mkNumRow('PP cost', ov.pp, base.pp, 0, undefined, false, (v) => this.setNum(id, 'pp', v));
+    this.mkTextRow(
+      'name',
+      ov.name,
+      base.name,
+      (v) => {
+        this.setName(id, v);
+        this.desktop?.render(); // reflect rename in tiles
+      },
+      'Display name override; blank reverts to the base move name.'
+    );
+    this.mkNumRow(
+      'PP cost',
+      ov.pp,
+      base.pp,
+      0,
+      undefined,
+      false,
+      (v) => this.setNum(id, 'pp', v),
+      'PP spent to cast; blank reverts to the base cost. Caster needs at least this much PP.'
+    );
 
     if (base.category === 'recover') {
-      this.mkNumRow('heal HP', ov.heal, base.heal ?? 0, 0, undefined, false, (v) =>
-        this.setNum(id, 'heal', v)
+      this.mkNumRow(
+        'heal HP',
+        ov.heal,
+        base.heal ?? 0,
+        0,
+        undefined,
+        false,
+        (v) => this.setNum(id, 'heal', v),
+        'HP restored to the target on cast; blank reverts to base. 0 = heals no HP.'
       );
-      this.mkCheckRow('cures status', effectivePsi(id, this.overrides)?.cures ?? false, (on) =>
-        this.setBool(id, 'cures', on)
+      this.mkCheckRow(
+        'cures status',
+        effectivePsi(id, this.overrides)?.cures ?? false,
+        (on) => this.setBool(id, 'cures', on),
+        'On = casting also clears the target’s status ailments.'
       );
       // reviveFrac is 0..1 stored; edited as a percent of max HP (0 = not a revive).
       const curRevive = ov.reviveFrac === undefined ? undefined : Math.round(ov.reviveFrac * 100);
@@ -473,15 +504,23 @@ class PsiManagerTool implements EditorTool {
         0,
         100,
         false,
-        (v) => this.setNum(id, 'reviveFrac', v === undefined ? undefined : v / 100)
+        (v) => this.setNum(id, 'reviveFrac', v === undefined ? undefined : v / 100),
+        'Revives a downed ally to this % of max HP (0 = not a revive, 100 = full HP).'
       );
       const note = document.createElement('div');
       note.textContent = 'revive: cast on a DOWNED ally. 100% = full HP. 0 = no revive.';
       note.style.cssText = 'color:#667;font-size:10px;margin-left:62px;';
       this.statsEl.appendChild(note);
     } else if (base.category === 'offense') {
-      this.mkNumRow('damage', ov.damage, base.damage ?? 0, 0, undefined, false, (v) =>
-        this.setNum(id, 'damage', v)
+      this.mkNumRow(
+        'damage',
+        ov.damage,
+        base.damage ?? 0,
+        0,
+        undefined,
+        false,
+        (v) => this.setNum(id, 'damage', v),
+        'Base damage dealt to each enemy hit; blank reverts to the base value.'
       );
       // Targeting shape decides which reach fields are relevant.
       const eff = effectivePsi(id, this.overrides);
@@ -498,17 +537,39 @@ class PsiManagerTool implements EditorTool {
         (v) => {
           this.setShape(id, v);
           this.refreshStats(); // swap in the fields for the new shape
-        }
+        },
+        'Targeting shape: radius (circle around caster), line (forward beam), or bolts (random strikes).'
       );
       if (shape === 'line') {
-        this.mkNumRow('length px', ov.length, base.length ?? 240, 16, 1024, false, (v) =>
-          this.setNum(id, 'length', v)
+        this.mkNumRow(
+          'length px',
+          ov.length,
+          base.length ?? 240,
+          16,
+          1024,
+          false,
+          (v) => this.setNum(id, 'length', v),
+          'Beam reach forward in pixels (16–1024); blank uses the base length.'
         );
-        this.mkNumRow('muzzle ½w', ov.width, base.width ?? 32, 4, 512, false, (v) =>
-          this.setNum(id, 'width', v)
+        this.mkNumRow(
+          'muzzle ½w',
+          ov.width,
+          base.width ?? 32,
+          4,
+          512,
+          false,
+          (v) => this.setNum(id, 'width', v),
+          'Half-width of the beam at the caster, in pixels (4–512); blank uses base.'
         );
-        this.mkNumRow('spread', ov.spread, base.spread ?? 0, 0, 4, true, (v) =>
-          this.setNum(id, 'spread', v)
+        this.mkNumRow(
+          'spread',
+          ov.spread,
+          base.spread ?? 0,
+          0,
+          4,
+          true,
+          (v) => this.setNum(id, 'spread', v),
+          'Extra ½-width gained per pixel forward (cone flare); 0 = straight beam.'
         );
         const note = document.createElement('div');
         note.textContent =
@@ -516,33 +577,71 @@ class PsiManagerTool implements EditorTool {
         note.style.cssText = 'color:#667;font-size:10px;margin-left:62px;';
         this.statsEl.appendChild(note);
       } else if (shape === 'bolts') {
-        this.mkNumRow('bolts', ov.bolts, base.bolts ?? 1, 1, 32, false, (v) =>
-          this.setNum(id, 'bolts', v)
+        this.mkNumRow(
+          'bolts',
+          ov.bolts,
+          base.bolts ?? 1,
+          1,
+          32,
+          false,
+          (v) => this.setNum(id, 'bolts', v),
+          'How many random enemies in range are struck (1–32); blank uses base.'
         );
-        this.mkNumRow('range px', ov.range, base.range ?? 520, 16, 1024, false, (v) =>
-          this.setNum(id, 'range', v)
+        this.mkNumRow(
+          'range px',
+          ov.range,
+          base.range ?? 520,
+          16,
+          1024,
+          false,
+          (v) => this.setNum(id, 'range', v),
+          'Radius in pixels within which targets can be struck (16–1024); blank uses base.'
         );
         const note = document.createElement('div');
         note.textContent = 'Strikes that many RANDOM enemies within range.';
         note.style.cssText = 'color:#667;font-size:10px;margin-left:62px;';
         this.statsEl.appendChild(note);
       } else {
-        this.mkNumRow('range px', ov.range, base.range ?? 240, 16, 640, false, (v) =>
-          this.setNum(id, 'range', v)
+        this.mkNumRow(
+          'range px',
+          ov.range,
+          base.range ?? 240,
+          16,
+          640,
+          false,
+          (v) => this.setNum(id, 'range', v),
+          'Radius of the effect circle around the caster, in pixels (16–640); blank uses base.'
         );
-        this.mkCheckRow('hits all in range', eff?.multi ?? false, (on) =>
-          this.setBool(id, 'multi', on)
+        this.mkCheckRow(
+          'hits all in range',
+          eff?.multi ?? false,
+          (on) => this.setBool(id, 'multi', on),
+          'On = damages every enemy in the radius; off = the single nearest target.'
         );
       }
       this.buildInflictEditor(id);
     } else if ((effectivePsi(id, this.overrides)?.inflict?.length ?? 0) > 0 || base.range) {
       // Ailment-style assist (Hypnosis/Paralysis/Brainshock): a status inflicter,
       // not a buff. Edit its reach + the status procs.
-      this.mkNumRow('range px', ov.range, base.range ?? 240, 16, 640, false, (v) =>
-        this.setNum(id, 'range', v)
+      this.mkNumRow(
+        'range px',
+        ov.range,
+        base.range ?? 240,
+        16,
+        640,
+        false,
+        (v) => this.setNum(id, 'range', v),
+        'Radius around the caster in which enemies are affected, in pixels (16–640); blank uses base.'
       );
-      this.mkNumRow('damage', ov.damage, base.damage ?? 0, 0, undefined, false, (v) =>
-        this.setNum(id, 'damage', v)
+      this.mkNumRow(
+        'damage',
+        ov.damage,
+        base.damage ?? 0,
+        0,
+        undefined,
+        false,
+        (v) => this.setNum(id, 'damage', v),
+        'Direct damage dealt alongside the status proc; blank reverts to base. 0 = no damage.'
       );
       this.buildInflictEditor(id);
     } else {
@@ -578,6 +677,7 @@ class PsiManagerTool implements EditorTool {
         const r = document.createElement('div');
         r.style.cssText = 'display:flex;align-items:center;gap:4px;';
         const sel = document.createElement('select');
+        sel.title = 'Status ailment this move may inflict on hit.';
         sel.style.cssText =
           'flex:1;min-width:0;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
         for (const o of STATUS_OPTIONS) {
@@ -595,7 +695,7 @@ class PsiManagerTool implements EditorTool {
         const pct = document.createElement('input');
         pct.type = 'number';
         pct.value = String(entry.chance);
-        pct.title = 'proc chance %';
+        pct.title = 'Proc chance % (1–100), scaled by the target’s resistance.';
         pct.style.cssText =
           'width:48px;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
         pct.onchange = () => {
@@ -613,6 +713,7 @@ class PsiManagerTool implements EditorTool {
         r.appendChild(pctLbl);
         const del = document.createElement('button');
         del.textContent = '🗑';
+        del.title = 'Remove this status inflict.';
         del.style.cssText =
           'font:11px monospace;padding:1px 6px;cursor:pointer;border-radius:3px;background:#1d2530;color:#cde;border:1px solid #3a4a5a;';
         del.onclick = () => {
@@ -639,7 +740,9 @@ class PsiManagerTool implements EditorTool {
         commit();
         renderRows();
       },
-      wrap
+      wrap,
+      false,
+      'Add another status this move can inflict on hit.'
     );
     const hint = document.createElement('div');
     hint.textContent = 'Chance is scaled by the target’s resistance to that status.';
@@ -657,18 +760,22 @@ class PsiManagerTool implements EditorTool {
     min: number,
     max: number | undefined,
     float: boolean,
-    onSet: (v: number | undefined) => void
+    onSet: (v: number | undefined) => void,
+    tip?: string
   ): void {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:6px;';
     const l = document.createElement('span');
     l.textContent = label;
-    l.style.cssText = 'width:62px;color:#9fb8cc;';
+    l.style.cssText =
+      'width:62px;color:#9fb8cc;' + (tip ? 'cursor:help;border-bottom:1px dotted #4a5a6a;' : '');
+    if (tip) l.title = tip;
     row.appendChild(l);
     const i = document.createElement('input');
     i.type = 'number';
     i.value = cur === undefined ? '' : String(cur);
     i.placeholder = `${base}`;
+    if (tip) i.title = tip;
     i.style.cssText =
       'width:72px;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
     i.onchange = () => {
@@ -703,15 +810,19 @@ class PsiManagerTool implements EditorTool {
     cur: T,
     opts: { value: T; label: string }[],
     base: T,
-    onSet: (v: T) => void
+    onSet: (v: T) => void,
+    tip?: string
   ): void {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:6px;';
     const l = document.createElement('span');
     l.textContent = label;
-    l.style.cssText = 'width:62px;color:#9fb8cc;';
+    l.style.cssText =
+      'width:62px;color:#9fb8cc;' + (tip ? 'cursor:help;border-bottom:1px dotted #4a5a6a;' : '');
+    if (tip) l.title = tip;
     row.appendChild(l);
     const sel = document.createElement('select');
+    if (tip) sel.title = tip;
     sel.style.cssText =
       'flex:1;min-width:0;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
     for (const o of opts) {
@@ -726,16 +837,19 @@ class PsiManagerTool implements EditorTool {
     this.statsEl!.appendChild(row);
   }
 
-  private mkCheckRow(label: string, on: boolean, onSet: (v: boolean) => void): void {
+  private mkCheckRow(label: string, on: boolean, onSet: (v: boolean) => void, tip?: string): void {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:6px;';
     const l = document.createElement('span');
     l.textContent = label;
-    l.style.cssText = 'width:62px;color:#9fb8cc;';
+    l.style.cssText =
+      'width:62px;color:#9fb8cc;' + (tip ? 'cursor:help;border-bottom:1px dotted #4a5a6a;' : '');
+    if (tip) l.title = tip;
     row.appendChild(l);
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = on;
+    if (tip) cb.title = tip;
     cb.style.cursor = 'pointer';
     cb.onchange = () => onSet(cb.checked);
     row.appendChild(cb);
@@ -746,19 +860,23 @@ class PsiManagerTool implements EditorTool {
     label: string,
     cur: string | undefined,
     base: string,
-    onSet: (v: string) => void
+    onSet: (v: string) => void,
+    tip?: string
   ): void {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:6px;';
     const l = document.createElement('span');
     l.textContent = label;
-    l.style.cssText = 'width:62px;color:#9fb8cc;';
+    l.style.cssText =
+      'width:62px;color:#9fb8cc;' + (tip ? 'cursor:help;border-bottom:1px dotted #4a5a6a;' : '');
+    if (tip) l.title = tip;
     row.appendChild(l);
     const i = document.createElement('input');
     i.type = 'text';
     i.value = cur ?? '';
     i.placeholder = base;
     i.maxLength = 40;
+    if (tip) i.title = tip;
     i.style.cssText =
       'flex:1;min-width:0;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
     i.onchange = () => onSet(i.value);
@@ -770,10 +888,12 @@ class PsiManagerTool implements EditorTool {
     label: string,
     fn: () => void,
     parent: HTMLElement,
-    accent = false
+    accent = false,
+    tip?: string
   ): HTMLButtonElement {
     const b = document.createElement('button');
     b.textContent = label;
+    if (tip) b.title = tip;
     b.style.cssText =
       'font:11px monospace;padding:4px 8px;cursor:pointer;border-radius:3px;' +
       (accent

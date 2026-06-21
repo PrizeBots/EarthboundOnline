@@ -9,6 +9,8 @@ import { drawSprite, getSpriteGroupMeta, SpritePart } from './SpriteManager';
 import { getNameplate, getLevelPlate } from './NamePlate';
 import { drawHeldItem, isItemBehind } from './Items';
 import { renderDrops } from './DropManager';
+import { collectProjectileSprites, ProjectileSprite } from './Projectiles';
+import { collectDeathSprites, DeathSprite } from './DeathFx';
 import {
   getSpritePriority,
   getPromotedMinitiles,
@@ -16,7 +18,8 @@ import {
   FG_PROMOTE_BIT,
 } from './Collision';
 import { getStatus } from './StatusModal';
-import { drawText, measureText } from './TextRenderer';
+import { rollHealth, pendFlash, HpHolder } from './HealthRoll';
+import { drawText, measureText, getLineHeight } from './TextRenderer';
 import {
   Pose,
   Direction,
@@ -120,7 +123,8 @@ function drawBarCapsule(
   ratio: number,
   color: string,
   topR: number,
-  bottomR: number
+  bottomR: number,
+  pend?: { ratio: number; color: string }
 ): void {
   const B = 0.5; // black frame thickness
   const w = BAR_W + 2 * B;
@@ -132,6 +136,14 @@ function drawBarCapsule(
   ctx.fillStyle = '#000';
   ctx.fill();
   ctx.clip(); // the fill can't spill past the capsule
+  // Pending (rolling) chunk first: the soon-to-drain HP sits BEHIND the real fill,
+  // so the bright flash shows in the gap between current HP and where the bar's
+  // still catching down to (EB rolling-counter look).
+  if (pend && pend.ratio > ratio) {
+    const pf = Math.round(pend.ratio * BAR_W);
+    ctx.fillStyle = pend.color;
+    ctx.fillRect(x + B, y + B, pf, BAR_H);
+  }
   const fill = Math.round(ratio * BAR_W);
   if (fill > 0) {
     ctx.fillStyle = color;
@@ -140,15 +152,26 @@ function drawBarCapsule(
   ctx.restore();
 }
 
+// The flashing color of the soon-to-drain (pending) HP chunk: pulses between a
+// hot white and the damage red so the lost amount reads on the bar before the
+// roll takes it away (EB rolling-counter feel). `f` is 0..1 from pendFlash.
+function pendColor(f: number): string {
+  const lerp = (a: number, b: number, t: number) => Math.round(a + (b - a) * t);
+  return `rgb(${lerp(216, 255, f)},${lerp(40, 230, f)},${lerp(24, 120, f)})`;
+}
+
 // `ppRatio` (0..1) is supplied ONLY for the local player — when present, a PSI
 // capsule sits flush beneath the HP capsule, sharing one black divider line.
+// `hpHolder` (when given) drives the rolling fill: the bar shows the real HP
+// fill with the soon-to-drain chunk flashing behind it, advanced each frame.
 function drawHealthBar(
   ctx: CanvasRenderingContext2D,
   centerX: number,
   feetY: number,
   spriteGroupId: number,
   ratio: number,
-  ppRatio?: number
+  ppRatio?: number,
+  hpHolder?: HpHolder
 ): void {
   const spriteH = getSpriteGroupMeta(spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
   const B = 0.5;
@@ -159,9 +182,21 @@ function drawHealthBar(
   const total = h + (hasPP ? h : 0); // flush — no gap between the two
   const x = centerX - BAR_W / 2 - B;
   const y = feetY - spriteH - BAR_GAP - total;
+  // Rolling pending chunk: advance displayHp toward real HP this frame, then draw
+  // the lagging part as a flashing band behind the real fill while it catches down.
+  let pend: { ratio: number; color: string } | undefined;
+  if (hpHolder && hpHolder.maxHp > 0) {
+    const tnow = performance.now();
+    rollHealth(hpHolder, tnow);
+    const dispRatio = Math.max(
+      0,
+      Math.min(1, (hpHolder.displayHp ?? hpHolder.hp) / hpHolder.maxHp)
+    );
+    if (dispRatio > ratio + 0.001) pend = { ratio: dispRatio, color: pendColor(pendFlash(tnow)) };
+  }
   // HP rounds its top fully; its inner (bottom) end is lightly rounded — or
   // fully rounded when it's the only bar (enemies, no PP).
-  drawBarCapsule(ctx, x, y, ratio, healthColor(ratio), R, hasPP ? INNER_R : R);
+  drawBarCapsule(ctx, x, y, ratio, healthColor(ratio), R, hasPP ? INNER_R : R, pend);
   if (hasPP) {
     drawBarCapsule(ctx, x, y + h, ppRatio, ppColor(ppRatio), INNER_R, R);
   }
@@ -614,7 +649,8 @@ export class Renderer {
           playerSy,
           player.spriteGroupId,
           player.healthRatio,
-          ppRatio
+          ppRatio,
+          player
         );
         drawNameplate(
           this.ctx,
@@ -668,7 +704,15 @@ export class Renderer {
           // Other players: an HP bar (no PSI — that's private) with their
           // name + level above it, so everyone can read who's who and how strong.
           const ratio = rp.maxHp ? Math.max(0, Math.min(1, (rp.hp ?? rp.maxHp) / rp.maxHp)) : 1;
-          drawHealthBar(this.ctx, rpScreenX, rpScreenY, rp.spriteGroupId, ratio);
+          drawHealthBar(
+            this.ctx,
+            rpScreenX,
+            rpScreenY,
+            rp.spriteGroupId,
+            ratio,
+            undefined,
+            rp.maxHp != null && rp.hp != null ? (rp as HpHolder) : undefined
+          );
           drawNameplate(
             this.ctx,
             rpScreenX,
@@ -699,7 +743,15 @@ export class Renderer {
         showBar || showPips
           ? () => {
               if (showBar)
-                drawHealthBar(this.ctx, nScreenX, nScreenY, npc.spriteGroupId, npc.healthRatio);
+                drawHealthBar(
+                  this.ctx,
+                  nScreenX,
+                  nScreenY,
+                  npc.spriteGroupId,
+                  npc.healthRatio,
+                  undefined,
+                  npc
+                );
               drawStatusPips(this.ctx, nScreenX, nScreenY, npc.spriteGroupId, false, npc.statuses);
             }
           : undefined;
@@ -720,6 +772,39 @@ export class Renderer {
           ),
         drawBar
       );
+    }
+
+    // Ranged-weapon shots + impact sparks join the same Y-sorted sprite pass so
+    // they respect layer depth: a shot flying behind a building/canopy (or behind
+    // a sprite in front of it) is occluded instead of always painting on top. A
+    // projectile is a point object, so ANY behind-FG priority hides the whole
+    // thing — map a nonzero priority to the 0x02 "whole body behind" bit and let
+    // the job loop's wholeBehind branch redraw the FG over it.
+    const projSprites: ProjectileSprite[] = [];
+    collectProjectileSprites(projSprites);
+    for (const ps of projSprites) {
+      jobs.push({
+        worldX: ps.x,
+        feetY: ps.y,
+        local: false,
+        pri: getSpritePriority(ps.x, ps.y) ? 0x02 : 0,
+        drawPart: () => ps.draw(this.ctx, camX, camY),
+      });
+    }
+
+    // Death throws (slain bodies tumbling + bouncing, see DeathFx) likewise join
+    // the Y-sorted pass, so a corpse flung behind a building/canopy is occluded —
+    // it sorts by its ground feet-Y like any other sprite.
+    const deathSprites: DeathSprite[] = [];
+    collectDeathSprites(deathSprites);
+    for (const ds of deathSprites) {
+      jobs.push({
+        worldX: ds.x,
+        feetY: ds.y,
+        local: false,
+        pri: getSpritePriority(ds.x, ds.y) ? 0x02 : 0,
+        drawPart: () => ds.draw(this.ctx, camX, camY),
+      });
     }
 
     // The FG layer over the BG for areas with NO sprite (sprites re-cover their

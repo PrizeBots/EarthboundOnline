@@ -104,6 +104,19 @@ function createEventRuntime({ root, getPlayers, broadcast, warpPlayer }) {
     console.log(`[events] '${def.id}' END (${reason})`);
   }
 
+  // A party member TRULY died (gameHost._trueDeath, after the 30s KO window or a
+  // give-up). _trueDeath has already respawned them at the spawn point, so we just
+  // drop them from the event — the end-of-event sweep must NOT warp a dead player
+  // to the exit. This is the "survive → exit, die → spawn" split.
+  function onPlayerDeath(playerId) {
+    for (const def of defs) {
+      const s = state.get(def.id);
+      if (s && s.party.delete(playerId)) {
+        console.log(`[events] '${def.id}' member ${playerId} died → out to spawn, not exit`);
+      }
+    }
+  }
+
   function tick(now) {
     for (const def of defs) {
       const s = st(def.id);
@@ -123,18 +136,15 @@ function createEventRuntime({ root, getPlayers, broadcast, warpPlayer }) {
           else s.phase = 'idle'; // not enough players, or no entrance authored
         }
       } else if (s.phase === 'active') {
-        const live = new Map();
-        for (const p of getPlayers()) live.set(p.id, p);
-        // Eject dead/downed/disconnected members to the exit immediately.
+        const liveIds = new Set();
+        for (const p of getPlayers()) liveIds.add(p.id);
+        // Drop only DISCONNECTED members. A KO'd (downed) member STAYS in the
+        // event — they're revivable in the room and shouldn't be warped out just
+        // for being knocked out. A member who TRULY dies is removed (and sent to
+        // their spawn point, never the exit) by onPlayerDeath, fired from
+        // gameHost._trueDeath — so the only thing to prune here is a lost socket.
         for (const id of [...s.party]) {
-          const p = live.get(id);
-          if (!p || p.downed) {
-            s.party.delete(id);
-            if (p) {
-              const w = exitWarp(def);
-              warpPlayer(id, w.x, w.y, w.dir | 0, null);
-            }
-          }
+          if (!liveIds.has(id)) s.party.delete(id);
         }
         const end = Array.isArray(def.end) ? def.end : [];
         const wantsTimer = end.length === 0 || end.includes('timer');
@@ -185,6 +195,7 @@ function createEventRuntime({ root, getPlayers, broadcast, warpPlayer }) {
 
   return {
     onTalk,
+    onPlayerDeath,
     tick,
     stop() {
       fs.unwatchFile(EVENTS_PATH);

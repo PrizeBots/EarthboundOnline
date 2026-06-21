@@ -10,8 +10,10 @@ import { loadJSON } from './AssetLoader';
 import { loadSpriteGroup, getSpriteGroupMeta } from './SpriteManager';
 import { NPC, NPCKind } from './NPC';
 import { spawnDamageNumber } from './Emitter';
+import { noteHealthDamage } from './HealthRoll';
 import { FLASH_MS } from './Juice';
 import { playEventSfxAt } from './SfxEvents';
+import { spawnDeathBody } from './DeathFx';
 import { Direction, POSES } from '../types';
 import type { NpcUpdate } from './Network';
 import { createInterpolator, applyPredOffset, injectPredOffset } from './RemoteInterp';
@@ -536,6 +538,7 @@ export function applyNpcHp(rows: [number, number, number][]): void {
     if (prev > 0 && hp < prev) {
       const dmg = prev - hp;
       const now = Date.now();
+      noteHealthDamage(npc, prev, performance.now()); // roll the bar: hold, flash, drain
       spawnDamageNumber(npc.x, npc.y, dmg);
       // Flash the struck sprite white — always; it's harmless cosmetic feedback for
       // every hit, ours or not. The freeze + shake juice is NOT fired here: it rides
@@ -552,6 +555,30 @@ export function applyNpcHp(rows: [number, number, number][]): void {
       npcInterp.drop(String(id));
     }
   }
+}
+
+/**
+ * A combatant died (server `npc_death`): play the rotate-and-bounce death throw
+ * from its current on-screen visual, flung along (dx,dy) by `force` (see DeathFx).
+ * Captured BEFORE the batched npc_hp delta hides the live slot — but even if that
+ * arrives first the NPC object still holds its sprite/position, so this is robust
+ * to message ordering. Gated by the entity's class-level `rotateOnDeath` flag.
+ */
+export function applyNpcDeath(id: number, dx: number, dy: number, force: number): void {
+  const npc = npcsById[id];
+  if (!npc || !npc.rotateOnDeath) return;
+  spawnDeathBody({
+    x: npc.x,
+    y: npc.y,
+    groupId: npc.spriteGroupId,
+    direction: npc.direction,
+    frame: npc.frame,
+    pose: npc.pose,
+    itemId: npc.itemId,
+    dx,
+    dy,
+    force,
+  });
 }
 
 /** Apply server status-set deltas to actors: [id, [statusId,…]] → npc.statuses. */

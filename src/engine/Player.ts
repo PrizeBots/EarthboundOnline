@@ -75,6 +75,10 @@ export class Player extends Entity {
   // and replay the un-acked inputs so prediction stays ahead with no rubber-band.
   private pendingInputs: { seq: number; dx: number; dy: number }[] = [];
   private inputSeq = 0;
+  /** Riding an escalator/stairway: the glide is client-driven and the server
+   *  isn't told until the ride ends, so its `pos` ACKs are stale — suppress
+   *  reconciliation (it would yank us back to the escalator's foot mid-glide). */
+  riding = false;
   /** The input applied THIS frame, for Game to send (null = idle, send nothing). */
   lastInputToSend: { seq: number; dx: number; dy: number } | null = null;
   private poseTimer = 0;
@@ -272,7 +276,7 @@ export class Player extends Entity {
    * another system owns position (knockback slide / status freeze).
    */
   reconcile(sx: number, sy: number, ackSeq: number): void {
-    if (this.kbFrames > 0 || Date.now() < this.frozenUntil) return;
+    if (this.riding || this.kbFrames > 0 || Date.now() < this.frozenUntil) return;
     this.pendingInputs = this.pendingInputs.filter((i) => i.seq > ackSeq);
     this.x = sx;
     this.y = sy;
@@ -312,6 +316,14 @@ export class Player extends Entity {
     this.moving = true;
     this.stepAnimation();
     return moveSpeed;
+  }
+
+  /** Escalator ride finished: re-enable server reconciliation and drop any inputs
+   *  queued during the (server-untracked) glide so they don't replay. The server
+   *  is resynced separately via `sendRideWarp`. */
+  endRide(): void {
+    this.riding = false;
+    this.pendingInputs.length = 0;
   }
 
   private dirFromInput(dx: number, dy: number): Direction {

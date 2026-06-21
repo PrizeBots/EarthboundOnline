@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "entities": {
+    "153": {
+      "combat": "brave",
+      "crit": 25,
+      "dodge": 20,
+      "speed": 1.5,
+      "attackCooldownMs": 100
+    },
+    "282": {
+      "level": 2
+    },
+    "284": {
+      "hp": 15,
+      "level": 2,
+      "xp": 12,
+      "damage": 7,
+      "attackCooldownMs": 700,
+      "speed": 0.7,
+      "attackRange": 1,
+      "crit": 1,
+      "dodge": 1,
+      "detectRange": 22,
+      "giveUpRange": 55,
+      "wanderRadius": 200
+    },
+    "388": {
+      "hp": 50,
+      "level": 3,
+      "xp": 60,
+      "damage": 19,
+      "attackCooldownMs": 1000,
+      "speed": 1,
+      "attackRange": 16,
+      "crit": 12,
+      "dodge": 2,
+      "detectRange": 10,
+      "giveUpRange": 200,
+      "wanderRadius": 100,
+      "combat": "nervous"
+    }
+  }
+}

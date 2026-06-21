@@ -43,6 +43,9 @@ type NetworkCallback = {
   onNpcStatus?: (rows: [number, string[]][]) => void;
   /** An actor's held weapon changed: [npcId, itemId|null] rows (welcome + deltas). */
   onNpcEquip?: (rows: [number, string | null][]) => void;
+  /** A combatant died: play its rotate-and-bounce death throw. (dx,dy) is the
+   *  unit heading the body is flung (away from the attacker); force = final dmg. */
+  onNpcDeath?: (id: number, dx: number, dy: number, force: number) => void;
   /**
    * A player's HP changed (enemy hit / respawn refill / item use). dmg>0 = took
    * a hit; heal>0 = restored HP (e.g. ate a Cookie).
@@ -372,6 +375,9 @@ function openSocket() {
       case 'npc_hp':
         callbacks?.onNpcHp(msg.hps);
         break;
+      case 'npc_death':
+        callbacks?.onNpcDeath?.(msg.id, msg.dx ?? 0, msg.dy ?? 0, msg.force ?? 0);
+        break;
       case 'player_join':
         callbacks?.onPlayerJoin(msg.player);
         break;
@@ -565,6 +571,16 @@ export function sendInput(seq: number, dx: number, dy: number) {
 export function sendUseDoor() {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'use_door' }));
+  }
+}
+
+/** Escalator/stairway ride finished: tell the server our landing spot. The
+ *  glide across the solid steps is client-driven; the server honors this only
+ *  when our authoritative position is actually on a stair trigger (anti-cheat),
+ *  then resyncs there + raises the warp shield. */
+export function sendRideWarp(x: number, y: number) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'ride_warp', x: Math.round(x), y: Math.round(y) }));
   }
 }
 

@@ -76,6 +76,11 @@ export interface RemotePlayer {
   // Synced by the server's player_hp broadcasts (enemy combat). Missing = full bar.
   hp?: number;
   maxHp?: number;
+  /** EB rolling-bar state (see HealthRoll) — displayHp lags `hp` so the bar drains
+   *  in increments; dmgPendUntil/rollTs drive the hold-flash + drain. Visual only. */
+  displayHp?: number;
+  dmgPendUntil?: number;
+  rollTs?: number;
   /** Entity level (no flee AI yet — tracked for a future leveling system). */
   level?: number;
   /** PK (player-kill) flag — server-synced; drives the red nameplate + PvP rules. */

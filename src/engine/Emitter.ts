@@ -62,6 +62,8 @@ interface Popup {
   life: number; // ms this popup lives
   scale: number; // base render scale (burst grows from this)
   top: boolean; // draw above every other popup (level-up)
+  riseRate?: number; // float style: px/s upward drift (defaults to FLOAT_RISE)
+  holdFrac?: number; // float style: fraction of life fully opaque before fading (0 = fade from birth)
 }
 
 const popups: Popup[] = [];
@@ -152,6 +154,24 @@ export function spawnMissText(x: number, y: number): void {
   spawn('MISS', x, y, getCombatJuice().colMiss, { life: 750 });
 }
 
+const MORTAL_COLOR = '#ff2a2a'; // blood red — a KO is dire (not combat juice, fixed)
+
+/** Pop a dire "MORTAL DAMAGE!" off a player who's been KO'd + knocked over.
+ *  Server-broadcast (player_downed) so EVERY client raises it over that player.
+ *  Tight + fixed size (no balloon), barely drifts off the head, and holds opaque
+ *  well past a second before fading. Always renders above other popups. */
+export function spawnMortalText(x: number, y: number): void {
+  spawn('MORTAL DAMAGE!', x, y, MORTAL_COLOR, {
+    style: 'float',
+    riseExtra: 6,
+    riseRate: 6, // barely climbs — stays right over the player
+    holdFrac: 0.6, // fully opaque the first ~60% of life, then fade
+    life: 1700, // ~1.0s solid + ~0.7s fade
+    scale: 1.25, // tight; no growth
+    top: true,
+  });
+}
+
 /** Pop a gold loot toast (e.g. "Found Cookie!", "Got $40") off the player. */
 export function spawnLootText(x: number, y: number, label: string): void {
   spawn(label, x, y, LEVELUP_COLOR, { style: 'float', riseExtra: 10, life: 1300 });
@@ -170,6 +190,8 @@ interface SpawnOpts {
   life?: number; // ms lifetime
   scale?: number; // base render scale
   top?: boolean; // draw above all other popups
+  riseRate?: number; // float style: px/s upward drift (defaults to FLOAT_RISE)
+  holdFrac?: number; // float style: fraction of life held fully opaque before fading
 }
 
 function spawn(text: string, x: number, y: number, color: string, opts: SpawnOpts = {}): void {
@@ -189,6 +211,8 @@ function spawn(text: string, x: number, y: number, color: string, opts: SpawnOpt
     life,
     scale,
     top,
+    riseRate: opts.riseRate,
+    holdFrac: opts.holdFrac,
   });
   if (popups.length > MAX_POPUPS) popups.shift();
 }
@@ -265,8 +289,11 @@ export function renderEmitters(
         alpha = prog < BURST_HOLD ? 1 : Math.max(0, 1 - (prog - BURST_HOLD) / (1 - BURST_HOLD));
       } else if (p.style === 'float') {
         // XP / loot / level-up: drift straight up and fade over the lifetime.
-        worldY = p.y0 - FLOAT_RISE * ts;
-        alpha = Math.max(0, 1 - prog);
+        // riseRate slows the drift (stay near the head); holdFrac keeps it fully
+        // opaque for the first part of life before fading (so it lingers, readable).
+        worldY = p.y0 - (p.riseRate ?? FLOAT_RISE) * ts;
+        const hold = p.holdFrac ?? 0;
+        alpha = prog < hold ? 1 : Math.max(0, 1 - (prog - hold) / (1 - hold));
       } else if (p.style === 'heal') {
         // Heal: drift up while swaying side-to-side on a sine curve, fading out.
         worldY = p.y0 - j.healRise * ts;

@@ -186,10 +186,16 @@ class GiftManagerTool implements EditorTool {
     this.panel.appendChild(this.tabsEl);
 
     // Place a brand-new container (of the active tab's type) by clicking the map.
-    this.placeBtn = this.mkBtn('📍 Place new', () => this.togglePlacing(), this.panel);
+    this.placeBtn = this.mkBtn(
+      '📍 Place new',
+      () => this.togglePlacing(),
+      this.panel,
+      'Arm placement, then click the map to drop a new container of the active tab type.'
+    );
 
     const search = document.createElement('input');
     search.placeholder = 'search item / key…';
+    search.title = 'Filter the list by contents item name or gift key.';
     search.style.cssText =
       'font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:3px 6px;';
     search.oninput = () => {
@@ -247,6 +253,10 @@ class GiftManagerTool implements EditorTool {
         sprite === null ? this.gifts.length : this.gifts.filter((g) => g.sprite === sprite).length;
       const b = document.createElement('button');
       b.textContent = `${label} (${count})`;
+      b.title =
+        sprite === null
+          ? 'Show all container types.'
+          : `Show only "${label}" containers (also the type used by Place new).`;
       b.style.cssText =
         'font:10px monospace;padding:2px 6px;cursor:pointer;border-radius:3px;' +
         (on
@@ -352,11 +362,26 @@ class GiftManagerTool implements EditorTool {
 
     const goRow = document.createElement('div');
     goRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
-    this.mkBtn('📍 Go to box', () => this.shell?.goTo(g.x, g.y), goRow);
+    this.mkBtn(
+      '📍 Go to box',
+      () => this.shell?.goTo(g.x, g.y),
+      goRow,
+      'Jump the camera to this container in the world.'
+    );
     if (g.added) {
-      this.mkBtn('🗑 Delete box', () => void this.deleteGift(g.k), goRow);
+      this.mkBtn(
+        '🗑 Delete box',
+        () => void this.deleteGift(g.k),
+        goRow,
+        'Remove this player-placed container.'
+      );
     } else if (this.edits[g.k]?.item !== undefined) {
-      this.mkBtn('↺ Reset to ROM', () => this.resetContents(g.k), goRow);
+      this.mkBtn(
+        '↺ Reset to ROM',
+        () => this.resetContents(g.k),
+        goRow,
+        'Discard your contents edit and restore the original ROM item.'
+      );
     }
     this.detailEl.appendChild(goRow);
 
@@ -370,12 +395,19 @@ class GiftManagerTool implements EditorTool {
       drawThumb: (canvas, v) => drawItemThumb(canvas, v),
       onSelect: (v) => this.setContents(g.k, Number(v) | 0),
     });
+    this.picker.el.title = 'Pick the item this container gives when opened.';
     this.detailEl.appendChild(this.picker.el);
   }
 
-  private mkBtn(label: string, fn: () => void, parent: HTMLElement): HTMLButtonElement {
+  private mkBtn(
+    label: string,
+    fn: () => void,
+    parent: HTMLElement,
+    tip?: string
+  ): HTMLButtonElement {
     const b = document.createElement('button');
     b.textContent = label;
+    if (tip) b.title = tip;
     b.style.cssText =
       'font:11px monospace;padding:2px 7px;cursor:pointer;border-radius:3px;background:#1d2530;color:#cde;border:1px solid #3a4a5a;';
     b.onclick = fn;

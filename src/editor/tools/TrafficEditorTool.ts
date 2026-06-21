@@ -511,7 +511,13 @@ class TrafficEditorTool implements EditorTool {
 
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
-    this.mkBtn('+ New vehicle (N)', () => this.startPlacing(), actions);
+    this.mkBtn(
+      '+ New vehicle (N)',
+      () => this.startPlacing(),
+      actions,
+      false,
+      'Place a new vehicle — next map click drops its first waypoint (shortcut: N).'
+    );
     this.addBtn = this.mkBtn(
       'Add waypoints',
       () => {
@@ -521,7 +527,9 @@ class TrafficEditorTool implements EditorTool {
         }
         this.setAddWp(!this.addWp);
       },
-      actions
+      actions,
+      false,
+      'Toggle append mode: map clicks add route waypoints to the selected vehicle.'
     );
     // No Save button — edits auto-save via the shell (registered 'traffic' handler).
     this.panel.appendChild(actions);
@@ -607,12 +615,17 @@ class TrafficEditorTool implements EditorTool {
         this.shell?.markDirty('traffic');
         this.refreshList();
       },
-      120
+      120,
+      'This vehicle\'s editor label (blank defaults to "car"); not shown in-game.'
     );
     nameIn.value = v.name;
 
     // vehicle picker — restricted to the vehicle sprite groups only
-    const spriteRow = this.mkRow(form, 'vehicle');
+    const spriteRow = this.mkRow(
+      form,
+      'vehicle',
+      'Which drivable vehicle sprite this car uses (restricted to EarthBound vehicle groups).'
+    );
     const sel = document.createElement('select');
     sel.style.cssText =
       'flex:1;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;' +
@@ -628,6 +641,8 @@ class TrafficEditorTool implements EditorTool {
       sel.appendChild(op);
     }
     sel.value = String(v.sprite);
+    sel.title =
+      'Which drivable vehicle sprite this car uses (restricted to EarthBound vehicle groups).';
     sel.onchange = () => {
       v.sprite = parseInt(sel.value, 10);
       this.shell?.markDirty('traffic');
@@ -660,10 +675,15 @@ class TrafficEditorTool implements EditorTool {
     this.refreshVehicleProps(v);
 
     // loop + enabled toggles
-    const loopRow = this.mkRow(form, 'loop');
+    const loopRow = this.mkRow(
+      form,
+      'loop',
+      'On = drive the route as a closed circuit; off = go back-and-forth along it.'
+    );
     const loop = document.createElement('input');
     loop.type = 'checkbox';
     loop.checked = v.loop;
+    loop.title = 'On = drive the route as a closed circuit; off = go back-and-forth along it.';
     loop.onchange = () => {
       v.loop = loop.checked;
       this.shell?.markDirty('traffic');
@@ -678,10 +698,15 @@ class TrafficEditorTool implements EditorTool {
     );
     loopRow.appendChild(loopHint);
 
-    const enRow = this.mkRow(form, 'on');
+    const enRow = this.mkRow(
+      form,
+      'on',
+      'Off = this vehicle is disabled and does not spawn in the world.'
+    );
     const en = document.createElement('input');
     en.type = 'checkbox';
     en.checked = v.enabled;
+    en.title = 'Off = this vehicle is disabled and does not spawn in the world.';
     en.onchange = () => {
       v.enabled = en.checked;
       this.shell?.markDirty('traffic');
@@ -693,7 +718,11 @@ class TrafficEditorTool implements EditorTool {
     // its route. Shown always so a parked car can be aimed; hidden visual weight
     // when it has a route.
     const parked = v.waypoints.length < 2;
-    const dirRow = this.mkRow(form, 'facing');
+    const dirRow = this.mkRow(
+      form,
+      'facing',
+      'Direction a PARKED car (1 waypoint) faces; a car with a route faces its travel direction.'
+    );
     const dirSel = document.createElement('select');
     dirSel.style.cssText =
       'flex:1;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;' +
@@ -731,9 +760,17 @@ class TrafficEditorTool implements EditorTool {
     this.mkBtn(
       v.t != null ? 'Dialogue ✎' : '+ Dialogue',
       () => void this.authorDialogue(v),
-      actions
+      actions,
+      false,
+      'Make this vehicle talkable: assign a text id and open the Dialogue Editor on it.'
     );
-    this.mkBtn('Delete vehicle', () => this.deleteVehicle(), actions);
+    this.mkBtn(
+      'Delete vehicle',
+      () => this.deleteVehicle(),
+      actions,
+      false,
+      'Permanently remove this vehicle and its whole route.'
+    );
 
     const talk = document.createElement('div');
     talk.style.cssText = 'font-size:10px;color:#778;';
@@ -791,7 +828,8 @@ class TrafficEditorTool implements EditorTool {
     label: string,
     fn: () => void,
     parent: HTMLElement,
-    accent = false
+    accent = false,
+    tip?: string
   ): HTMLButtonElement {
     const b = document.createElement('button');
     b.textContent = label;
@@ -800,17 +838,20 @@ class TrafficEditorTool implements EditorTool {
       (accent
         ? 'background:#143d22;color:#6ad08a;border:1px solid #6ad08a;'
         : 'background:#1d2530;color:#cde;border:1px solid #3a4a5a;');
+    if (tip) b.title = tip;
     b.onclick = fn;
     parent.appendChild(b);
     return b;
   }
 
-  private mkRow(parent: HTMLElement, label: string): HTMLDivElement {
+  private mkRow(parent: HTMLElement, label: string, tip?: string): HTMLDivElement {
     const r = document.createElement('div');
     r.style.cssText = 'display:flex;align-items:center;gap:6px;';
     const l = document.createElement('span');
     l.textContent = label;
-    l.style.cssText = 'width:46px;color:#9fb8cc;';
+    l.style.cssText =
+      'width:46px;color:#9fb8cc;' + (tip ? 'cursor:help;border-bottom:1px dotted #4a5a6a;' : '');
+    if (tip) l.title = tip;
     r.appendChild(l);
     parent.appendChild(r);
     return r;
@@ -831,13 +872,15 @@ class TrafficEditorTool implements EditorTool {
     name: string,
     label: string,
     onChange: (v: string) => void,
-    width = 64
+    width = 64,
+    tip?: string
   ): HTMLInputElement {
-    const r = this.mkRow(parent, label);
+    const r = this.mkRow(parent, label, tip);
     const i = document.createElement('input');
     i.style.cssText =
       `width:${width}px;font:11px monospace;background:#0c1014;color:#cde;` +
       'border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
+    if (tip) i.title = tip;
     i.onchange = () => onChange(i.value);
     r.appendChild(i);
     this.fields.set(name, i);

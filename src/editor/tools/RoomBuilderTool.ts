@@ -1459,7 +1459,9 @@ class RoomBuilderTool implements EditorTool {
     const top = document.createElement('div');
     top.style.cssText = 'display:flex;align-items:center;gap:6px;';
     this.tabTilesBtn = this.mkBtn('Tiles', () => this.setTab('tiles'), top);
+    this.tabTilesBtn.title = 'Brush from a single tileset arrangement picked in the palette grid.';
     this.tabStampsBtn = this.mkBtn('Stamps', () => this.setTab('stamps'), top);
+    this.tabStampsBtn.title = 'Brush from a saved multi-tile stamp sampled from the world.';
     const spacer = document.createElement('div');
     spacer.style.cssText = 'flex:1;';
     top.appendChild(spacer);
@@ -1478,10 +1480,14 @@ class RoomBuilderTool implements EditorTool {
     this.tilesPane.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
     const palBar = document.createElement('div');
     palBar.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:11px;';
-    this.mkMini('ts−', () => this.stepPalette('ts', -1), palBar);
-    this.mkMini('ts+', () => this.stepPalette('ts', 1), palBar);
-    this.mkMini('pal−', () => this.stepPalette('pal', -1), palBar);
-    this.mkMini('pal+', () => this.stepPalette('pal', 1), palBar);
+    this.mkMini('ts−', () => this.stepPalette('ts', -1), palBar).title =
+      'Previous tileset for the palette grid.';
+    this.mkMini('ts+', () => this.stepPalette('ts', 1), palBar).title =
+      'Next tileset for the palette grid.';
+    this.mkMini('pal−', () => this.stepPalette('pal', -1), palBar).title =
+      'Previous palette for the current tileset.';
+    this.mkMini('pal+', () => this.stepPalette('pal', 1), palBar).title =
+      'Next palette for the current tileset.';
     this.palLabel = document.createElement('div');
     this.palLabel.style.cssText = 'color:#9fb8cc;margin-left:4px;';
     palBar.appendChild(this.palLabel);
@@ -1513,7 +1519,8 @@ class RoomBuilderTool implements EditorTool {
       'Sample whole tiles (32px)';
     this.mkBtn('Sample 8', () => this.startSample(true), sampRow, true).title =
       'Sample minitiles (8px — quarter-tile and finer)';
-    this.mkBtn('→ Stamp', () => void this.saveStamp(), sampRow);
+    this.mkBtn('→ Stamp', () => void this.saveStamp(), sampRow).title =
+      'Save the sampled box as a reusable stamp brush.';
     this.mkBtn('→ Furniture', () => void this.saveFurniture(), sampRow).title =
       'Turn the sampled tiles into a movable, solid prop you place in the Placement editor';
     this.mkBtn('+ Folder', () => void this.createFolder(), sampRow).title =
@@ -1528,6 +1535,8 @@ class RoomBuilderTool implements EditorTool {
 
     this.paintBtn = this.mkBtn('Paint: off', () => this.setPainting(!this.painting), this.panel);
     this.paintBtn.style.width = '100%';
+    this.paintBtn.title =
+      'Toggle paint mode — click/drag in a room to lay down the current brush (right-click/Esc stops).';
 
     // Edit-map toggle: when ON, the brush/erase/stamp paints onto ANY room's
     // tiles (overrides/map_tiles.json) instead of a custom band room — for
@@ -1542,8 +1551,10 @@ class RoomBuilderTool implements EditorTool {
     this.panel.appendChild(this.mkSection('ROOMS'));
     const roomRow = document.createElement('div');
     roomRow.style.cssText = 'display:flex;gap:6px;';
-    this.mkBtn('+ New Room', () => this.startBlankRoom(), roomRow, true);
-    this.mkBtn('Copy area', () => void this.copySelection(), roomRow);
+    this.mkBtn('+ New Room', () => this.startBlankRoom(), roomRow, true).title =
+      'Drag a box on the map to size a new blank custom room (sector-aligned).';
+    this.mkBtn('Copy area', () => void this.copySelection(), roomRow).title =
+      'Copy the sampled map region into a new custom room.';
     this.panel.appendChild(roomRow);
 
     const listTitle = document.createElement('div');

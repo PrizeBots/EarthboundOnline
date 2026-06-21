@@ -29,9 +29,20 @@ export abstract class Entity implements EntityView {
   spriteGroupId: number;
   maxHp: number;
   hp: number;
+  /** EB rolling-bar state (see HealthRoll): displayHp lags `hp` so the bar drains
+   *  in increments, dmgPendUntil/rollTs drive the hold-flash + frame-independent
+   *  drain. Purely visual — never gates the simulation. */
+  displayHp?: number;
+  dmgPendUntil?: number;
+  rollTs?: number;
   /** Epoch-ms until which this sprite blinks white from a hit (see Juice.FLASH_MS
    *  / drawSprite). 0 = not flashing. */
   flashUntil = 0;
+  /** When this combatant dies, play the rotate-and-bounce death throw (see
+   *  DeathFx / NPCManager.applyNpcDeath) instead of just vanishing. Class-level
+   *  default ON for every entity; flip to false in code for the kinds that
+   *  shouldn't tumble (it's deliberately NOT a per-instance authored field). */
+  rotateOnDeath = true;
   protected animTimer = 0;
 
   constructor(x: number, y: number, spriteGroupId: number, maxHp = 30) {

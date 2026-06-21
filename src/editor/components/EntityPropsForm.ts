@@ -25,6 +25,8 @@ export interface PropFieldDesc {
   /** Entity kinds this field is meaningful for; absent = always show (used by the
    *  sprite-group / spawner / vehicle forms, which aren't per-placement-kind). */
   kinds?: NPCKind[];
+  /** Hover tooltip explaining the field. */
+  tip?: string;
 }
 
 // ONE source of label/clamp metadata for every shared prop. Each editor picks
@@ -36,20 +38,70 @@ interface FieldMeta {
   max?: number;
   scale?: number;
   float?: boolean;
+  /** Hover tooltip explaining the field. */
+  tip?: string;
 }
 const FIELD_META: Record<FieldKey, FieldMeta> = {
-  hp: { label: 'HP', min: 1 },
-  level: { label: 'level', min: 1 },
-  xp: { label: 'XP', min: 0 },
-  damage: { label: 'damage', min: 0 },
-  attackCooldownMs: { label: 'atk cd s', min: 50, scale: 1000 },
-  speed: { label: 'speed', min: 0.1, float: true },
-  attackRange: { label: 'atk px', min: 1 },
-  detectRange: { label: 'aggro px', min: 1 },
-  giveUpRange: { label: 'chase px', min: 1 },
-  wanderRadius: { label: 'roam px', min: 0 },
-  crit: { label: 'crit %', min: 0, max: 100 },
-  dodge: { label: 'dodge %', min: 0, max: 100 },
+  hp: {
+    label: 'HP',
+    min: 1,
+    tip: 'Max hit points. Higher = tankier; a townsperson with more HP survives longer in a brawl.',
+  },
+  level: {
+    label: 'level',
+    min: 1,
+    tip: 'Combat level. Also sets the walk-push weight class — a higher-level body shoves lighter ones and resists knockback.',
+  },
+  xp: { label: 'XP', min: 0, tip: 'Experience granted to the player on kill. Enemies only.' },
+  damage: {
+    label: 'damage',
+    min: 0,
+    tip: 'Damage dealt per hit. 0 = a civilian who cannot fight back.',
+  },
+  attackCooldownMs: {
+    label: 'atk cd s',
+    min: 50,
+    scale: 1000,
+    tip: 'Seconds between attacks. Lower = swings faster. Min 0.05s.',
+  },
+  speed: {
+    label: 'speed',
+    min: 0.1,
+    float: true,
+    tip: 'Movement speed (pixels/tick). Fractional values allowed.',
+  },
+  attackRange: {
+    label: 'atk px',
+    min: 1,
+    tip: 'Attack reach in pixels — how close it must be to land a hit.',
+  },
+  detectRange: {
+    label: 'aggro px',
+    min: 1,
+    tip: 'Aggro radius in pixels — how close a player must get before it notices a threat.',
+  },
+  giveUpRange: {
+    label: 'chase px',
+    min: 1,
+    tip: 'Chase give-up distance in pixels — a locked-on pursuer breaks off and returns home past this.',
+  },
+  wanderRadius: {
+    label: 'roam px',
+    min: 0,
+    tip: 'How far it roams from home, in pixels. 0 = stationary (a clerk/guard that holds its spot).',
+  },
+  crit: {
+    label: 'crit %',
+    min: 0,
+    max: 100,
+    tip: 'Critical-hit chance (0–100%). A crit deals extra damage.',
+  },
+  dodge: {
+    label: 'dodge %',
+    min: 0,
+    max: 100,
+    tip: 'Chance to dodge an incoming hit entirely (0–100%).',
+  },
 };
 
 /** Build an ordered field list from keys, with optional per-key `kinds` filters. */
@@ -172,13 +224,17 @@ export class EntityPropsForm {
 
       const label = document.createElement('span');
       label.textContent = f.label;
-      label.style.cssText = `flex:1;font-size:11px;color:${isSet ? '#e8a33d' : '#9fb8cc'};`;
+      label.style.cssText =
+        `flex:1;font-size:11px;color:${isSet ? '#e8a33d' : '#9fb8cc'};` +
+        (f.tip ? 'cursor:help;' : '');
+      if (f.tip) label.title = f.tip;
       row.appendChild(label);
 
       const input = document.createElement('input');
       input.type = 'text';
       input.value = isSet ? fmt(overridden as number) : '';
       input.placeholder = inherited != null ? fmt(inherited) : '—';
+      if (f.tip) input.title = f.tip;
       input.style.cssText =
         'width:64px;font:11px monospace;background:#0c1014;color:#cde;' +
         'border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';

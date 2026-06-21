@@ -7,15 +7,25 @@
  * range (`dist`), so nothing can linger forever.
  *
  * Mirrors PsiFx/Emitter: a live array advanced one step per frame (60Hz, same
- * cadence as the server tick) and drawn in world space with the camera transform.
+ * cadence as the server tick). Unlike those flat overlays, shots + sparks are
+ * fed into the Renderer's feet-Y sprite pass via `collectProjectileSprites` so
+ * they respect layer depth sorting — a building/canopy or a sprite in front of a
+ * shot occludes it instead of the shot always painting on top.
  *
  * `look` is the weapon's `projSprite` — a built-in style keyword (no art asset
  * needed yet). Unknown/absent → 'bullet'. Per-weapon PNG art can layer on later
  * by resolving a real image here without touching the call sites.
  */
-import { Camera } from './Camera';
-
 type Look = 'pellet' | 'bullet' | 'beam';
+
+/** A world-space visual the Renderer can interleave into its Y-sorted sprite
+ *  pass. `y` is the depth sort key; `draw` paints camera-relative (rounds the
+ *  world position against the same integer camera origin the world pass uses). */
+export interface ProjectileSprite {
+  x: number;
+  y: number;
+  draw(ctx: CanvasRenderingContext2D, camX: number, camY: number): void;
+}
 
 interface Shot {
   id: number;
@@ -101,54 +111,67 @@ export function updateProjectiles(): void {
   }
 }
 
-/** Draw shots + impact sparks in world space (camera-relative, like PsiFx). */
-export function renderProjectiles(ctx: CanvasRenderingContext2D, camera: Camera): void {
-  if (!shots.length && !sparks.length) return;
-  const camX = Math.round(camera.x);
-  const camY = Math.round(camera.y);
+/**
+ * Hand the Renderer every live shot + impact spark as a depth-sortable sprite
+ * (world Y = sort key), pushed onto its job list so they Y-sort and FG-occlude
+ * with players/NPCs. Each `draw` sets up + tears down its own ctx state, since
+ * the renderer interleaves these with sprite draws (no shared save/restore).
+ */
+export function collectProjectileSprites(out: ProjectileSprite[]): void {
+  for (const s of shots)
+    out.push({ x: s.x, y: s.y, draw: (ctx, cx, cy) => drawShot(ctx, s, cx, cy) });
+  for (const s of sparks)
+    out.push({ x: s.x, y: s.y, draw: (ctx, cx, cy) => drawSpark(ctx, s, cx, cy) });
+}
+
+/** Paint one flying shot, camera-relative. */
+function drawShot(ctx: CanvasRenderingContext2D, s: Shot, camX: number, camY: number): void {
+  const px = Math.round(s.x - camX);
+  const py = Math.round(s.y - camY);
   ctx.save();
   ctx.imageSmoothingEnabled = false;
   ctx.lineCap = 'round';
-  for (const s of shots) {
-    const px = Math.round(s.x - camX);
-    const py = Math.round(s.y - camY);
-    if (s.look === 'pellet') {
-      // Slingshot pellet: a small gray stone with a dark rim.
-      ctx.fillStyle = '#3a2f25';
-      ctx.beginPath();
-      ctx.arc(px, py, 3, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#cdbfae';
-      ctx.beginPath();
-      ctx.arc(px, py, 2, 0, Math.PI * 2);
-      ctx.fill();
-    } else if (s.look === 'beam') {
-      // Energy beam: a long cyan streak with a white-hot core + soft glow.
-      drawStreak(ctx, px, py, s.vx, s.vy, 16, 5, 'rgba(120,240,255,0.35)');
-      drawStreak(ctx, px, py, s.vx, s.vy, 14, 3, '#3fd9ff');
-      drawStreak(ctx, px, py, s.vx, s.vy, 11, 1.4, '#eaffff');
-    } else {
-      // Bullet/pellet shot: a short yellow tracer with a bright tip.
-      drawStreak(ctx, px, py, s.vx, s.vy, 7, 2.6, '#7a5a18');
-      drawStreak(ctx, px, py, s.vx, s.vy, 6, 1.4, '#ffe57a');
-      ctx.fillStyle = '#fffceb';
-      ctx.beginPath();
-      ctx.arc(px, py, 1.4, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-  for (const s of sparks) {
-    const px = Math.round(s.x - camX);
-    const py = Math.round(s.y - camY);
-    const t = s.life / SPARK_LIFE;
-    const r = (s.big ? 7 : 4) * (1 - t) + 1;
-    ctx.globalAlpha = t;
-    ctx.strokeStyle = s.big ? '#fff1b0' : '#ffffff';
-    ctx.lineWidth = 1.5;
+  if (s.look === 'pellet') {
+    // Slingshot pellet: a small gray stone with a dark rim.
+    ctx.fillStyle = '#3a2f25';
     ctx.beginPath();
-    ctx.arc(px, py, r, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.arc(px, py, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#cdbfae';
+    ctx.beginPath();
+    ctx.arc(px, py, 2, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (s.look === 'beam') {
+    // Energy beam: a long cyan streak with a white-hot core + soft glow.
+    drawStreak(ctx, px, py, s.vx, s.vy, 16, 5, 'rgba(120,240,255,0.35)');
+    drawStreak(ctx, px, py, s.vx, s.vy, 14, 3, '#3fd9ff');
+    drawStreak(ctx, px, py, s.vx, s.vy, 11, 1.4, '#eaffff');
+  } else {
+    // Bullet/pellet shot: a short yellow tracer with a bright tip.
+    drawStreak(ctx, px, py, s.vx, s.vy, 7, 2.6, '#7a5a18');
+    drawStreak(ctx, px, py, s.vx, s.vy, 6, 1.4, '#ffe57a');
+    ctx.fillStyle = '#fffceb';
+    ctx.beginPath();
+    ctx.arc(px, py, 1.4, 0, Math.PI * 2);
+    ctx.fill();
   }
+  ctx.restore();
+}
+
+/** Paint one impact spark, camera-relative. */
+function drawSpark(ctx: CanvasRenderingContext2D, s: Spark, camX: number, camY: number): void {
+  const px = Math.round(s.x - camX);
+  const py = Math.round(s.y - camY);
+  const t = s.life / SPARK_LIFE;
+  const r = (s.big ? 7 : 4) * (1 - t) + 1;
+  ctx.save();
+  ctx.imageSmoothingEnabled = false;
+  ctx.globalAlpha = t;
+  ctx.strokeStyle = s.big ? '#fff1b0' : '#ffffff';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(px, py, r, 0, Math.PI * 2);
+  ctx.stroke();
   ctx.restore();
 }
 

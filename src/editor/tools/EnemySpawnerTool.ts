@@ -16,6 +16,7 @@ import {
 } from '../../engine/EntityStats';
 import { EntityPropsForm, SPAWNER_STAT_FIELDS } from '../components/EntityPropsForm';
 import { loadJSON } from '../../engine/AssetLoader';
+import { regionAt, regionLabel, regionOrder } from '../../engine/Regions';
 import { entityManagerTool } from './EntityManagerTool';
 import { saveOverride, loadOverride } from '../saveOverride';
 import { registerSaveHandler } from '../registry';
@@ -50,9 +51,13 @@ interface Spawner {
   sprite: number;
   x: number;
   y: number;
-  wanderRadius: number;
-  detectRange: number; // px — player within this aggros THIS spawner's enemies
-  giveUpRange: number; // px — once locked on, the chase breaks off past this
+  // Behavior ranges are OPTIONAL per-spawner overrides: undefined = inherit the
+  // entity's authored value (Entity Manager), the SAME blank-means-inherit model
+  // as the combat `props` below. The server's resolveProps only honors these when
+  // set, so leaving them blank lets the entity table drive a spawner's roam/aggro.
+  wanderRadius?: number; // px — how far enemies roam from home (blank = inherit entity)
+  detectRange?: number; // px — player within this aggros THIS spawner's enemies (blank = inherit)
+  giveUpRange?: number; // px — once locked on, the chase breaks off past this (blank = inherit)
   maxActive: number;
   spawnIntervalMs: number;
   respawnDelayMs: number;
@@ -73,11 +78,15 @@ interface EnemyFile {
   spawners?: (Partial<Spawner> & Partial<EntityStats>)[]; // legacy files may still carry per-spawner stats
 }
 
-const DEFAULTS: Omit<Spawner, 'name' | 'x' | 'y' | 'props'> = {
+// A fresh spawner carries only its spawn-rate/pool fields; roam/aggro/chase are
+// left UNSET so they inherit the entity's authored values (Entity Manager). The
+// inherited defaults live in DEFAULT_ENTITY_STATS (detect 220 / giveUp 560 /
+// wander 256 — KEEP IN SYNC with npcSim).
+const DEFAULTS: Omit<
+  Spawner,
+  'name' | 'x' | 'y' | 'props' | 'wanderRadius' | 'detectRange' | 'giveUpRange'
+> = {
   sprite: 284,
-  wanderRadius: 600,
-  detectRange: 220, // KEEP IN SYNC with npcSim DETECT_RANGE
-  giveUpRange: 560, // KEEP IN SYNC with npcSim GIVE_UP_RANGE
   maxActive: 4,
   spawnIntervalMs: 3500,
   respawnDelayMs: 9000,
@@ -158,10 +167,19 @@ class EnemySpawnerTool implements EditorTool {
   private listSearch = '';
   private listFilter: 'all' | 'on' | 'off' | 'bad' = 'all';
   private countEl: HTMLSpanElement | null = null;
-  // Outline state: which enemy-type (sprite) groups are expanded. Collapsed is
-  // the resting state — the list groups spawners by enemy so dozens collapse to
-  // a handful of headers. A search/state filter auto-expands matching groups.
-  private expanded = new Set<number>();
+  // How the list is grouped: by enemy TYPE (sprite) or by AREA (town/region the
+  // spawn point sits in — via Regions.regionAt). Area grouping answers "where are
+  // my spawners" once they're scattered across the whole map. Persisted so the
+  // choice sticks between sessions (localStorage idiom, like MuteButton/Auth).
+  private groupBy: 'enemy' | 'area' =
+    (typeof localStorage !== 'undefined' && localStorage.getItem('eb_spawner_groupby')) === 'area'
+      ? 'area'
+      : 'enemy';
+  // Outline state: which group headers are expanded (keyed `e:<sprite>` for enemy
+  // grouping, `a:<region>` for area grouping). Collapsed is the resting state, so
+  // dozens of spawners collapse to a handful of headers. A search/state filter
+  // auto-expands matching groups.
+  private expanded = new Set<string>();
 
   activate(shell: EditorShellApi): void {
     this.shell = shell;
@@ -224,9 +242,11 @@ class EnemySpawnerTool implements EditorTool {
         sprite,
         x: s.x ?? 0,
         y: s.y ?? 0,
-        wanderRadius: s.wanderRadius ?? DEFAULTS.wanderRadius,
-        detectRange: s.detectRange ?? DEFAULTS.detectRange,
-        giveUpRange: s.giveUpRange ?? DEFAULTS.giveUpRange,
+        // Optional overrides: absent in the file = inherit the entity. Legacy
+        // files that baked in explicit values keep them (they load as overrides).
+        wanderRadius: s.wanderRadius ?? undefined,
+        detectRange: s.detectRange ?? undefined,
+        giveUpRange: s.giveUpRange ?? undefined,
         maxActive: s.maxActive ?? DEFAULTS.maxActive,
         spawnIntervalMs: s.spawnIntervalMs ?? DEFAULTS.spawnIntervalMs,
         respawnDelayMs: s.respawnDelayMs ?? DEFAULTS.respawnDelayMs,
@@ -285,6 +305,19 @@ class EnemySpawnerTool implements EditorTool {
     sp.reach = sp.solid ? 0 : floodReach(sp.x, sp.y);
   }
 
+  // Effective behavior ranges: the spawner's own override if set, else the value
+  // the entity (Entity Manager → DEFAULT_ENTITY_STATS floor) resolves to — what
+  // the server actually uses. Drives the wander ring + the inherited placeholders.
+  private effWander(sp: Spawner): number {
+    return sp.wanderRadius ?? this.baselineFor(sp.sprite).wanderRadius ?? 256;
+  }
+  private effDetect(sp: Spawner): number {
+    return sp.detectRange ?? this.baselineFor(sp.sprite).detectRange ?? 220;
+  }
+  private effGiveUp(sp: Spawner): number {
+    return sp.giveUpRange ?? this.baselineFor(sp.sprite).giveUpRange ?? 560;
+  }
+
   // --- save ----------------------------------------------------------------------------
 
   private async save(): Promise<void> {
@@ -302,9 +335,11 @@ class EnemySpawnerTool implements EditorTool {
         sprite: s.sprite,
         x: Math.round(s.x),
         y: Math.round(s.y),
-        wanderRadius: s.wanderRadius,
-        detectRange: s.detectRange,
-        giveUpRange: s.giveUpRange,
+        // Roam/aggro/chase are written ONLY when overridden; omitted = the spawner
+        // inherits the entity's authored ranges (resolveProps pick/entityStat).
+        ...(s.wanderRadius != null ? { wanderRadius: s.wanderRadius } : {}),
+        ...(s.detectRange != null ? { detectRange: s.detectRange } : {}),
+        ...(s.giveUpRange != null ? { giveUpRange: s.giveUpRange } : {}),
         poolSize: derivePoolSize(s.maxActive),
         maxActive: s.maxActive,
         spawnIntervalMs: s.spawnIntervalMs,
@@ -450,11 +485,11 @@ class EnemySpawnerTool implements EditorTool {
       drawSprite(ctx, s.sprite, Direction.S, 0, sx, sy);
       ctx.globalAlpha = 1;
 
-      // Wander-radius ring.
+      // Wander-radius ring (effective: override, else inherited entity roam).
       ctx.strokeStyle = color;
       ctx.setLineDash(s === this.sel ? [] : [4, 4]);
       ctx.beginPath();
-      ctx.arc(sx, sy, s.wanderRadius, 0, Math.PI * 2);
+      ctx.arc(sx, sy, this.effWander(s), 0, Math.PI * 2);
       ctx.stroke();
       ctx.setLineDash([]);
 
@@ -513,6 +548,42 @@ class EnemySpawnerTool implements EditorTool {
     // No Save button — edits (incl. a freshly placed spawner) auto-save via the
     // shell (registered 'enemies' handler), debounced and flushed on exit.
     this.panel.appendChild(actions);
+
+    // Group-by toggle: organize the list by enemy type or by world area.
+    const groupRow = document.createElement('div');
+    groupRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
+    const groupLbl = document.createElement('span');
+    groupLbl.textContent = 'group by';
+    groupLbl.title =
+      'Organize the spawner list by enemy TYPE, or by the AREA (town/region) each spawn point sits in.';
+    groupLbl.style.cssText = 'color:#9fb8cc;cursor:help;border-bottom:1px dotted #4a5a6a;';
+    groupRow.appendChild(groupLbl);
+    const groupSel = document.createElement('select');
+    groupSel.title = groupLbl.title;
+    groupSel.style.cssText =
+      'flex:1;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 3px;';
+    for (const [v, label] of [
+      ['enemy', 'Enemy type'],
+      ['area', 'Area (town / region)'],
+    ] as [typeof this.groupBy, string][]) {
+      const o = document.createElement('option');
+      o.value = v;
+      o.textContent = label;
+      o.selected = this.groupBy === v;
+      groupSel.appendChild(o);
+    }
+    groupSel.onchange = () => {
+      this.groupBy = groupSel.value as typeof this.groupBy;
+      try {
+        localStorage.setItem('eb_spawner_groupby', this.groupBy);
+      } catch {
+        /* private-mode / blocked storage — non-fatal */
+      }
+      this.expanded.clear(); // keys differ between groupings; start collapsed
+      this.refreshList();
+    };
+    groupRow.appendChild(groupSel);
+    this.panel.appendChild(groupRow);
 
     // Filter row: free-text search + a state dropdown + a result count. Keeps the
     // list usable once dozens/hundreds of ROM-imported spawners are present.
@@ -604,27 +675,24 @@ class EnemySpawnerTool implements EditorTool {
       return;
     }
 
-    // Group by enemy type (sprite). Same-enemy spawners are what you tune
-    // together, and grouping collapses dozens of rows to a few headers.
-    const groups = new Map<number, Spawner[]>();
-    for (const s of shown) {
-      const g = groups.get(s.sprite);
-      if (g) g.push(s);
-      else groups.set(s.sprite, [s]);
-    }
+    // Group the visible spawners (by enemy type or by world area), collapsing
+    // dozens of rows to a handful of headers.
+    const groups = this.buildGroups(shown);
+
     // While filtering, force every matching group open so results are visible
     // without hunting for the toggle.
     const forceOpen = !!q || this.listFilter !== 'all';
     // Keep the selected spawner's group open so the highlight is never hidden.
-    if (this.sel) this.expanded.add(this.sel.sprite);
+    if (this.sel) this.expanded.add(this.groupKeyFor(this.sel));
 
-    const sortedSprites = [...groups.keys()].sort((a, b) =>
-      (getSpriteName(a) ?? `#${a}`).localeCompare(getSpriteName(b) ?? `#${b}`)
-    );
-    for (const sprite of sortedSprites) {
-      const kids = groups.get(sprite)!.sort((a, b) => a.name.localeCompare(b.name));
-      const open = forceOpen || this.expanded.has(sprite);
-      const anyBad = kids.some((k) => this.isBad(k));
+    // In area mode the child rows name the enemy (the header is the place, not
+    // the enemy); in enemy mode the header already is the enemy, so rows show
+    // just the spawner name.
+    const showEnemy = this.groupBy === 'area';
+
+    for (const g of groups) {
+      const open = forceOpen || this.expanded.has(g.key);
+      const anyBad = g.kids.some((k) => this.isBad(k));
 
       // --- group header -------------------------------------------------------
       const header = document.createElement('div');
@@ -635,52 +703,106 @@ class EnemySpawnerTool implements EditorTool {
       caret.textContent = open ? '▾' : '▸';
       caret.style.cssText = 'color:#7a8aa0;width:9px;';
       const hname = document.createElement('span');
-      hname.textContent = `${getSpriteName(sprite) ?? 'enemy'} (#${sprite})`;
+      hname.textContent = g.label;
       hname.style.cssText =
         'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#cde;font-weight:bold;';
       const cnt = document.createElement('span');
-      cnt.textContent = anyBad ? `${kids.length} ⚠` : String(kids.length);
+      cnt.textContent = anyBad ? `${g.kids.length} ⚠` : String(g.kids.length);
       cnt.style.cssText = `font-size:10px;color:${anyBad ? '#ff6a6a' : '#7a8aa0'};white-space:nowrap;`;
       header.append(caret, hname, cnt);
       header.onclick = () => {
         // Toggle is a no-op while a filter forces everything open.
         if (forceOpen) return;
-        if (this.expanded.has(sprite)) this.expanded.delete(sprite);
-        else this.expanded.add(sprite);
+        if (this.expanded.has(g.key)) this.expanded.delete(g.key);
+        else this.expanded.add(g.key);
         this.refreshList();
       };
       this.listEl.appendChild(header);
       if (!open) continue;
 
       // --- children -----------------------------------------------------------
-      for (const s of kids) {
-        const row = document.createElement('div');
-        const bad = this.isBad(s);
-        const sel = s === this.sel;
-        row.style.cssText =
-          'display:flex;align-items:center;gap:6px;padding:2px 4px 2px 18px;cursor:pointer;border-radius:3px;' +
-          (sel ? 'background:#2a1818;' : '');
-        const dot = document.createElement('span');
-        dot.textContent = '●';
-        dot.style.color = !s.enabled ? '#667' : bad ? '#ff5a5a' : '#e85050';
-        const label = document.createElement('span');
-        label.textContent = s.name;
-        label.style.cssText =
-          'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' +
-          (s.enabled ? '' : 'color:#778;');
-        row.appendChild(dot);
-        row.appendChild(label);
-        row.onclick = () => {
-          this.sel = s;
-          // Fly the view to the spawner so it's actually on screen (they're
-          // scattered across town, usually off the current view).
-          this.shell?.context.teleport(s.x, s.y);
-          this.refreshList();
-          this.rebuildForm();
-        };
-        this.listEl.appendChild(row);
-      }
+      for (const s of g.kids) this.listEl.appendChild(this.renderSpawnerRow(s, showEnemy));
     }
+  }
+
+  /** The group key a spawner falls under for the current grouping mode. */
+  private groupKeyFor(s: Spawner): string {
+    return this.groupBy === 'area' ? `a:${regionAt(s.x, s.y)}` : `e:${s.sprite}`;
+  }
+
+  /** Bucket the visible spawners into ordered, labeled groups for the current
+   *  grouping mode. Enemy: by sprite, sorted/labeled by enemy name. Area: by the
+   *  region each spawn point sits in, sorted by story order. */
+  private buildGroups(shown: Spawner[]): { key: string; label: string; kids: Spawner[] }[] {
+    const byKey = new Map<string, Spawner[]>();
+    for (const s of shown) {
+      const k = this.groupKeyFor(s);
+      const g = byKey.get(k);
+      if (g) g.push(s);
+      else byKey.set(k, [s]);
+    }
+
+    if (this.groupBy === 'area') {
+      // Sort kids within an area by enemy name then spawner name, so same enemies
+      // cluster together under the place header.
+      const enemyName = (s: Spawner) => getSpriteName(s.sprite) ?? `#${s.sprite}`;
+      return [...byKey.keys()]
+        .sort((a, b) => regionOrder(a.slice(2)) - regionOrder(b.slice(2)) || a.localeCompare(b))
+        .map((key) => ({
+          key,
+          label: regionLabel(key.slice(2)),
+          kids: byKey
+            .get(key)!
+            .sort(
+              (a, b) => enemyName(a).localeCompare(enemyName(b)) || a.name.localeCompare(b.name)
+            ),
+        }));
+    }
+
+    // Enemy grouping: header = enemy name (#sprite), sorted by name.
+    const nameOf = (key: string) => {
+      const sprite = Number(key.slice(2));
+      return `${getSpriteName(sprite) ?? 'enemy'} (#${sprite})`;
+    };
+    return [...byKey.keys()]
+      .sort((a, b) => nameOf(a).localeCompare(nameOf(b)))
+      .map((key) => ({
+        key,
+        label: nameOf(key),
+        kids: byKey.get(key)!.sort((a, b) => a.name.localeCompare(b.name)),
+      }));
+  }
+
+  /** One selectable spawner row. `showEnemy` prefixes the enemy name (area mode,
+   *  where the header is the place rather than the enemy). */
+  private renderSpawnerRow(s: Spawner, showEnemy: boolean): HTMLDivElement {
+    const row = document.createElement('div');
+    const bad = this.isBad(s);
+    const sel = s === this.sel;
+    row.style.cssText =
+      'display:flex;align-items:center;gap:6px;padding:2px 4px 2px 18px;cursor:pointer;border-radius:3px;' +
+      (sel ? 'background:#2a1818;' : '');
+    const dot = document.createElement('span');
+    dot.textContent = '●';
+    dot.style.color = !s.enabled ? '#667' : bad ? '#ff5a5a' : '#e85050';
+    const label = document.createElement('span');
+    label.textContent = showEnemy
+      ? `${getSpriteName(s.sprite) ?? `#${s.sprite}`} · ${s.name}`
+      : s.name;
+    label.style.cssText =
+      'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' +
+      (s.enabled ? '' : 'color:#778;');
+    row.appendChild(dot);
+    row.appendChild(label);
+    row.onclick = () => {
+      this.sel = s;
+      // Fly the view to the spawner so it's actually on screen (they're
+      // scattered across town, usually off the current view).
+      this.shell?.context.teleport(s.x, s.y);
+      this.refreshList();
+      this.rebuildForm();
+    };
+    return row;
   }
 
   private rebuildForm(): void {
@@ -746,6 +868,7 @@ class EnemySpawnerTool implements EditorTool {
         s.sprite = Math.max(0, Number(v) | 0);
         this.shell?.markDirty('enemies');
         this.refreshList();
+        this.rebuildForm(); // refresh inherited placeholders + entity-override block
       },
     });
     this.spritePicker.el.style.flex = '1';
@@ -781,6 +904,36 @@ class EnemySpawnerTool implements EditorTool {
       i.value = String(get());
     };
 
+    // Optional override field: BLANK = inherit the entity's value (shown as the
+    // greyed placeholder); a typed number overrides it for this spawner only.
+    const optField = (
+      name: string,
+      label: string,
+      get: () => number | undefined,
+      set: (n: number | undefined) => void,
+      inherited: () => number,
+      tip: string,
+      clampMin = 1
+    ) => {
+      const i = this.mkInput(
+        form,
+        name,
+        label,
+        (v) => {
+          const raw = v.trim();
+          set(raw === '' ? undefined : Math.max(clampMin, Math.round(parseFloat(raw) || 0)));
+          this.shell?.markDirty('enemies');
+          this.refreshList();
+          this.rebuildForm(); // refresh placeholder + the ring + dependent clamps
+        },
+        64,
+        tip
+      );
+      const ov = get();
+      i.value = ov != null ? String(ov) : '';
+      i.placeholder = `${inherited()} (entity)`;
+    };
+
     numField(
       'x',
       'x',
@@ -797,26 +950,30 @@ class EnemySpawnerTool implements EditorTool {
       'World Y (pixels) of the spawn point. Tip: drag the marker on the map instead.',
       true
     );
-    numField(
+    optField(
       'radius',
       'roam',
       () => s.wanderRadius,
-      (n) => (s.wanderRadius = Math.max(32, Math.round(n))),
-      'Wander radius in pixels — how far enemies roam from the spawn point. Shown as the ring on the map. Min 32.'
+      (n) => (s.wanderRadius = n == null ? undefined : Math.max(0, n)),
+      () => this.effWander(s),
+      'Wander radius in px — how far enemies roam from the spawn point (the map ring). BLANK = inherit the entity’s roam. 0 = stationary.',
+      0
     );
-    numField(
+    optField(
       'aggro',
       'aggro',
       () => s.detectRange,
-      (n) => (s.detectRange = Math.max(1, Math.round(n))),
-      'Aggro radius in pixels — how close a player must get to wake THIS spawner’s enemies. Independent per spawner.'
+      (n) => (s.detectRange = n),
+      () => this.effDetect(s),
+      'Aggro radius in px — how close a player must get to wake this spawner’s enemies. BLANK = inherit the entity’s aggro.'
     );
-    numField(
+    optField(
       'chase',
       'chase',
       () => s.giveUpRange,
-      (n) => (s.giveUpRange = Math.max(s.detectRange, Math.round(n))),
-      'Chase give-up distance in pixels — a locked-on enemy pursues until the target is this far, then returns home. Never below aggro.'
+      (n) => (s.giveUpRange = n == null ? undefined : Math.max(this.effDetect(s), n)),
+      () => this.effGiveUp(s),
+      'Chase give-up distance in px — a locked-on enemy pursues until the target is this far, then returns home. BLANK = inherit the entity’s value. Never below aggro.'
     );
     numField(
       'rate',

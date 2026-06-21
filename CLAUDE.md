@@ -78,6 +78,10 @@ pre-launch TODO; see TODO.md):
 - Uses EarthBound's native dual-layer system: BG atlas (minitiles 0-383) behind sprites, FG atlas (minitiles 512-895) in front
 - Foreground atlas files: `{mapTS}_{pal}_fg.png` — transparent except where foreground pixels exist
 - Collision byte bit 7 (0x80) = solid wall; bits 0-1 = sprite priority flags
+- Animated tiles: EB's ~8 palette-animated combos (Flash Effect — water, lava,
+  dept-store escalators) are baked to per-frame atlases (`{ts}_{pal}_f{k}.png`)
+  - `atlases/anim.json`; the renderer swaps frames on a clock. Extracted from ROM
+    by `tools/palette_anim.py` (used by `build_atlases.py`)
 
 ## Music
 
