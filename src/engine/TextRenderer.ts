@@ -55,7 +55,10 @@ function fontBase(fontId: FontId): string {
   return typeof fontId === 'number' ? `font_${fontId}` : fontId;
 }
 
-export async function loadFont(fontId: FontId = 1): Promise<void> {
+// Most EB font sheets are 16x8 (128 glyphs). The credits sheet is 16x6 (96
+// glyphs, ASCII 0x20–0x7F) with TALLER cells, so callers can override the row
+// count to derive the right cell height.
+export async function loadFont(fontId: FontId = 1, rows: number = SHEET_ROWS): Promise<void> {
   if (fontCache.has(fontId)) return;
 
   const base = fontBase(fontId);
@@ -68,7 +71,7 @@ export async function loadFont(fontId: FontId = 1): Promise<void> {
     image,
     widths,
     cellW: image.width / SHEET_COLS,
-    cellH: image.height / SHEET_ROWS,
+    cellH: image.height / rows,
   });
 }
 

@@ -99,10 +99,21 @@ for font_id in range(5):
     else:
         print(f"  {font_id}_widths.yml not found — skipping")
 
-# Copy credits.png if present (used as a bitmap text image in some contexts)
+# Credits font (used as a bitmap font: KO "give up" prompt + downed timer). The
+# ROM sheet is white glyphs on an OPAQUE colored field (not palette-0), so after
+# the palette→RGBA pass we key the dark background out — keep bright glyph pixels,
+# make everything dark transparent. Layout is 16 cols x 6 rows of 8x16 cells
+# (ASCII 0x20–0x7F), fixed-width (no widths table). KEEP IN SYNC with
+# TextRenderer.loadFont('credits', 6).
 credits_src = os.path.join(FONTS_SRC, "credits.png")
 if os.path.exists(credits_src):
-    palettized_to_rgba(credits_src, os.path.join(FONTS_DST, "credits.png"))
+    credits_dst = os.path.join(FONTS_DST, "credits.png")
+    palettized_to_rgba(credits_src, credits_dst)
+    cim = np.array(Image.open(credits_dst).convert("RGBA"), dtype=np.uint8)
+    dark = cim[:, :, :3].astype(np.int32).sum(axis=2) < 150  # background field
+    cim[dark] = (0, 0, 0, 0)
+    Image.fromarray(cim, "RGBA").save(credits_dst, "PNG")
+    print(f"  Keyed credits.png background → transparent")
 
 
 # ── 2. Window Graphics ────────────────────────────────────────────────────────

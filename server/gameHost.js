@@ -107,6 +107,16 @@ const DEATH_CASH_MAX_OBJECTS = 20; // cap on cash objects per death (each worth 
 // it, allies can revive them; the cash-drop penalty is DEFERRED to true death, so a
 // revived player loses nothing. Elapsing it (or "giving up the ghost") = true death.
 const DOWNED_MS = 30000;
+// EB "rolling HP" / Mortal Damage: a lethal hit doesn't drop you instantly — the
+// HP meter ROLLS to zero over a few seconds and you can heal to survive before it
+// lands (use_item/use_psi while `dying`). MORTAL_DRAIN_FULL_MS is how long a FULL
+// bar takes to roll to 0; the actual roll scales by how much HP you had, so a hit
+// from high HP gives a long window and from low HP a short one. Keep this in sync
+// with the client's HealthRoll drain feel. MORTAL_BANNER_MS = only roll windows
+// at least this long announce "MORTAL DAMAGE!" (shorter ones just drop fast).
+const MORTAL_DRAIN_FULL_MS = 4000;
+const MORTAL_BANNER_MS = 2000;
+const MORTAL_MIN_MS = 350; // floor so even a near-dead hit rolls a touch, not snap
 // How close (px) an ally must be to a downed friend to revive them (item or PSI).
 const REVIVE_RANGE = 44;
 // Range (px) within which support PSI (Lifeup/Healing) may target an ally; revive
@@ -368,20 +378,21 @@ const PSI_DIR = [
 // (progressionFromAlloc below); anonymous/dev sessions use defaultAlloc(). One
 // stat model for everyone means banked skill points only ever ADD to a build
 // (no baseline that a spend would silently re-derive away from).
-// Per-level stat gains (tunable). HP/maxHp, offense and defense feed combat;
-// SPEED now drives both dodge (dodgeChanceFromSpeed) AND the player's walk speed
-// (client Player.moveSpeedFor) — so leveling visibly quickens your legs. guts/
-// vitality/iq/luck grow and show on the Status screen but aren't hooked up yet.
+// Per-level AUTOMATIC stat gains (tunable). Deliberately a thin survival floor:
+// real progression comes from the banked skill point each level spent on the
+// pentagon (spend_points -> reapplyAlloc -> deriveCombatStats). We keep a small
+// maxHp drip so a player who dumps every point into offense/speed doesn't stall
+// out on survivability, but offense/defense/speed/etc. now grow ONLY by choice.
 const GROWTH = {
-  maxHp: 8,
-  ppMax: 2,
-  offense: 2,
-  defense: 1,
-  speed: 1,
-  guts: 1,
-  vitality: 1,
-  iq: 1,
-  luck: 1,
+  maxHp: 3,
+  ppMax: 0,
+  offense: 0,
+  defense: 0,
+  speed: 0,
+  guts: 0,
+  vitality: 0,
+  iq: 0,
+  luck: 0,
 };
 // EXP to go from `level` to `level+1` (geometric ramp: 30, 45, 67, 101, …).
 const expCost = (level) => Math.floor(30 * Math.pow(1.5, level - 1));
@@ -706,6 +717,12 @@ class GameHost {
   _tickPlayerStatuses() {
     const now = Date.now();
     for (const [id, p] of this.players) {
+      // Mortal roll: the HP meter is rolling to zero. If it lands without a heal
+      // saving them, lay them out (KO). They keep acting/healing until then.
+      if (p.dying) {
+        if (now >= p.dyingUntil) this._mortalExpired(id, p);
+        continue;
+      }
       // Downed players: tick the KO window; when it elapses they truly die.
       if (p.downed) {
         if (now >= p.downedUntil) this._trueDeath(id);
@@ -1287,6 +1304,7 @@ class GameHost {
     const p = this.players.get(playerId);
     if (!p || p.hp <= 0) return;
     if (p.editor) return; // out of the world in the dev editor — untargetable
+    if (p.dying) return; // bleeding out from a mortal blow — invulnerable until it resolves
     // Shielded mid door-transition: the player is a frozen ghost at the doorway
     // and can't move or defend, so enemy swings whiff (see player.warping).
     if (p.warping && Date.now() < p.warpUntil) return;
@@ -1298,22 +1316,125 @@ class GameHost {
       1,
       dmg - Math.floor(((p.defense || 0) + (p.armorDefense || 0) + defBuff) / 2)
     );
-    p.hp = Math.max(0, p.hp - eff);
-    this.broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: eff });
-    if (p.hp > 0) this._applyHitStatuses(p, inflict); // break sleep + roll any inflicts
-    if (p.hp > 0 && knock) {
-      // Knocked back (and lived): the sim already collision-clamped the landing
-      // spot. Move our authoritative record and broadcast a push — the victim's
-      // client snaps itself there (and reports from there), others snap the
-      // remote copy. Player movement is client-authoritative, so this is a hint
-      // the client honors, same trust model as ordinary moves.
-      p.x = knock.x;
-      p.y = knock.y;
-      this.broadcastAll({ type: 'player_push', id: playerId, x: p.x, y: p.y });
+    const newHp = p.hp - eff;
+    if (newHp > 0) {
+      // Survivable hit — apply instantly (the client bar still rolls it down for
+      // feel; gameplay-wise it's settled).
+      p.hp = newHp;
+      this.broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: eff });
+      this._applyHitStatuses(p, inflict); // break sleep + roll any inflicts
+      if (knock) {
+        // Knocked back (and lived): the sim already collision-clamped the landing
+        // spot. Move our authoritative record and broadcast a push — the victim's
+        // client snaps itself there (and reports from there), others snap the
+        // remote copy. Player movement is client-authoritative, so this is a hint
+        // the client honors, same trust model as ordinary moves.
+        p.x = knock.x;
+        p.y = knock.y;
+        this.broadcastAll({ type: 'player_push', id: playerId, x: p.x, y: p.y });
+      }
+      return;
     }
-    // Killing blow → enter the downed/KO state (30s) instead of dying outright.
-    // Drops + respawn are deferred to true death so a revive loses nothing.
-    if (p.hp <= 0 && !p.downed) this._enterDowned(playerId, p);
+    // LETHAL blow → don't drop instantly. Start the EB rolling-HP death: the meter
+    // rolls to 0 over a few seconds while the player stays UP and can heal to
+    // survive (use_item/use_psi `dying` branch). The laying KO (and its rotate +
+    // fling "death throw", see client KoThrow) is deferred to the roll's end
+    // (_mortalExpired → _enterDowned). Stash the blow's direction now (from the
+    // sim's knockback landing = the spot away from the attacker) + its force, so
+    // the collapse can fling the body the right way. No knock (DoT) → in-place.
+    if (knock) {
+      const kdx = knock.x - p.x;
+      const kdy = knock.y - p.y;
+      const klen = Math.hypot(kdx, kdy) || 1;
+      p.koDx = kdx / klen;
+      p.koDy = kdy / klen;
+    } else {
+      p.koDx = 0;
+      p.koDy = 0;
+    }
+    p.koForce = eff;
+    this._enterDying(playerId, p, eff);
+  }
+
+  /** Begin the rolling-HP "Mortal Damage" window. The player keeps `hp` (stays
+   *  conscious + able to act/heal); `hpReal` carries the true post-hit total (≤0)
+   *  that a heal must lift back above 0 to survive. The visible roll + banner are
+   *  client-driven from `player_mortal`; the death deadline is `dyingUntil`. */
+  _enterDying(playerId, p, eff) {
+    const now = Date.now();
+    const fromHp = p.hp; // > 0
+    const ms = Math.max(
+      MORTAL_MIN_MS,
+      Math.min(
+        MORTAL_DRAIN_FULL_MS,
+        Math.round((fromHp / Math.max(1, p.maxHp)) * MORTAL_DRAIN_FULL_MS)
+      )
+    );
+    p.dying = true;
+    p.hpReal = fromHp - eff; // ≤ 0 — heal must out-pace the overkill to save you
+    p.dyingUntil = now + ms;
+    const banner = ms >= MORTAL_BANNER_MS;
+    this.broadcastAll({
+      type: 'player_mortal',
+      id: playerId,
+      fromHp,
+      maxHp: p.maxHp,
+      ms,
+      banner,
+      dmg: eff,
+    });
+  }
+
+  /** The mortal roll ran out without a save → the meter hit 0. Lay them out into
+   *  the normal KO/downed window (ally/self revive still possible). */
+  _mortalExpired(playerId, p) {
+    p.dying = false;
+    p.dyingUntil = 0;
+    p.hp = 0;
+    if (!p.downed) this._enterDowned(playerId, p);
+  }
+
+  /** Restore HP, honoring an in-progress mortal roll. While `dying`, HP lives on
+   *  `hpReal` (can be ≤0); a heal that lifts it above 0 SAVES the player — the roll
+   *  cancels and they stay standing. Otherwise it's an ordinary heal. Broadcasts
+   *  `player_hp` (heal) so clients pop the green number + settle/stop the bar.
+   *  Returns the HP actually restored. */
+  healPlayer(p, amount) {
+    if (p.dying) {
+      const shown = Math.max(0, p.hpReal); // what the meter would read (clamped ≥0)
+      p.hpReal = Math.min(p.maxHp, p.hpReal + amount);
+      if (p.hpReal > 0) {
+        // Out-healed the mortal blow in time — survive, still on your feet.
+        p.dying = false;
+        p.dyingUntil = 0;
+        p.hp = p.hpReal;
+        const healed = p.hp - shown;
+        this.broadcastAll({
+          type: 'player_hp',
+          id: p.id,
+          hp: p.hp,
+          maxHp: p.maxHp,
+          dmg: 0,
+          heal: Math.max(0, healed),
+        });
+        return healed;
+      }
+      return 0; // healed but still below zero — keep bleeding out
+    }
+    const before = p.hp;
+    p.hp = Math.min(p.maxHp, p.hp + amount);
+    const healed = p.hp - before;
+    if (healed > 0) {
+      this.broadcastAll({
+        type: 'player_hp',
+        id: p.id,
+        hp: p.hp,
+        maxHp: p.maxHp,
+        dmg: 0,
+        heal: healed,
+      });
+    }
+    return healed;
   }
 
   /** HP hit 0 → lay the player out (KO) for DOWNED_MS instead of dying. Clears
@@ -1330,7 +1451,18 @@ class GameHost {
     buffs.clearBuffs(p);
     this._broadcastPlayerStatus(p);
     this._sendPlayerBuffs(p);
-    this.broadcastAll({ type: 'player_downed', id: playerId, ms: DOWNED_MS });
+    // Carry the killing blow's direction + force so every client plays the same
+    // rotate-and-fling KO throw as the body collapses (client KoThrow). Defaults
+    // to 0 (rotate in place) for a downing with no recorded knockback.
+    this.broadcastAll({
+      type: 'player_downed',
+      id: playerId,
+      ms: DOWNED_MS,
+      dx: p.koDx || 0,
+      dy: p.koDy || 0,
+      force: p.koForce || 0,
+    });
+    p.koDx = p.koDy = p.koForce = 0; // consumed
   }
 
   /** Resolve a downed player into TRUE death: apply the cash-drop penalty, then
@@ -2096,6 +2228,42 @@ class GameHost {
         // Equippable gear is NOT a consumable — "using" a weapon/armor must
         // never destroy it. It's equipped via the 'equip' path instead.
         if (def.equip) break;
+        // Mortal-roll self-rescue: HP is rolling to zero RIGHT NOW. A healing or
+        // revive consumable that lifts your true HP back above 0 saves you before
+        // the meter lands — you stay on your feet (healPlayer cancels the roll).
+        // Anything that can't restore HP is refused without being consumed.
+        if (entry.dying) {
+          const restore = def.revive > 0 ? def.revive : def.heal > 0 ? def.heal : 0;
+          if (restore <= 0) {
+            entry._ws.send(
+              JSON.stringify({ type: 'notice', text: 'Only a healing item can save you now!' })
+            );
+            break;
+          }
+          this.healPlayer(entry, restore); // may cancel the roll (survive) — broadcasts player_hp
+          entry.inventory.splice(slot, 1);
+          entry._ws.send(
+            JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) })
+          );
+          entry._ws.send(
+            JSON.stringify({
+              type: 'notice',
+              text: entry.dying ? `${def.name}... not enough!` : `${def.name} saved you!`,
+            })
+          );
+          this.broadcastExcept(
+            {
+              type: 'item_use',
+              id: playerId,
+              item: itemId,
+              x: Math.round(entry.x),
+              y: Math.round(entry.y),
+            },
+            playerId
+          );
+          this._saveCharacter(playerId);
+          break;
+        }
         // KO'd self-rescue: a downed player is knocked over (MORTAL DAMAGE) but can
         // still claw back up — a healing OR revive consumable used on THEMSELVES
         // stands them up before the KO window runs out (the EB "heal before the
@@ -2459,16 +2627,9 @@ class GameHost {
           // Revive the downed ally to a fraction of their max HP (γ half, Ω full).
           this._reviveDowned(target, Math.ceil(target.maxHp * def.reviveFrac));
         } else if (def.heal) {
-          const healed = Math.min(target.maxHp, target.hp + def.heal) - target.hp;
-          target.hp += healed;
-          this.broadcastAll({
-            type: 'player_hp',
-            id: target.id,
-            hp: target.hp,
-            maxHp: target.maxHp,
-            dmg: 0,
-            heal: healed,
-          });
+          // healPlayer broadcasts player_hp and, if the target is mid mortal-roll,
+          // can SAVE them (lift true HP above 0 → cancel the roll, stay standing).
+          this.healPlayer(target, def.heal);
         }
         if (def.cures && !def.reviveFrac) {
           // Healing PSI clears the target's status conditions (self or ally).

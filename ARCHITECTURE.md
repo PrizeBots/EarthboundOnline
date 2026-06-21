@@ -749,8 +749,26 @@ pruned each tick; `statsPayload` reports EFFECTIVE base+buff so the status scree
 agrees). `use_item` applies heal/healPp/cure/buffs and refuses an all-no-op use
 (full bars, nothing to cure).
 
-**Downed / KO + revive.** A killing blow no longer respawns instantly: the player
-enters a **downed** state for `DOWNED_MS` (30s) — `_enterDowned` (laying pose,
+**Mortal Damage (EB rolling-HP death).** A lethal hit does NOT drop you instantly.
+`damagePlayer` splits on `newHp`: survivable hits apply at once; a hit that would
+reach ≤0 calls `_enterDying` instead, starting the **rolling-HP death** — the EB
+mechanic where the meter slides to 0 over a few seconds and you can heal mid-slide to
+live. State: `p.dying`, `p.hpReal` (true post-hit total, ≤0 — what a heal must lift
+back above 0), `p.dyingUntil`. Roll duration scales with how much HP you had:
+`ms = (fromHp/maxHp)·MORTAL_DRAIN_FULL_MS` (4s full bar), so a hit from high HP gives a
+long window, from low HP a short one. Only windows ≥ `MORTAL_BANNER_MS` (2s) flag
+`banner` → the client raises **MORTAL DAMAGE!** over that player (broadcast, everyone
+sees it). The visible slide is client-driven (`HealthRoll` `startMortalRoll`/
+`tickMortalRoll`, drives both hp+displayHp); the authoritative death deadline is
+`dyingUntil`, checked in `_tickPlayerStatuses`. **Healing** while `dying` runs through
+`healPlayer`, which adds to `hpReal` and, if it clears 0, **cancels the roll (survive,
+stay standing)** — so a quick potion (self via the `entry.dying` `use_item` branch, or
+an ally's Lifeup via `use_psi`) literally saves you before you fall. The player stays
+up + can act during the roll; `damagePlayer` early-returns on `p.dying` (invuln while
+bleeding out). If the meter lands, `_mortalExpired` → `_enterDowned`.
+
+**Downed / KO + revive.** When the mortal roll lands (or any future direct-down path),
+the player enters a **downed** state for `DOWNED_MS` (30s) — `_enterDowned` (laying pose,
 statuses/buffs cleared, untargetable via the `hp<=0` guards). The cash-drop penalty
 is **deferred** to `_trueDeath` (timer elapses via `_tickPlayerStatuses`, or the
 player **gives up the ghost** — client holds Space/touch 2s → `give_up`), so a
@@ -763,11 +781,18 @@ A downed player can also **self-rescue**: while down they may use a healing OR r
 consumable on _themselves_ (`use_item`'s `entry.downed` branch routes any HP-restoring
 food through `_reviveDowned` to stand back up; non-healing items are refused). Client:
 the downed input branch fires only `triggerHotbarConsumable` (weapons/PSI stay locked).
-This is the EB "heal before the counter hits 0" survival window — the 30s KO is the
-grace, so a fast potion **prevents true death**.
-Client: `player_downed`/`player_revived` drive the laying render (90° rotation),
-the over-head countdown, the owner's closing **vignette**, and a broadcast
-**`MORTAL DAMAGE!`** banner over the KO'd player (everyone sees it, on `player_downed`).
+(This downed-window self-rescue is a SECOND safety net after the mortal roll: if you
+couldn't out-heal the slide and fell, you still get the 30s KO to be revived.)
+Client: `player_downed`/`player_revived` drive the laying render, the over-head
+countdown, and the owner's closing **vignette**. (The **MORTAL DAMAGE!** banner fires
+earlier, at the START of the roll on `player_mortal` — not here.) `player_downed`
+carries the killing blow's `{dx, dy, force}` (server stashes it from the lethal hit's
+knockback landing), so the collapse plays a **KO throw** (`KoThrow.ts`) — the same
+rotate + fling + wall-ricochet physics as the NPC `DeathFx`, but settling into the
+laying pose instead of sinking (a downed player stays revivable). It's a pure render
+offset (`offX/offY` + hop `z` + `angle`) on the Player/RemotePlayer — authoritative
+position never moves — and the body, countdown, and vignette all ride it; cleared on
+revive/standup/respawn. Deterministic from the broadcast, so every client matches.
 
 **NPC death throw (`DeathFx.ts`).** When a combatant (enemy / townsperson / car)
 is killed, `applyDamage` broadcasts **`npc_death`** `{id, dx, dy, force}` — `(dx,dy)`

@@ -1,4 +1,4 @@
-﻿import { Direction, Pose } from '../types';
+﻿import { Direction, Pose, KoThrowState } from '../types';
 import { Entity } from './Entity';
 import { getDirection } from './Input';
 import { checkPlayerCollision } from './Collision';
@@ -102,6 +102,9 @@ export class Player extends Entity {
   downedUntil = 0;
   downedTotalMs = 0;
   giveUpProgress = 0;
+  /** Transient KO throw physics (rotate + fling + bounce into the laying pose);
+   *  a render offset only — see KoThrow.ts. Cleared on revive/standup. */
+  koThrow?: KoThrowState;
 
   constructor() {
     // Spawn position/facing come from src/spawn.json (Onett default), so the

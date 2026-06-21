@@ -61,6 +61,24 @@ export type CharacterAppearance = string;
 export const POSES = ['walk', 'climb', 'attack', 'hurt', 'peace', 'laying'] as const;
 export type Pose = (typeof POSES)[number];
 
+/** A player's KO "death throw" physics (client-side, see KoThrow.ts). The body
+ *  rotates flat while flung back from the killing blow and bouncing off walls,
+ *  then settles at `offX/offY` for the rest of the downed window. `z` is the
+ *  vertical hop (px), `angle` the live rotation (rad). Pure-visual: the player's
+ *  authoritative position never changes — this is a render offset only. */
+export interface KoThrowState {
+  angle: number;
+  angTarget: number;
+  offX: number;
+  offY: number;
+  z: number;
+  vx: number;
+  vy: number;
+  zVel: number;
+  bounces: number;
+  resting: boolean;
+}
+
 export interface RemotePlayer {
   id: string;
   name: string;
@@ -81,6 +99,10 @@ export interface RemotePlayer {
   displayHp?: number;
   dmgPendUntil?: number;
   rollTs?: number;
+  /** Mortal roll (server-timed HP→0 death slide); see HealthRoll. */
+  mortalFrom?: number;
+  mortalStart?: number;
+  mortalMs?: number;
   /** Entity level (no flee AI yet — tracked for a future leveling system). */
   level?: number;
   /** PK (player-kill) flag — server-synced; drives the red nameplate + PvP rules. */
@@ -93,6 +115,10 @@ export interface RemotePlayer {
   downed?: boolean;
   /** Epoch-ms the downed window ends (for the over-head countdown). */
   downedUntil?: number;
+  /** Transient KO "death throw" physics: the body rotates + is flung back +
+   *  bounces off walls before settling into the laying pose (see KoThrow.ts).
+   *  Deterministic from the player_downed dir/force, so every client matches. */
+  koThrow?: KoThrowState;
   /** Client-side prediction offset (px), layered on the interpolated position and
    *  decayed each frame — see RemoteInterp.applyPredOffset. Lets the local player's
    *  push/knockback on this remote player show instantly, then reconcile. */

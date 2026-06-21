@@ -5,23 +5,24 @@
       "combat": "brave",
       "crit": 25,
       "dodge": 20,
-      "speed": 1.5
+      "speed": 1.5,
+      "attackCooldownMs": 100
     },
     "282": {
       "level": 2
     },
     "284": {
-      "hp": 15,
+      "hp": 32,
       "level": 2,
       "xp": 12,
       "damage": 7,
       "attackCooldownMs": 700,
       "speed": 0.7,
-      "attackRange": 1,
+      "attackRange": 24,
       "crit": 1,
       "dodge": 1,
-      "detectRange": 22,
-      "giveUpRange": 55,
+      "detectRange": 220,
+      "giveUpRange": 560,
       "wanderRadius": 200
     },
     "388": {

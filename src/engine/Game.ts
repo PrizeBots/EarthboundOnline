@@ -14,7 +14,11 @@ import {
   consumePointerClick,
   isPointerDown,
   flushKeys,
+  releaseVirtualTaps,
 } from './Input';
+import { mountTouchControls, setTouchContext } from './TouchControls';
+import { pollGamepads } from './Gamepad';
+import { hotbarBoxAt } from './menu/layout';
 import { loadMapData, getSector, getDrawTilesetId } from './MapManager';
 import {
   loadDoors,
@@ -180,11 +184,18 @@ import {
   spawnNoticeText,
   spawnMortalText,
 } from './Emitter';
-import { noteHealthDamage, HpHolder } from './HealthRoll';
+import {
+  noteHealthDamage,
+  startMortalRoll,
+  tickMortalRoll,
+  clearMortalRoll,
+  HpHolder,
+} from './HealthRoll';
 import { triggerHitstop, tickHitstop, addShake, tickShake, FLASH_MS } from './Juice';
 import { initPsiFx, updatePsiFx, renderPsiFx, spawnPsiFx } from './PsiFx';
 import { spawnProjectile, endProjectile, updateProjectiles } from './Projectiles';
 import { updateDeathFx } from './DeathFx';
+import { spawnKoThrow, advanceKoThrow, clearKoThrow } from './KoThrow';
 import { updateItemFx, renderItemFx, spawnItemFx } from './ItemFx';
 import { setDrops, addDrop, removeDrop } from './DropManager';
 import { playEventSfx, loadSfxEvents } from './SfxEvents';
@@ -329,7 +340,7 @@ export class Game {
       loadFont(0), // regular EB dialogue font (chat input, command menu)
       loadFont(1), // Mr. Saturn font (backlogged chat option)
       loadFont(4), // small 8px battle font (speech bubbles)
-      loadFont('credits'), // fixed-width EB credits font (KO "give up" prompt)
+      loadFont('credits', 6), // EB credits font (16x6 grid, 8x16 cells) — KO prompt + downed timer
       loadWindowStyle(0),
     ]);
 
@@ -342,6 +353,9 @@ export class Game {
     // pointer listeners NOW so clicks work on the character-select screen, not
     // just after the game starts.
     initInput(this.canvasEl);
+    // On phones/tablets, mount the on-screen joystick + buttons (no-op on
+    // desktop). They synthesize the same key codes the keyboard uses.
+    mountTouchControls();
     window.addEventListener('keydown', (e) => this.onKeyDown(e));
 
     // Dev-only editor tools — the dynamic import inside a DEV guard compiles
@@ -653,6 +667,9 @@ export class Game {
         },
         onPlayerHp: (id, hp, maxHp, dmg, heal) => {
           if (id === this.localPlayerId) {
+            // Any authoritative HP settles a mortal roll (survived a heal, or a
+            // plain hit/refill) — stop the death slide and snap to the real value.
+            clearMortalRoll(this.player);
             this.player.hp = hp;
             this.player.maxHp = maxHp;
             if (dmg > 0) {
@@ -673,6 +690,7 @@ export class Game {
           } else {
             const rp = this.remotePlayers.get(id);
             if (rp) {
+              clearMortalRoll(rp as HpHolder); // settled — stop any death slide
               rp.hp = hp;
               rp.maxHp = maxHp;
               if (dmg > 0) {
@@ -681,6 +699,37 @@ export class Game {
                 rp.flashUntil = Date.now() + FLASH_MS; // blink, but no shake/freeze — not our hit
               }
               if (heal > 0) spawnHealNumber(rp.x, rp.y, heal);
+            }
+          }
+        },
+        onPlayerMortal: (id, fromHp, maxHp, ms, banner, dmg) => {
+          // EB rolling-HP death: the bar slides fromHp→0 over `ms` while the player
+          // stays up and can heal to survive. We drive the slide client-side; the
+          // server holds the real death deadline. MORTAL DAMAGE! shows only when the
+          // window is long enough to actually react (server-decided `banner`).
+          const tnow = performance.now();
+          if (id === this.localPlayerId) {
+            this.player.maxHp = maxHp;
+            startMortalRoll(this.player, fromHp, ms, tnow);
+            if (dmg > 0) {
+              spawnOwnDamageNumber(this.player.x, this.player.y, dmg);
+              this.player.hurt();
+              this.player.flashUntil = Date.now() + FLASH_MS;
+              triggerHitstop(3);
+              addShake(Math.min(0.7, 0.35 + dmg * 0.02));
+              playEventSfx('player-hurt'); // still alive (rolling) — not the death sting yet
+            }
+            if (banner) spawnMortalText(this.player.x, this.player.y);
+          } else {
+            const rp = this.remotePlayers.get(id);
+            if (rp) {
+              rp.maxHp = maxHp;
+              startMortalRoll(rp as HpHolder, fromHp, ms, tnow);
+              if (dmg > 0) {
+                spawnDamageNumber(rp.x, rp.y, dmg);
+                rp.flashUntil = Date.now() + FLASH_MS;
+              }
+              if (banner) spawnMortalText(rp.x, rp.y);
             }
           }
         },
@@ -799,32 +848,46 @@ export class Game {
             expiresAt: now + b.ms,
           }));
         },
-        onPlayerDowned: (id, ms) => {
+        onPlayerDowned: (id, ms, dx, dy, force) => {
           const until = Date.now() + ms;
+          // The mortal roll ran out (or a path that downs directly) — stop the
+          // slide and lay them out. The MORTAL DAMAGE! banner already fired at the
+          // start of the roll (onPlayerMortal), not here. Seed the rotate-and-fling
+          // KO throw so the body tumbles into the laying pose (KoThrow).
           if (id === this.localPlayerId) {
+            clearMortalRoll(this.player);
+            this.player.hp = 0;
             this.player.downed = true;
             this.player.downedUntil = until;
             this.player.downedTotalMs = ms;
             this.player.giveUpProgress = 0;
             this.player.moving = false;
-            // KO'd + knocked over → the dramatic banner, seen by everyone.
-            spawnMortalText(this.player.x, this.player.y);
+            spawnKoThrow(this.player, dx, dy, force);
+            playEventSfx('player-die'); // the meter hit 0 — you fell
           } else {
             const rp = this.remotePlayers.get(id);
             if (rp) {
+              clearMortalRoll(rp as HpHolder);
+              rp.hp = 0;
               rp.downed = true;
               rp.downedUntil = until;
-              spawnMortalText(rp.x, rp.y);
+              spawnKoThrow(rp, dx, dy, force);
             }
           }
         },
         onPlayerRevived: (id) => {
           if (id === this.localPlayerId) {
+            clearMortalRoll(this.player);
             this.player.downed = false;
             this.player.giveUpProgress = 0;
+            clearKoThrow(this.player);
           } else {
             const rp = this.remotePlayers.get(id);
-            if (rp) rp.downed = false;
+            if (rp) {
+              clearMortalRoll(rp as HpHolder);
+              rp.downed = false;
+              clearKoThrow(rp);
+            }
           }
         },
         onPsiCast: (id, _casterId, x, y, tx, ty, hits, beams) => {
@@ -865,9 +928,10 @@ export class Game {
             this.player.direction = dir;
             this.player.moving = false;
             this.player.frame = 0;
-            // True death resolved the KO — clear the downed/vignette state.
+            // True death resolved the KO — clear the downed/vignette/throw state.
             this.player.downed = false;
             this.player.giveUpProgress = 0;
+            clearKoThrow(this.player);
             // While editing (dev), the free camera owns the view — don't yank it
             // back to the avatar. The server shouldn't respawn us at all in editor
             // mode (we're pulled from the sim); this guards a late in-flight hit.
@@ -881,6 +945,7 @@ export class Game {
               rp.x = x;
               rp.y = y;
               rp.downed = false; // true death respawn clears the laying pose
+              clearKoThrow(rp);
             }
             dropRemoteBuffer(id); // snap across the map, don't glide
           }
@@ -1412,12 +1477,43 @@ export class Game {
         sendRideWarp(exit.destX, exit.destY);
         this.startTransition(exit);
       } else {
-        // No floor door. Resync the server to where the glide left us (reconcile
-        // fix). Re-crop ONLY for a true floor change — a same-floor dept-store
-        // hop never left its room, so its crop is still correct and re-cropping it
-        // is exactly what blacked the player out / sealed them (bugs.md).
-        sendRideWarp(this.player.x, this.player.y);
+        // No floor door. Re-crop ONLY for a true floor change — a same-floor
+        // dept-store hop never left its room, so its crop is still correct and
+        // re-cropping it is what blacked the player out / sealed them (bugs.md).
         if (!r.sameFloor) this.updateRoomBounds(this.player.x, this.player.y);
+        // The landing trigger sits at the ramp/floor boundary, so the player's foot
+        // box can straddle OUTSIDE the (now re-sealed) room — every move then reads
+        // as a wall and they're stuck at the top. Nudge them off the seam onto the
+        // floor (ride direction first), exactly like a door warp's nudge-out.
+        this.nudgeIntoRoom(r.dx, r.dy);
+        // Resync the server to where the glide actually left us (reconcile fix).
+        sendRideWarp(this.player.x, this.player.y);
+      }
+    }
+  }
+
+  /**
+   * After an escalator ride, the player can land on the ramp/room seam where the
+   * foot box overlaps a wall or the sealed-room edge — leaving them unable to move
+   * (stuck at the top). If so, nudge them to the nearest free spot, preferring the
+   * ride direction (= deeper onto the destination floor). Mirrors the door-warp
+   * nudge; uses checkPlayerCollision so it respects walls AND the active-room seal.
+   */
+  private nudgeIntoRoom(rideDx: number, rideDy: number) {
+    const COL_W = 14,
+      COL_H = 8,
+      COL_OY = -8;
+    const free = (x: number, y: number) =>
+      !checkPlayerCollision(x - COL_W / 2, y + COL_OY, COL_W, COL_H);
+    if (free(this.player.x, this.player.y)) return;
+    const nudges: [number, number][] = [];
+    for (let d = 8; d <= 48; d += 8) nudges.push([rideDx * d, rideDy * d]); // forward off the ramp
+    for (let d = 8; d <= 48; d += 8) nudges.push([0, d], [0, -d], [d, 0], [-d, 0]);
+    for (const [nx, ny] of nudges) {
+      if (free(this.player.x + nx, this.player.y + ny)) {
+        this.player.x += nx;
+        this.player.y += ny;
+        return;
       }
     }
   }
@@ -1578,6 +1674,11 @@ export class Game {
   }
 
   private update() {
+    // Physical gamepad (Steam Deck / Retroid / any controller) → virtual keys.
+    // Polled every frame, before any input is read, so it drives the same code
+    // paths the keyboard does. Action buttons adapt to whether UI is open.
+    pollGamepads({ menuOpen: isMenuOpen(), dialogueOpen: isDialogueOpen() });
+
     if (this.phase === 'charselect') {
       updateCharacterSelect();
       // While the account overlay is up it owns input (DOM); don't also drive
@@ -1618,9 +1719,14 @@ export class Game {
 
     // Remote players + server NPCs/enemies keep gliding even while menus/
     // dialogue/transitions freeze the local world — their senders haven't stopped.
+    const mortalNow = performance.now();
+    tickMortalRoll(this.player, mortalNow); // local HP death-slide advances always
+    advanceKoThrow(this.player); // KO rotate/fling/bounce settles into the laying pose
     for (const [, rp] of this.remotePlayers) {
       interpolateRemotePlayer(rp);
       applyPredOffset(rp); // layer predicted push/knockback on top, then decay
+      tickMortalRoll(rp as HpHolder, mortalNow); // ally's death-slide too
+      advanceKoThrow(rp); // ally's KO throw advances identically (deterministic)
     }
     interpolateNpcs();
 
@@ -1708,14 +1814,22 @@ export class Game {
       return;
     }
 
-    // Downed (KO): can't act except "give up the ghost" (hold Down/Space/touch ~2s)
+    // Downed (KO): can't act except "give up the ghost" (hold ANY key/touch ~2s)
     // OR claw back up with a last-ditch healing/revive item on the hotbar — the EB
     // "heal before the counter runs out" survival window. Movement, talk, attack
-    // and weapon/PSI hotbar slots stay suppressed until revived or dead.
+    // and weapon/PSI hotbar slots stay suppressed until revived or dead. (A quick
+    // tap of a hotbar slot uses its item; only a sustained hold gives up.)
     if (this.player.downed) {
       this._updateGiveUp();
       const slot = consumeHotbarSlot();
       if (slot >= 0) triggerHotbarConsumable(slot);
+      // Tapping a hotbar slot uses its consumable too (a quick tap, not the
+      // sustained hold that gives up the ghost — see _updateGiveUp).
+      const tap = consumePointerClick();
+      if (tap) {
+        const box = hotbarBoxAt(tap.x, tap.y);
+        if (box >= 0) triggerHotbarConsumable(box);
+      }
       return;
     }
 
@@ -1740,6 +1854,14 @@ export class Game {
     // weapon, use a consumable, or cast an assigned PSI move).
     const slot = consumeHotbarSlot();
     if (slot >= 0) triggerHotbarSlot(slot);
+    // Touch/click: a tap on a hotbar box triggers that slot too — the mobile
+    // equivalent of the number keys. (No dialogue/menu is open on this path, so
+    // the pending click is ours to consume.)
+    const tap = consumePointerClick();
+    if (tap) {
+      const box = hotbarBoxAt(tap.x, tap.y);
+      if (box >= 0) triggerHotbarSlot(box);
+    }
     if (isHurtPressed()) this.player.hurt();
     if (isToggleBoxesPressed()) setDebugBoxes(!debugBoxesOn());
 
@@ -1850,15 +1972,15 @@ export class Game {
    * Mirrors EB's combined "Talk to"+"Check" command: a target with dialogue
    * speaks; empty space gives the classic Check fallback.
    */
-  // While downed: hold Down (Arrow/S), Space, or press-and-hold (touch/mouse) for
-  // GIVE_UP_HOLD_MS to give up the ghost (true death now → respawn at spawn).
-  // Movement is suppressed while downed, so Down is free to mean "give up" and
-  // matches the on-screen prompt. Releasing resets the hold; giveUpProgress
-  // (0..1) drives the on-screen hold meter.
+  // While downed: hold ANY key (or press-and-hold touch/mouse) for GIVE_UP_HOLD_MS
+  // to give up the ghost (true death now → respawn at spawn). All other input is
+  // suppressed while downed, so any held key is free to mean "give up" and matches
+  // the "HOLD TO GIVE UP" prompt. Holding also closes the vignette faster (see
+  // Renderer: t = max(timeT, giveUpProgress)). Releasing resets the hold;
+  // giveUpProgress (0..1) drives both the on-screen meter and that vignette boost.
   private _updateGiveUp(): void {
     const GIVE_UP_HOLD_MS = 2000;
-    const k = getKeySet();
-    const held = k.has('ArrowDown') || k.has('KeyS') || k.has('Space') || isPointerDown();
+    const held = getKeySet().size > 0 || isPointerDown();
     const now = Date.now();
     if (!held) {
       this.giveUpHoldStart = 0;
@@ -2241,6 +2363,17 @@ export class Game {
   }
 
   private render() {
+    // Release last frame's momentary touch presses (menu/talk/confirm taps) now
+    // that update() has had its single frame to read them, and sync the on-screen
+    // controls to the current phase (visibility, attack-in-menu, action label).
+    releaseVirtualTaps();
+    setTouchContext({
+      playing: this.phase === 'playing',
+      menuOpen: isMenuOpen(),
+      dialogueOpen: isDialogueOpen(),
+      downed: !!this.player?.downed,
+    });
+
     // Non-gameplay screens draw straight onto the canvas, so set the base
     // transform to match the supersampled backbuffer (render() does this for
     // gameplay itself).

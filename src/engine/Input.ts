@@ -27,6 +27,38 @@ export function getKeySet(): Set<string> {
   return keys;
 }
 
+// --- Virtual keys (on-screen touch controls) --------------------------------
+// The mobile overlay (TouchControls.ts) drives the game by writing into the SAME
+// key set the keyboard uses, so every downstream reader (movement, menu toggle,
+// dialogue advance, hotbar) works unchanged. Held controls (joystick, attack)
+// use setVirtualKey(down); momentary controls (menu/talk/confirm) use
+// pressVirtualKey, which injects a one-frame press released by
+// releaseVirtualTaps() once per frame.
+const virtualTaps = new Set<string>();
+
+/** Press/release a held virtual key (joystick directions, attack button). */
+export function setVirtualKey(code: string, down: boolean): void {
+  if (down) keys.add(code);
+  else keys.delete(code);
+}
+
+/** Inject a momentary virtual key press (menu/talk/confirm buttons). Lives for
+ *  exactly one frame — released at the next releaseVirtualTaps() — so it reads
+ *  as a single press to both edge-detected (menu toggle) and consume-once
+ *  (talk/action) readers without lingering as a stale key. */
+export function pressVirtualKey(code: string): void {
+  keys.add(code);
+  virtualTaps.add(code);
+}
+
+/** Clear last frame's momentary virtual presses. Call once per frame (top of
+ *  render, after update has had its chance to read them). */
+export function releaseVirtualTaps(): void {
+  if (!virtualTaps.size) return;
+  for (const code of virtualTaps) keys.delete(code);
+  virtualTaps.clear();
+}
+
 /**
  * Drop all currently-held keys. Called when the game transitions into play so a
  * key still down from the previous screen (e.g. the E that confirmed character
@@ -109,6 +141,51 @@ export function initInput(gameCanvas?: HTMLCanvasElement) {
     },
     { passive: false }
   );
+
+  // Touch → pointer bridge. A tap on the GAME CANVAS feeds the same pointer
+  // latches a left mouse click does, so on-canvas UI (hotbar, menu items, shops,
+  // dialogue "tap to continue", character select) is tappable on mobile. The
+  // on-screen movement/attack/menu controls are separate DOM elements layered
+  // ABOVE the canvas, so their touches target those elements, not this handler —
+  // and unlike a mouse click we DON'T latch mouseAttack, so a UI tap never leaks
+  // through as a sword swing (attack is its own button). preventDefault stops the
+  // browser from also firing a synthetic mouse event / scrolling the page.
+  if (canvas) {
+    canvas.addEventListener(
+      'touchstart',
+      (e) => {
+        const t = e.changedTouches[0];
+        if (!t) return;
+        e.preventDefault();
+        const c = toGameCoords(t.clientX, t.clientY);
+        pointerX = c.x;
+        pointerY = c.y;
+        clickPending = c;
+        pressPending = c;
+        pointerHeld = true;
+      },
+      { passive: false }
+    );
+    canvas.addEventListener(
+      'touchmove',
+      (e) => {
+        const t = e.changedTouches[0];
+        if (!t) return;
+        e.preventDefault();
+        const c = toGameCoords(t.clientX, t.clientY);
+        pointerX = c.x;
+        pointerY = c.y;
+      },
+      { passive: false }
+    );
+    const endTouch = (e: TouchEvent) => {
+      const t = e.changedTouches[0];
+      pointerHeld = false;
+      if (t) releasePending = toGameCoords(t.clientX, t.clientY);
+    };
+    canvas.addEventListener('touchend', endTouch);
+    canvas.addEventListener('touchcancel', endTouch);
+  }
 }
 
 /** True while the left button is held down (for drag interactions). */

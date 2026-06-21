@@ -21,10 +21,17 @@ export interface HpHolder {
   dmgPendUntil?: number;
   /** Per-holder timestamp of the last roll step, for frame-independent drain. */
   rollTs?: number;
+  // --- Mortal roll (server-timed): the EB rolling-HP death. The meter slides
+  // from mortalFrom → 0 over mortalMs (authoritative, from the server) while the
+  // player can still heal to survive. Drives BOTH hp + displayHp so the whole bar
+  // visibly empties. Cleared on survive / down / revive. ---
+  mortalFrom?: number;
+  mortalStart?: number;
+  mortalMs?: number;
 }
 
 const HIGHLIGHT_MS = 450; // hold + flash the lost chunk before it drains
-const DRAIN_MS = 2800; // time to drain a FULL bar (partial chunks scale linearly)
+const DRAIN_MS = 4000; // time to drain a FULL bar (partial chunks scale linearly)
 const HEAL_MS = 1200; // time to fill a FULL bar on a heal
 const PEND_HZ = 7; // flash speed of the pending-damage chunk
 
@@ -59,4 +66,36 @@ export function rollHealth(h: HpHolder, now: number): void {
 /** 0..1 brightness for the pending chunk's flash (1 = brightest). */
 export function pendFlash(now: number): number {
   return 0.5 + 0.5 * Math.sin((now / 1000) * PEND_HZ * Math.PI * 2);
+}
+
+/** Begin a server-timed mortal roll: the whole bar slides from `fromHp` to 0 over
+ *  `ms`. Seeds hp + displayHp so the bar reads `fromHp` on frame one. */
+export function startMortalRoll(h: HpHolder, fromHp: number, ms: number, now: number): void {
+  h.mortalFrom = fromHp;
+  h.mortalStart = now;
+  h.mortalMs = Math.max(1, ms);
+  h.hp = fromHp;
+  h.displayHp = fromHp;
+}
+
+/** Drive a mortal roll one frame: set hp + displayHp to the slid value (→0 at end).
+ *  No-op if no roll is active. Call every frame for any holder that can be dying. */
+export function tickMortalRoll(h: HpHolder, now: number): void {
+  if (h.mortalStart === undefined || h.mortalMs === undefined || h.mortalFrom === undefined) return;
+  const t = Math.min(1, (now - h.mortalStart) / h.mortalMs);
+  const v = Math.max(0, h.mortalFrom * (1 - t));
+  h.hp = v;
+  h.displayHp = v;
+}
+
+/** End a mortal roll (survived / downed / revived). The caller sets the real hp. */
+export function clearMortalRoll(h: HpHolder): void {
+  h.mortalFrom = undefined;
+  h.mortalStart = undefined;
+  h.mortalMs = undefined;
+}
+
+/** Is a mortal roll currently animating on this holder? */
+export function isMortalRolling(h: HpHolder): boolean {
+  return h.mortalStart !== undefined;
 }

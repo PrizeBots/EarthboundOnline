@@ -186,9 +186,23 @@ type NetworkCallback = {
    * local deadline, so it stays correct across clock skew). Empty = no buffs.
    */
   onPlayerBuffs?: (buffs: BuffPayload[]) => void;
+  /** A lethal hit started the EB rolling-HP "Mortal Damage" death. The bar rolls
+   *  from `fromHp` → 0 over `ms` while the player stays up and can heal to survive;
+   *  `banner` flags windows long enough to announce MORTAL DAMAGE!; `dmg` is the
+   *  hit that triggered it (for the damage number + flinch). */
+  onPlayerMortal?: (
+    id: string,
+    fromHp: number,
+    maxHp: number,
+    ms: number,
+    banner: boolean,
+    dmg: number
+  ) => void;
   /** A player was KO'd (downed). `ms` = the revive window length; the client lays
-   *  them out, counts down, and (for the owner) draws the closing vignette. */
-  onPlayerDowned?: (id: string, ms: number) => void;
+   *  them out, counts down, and (for the owner) draws the closing vignette.
+   *  (dx,dy) is the killing blow's heading + `force` its damage, driving the
+   *  rotate-and-fling KO throw (KoThrow). */
+  onPlayerDowned?: (id: string, ms: number, dx: number, dy: number, force: number) => void;
   /** A downed player was revived (by an ally) — stand them back up. */
   onPlayerRevived?: (id: string) => void;
   /** Public state of arming/in-progress events (trigger circle + countdown/timer),
@@ -399,6 +413,16 @@ function openSocket() {
       case 'player_hp':
         callbacks?.onPlayerHp(msg.id, msg.hp, msg.maxHp, msg.dmg ?? 0, msg.heal ?? 0);
         break;
+      case 'player_mortal':
+        callbacks?.onPlayerMortal?.(
+          msg.id,
+          msg.fromHp,
+          msg.maxHp,
+          typeof msg.ms === 'number' ? msg.ms : 0,
+          !!msg.banner,
+          msg.dmg ?? 0
+        );
+        break;
       case 'combat':
         callbacks?.onCombat(
           msg.evt,
@@ -481,7 +505,13 @@ function openSocket() {
         callbacks?.onPlayerBuffs?.(Array.isArray(msg.buffs) ? msg.buffs : []);
         break;
       case 'player_downed':
-        callbacks?.onPlayerDowned?.(msg.id, typeof msg.ms === 'number' ? msg.ms : 0);
+        callbacks?.onPlayerDowned?.(
+          msg.id,
+          typeof msg.ms === 'number' ? msg.ms : 0,
+          msg.dx ?? 0,
+          msg.dy ?? 0,
+          msg.force ?? 0
+        );
         break;
       case 'player_revived':
         callbacks?.onPlayerRevived?.(msg.id);

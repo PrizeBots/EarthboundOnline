@@ -209,17 +209,20 @@ Engine code should still be written to port cleanly (see CLAUDE.md Architecture)
 
 ## Backlog / Ideas
 
-- [~] **Tile animation system** — EB has TWO animation systems; both are now wired into
-  the per-frame-atlas + `anim.json` pipeline (build_atlases bakes `{key}_f{k}.png`,
-  `TilesetManager` swaps on a clock). DONE: (1) **palette cycling** — all 8 Flash-Effect
-  combos (`tools/palette_anim.py`, water/lava/etc.); (2) **tile-graphic animation** —
-  the moving escalator steps (`tools/tile_anim.py`, Tile Animation Properties Table
-  ROM 0x2F126B), baked for the dept-store draw tilesets **12 (Twoson) + 13 (Fourside)**.
-  REMAINING: bake tile-graphic animation for the other draw tilesets that carry it —
-  **0, 1, 5, 6, 7, 8, 16, 17, 18, 19** (water, waterfalls, churn, etc.). Just add their
-  ids to `ESCALATOR_DRAW_TS` in build_atlases.py and re-run; verify each looks right
-  in-game (frame 0 == static, so it's safe). Watch combos that use BOTH systems (the
-  build already merges them to lcm(frames) using the tile delay).
+- [~] **Tile animation system** — EB has TWO systems; both wired into the per-frame-atlas
+  - `anim.json` pipeline (build_atlases bakes `{key}_f{k}.png`, `TilesetManager` swaps on a
+    clock). DONE: **palette cycling** — all 8 Flash-Effect combos (`tools/palette_anim.py`,
+    water/lava/the 29_3 palette). NOT DONE: **tile-graphic animation** (the moving escalator/
+    conveyor/waterfall STEPS). The properties table is parsed (`tools/tile_anim.py`, ROM
+    0x2F126B) and the bake/merge path is ready, but the frame GRAPHICS source is unsolved —
+    currently **disabled** (`ESCALATOR_DRAW_TS=set()` in build_atlases.py) because the first
+    guess (consecutive tileset minitiles) flashed WRONG sprites in-game (the 896-minitile
+    graphics block has nothing appended). **NEXT:** find EB's per-tileset animation-graphics
+    asset (what it decompresses to $7EC000) + its ROM pointer table, decode its minitiles,
+    point the `tile_anim.py` remap at those. Then re-enable draw tilesets 12+13 (dept-store
+    escalators) first, then the rest (water/waterfalls: 0,1,5,6,7,8,16,17,18,19). Verify
+    in-game (frame 0 == static, so a correct source is safe). Combos using BOTH systems
+    (Fourside 29_3/29_4) already merge to lcm(frames) with the tile delay.
 - [ ] Knockback + stun tuning pass — knockback distance + stun frequency/duration are best felt in-game; nudge the `KB_*` / `STUN_*` constants in `npcSim.js` after a playtest. (Knockback + basic stun already shipped; this is polish, folded into the Status System above as it matures.)
 - [ ] Player settings screen — selectable chat font (default: regular EB font; Mr. Saturn font as a fun option via ChatManager.setChatFont)
 - [ ] Build visual sprite catalog (HTML page showing all 463 groups with IDs)

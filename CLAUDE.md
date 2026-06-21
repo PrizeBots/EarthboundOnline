@@ -78,10 +78,13 @@ pre-launch TODO; see TODO.md):
 - Uses EarthBound's native dual-layer system: BG atlas (minitiles 0-383) behind sprites, FG atlas (minitiles 512-895) in front
 - Foreground atlas files: `{mapTS}_{pal}_fg.png` — transparent except where foreground pixels exist
 - Collision byte bit 7 (0x80) = solid wall; bits 0-1 = sprite priority flags
-- Animated tiles: EB's ~8 palette-animated combos (Flash Effect — water, lava,
-  dept-store escalators) are baked to per-frame atlases (`{ts}_{pal}_f{k}.png`)
-  - `atlases/anim.json`; the renderer swaps frames on a clock. Extracted from ROM
-    by `tools/palette_anim.py` (used by `build_atlases.py`)
+- Animated tiles — TWO ROM systems, both baked to per-frame atlases
+  (`{ts}_{pal}_f{k}.png` + `atlases/anim.json`; `TilesetManager` swaps on a clock):
+  (1) **palette cycling** (Flash Effect — water/lava) via `tools/palette_anim.py`;
+  (2) **tile-graphic** (escalator/conveyor/waterfall STEPS — swaps minitile graphics)
+  via `tools/tile_anim.py`. Both consumed by `build_atlases.py`; combos with both
+  merge. Tile-graphic currently baked for the escalator draw tilesets 12+13
+  (`ESCALATOR_DRAW_TS`); water/waterfalls are TODO2.md.
 
 ## Music
 

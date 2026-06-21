@@ -65,18 +65,35 @@ Format:
   to dodge — and the client is immediately live). Door-exit rides still fade+shield
   via their own `warp` message.
 
-### Escalator STEP animation is tile-graphic, not palette (OPEN — system not built)
+### Escalator STEP animation is tile-graphic (OPEN — pipeline built, frame SOURCE wrong)
 
-- **Finding:** the dept-store escalator STEPS animate via EB's _Tile Animation
-  Properties Table_ (ROM 0x2F126B unheadered; swaps minitile GRAPHICS in VRAM each
-  frame — escalators/conveyors/waterfalls), NOT the palette "Flash Effect" system.
-  Twoson tileset (drawTS 12) = 1 anim, 3 frames, delay 5; Fourside (drawTS 13) =
-  8 frames, delay 3. Many tilesets have these (water/waterfalls too).
-- **Status:** the palette-animation system (project_animated_tiles) is built and
-  correct, but it animates flash-effect palettes (water/lava + the 29_3 palette),
-  NOT the escalator step graphics. Animating the steps needs a SECOND system:
-  extract per-tileset animation graphics frames + bake per-frame minitile atlas
-  variants + swap in the renderer. Scoped, not yet built.
+- **Finding:** the escalator STEPS animate via EB's _Tile Animation Properties Table_
+  (ROM 0x2F126B unheadered; swaps minitile GRAPHICS in VRAM — escalators/conveyors/
+  waterfalls), NOT palette cycling. Table parsed OK (`tools/tile_anim.py`): Twoson
+  drawTS 12 = 3f delay 5; Fourside drawTS 13 = 8f delay 3.
+- **WRONG ASSUMPTION (caused "flashing with the wrong sprites"):** I assumed the per-
+  frame graphics were consecutive tileset minitiles (M, M+stride, ...). They are NOT —
+  the graphics block is exactly 896 minitiles with nothing appended; EB decompresses a
+  SEPARATE per-tileset animation-graphics asset to $7EC000. Using tileset minitiles
+  swapped in unrelated tiles in-game. **Disabled** (`ESCALATOR_DRAW_TS = set()`) so
+  escalators are static, not garbled.
+- **What's left (TODO2.md):** locate the per-tileset animation-graphics source (the
+  $7EC000 asset) + its ROM pointer, decode its minitiles, then the `tile_anim.py` frame
+  remap points at THOSE. The bake/manifest/`TilesetManager` path already works (the
+  palette system uses it); only the frame source is missing.
+
+### Escalator ride — stuck at the top (room-seal seam) (FIXED 2026-06-21)
+
+- **Symptom:** after the ride STOPS at the top you can't move ("stuck on top").
+- **Root cause (client seal):** the ride snaps the player exactly onto the landing
+  trigger, which sits at the ramp/floor boundary. After `updateRoomBounds` re-seals to
+  the destination room, the player's foot box straddles OUTSIDE the sealed cells, so
+  `checkPlayerCollision` blocks every direction. (A server warp-shield freeze — see
+  ride Follow-up 3 — was a separate contributor, already removed.)
+- **Fix:** `Game.nudgeIntoRoom` — after the ride, if the foot box collides, nudge to
+  the nearest free spot (ride direction first = deeper onto the floor), mirroring the
+  door-warp nudge; respects walls AND the room seal. Runs before `sendRideWarp` so the
+  server gets the freed position.
 
 ### Escalators never stop — ride loops, server drags you back (FIXED 2026-06-20)
 

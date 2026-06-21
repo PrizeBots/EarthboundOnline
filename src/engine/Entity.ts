@@ -35,6 +35,10 @@ export abstract class Entity implements EntityView {
   displayHp?: number;
   dmgPendUntil?: number;
   rollTs?: number;
+  /** Mortal roll (server-timed HP→0 death slide); see HealthRoll. */
+  mortalFrom?: number;
+  mortalStart?: number;
+  mortalMs?: number;
   /** Epoch-ms until which this sprite blinks white from a hit (see Juice.FLASH_MS
    *  / drawSprite). 0 = not flashing. */
   flashUntil = 0;

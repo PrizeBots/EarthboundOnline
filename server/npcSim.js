@@ -3385,6 +3385,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   const PROJ_HALF = 5; // shot hitbox half-size (px)
   const PROJ_DEFAULT_SPEED = 6; // px/tick when a weapon authors no projSpeed
   const PROJ_KNOCK_BEHIND = 20; // knockback source sits this far behind the shot
+  const PROJ_MUZZLE_RISE = 10; // shot flies at chest height (feet - this); see the muzzle in handleAttack
   let projectiles = [];
   let projSeq = 0;
 
@@ -3539,6 +3540,18 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     return false;
   }
 
+  // True if the shot at (x,y) is inside a solid collision tile. The shot flies at
+  // chest height, but WALLS are solid on the ground plane — so we test the SAME
+  // foot-line band a walking body collides against (blocked / COL_*), shifting the
+  // sample down by the muzzle rise. A small box (PROJ_HALF wide, COL_H tall) means
+  // even a one-minitile-thick wall stops the bullet. This is why a shot collides
+  // with exactly the walls a player can't walk through. (wallBetween samples at
+  // foot height too, but offset for actor-to-actor LoS — wrong for a chest-high shot.)
+  function projBlocked(x, y) {
+    const footY = y + PROJ_MUZZLE_RISE;
+    return blocked(x - PROJ_HALF, footY - COL_H, PROJ_HALF * 2, COL_H);
+  }
+
   // Advance every projectile one tick. Each marches forward in sub-steps no larger
   // than its hitbox, so a fast shot can't tunnel past a thin target or wall between
   // ticks; it ends on a wall, on its first hit (unless piercing), or at max range.
@@ -3559,8 +3572,12 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         p.x += sx;
         p.y += sy;
         p.traveled += stepLen;
-        if (wallBetween(px0, py0, p.x, p.y)) {
-          done = true; // a shot stops at the first solid wall it meets
+        if (projBlocked(p.x, p.y)) {
+          // Stop at the first solid collision tile; back out to the last clear spot
+          // so the impact spark lands on the wall face, not buried inside it.
+          p.x = px0;
+          p.y = py0;
+          done = true;
           break;
         }
         if (projectileHits(p, players, now)) {

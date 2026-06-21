@@ -19,10 +19,15 @@ from coilsnake.util.eb.pointer import from_snes_address
 from palette_anim import combo_animations
 from tile_anim import tile_animations
 
-# Graphics tilesets whose TILE-GRAPHIC animation we bake (the dept-store escalators).
-# TODO (TODO2.md): the rest of EB's tile animations — water/waterfalls on draw
-# tilesets 0,1,5,6,7,8,16,17,18,19.
-ESCALATOR_DRAW_TS = {12, 13}
+# Graphics tilesets whose TILE-GRAPHIC animation we bake.
+# DISABLED (empty) for now: the frame GRAPHICS source is wrong — EB's animation
+# minitiles live in a SEPARATE per-tileset asset (decompressed to $7EC000), NOT in
+# the tileset's own 896 minitiles (verified: the graphics block is exactly 896, no
+# frames appended). Using consecutive minitiles flashed unrelated tiles in-game.
+# TODO2.md: locate that animation-graphics source, then re-enable {12,13} (escalators)
+# and the rest (water/waterfalls: 0,1,5,6,7,8,16,17,18,19). The bake/manifest/renderer
+# path (tile_anim.py + the merge below) is ready — only the frame source is missing.
+ESCALATOR_DRAW_TS = set()
 
 TILE_SIZE = 32
 MINI_SIZE = 8

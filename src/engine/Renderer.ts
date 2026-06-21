@@ -11,6 +11,7 @@ import { drawHeldItem, isItemBehind } from './Items';
 import { renderDrops } from './DropManager';
 import { collectProjectileSprites, ProjectileSprite } from './Projectiles';
 import { collectDeathSprites, DeathSprite } from './DeathFx';
+import { isTouchDevice } from './TouchControls';
 import {
   getSpritePriority,
   getPromotedMinitiles,
@@ -24,6 +25,7 @@ import {
   Pose,
   Direction,
   RemotePlayer,
+  KoThrowState,
   SCREEN_WIDTH,
   SCREEN_HEIGHT,
   TILE_SIZE,
@@ -261,6 +263,27 @@ const STATUS_PIP_COLOR: Record<string, string> = {
   homesick: '#ffaacc', // pink
 };
 
+// A stunned (paralysis) entity gets a dizzy 😵 bobbing over its head — reads as
+// "stunned" instantly, far clearer than a colored pip. Drawn with the system emoji
+// font (color glyph), so it's not pixel-art, but it's a universal, art-free tell.
+const STUN_EMOJI_PX = 12;
+const STUN_EMOJI_DROP = 8; // px below the sprite top — sits on the head/face
+function drawStunEmoji(
+  ctx: CanvasRenderingContext2D,
+  centerX: number,
+  feetY: number,
+  spriteGroupId: number
+): void {
+  const spriteH = getSpriteGroupMeta(spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
+  const bob = Math.sin(performance.now() / 180); // gentle hover over the head
+  ctx.save();
+  ctx.font = `${STUN_EMOJI_PX}px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('😵', centerX, feetY - spriteH + STUN_EMOJI_DROP + bob); // on the head/face
+  ctx.restore();
+}
+
 function drawStatusPips(
   ctx: CanvasRenderingContext2D,
   centerX: number,
@@ -270,6 +293,10 @@ function drawStatusPips(
   statuses: string[] | undefined
 ): void {
   if (!statuses || statuses.length === 0) return;
+  // Stun (paralysis) shows as the 😵 over the head instead of a pip.
+  if (statuses.includes('paralysis')) drawStunEmoji(ctx, centerX, feetY, spriteGroupId);
+  const pips = statuses.filter((s) => s !== 'paralysis');
+  if (pips.length === 0) return;
   const spriteH = getSpriteGroupMeta(spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
   const capsule = BAR_H + 1;
   const barCount = hasPP ? 2 : 1;
@@ -279,7 +306,7 @@ function drawStatusPips(
   const barRight = centerX + BAR_W / 2 + 0.5;
   let x = Math.round(barRight + 1);
   const y = barTop + (barCount * capsule) / 2 - PIP / 2;
-  for (const s of statuses) {
+  for (const s of pips) {
     ctx.fillStyle = '#101018'; // 1px dark backing so pale pips stay legible
     ctx.fillRect(x - 0.5, y - 0.5, PIP + 1, PIP + 1);
     ctx.fillStyle = STATUS_PIP_COLOR[s] ?? '#bbbbbb';
@@ -331,6 +358,10 @@ function drawBuffHud(
   }
 }
 
+// EB credits font (16x6 grid, fixed-width 8x16 cells) — the KO "give up" prompt
+// and the downed revive countdown both render in it. Loaded in Game.boot.
+const KO_FONT = 'credits';
+
 /** Seconds-remaining counter floated just above a downed body (player or ally). */
 function drawDownedCountdown(
   ctx: CanvasRenderingContext2D,
@@ -343,7 +374,8 @@ function drawDownedCountdown(
   const remain = Math.max(0, Math.ceil((downedUntil - now) / 1000));
   const spriteH = getSpriteGroupMeta(spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
   const text = `${remain}`;
-  const tw = measureText(text, 1) * 0.5;
+  // Credits font at half scale keeps the over-head counter the same ~8px size.
+  const tw = measureText(text, KO_FONT) * 0.5;
   const x = Math.round(centerX - tw / 2);
   const y = Math.round(feetY - spriteH - 7);
   ctx.fillStyle = '#101018cc';
@@ -352,7 +384,7 @@ function drawDownedCountdown(
   ctx.fill();
   ctx.save();
   ctx.scale(0.5, 0.5);
-  drawText(ctx, text, x * 2, y * 2 + 1, 1, 1);
+  drawText(ctx, text, x * 2, y * 2 + 1, KO_FONT, 1);
   ctx.restore();
 }
 
@@ -384,10 +416,12 @@ function drawGiveUpPrompt(ctx: CanvasRenderingContext2D, progress: number): void
   const HOTBAR_CLEARANCE = 16 + 8; // hotbar box height + gap above it
   const x = Math.round((SCREEN_WIDTH - w) / 2);
   const y = SCREEN_HEIGHT - HOTBAR_CLEARANCE - h;
-  ctx.save();
-  ctx.scale(0.5, 0.5);
-  drawText(ctx, 'HOLD DOWN TO GIVE UP', x * 2, (y - 11) * 2 + 1, 1, 1);
-  ctx.restore();
+  // Credits font cells are small (8x16), so draw at native scale and center the
+  // label horizontally over the meter.
+  const label = 'HOLD TO GIVE UP';
+  const tw = measureText(label, KO_FONT, 1);
+  const tx = Math.round((SCREEN_WIDTH - tw) / 2);
+  drawText(ctx, label, tx, y - getLineHeight(KO_FONT) - 2, KO_FONT, 1);
   ctx.fillStyle = '#222';
   ctx.fillRect(x, y, w, h);
   ctx.fillStyle = '#d8443a';
@@ -414,12 +448,23 @@ export class Renderer {
     this.ctx = canvas.getContext('2d')!;
     this.resizeToFit();
     window.addEventListener('resize', () => this.resizeToFit());
+    // Mobile: the URL bar showing/hiding and orientation flips change the usable
+    // area without always firing 'resize' — track the visual viewport too so the
+    // game re-fills the screen.
+    window.visualViewport?.addEventListener('resize', () => this.resizeToFit());
+    window.addEventListener('orientationchange', () => this.resizeToFit());
   }
 
   private resizeToFit() {
-    const scaleX = window.innerWidth / SCREEN_WIDTH;
-    const scaleY = window.innerHeight / SCREEN_HEIGHT;
-    this.scale = Math.max(1, Math.floor(Math.min(scaleX, scaleY)));
+    const vw = window.visualViewport?.width ?? window.innerWidth;
+    const vh = window.visualViewport?.height ?? window.innerHeight;
+    const fit = Math.min(vw / SCREEN_WIDTH, vh / SCREEN_HEIGHT);
+    // Desktop keeps integer scaling for pixel-perfect art. On phones/tablets a
+    // floored scale bottoms out at 1× on a narrow screen — a 256×224 postage
+    // stamp — so we fill the screen with the exact fractional fit instead. The
+    // uneven-pixel artifact that normally argues for integer scaling is
+    // imperceptible at the high device-pixel-ratio of a phone.
+    this.scale = isTouchDevice() ? fit : Math.max(1, Math.floor(fit));
     this.applyBackbuffer();
   }
 
@@ -583,18 +628,19 @@ export class Renderer {
       sy: number,
       part: SpritePart,
       flash: boolean,
-      downed = false
+      downedAngle?: number
     ) => {
-      // Downed = KO'd: rotate the whole sprite 90° around its mid so it lays on
-      // its back. Each FG-priority part rotates around the SAME pivot, so the
-      // slices still compose into one coherent rotated body.
-      if (downed) {
+      // Downed = KO'd: rotate the whole sprite around its mid so it lays on its
+      // back. `downedAngle` is the live KO-throw angle (tweens 0→±90°, see
+      // KoThrow); undefined = upright. Each FG-priority part rotates around the
+      // SAME pivot, so the slices still compose into one coherent rotated body.
+      if (downedAngle !== undefined) {
         const h = getSpriteGroupMeta(groupId)?.height ?? DEFAULT_SPRITE_H;
         const px = sx;
         const py = sy - h / 2;
         this.ctx.save();
         this.ctx.translate(px, py);
-        this.ctx.rotate(Math.PI / 2);
+        this.ctx.rotate(downedAngle);
         this.ctx.translate(-px, -py);
       }
       const itemHere = itemId !== null && part !== 'upper';
@@ -605,7 +651,20 @@ export class Renderer {
       if (itemHere && !isItemBehind(direction)) {
         drawHeldItem(this.ctx, itemId!, direction, frame, pose, sx, sy);
       }
-      if (downed) this.ctx.restore();
+      if (downedAngle !== undefined) this.ctx.restore();
+    };
+
+    // KO throw render offset (screen px) + rotation for a downed body. The body,
+    // its countdown, and (owner) the vignette all ride this offset so they stay
+    // together as it's flung + bounces, then rest. Upright entity → null.
+    const koDraw = (e: {
+      downed?: boolean;
+      koThrow?: KoThrowState;
+    }): { ox: number; oy: number; angle: number } | null => {
+      if (!e.downed) return null;
+      const k = e.koThrow;
+      if (!k) return { ox: 0, oy: 0, angle: Math.PI / 2 };
+      return { ox: Math.round(k.offX), oy: Math.round(k.offY - k.z), angle: k.angle };
     };
 
     const playerSx = Math.round(player.x) - camX;
@@ -613,26 +672,29 @@ export class Renderer {
     addSprite(
       player.x,
       player.y,
-      (part) =>
+      (part) => {
+        const ko = koDraw(player);
         drawEntityPart(
           player.spriteGroupId,
           player.direction,
           player.frame,
           player.pose,
           player.heldItemId,
-          playerSx,
-          playerSy,
+          playerSx + (ko?.ox ?? 0),
+          playerSy + (ko?.oy ?? 0),
           part,
           player.flashUntil > now,
-          player.downed
-        ),
+          ko?.angle
+        );
+      },
       () => {
         // Downed: show the revive countdown over the body instead of bars.
         if (player.downed) {
+          const ko = koDraw(player);
           drawDownedCountdown(
             this.ctx,
-            playerSx,
-            playerSy,
+            playerSx + (ko?.ox ?? 0),
+            playerSy + (ko?.oy ?? 0),
             player.spriteGroupId,
             player.downedUntil,
             now
@@ -675,26 +737,29 @@ export class Renderer {
       addSprite(
         rp.x,
         rp.y,
-        (part) =>
+        (part) => {
+          const ko = koDraw(rp);
           drawEntityPart(
             rp.spriteGroupId,
             rp.direction,
             rp.frame,
             rp.pose ?? 'walk',
             rp.itemId ?? null,
-            rpScreenX,
-            rpScreenY,
+            rpScreenX + (ko?.ox ?? 0),
+            rpScreenY + (ko?.oy ?? 0),
             part,
             (rp.flashUntil ?? 0) > now,
-            !!rp.downed
-          ),
+            ko?.angle
+          );
+        },
         () => {
           // Downed ally: show their revive countdown so others know to hurry.
           if (rp.downed) {
+            const ko = koDraw(rp);
             drawDownedCountdown(
               this.ctx,
-              rpScreenX,
-              rpScreenY,
+              rpScreenX + (ko?.ox ?? 0),
+              rpScreenY + (ko?.oy ?? 0),
               rp.spriteGroupId,
               rp.downedUntil ?? now,
               now
@@ -969,10 +1034,17 @@ export class Renderer {
     // Downed: closing vignette + give-up prompt (owner only), over everything.
     if (player.downed) {
       const h = getSpriteGroupMeta(player.spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
-      const cx = Math.round(player.x) - camX;
-      const cy = Math.round(player.y) - camY - h / 2;
+      // Ride the KO-throw offset so the vignette stays centered on the flung body.
+      const ko = koDraw(player);
+      const cx = Math.round(player.x) - camX + (ko?.ox ?? 0);
+      const cy = Math.round(player.y) - camY - h / 2 + (ko?.oy ?? 0);
       const total = player.downedTotalMs || 30000;
-      const t = 1 - Math.max(0, Math.min(1, (player.downedUntil - now) / total));
+      // The vignette closes on TWO drivers, whichever is further along: the
+      // natural time countdown, and the hold-to-give-up meter. Holding (red bar
+      // grows) closes it faster toward black; releasing retracts it only back to
+      // the time-based value, so it keeps closing in as the timer nears zero.
+      const timeT = 1 - Math.max(0, Math.min(1, (player.downedUntil - now) / total));
+      const t = Math.max(timeT, player.giveUpProgress);
       drawDownedVignette(this.ctx, cx, cy, t);
       drawGiveUpPrompt(this.ctx, player.giveUpProgress);
     }
