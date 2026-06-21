@@ -140,3 +140,54 @@ export function pollGamepads(ctx: { menuOpen: boolean; dialogueOpen: boolean }):
   edge(b, 4, 'Digit3');
   edge(b, 5, 'Digit4');
 }
+
+/**
+ * Live on-screen gamepad readout for diagnosing handhelds (Retroid, etc.) where
+ * we can't open a console. Enabled by adding `?gpdebug` to the URL. Runs its own
+ * rAF loop independent of the game so it reports even if the game didn't boot.
+ * Shows every pad the browser exposes plus its mapping, live axes and pressed
+ * button indices — so we can see exactly how THIS device presents its controls.
+ */
+export function mountGamepadDebug(): void {
+  if (!/[?&]gpdebug/i.test(location.search)) return;
+  const el = document.createElement('pre');
+  el.style.cssText =
+    'position:fixed;left:4px;top:4px;z-index:99999;margin:0;padding:6px 8px;' +
+    'background:rgba(0,0,0,.78);color:#3cff6a;font:11px/1.35 monospace;' +
+    'white-space:pre-wrap;max-width:96vw;pointer-events:none;border-radius:4px;';
+  document.body.appendChild(el);
+
+  let connectedEver = false;
+  window.addEventListener('gamepadconnected', () => {
+    connectedEver = true;
+  });
+
+  const tick = () => {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const lines: string[] = ['GAMEPAD DEBUG (?gpdebug)'];
+    let any = false;
+    for (const p of pads) {
+      if (!p) continue;
+      any = true;
+      const ax = Array.from(p.axes, (a) => a.toFixed(2)).join(', ');
+      const down = p.buttons
+        .map((bb, i) => (bb.pressed || bb.value > 0.3 ? i : -1))
+        .filter((i) => i >= 0)
+        .join(',');
+      lines.push(`#${p.index} "${p.id}"`);
+      lines.push(`  mapping=${p.mapping || '(none/non-standard)'}`);
+      lines.push(`  axes[${p.axes.length}]: ${ax}`);
+      lines.push(`  buttons down: ${down || '-'}`);
+    }
+    if (!any) {
+      lines.push(
+        connectedEver ? '(connected event fired, but no live pad)' : 'No gamepad seen yet.'
+      );
+      lines.push('Press a face button / move a stick');
+      lines.push('with this page focused.');
+    }
+    el.textContent = lines.join('\n');
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}

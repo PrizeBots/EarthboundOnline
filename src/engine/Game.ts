@@ -17,17 +17,10 @@ import {
   releaseVirtualTaps,
 } from './Input';
 import { mountTouchControls, setTouchContext } from './TouchControls';
-import { pollGamepads } from './Gamepad';
+import { pollGamepads, mountGamepadDebug } from './Gamepad';
 import { hotbarBoxAt } from './menu/layout';
 import { loadMapData, getSector, getDrawTilesetId } from './MapManager';
-import {
-  loadDoors,
-  getDoorAt,
-  getStairAt,
-  getStairExit,
-  getStairLanding,
-  DoorData,
-} from './DoorManager';
+import { loadDoors, getDoorAt, getStairAt, DoorData } from './DoorManager';
 import { setActiveRoomFromPoint, loadRegionRooms } from './Rooms';
 import {
   loadNPCs,
@@ -356,6 +349,8 @@ export class Game {
     // On phones/tablets, mount the on-screen joystick + buttons (no-op on
     // desktop). They synthesize the same key codes the keyboard uses.
     mountTouchControls();
+    // Opt-in live gamepad readout (?gpdebug) for diagnosing handhelds.
+    mountGamepadDebug();
     window.addEventListener('keydown', (e) => this.onKeyDown(e));
 
     // Dev-only editor tools — the dynamic import inside a DEV guard compiles
