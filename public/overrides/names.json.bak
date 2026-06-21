@@ -11,8 +11,10 @@
     "48": "Business Pokey",
     "52": "Grandpa",
     "53": "Grandma",
+    "60": "Drunk",
     "123": "Kid in Blue",
     "223": "Apple",
+    "227": "mailbox",
     "282": "Spiteful Crow",
     "283": "Coil Snake",
     "291": "Ramblin Mushroom",
@@ -20,6 +22,6 @@
     "330": "Runaway Dog",
     "388": "Zombie Guy",
     "415": "Rowdy Mouse",
-    "100000": "Black Antoid"
+    "100000": "005"
   }
 }

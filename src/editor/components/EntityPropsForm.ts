@@ -73,15 +73,16 @@ const COMBAT_KEYS: FieldKey[] = [
 ];
 const BEHAVIOR_KEYS: FieldKey[] = ['detectRange', 'giveUpRange', 'wanderRadius'];
 
-/** Sprite-group layer (Entity Manager): combat stats only. Aggro/chase/roam are
- *  NOT here — those are per-instance / per-spawner. */
-export const ENTITY_STAT_FIELDS = fields(COMBAT_KEYS);
+/** Sprite-group layer (Entity Manager): combat stats + the behavior ranges
+ *  (detect/giveUp aggro & chase, wander roam radius). These set the entity-wide
+ *  DEFAULT; a placement or spawner still overrides per-instance. (0 wander = a
+ *  stationary entity — a clerk/guard that holds its spot.) */
+export const ENTITY_STAT_FIELDS = fields([...COMBAT_KEYS, ...BEHAVIOR_KEYS]);
 
 /** Spawner instance-override layer (Enemy Spawner): the combat fields the server's
- *  resolveProps actually honors per-spawner. Excludes crit/dodge (resolveProps
- *  ignores them at the instance layer) and the behavior ranges (the spawner has
- *  its own dedicated roam/aggro/chase inputs). KEEP IN SYNC with npcSim
- *  resolveProps' pick() set. */
+ *  resolveProps honors per-spawner. Excludes the behavior ranges (the spawner has
+ *  its own dedicated roam/aggro/chase inputs that map to detect/giveUp/wander).
+ *  KEEP IN SYNC with npcSim resolveProps' pick() set. */
 export const SPAWNER_STAT_FIELDS = fields([
   'hp',
   'level',
@@ -90,23 +91,30 @@ export const SPAWNER_STAT_FIELDS = fields([
   'attackCooldownMs',
   'speed',
   'attackRange',
+  'crit',
+  'dodge',
 ]);
 
 /** Per-instance placement override (Placement tool): combat + behavior, filtered
- *  by kind (a townsperson can only take a speed override; an enemy takes all). */
+ *  by kind to the fields the runtime ACTUALLY honors for that kind. Enemies take
+ *  everything; townsfolk now honor their full combat stats too (tickNpcCombat
+ *  reads the resolved damage/attack-rate/range/crit/dodge + detect range — a
+ *  damage of 0 = a civilian who can't fight). Only enemy-CHASE knobs (xp/giveUp/
+ *  roam) stay enemy-only, since townsfolk defend-in-place rather than hunt. The
+ *  full stat set per sprite group lives in the Entity Manager (the master). */
 export const PLACEMENT_PROP_FIELDS = fields([...COMBAT_KEYS, ...BEHAVIOR_KEYS], {
-  hp: ['enemy'],
-  level: ['enemy', 'person'], // level drives walk-push weight class for people too
-  xp: ['enemy'],
-  damage: ['enemy'],
-  attackCooldownMs: ['enemy'],
+  hp: ['enemy', 'person'], // townsfolk are damageable — a tankier NPC is meaningful
+  level: ['enemy', 'person'], // drives walk-push weight class (+ flee/knockback) for people too
+  xp: ['enemy'], // only enemy kills grant EXP
+  damage: ['enemy', 'person'], // 0 = can't fight (civilian); higher = a real brawler
+  attackCooldownMs: ['enemy', 'person'],
   speed: ['enemy', 'person'],
-  attackRange: ['enemy'],
-  detectRange: ['enemy'],
-  giveUpRange: ['enemy'],
-  wanderRadius: ['enemy'],
-  crit: ['enemy'],
-  dodge: ['enemy'],
+  attackRange: ['enemy', 'person'],
+  detectRange: ['enemy', 'person'], // how far off a townsperson notices a threat
+  giveUpRange: ['enemy', 'person'], // a 'pursuer' cop holds the chase out to here
+  wanderRadius: ['enemy', 'person'], // how far an NPC roams from home (0 = stationary)
+  crit: ['enemy', 'person'],
+  dodge: ['enemy', 'person'],
 });
 
 /** Vehicle layer (Traffic Editor): the shared fields a car uses. */

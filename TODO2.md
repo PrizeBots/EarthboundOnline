@@ -1,4 +1,4 @@
-# EarthBound Online — TODO2 (active worklist)
+# Zexonyte Online — TODO2 (active worklist)
 
 > This is the **active** worklist — everything still to do. The completed archive
 > lives in **TODO.md**. Top section is the current focus.

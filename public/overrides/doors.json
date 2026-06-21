@@ -37,6 +37,15 @@
       "worldX": 1424,
       "worldY": 504
     },
+    "2400,348": {
+      "destX": 7360,
+      "destY": 872,
+      "destDir": 3,
+      "style": 4,
+      "sfx": "door-open",
+      "worldX": 2400,
+      "worldY": 352
+    },
     "7224,396": {
       "destX": 2016,
       "destY": 1712,

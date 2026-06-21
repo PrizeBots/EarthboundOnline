@@ -1,8 +1,9 @@
 // Per-entity stats, keyed by sprite group id. Authored in the Entity Manager
-// (editor) and stored in enemy_spawns.json under `entities`. Enemy spawners no
-// longer carry these — they reference a sprite and inherit its entity stats, so
-// every shark (etc.) shares one definition. The server (npcSim) applies them to
-// spawned enemies; the client only needs `hp` for the health bar.
+// (editor) and stored in overrides/entities.json — the UNIVERSAL master table
+// for EVERY kind (person/prop/enemy/car), separate from enemy_spawns.json (the
+// enemy-spawner config). Every placed instance / spawner of a sprite inherits
+// its entity stats and may override per-instance. The server (npcSim) applies
+// the full resolved stats; the client reads hp (health bar) + col + level.
 //
 // KEEP DEFAULTS IN SYNC with server/npcSim.js (DEFAULT_ENEMY_* / ENEMY_*).
 
@@ -22,16 +23,19 @@ export interface EntityCol {
 // How a townsperson (sprite group) maneuvers when an enemy threatens it. Server
 // only (npcSim drives the behavior); assigned per entity in the Entity Manager.
 // KEEP IN SYNC with server/npcSim.js COMBAT_PERSONALITIES.
-export type CombatPersonality = 'brave' | 'skirmisher' | 'coward' | 'nervous';
+export type CombatPersonality = 'brave' | 'skirmisher' | 'coward' | 'nervous' | 'pursuer';
 
 // Editor-facing labels + blurbs for the personality dropdown (order = dropdown
-// order). 'default' means "leave unassigned" — npcSim then seeds a pick by id.
+// order). 'default' means "leave unassigned" — npcSim then seeds a pick by id
+// (from the non-pursuer set, so a cop is never random). KEEP IN SYNC with
+// server/npcSim.js VALID_PERSONALITIES.
 export const COMBAT_PERSONALITY_OPTIONS: { value: CombatPersonality | ''; label: string }[] = [
   { value: '', label: 'default (seeded mix)' },
   { value: 'brave', label: 'brave — close in & press' },
   { value: 'skirmisher', label: 'skirmisher — hit & run' },
   { value: 'coward', label: 'coward — flee, swing if cornered' },
   { value: 'nervous', label: 'nervous — swing & shuffle' },
+  { value: 'pursuer', label: 'pursuer — COP: chase the bad guy down' },
 ];
 
 // EntityProps is the SHARED PARENT property shape every placed entity draws from
@@ -96,8 +100,8 @@ export const DEFAULT_ENTITY_STATS: EntityStats = {
   attackCooldownMs: 700,
   speed: 0.7,
   attackRange: 24,
-  crit: 4, // % — KEEP IN SYNC with npcSim DEFAULT_ENEMY_CRIT
-  dodge: 4, // % — KEEP IN SYNC with npcSim DEFAULT_ENEMY_DODGE
+  crit: 0, // % — honored when authored; 0 default. KEEP IN SYNC with npcSim DEFAULT_ENEMY_CRIT
+  dodge: 0, // % — honored when authored; 0 default. KEEP IN SYNC with npcSim DEFAULT_ENEMY_DODGE
 };
 
 /** Kind-default behavior ranges (px) — the baseline shown when a placement /

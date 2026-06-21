@@ -68,6 +68,15 @@ export class Player extends Entity {
   level = 1;
   /** Epoch-ms the PK enable-lock expires (can't disable PK before this). */
   pkUntil = 0;
+  // --- Server-authoritative movement (client prediction + reconciliation) ---
+  // We PREDICT movement locally each frame (instant feel) but the SERVER owns the
+  // position. Each moving frame produces one input with a monotonic seq, kept here
+  // until the server ACKs it via a `pos`; on reconcile we snap to the server spot
+  // and replay the un-acked inputs so prediction stays ahead with no rubber-band.
+  private pendingInputs: { seq: number; dx: number; dy: number }[] = [];
+  private inputSeq = 0;
+  /** The input applied THIS frame, for Game to send (null = idle, send nothing). */
+  lastInputToSend: { seq: number; dx: number; dy: number } | null = null;
   private poseTimer = 0;
   // Active knockback slide toward (kbX, kbY); kbFrames counts down to 0.
   private kbX = 0;
@@ -209,52 +218,73 @@ export class Player extends Entity {
     const moving = dx !== 0 || dy !== 0;
 
     if (moving) {
-      this.direction = this.dirFromInput(dx, dy);
-      this.moving = true;
-
-      // Foot box at the START of this frame — passed to the NPC check so a
-      // player embedded in a person (spawned on a wanderer, or a server
-      // teleport pushing one onto them) can walk out instead of being trapped
-      // because every candidate move still overlaps.
-      const curColX = this.x - COL_WIDTH / 2;
-      const curColY = this.y + COL_OFFSET_Y;
-
-      // Normalize diagonal movement so speed is consistent. Base speed scales
-      // with the Speed stat (slow at level 1, faster as you level up).
-      const diagonal = dx !== 0 && dy !== 0;
-      const base = moveSpeedFor(this.speed);
-      const moveSpeed = diagonal ? base * Math.SQRT1_2 : base;
-
-      // Compute desired position
-      const newX = this.x + dx * moveSpeed;
-      const newY = this.y + dy * moveSpeed;
-
-      // Collision check - try full move, then axis-separated
-      const colX = newX - COL_WIDTH / 2;
-      const colY = newY + COL_OFFSET_Y;
-
-      if (!this.blocked(colX, colY, curColX, curColY)) {
-        this.x = newX;
-        this.y = newY;
-      } else {
-        // Try horizontal only
-        const hx = this.x + dx * moveSpeed;
-        if (!this.blocked(hx - COL_WIDTH / 2, this.y + COL_OFFSET_Y, curColX, curColY)) {
-          this.x = hx;
-        }
-
-        // Try vertical only
-        const vy = this.y + dy * moveSpeed;
-        if (!this.blocked(this.x - COL_WIDTH / 2, vy + COL_OFFSET_Y, curColX, curColY)) {
-          this.y = vy;
-        }
-      }
-
-      this.stepAnimation();
+      // Predict locally NOW (instant feel) AND record the input so the server's
+      // authoritative result can reconcile against it (see applyInput/reconcile).
+      const seq = ++this.inputSeq;
+      this.pendingInputs.push({ seq, dx, dy });
+      if (this.pendingInputs.length > 256) this.pendingInputs.shift();
+      this.lastInputToSend = { seq, dx, dy };
+      this.applyInput(dx, dy);
     } else {
       this.moving = false;
       this.resetAnimation();
+      this.lastInputToSend = null; // idle → nothing to send (server holds position)
     }
+  }
+
+  /**
+   * Apply ONE movement input (= one frame): facing, speed-scaled axis-separated
+   * slide against world + NPC collision. Shared by live prediction AND
+   * reconciliation replay, and an EXACT mirror of the server's `_stepPlayer`
+   * (gameHost.js) so the authoritative result matches our prediction with no drift.
+   */
+  private applyInput(dx: number, dy: number): void {
+    if (dx === 0 && dy === 0) return;
+    this.direction = this.dirFromInput(dx, dy);
+    this.moving = true;
+    // Foot box at the START of this step — lets a player embedded in an NPC walk
+    // back out (every candidate move would otherwise still overlap).
+    const curColX = this.x - COL_WIDTH / 2;
+    const curColY = this.y + COL_OFFSET_Y;
+    const diagonal = dx !== 0 && dy !== 0;
+    const base = moveSpeedFor(this.speed);
+    const moveSpeed = diagonal ? base * Math.SQRT1_2 : base;
+    const newX = this.x + dx * moveSpeed;
+    const newY = this.y + dy * moveSpeed;
+    if (!this.blocked(newX - COL_WIDTH / 2, newY + COL_OFFSET_Y, curColX, curColY)) {
+      this.x = newX;
+      this.y = newY;
+    } else {
+      const hx = this.x + dx * moveSpeed;
+      if (!this.blocked(hx - COL_WIDTH / 2, this.y + COL_OFFSET_Y, curColX, curColY)) this.x = hx;
+      const vy = this.y + dy * moveSpeed;
+      if (!this.blocked(this.x - COL_WIDTH / 2, vy + COL_OFFSET_Y, curColX, curColY)) this.y = vy;
+    }
+    this.stepAnimation();
+  }
+
+  /**
+   * Server reconciliation: the server ACKed inputs up to `ackSeq` and says we're
+   * authoritatively at (sx,sy). Drop the acked inputs, snap to the server spot,
+   * then REPLAY the still-unacked inputs so our prediction stays ahead — the
+   * common case (server agrees) is a no-op nudge; a real disagreement (a blocked
+   * step we mispredicted, an anti-cheat correction) snaps cleanly. Skipped while
+   * another system owns position (knockback slide / status freeze).
+   */
+  reconcile(sx: number, sy: number, ackSeq: number): void {
+    if (this.kbFrames > 0 || Date.now() < this.frozenUntil) return;
+    this.pendingInputs = this.pendingInputs.filter((i) => i.seq > ackSeq);
+    this.x = sx;
+    this.y = sy;
+    for (const i of this.pendingInputs) this.applyInput(i.dx, i.dy);
+  }
+
+  /** An authoritative door warp landed: jump to the server's dest and drop any
+   *  stale pre-warp inputs so they don't replay at the destination. */
+  warpTo(x: number, y: number): void {
+    this.x = x;
+    this.y = y;
+    this.pendingInputs.length = 0;
   }
 
   /**

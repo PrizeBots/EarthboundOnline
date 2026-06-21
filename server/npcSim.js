@@ -162,6 +162,12 @@ const ENEMY_ATTACK_COOLDOWN_MS = 700; // min time between one enemy's swings
 const ENEMY_ATTACK_POSE_MS = 250; // how long the swing pose shows
 const ENEMY_DAMAGE = 7; // HP per landed hit
 const DEFAULT_ENEMY_XP = 5; // EXP a kill grants the killer (spawners override)
+// Default crit/dodge % when none is authored: 0 for ALL kinds. crit/dodge are
+// honored when set on the entity (Entity Manager) or instance, but no unauthored
+// actor silently gains them — preserves existing combat feel. KEEP IN SYNC with
+// EntityStats.ts DEFAULT_ENTITY_STATS (crit/dodge).
+const DEFAULT_ENEMY_CRIT = 0;
+const DEFAULT_ENEMY_DODGE = 0;
 
 // --- Pursuit steering (anti-clump + obstacle routing) ---
 // Separation spreads pursuers around the target instead of stacking; angled
@@ -221,8 +227,14 @@ const NPC_RESPAWN_MS = 12000; // a downed townsperson revives at home after this
 //   skirmisher — dart in to swing, then back off / sidestep (hit-and-run)
 //   coward     — run from the enemy; only swing when cornered
 //   nervous    — keep swinging but shuffle restlessly in place
+//   pursuer    — COP: lock on and chase the bad guy down (no home leash),
+//                holding the chase out to giveUpRange before walking home
 // KEEP IN SYNC with src/engine/EntityStats.ts CombatPersonality.
+// SEEDED set = what an UNASSIGNED townsperson randomly gets (a varied crowd).
+// 'pursuer' is deliberately excluded — a cop is opt-in per entity, never random.
 const COMBAT_PERSONALITIES = ['brave', 'skirmisher', 'coward', 'nervous'];
+// Every personality an entity may be AUTHORED as (the seeded set + opt-in pursuer).
+const VALID_PERSONALITIES = [...COMBAT_PERSONALITIES, 'pursuer'];
 const NPC_COMBAT_SPEED = 0.8; // px/tick while maneuvering in a fight (wander is 0.5)
 const NPC_FLEE_SPEED = 1.1; // a fleeing coward moves with real urgency
 const NPC_COMBAT_LEASH = 112; // px from home a fighter may range while engaged
@@ -349,6 +361,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       psiStrike: () => null,
       psiStrikeAll: () => null,
       spawnMoneyDrop: () => {},
+      spawnCashFountain: () => [],
       noteRespawn: () => {},
       noteEditorExit: () => {},
       noteTeleport: () => {},
@@ -392,6 +405,11 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     return { ts, pal, arr, mi };
   };
   const ROOMS_OV_PATH = path.join(assetsDir, '..', 'overrides', 'rooms.json');
+  // Per-map-cell tile override (Room Builder "Edit map" → overrides/map_tiles.json).
+  // Mirrors the client (MapManager.buildCustomRoomBand): replaces the arrangement
+  // at specific cells of ANY room. Applied LAST in buildRoomBand so it wins over
+  // the ROM base + band; blocked() reads tiles[] so collision follows for free.
+  const MAP_TILES_OV_PATH = path.join(assetsDir, '..', 'overrides', 'map_tiles.json');
   // Re-stamp the custom-room band over a fresh copy of the ROM base (idempotent —
   // never double-stamps). Grows tiles/sectors to fit the lowest room, writes each
   // room's arrangement cells + sector style, and registers its composites.
@@ -427,6 +445,23 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         for (let sx = s0x; sx <= s1x; sx++) sectors[sy * MAP_W_SECTORS + sx] = { ...r.sector };
       }
       for (const [id, refs] of Object.entries(r.composites || {})) composites.set(Number(id), refs);
+    }
+    // Per-map-cell tile override, applied last (wins over base + band).
+    let mapOv = null;
+    try {
+      mapOv = JSON.parse(fs.readFileSync(MAP_TILES_OV_PATH, 'utf8'));
+    } catch {
+      mapOv = null;
+    }
+    if (mapOv && mapOv.cells) {
+      for (const [k, arr] of Object.entries(mapOv.cells)) {
+        const [tx, ty] = k.split(',').map(Number);
+        const i = ty * MAP_W_TILES + tx;
+        if (i >= 0 && i < tiles.length) tiles[i] = arr;
+      }
+    }
+    if (mapOv && mapOv.composites) {
+      for (const [id, refs] of Object.entries(mapOv.composites)) composites.set(Number(id), refs);
     }
     mapHTiles = hTiles;
   }
@@ -795,7 +830,13 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // (excluding gift-container sprites, which are passive unless kind:'enemy').
   function isEnemyPlacement(r) {
     if (r.kind === 'enemy') return true;
+    // Editor-authored placement: its explicit kind is authoritative. Since kind
+    // isn't 'enemy' (checked above), a deliberate person/prop/car must NOT be
+    // force-upgraded to enemy just because its sprite is an enemy sprite.
+    if (r._authored) return false;
     if (CONTAINER_SPRITES.has(r.sprite)) return false;
+    // Base ROM placements: the enemy-sprite heuristic surfaces enemies that the
+    // base data stores as kind:'person' (e.g. roaming ROM enemies).
     return ENEMY_SPRITES.has(r.sprite);
   }
   // One effective per-entity stat (merged catalog+authored), or `def`.
@@ -835,17 +876,41 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       hp: pick('hp', ent('hp', car ? VEHICLE_HP : enemy ? STATIC_ENEMY_HP : person ? NPC_HP : 0)),
       level: pick('level', ent('level', enemy ? DEFAULT_ENEMY_LEVEL : 1)),
       xp: pick('xp', ent('xp', enemy ? DEFAULT_ENEMY_XP : 0)),
-      damage: pick('damage', car ? VEHICLE_DAMAGE : ent('damage', ENEMY_DAMAGE)),
-      attackCooldown: pick('attackCooldownMs', ent('attackCooldownMs', ENEMY_ATTACK_COOLDOWN_MS)),
+      // Per-kind combat FLOORS: a default townsperson keeps its gentler NPC_*
+      // values, an enemy its ENEMY_* values; the entity table / instance override
+      // either. This lets a Master-Roshi entity out-fight a level-1 civilian of
+      // the same base kind purely by its authored stats.
+      damage: pick(
+        'damage',
+        car ? VEHICLE_DAMAGE : ent('damage', person ? NPC_DAMAGE : ENEMY_DAMAGE)
+      ),
+      attackCooldown: pick(
+        'attackCooldownMs',
+        ent('attackCooldownMs', person ? NPC_ATTACK_COOLDOWN_MS : ENEMY_ATTACK_COOLDOWN_MS)
+      ),
       speed,
       chaseSpeed: speed * CHASE_RATIO, // walkers only (cars route, never chase)
-      attackRange: pick('attackRange', ent('attackRange', ATTACK_RANGE)),
-      detectRange: pick('detectRange', ent('detectRange', DETECT_RANGE)),
+      attackRange: pick(
+        'attackRange',
+        ent('attackRange', person ? NPC_ATTACK_RANGE : ATTACK_RANGE)
+      ),
+      detectRange: pick(
+        'detectRange',
+        ent('detectRange', person ? NPC_DETECT_RANGE : DETECT_RANGE)
+      ),
       giveUpRange: pick('giveUpRange', ent('giveUpRange', GIVE_UP_RANGE)),
       // null = no per-instance/entity roam radius; the tick then falls back to
       // the spawner's radius / 256 (entityStat returns null when unset).
       wanderRadius:
         o.wanderRadius != null ? o.wanderRadius : entityStat(sprite, 'wanderRadius', null),
+      // crit/dodge % — enemies default to DEFAULT_ENEMY_*, townsfolk to 0 (they
+      // didn't crit/dodge before). Honored by resolveMelee for BOTH now.
+      crit: pick('crit', ent('crit', enemy ? DEFAULT_ENEMY_CRIT : 0)),
+      dodge: pick('dodge', ent('dodge', enemy ? DEFAULT_ENEMY_DODGE : 0)),
+      // Combat personality (townsfolk): per-INSTANCE override (Placement editor)
+      // wins over the entity-level default; null → npcCombatPersonality seeds a
+      // random pick by id. A string, so not run through pick()'s numeric path.
+      combat: o.combat != null ? o.combat : entityStat(sprite, 'combat', null),
     };
   }
 
@@ -1001,7 +1066,15 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   function dropWire(d) {
     const base =
       d.kind === 'money'
-        ? { id: d.id, kind: 'money', x: d.x, y: d.y, amount: d.amount | 0 }
+        ? {
+            id: d.id,
+            kind: 'money',
+            x: d.x,
+            y: d.y,
+            amount: d.amount | 0,
+            // Death cash renders as the c001 "cash" item art; absent → coin glyph.
+            ...(d.sprite ? { sprite: d.sprite } : {}),
+          }
         : { id: d.id, kind: 'item', x: d.x, y: d.y, item: d.item, name: d.name || '' };
     if (d.fromX != null && d.pickableAt && Date.now() < d.pickableAt) {
       base.fromX = d.fromX;
@@ -1133,13 +1206,17 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // replaces a base entry; null deletes it (slot becomes a tombstone so ids
   // don't shift); `additions` append after the base list.
   function mergeNpcOverrides(base, ov) {
+    // `_authored` tags editor edits + additions so isEnemyPlacement honors their
+    // EXPLICIT kind (a deliberate person/prop isn't force-upgraded to enemy by the
+    // enemy-sprite heuristic). Untouched base entries keep the heuristic.
     const merged = base.map((e) => {
       const o = e.k !== undefined && ov && ov.edits ? ov.edits[e.k] : undefined;
       if (o === null) return null;
-      if (o) return Object.assign({}, o, { k: e.k });
+      if (o) return Object.assign({}, o, { k: e.k, _authored: true });
       return e;
     });
-    for (const a of (ov && ov.additions) || []) merged.push(Object.assign({}, a));
+    for (const a of (ov && ov.additions) || [])
+      merged.push(Object.assign({}, a, { _authored: true }));
     return merged;
   }
 
@@ -1174,6 +1251,12 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         detectRange: DETECT_RANGE, // px the player must be within to aggro this enemy
         giveUpRange: GIVE_UP_RANGE, // px a locked-on chase breaks off past
         attackRange: ATTACK_RANGE, // px the enemy must be within to land a hit
+        crit: 0, // % chance a swing crits (SMAAAASH); resolved per-entity in build*
+        dodge: 0, // % chance to evade an incoming swing; resolved per-entity in build*
+        combat: null, // townsfolk combat personality override (instance>entity);
+        // null → npcCombatPersonality seeds a pick by id
+        pursuing: false, // 'pursuer' (cop) townsfolk: currently locked onto a foe
+        // (hysteresis — keeps the chase out to giveUpRange)
         wanderRadius: null, // per-instance roam radius; null -> spawner / 256 (see tickEnemy)
         dead: false,
         hpDirty: false,
@@ -1235,6 +1318,14 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         });
       }
       const enemy = isEnemyPlacement(r);
+      // ROM config id from the placement key "areaIdx:npcId:occ" (−1 for editor
+      // additions / keyless). Drives server-side shop-clerk proximity (npcShops
+      // maps this id → store); mirrors the client's npcIdFromKey.
+      const npcConfigId = (() => {
+        if (!r.k) return -1;
+        const parts = String(r.k).split(':');
+        return parts.length >= 2 ? parseInt(parts[1], 10) : -1;
+      })();
       // One cascade: kind default -> sprite-group entity table -> this placement's
       // `props` override. Same resolver the spawner pool uses, so a placed enemy
       // and a spawned one of the same sprite match (minus any per-instance props).
@@ -1243,6 +1334,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         id,
         kind: enemy ? 'enemy' : r.kind,
         sprite: r.sprite,
+        npcConfigId,
         x: r.x,
         y: r.y,
         homeX: r.x,
@@ -1267,6 +1359,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         attackRange: p.attackRange,
         detectRange: p.detectRange,
         giveUpRange: p.giveUpRange,
+        crit: p.crit,
+        dodge: p.dodge,
+        combat: p.combat,
         wanderRadius: p.wanderRadius, // null unless this placement overrides it
       });
     });
@@ -1314,6 +1409,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             detectRange: p.detectRange,
             giveUpRange: p.giveUpRange,
             attackRange: p.attackRange,
+            crit: p.crit,
+            dodge: p.dodge,
+            combat: p.combat,
             wanderRadius: p.wanderRadius, // per-spawner roam radius (else null -> 256)
             dead: true, // inactive until the spawner wakes it
             spawner: sp,
@@ -1435,6 +1533,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         n.detectRange = p.detectRange;
         n.giveUpRange = p.giveUpRange;
         n.attackRange = p.attackRange;
+        n.crit = p.crit;
+        n.dodge = p.dodge;
+        n.combat = p.combat;
         n.wanderRadius = p.wanderRadius; // null unless this placement overrides it
         n.dead = false;
         n.dirty = n.kind === 'person' || enemy;
@@ -1534,6 +1635,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   fs.watchFile(ENTITIES_OV_PATH, { interval: 2000 }, reloadEntities);
   fs.watchFile(CAR_OV_PATH, { interval: 2000 }, reloadTraffic);
   fs.watchFile(ROOMS_OV_PATH, { interval: 2000 }, reloadRooms);
+  // Map-tile override edits re-stamp the band the same way (it's applied inside
+  // buildRoomBand), so enemies/collision pick up moved/covered furniture.
+  fs.watchFile(MAP_TILES_OV_PATH, { interval: 2000 }, reloadRooms);
 
   function stepAnimation(n) {
     if (++n.animTimer >= 8) {
@@ -1594,6 +1698,30 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       if (o === self || o.dead || o.kind === 'deleted') continue;
       const [ox, oy, ow, oh] = actorBox(o, o.x, o.y);
       if (x < ox + ow && x + w > ox && y < oy + oh && y + h > oy) return true;
+    }
+    return false;
+  }
+
+  // AUTHORITATIVE collision for a PLAYER's foot box at (px,py) — walls PLUS solid
+  // actors (person/enemy/car), weight-class aware. EXACT mirror of the client's
+  // Player.blocked → checkPlayerCollision + blockedByNPC, so server simulation and
+  // client prediction agree (no reconciliation jitter). A heavier player (level >
+  // the actor's) walks THROUGH a person/enemy (the walk-push plows it); cars never
+  // yield. `cur*` is the player's box at the START of the step: an actor it ALREADY
+  // overlaps doesn't block (so an embedded player can always walk out). Players do
+  // NOT block each other here (matches the client; overlaps are resolved by the
+  // push system), so PvP plowing stays consistent.
+  function playerBlocked(px, py, level, curX, curY) {
+    if (blocked(px, py, COL_W, COL_H)) return true; // walls / room edges
+    const haveCur = curX !== undefined && curY !== undefined;
+    for (const o of actors) {
+      if (o.dead || o.kind === 'deleted') continue;
+      if (o.kind !== 'person' && o.kind !== 'enemy' && o.kind !== 'car') continue;
+      if (o.kind !== 'car' && level !== undefined && level > (o.level || 1)) continue; // plow lighter
+      const [ox, oy, ow, oh] = actorBox(o, o.x, o.y);
+      if (!aabb(px, py, COL_W, COL_H, ox, oy, ow, oh)) continue;
+      if (haveCur && aabb(curX, curY, COL_W, COL_H, ox, oy, ow, oh)) continue; // already inside → let out
+      return true;
     }
     return false;
   }
@@ -1671,12 +1799,11 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // so an unconfigured crowd still reacts diversely. KEEP IN SYNC with
   // EntityStats.CombatPersonality / EntityManagerTool's dropdown.
   function npcCombatPersonality(n) {
-    const c =
-      enemyCfg &&
-      enemyCfg.entities &&
-      enemyCfg.entities[n.sprite] &&
-      enemyCfg.entities[n.sprite].combat;
-    if (c && COMBAT_PERSONALITIES.includes(c)) return c;
+    // n.combat is the RESOLVED override (per-instance placement > entity table),
+    // set in build*/reload via resolveProps. null → seed a stable pick by id from
+    // the non-pursuer set (so an unassigned crowd reacts diversely, never a cop).
+    const c = n.combat;
+    if (c && VALID_PERSONALITIES.includes(c)) return c;
     return COMBAT_PERSONALITIES[n.id % COMBAT_PERSONALITIES.length];
   }
 
@@ -1732,9 +1859,23 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     const dist = foe.dist;
     n.life = 'idle'; // drop any leftover wander leg without resetting the anim timer
 
+    // "Can't fight": an entity authored with no damage (e.g. a level-1 civilian)
+    // never swings — it keeps its distance from the threat. Combat is a PROPERTY
+    // of the entity now, not a reflex every townsperson has by default.
+    if ((n.damage | 0) <= 0) {
+      const fled = fleeFrom(n, e.x, e.y, NPC_FLEE_SPEED, players, NPC_FLEE_LEASH);
+      n.dir = faceDir(fled ? n.x - e.x : e.x - n.x, fled ? n.y - e.y : e.y - n.y);
+      return;
+    }
+
+    // All combat numbers come from the RESOLVED entity stats (Entity Manager /
+    // per-instance override), with the NPC_* constants only as floors — so a
+    // Master-Roshi townsperson genuinely out-fights a weaker one of the same kind.
+    const range = n.attackRange || NPC_ATTACK_RANGE;
+    const cooldown = n.attackCooldown || NPC_ATTACK_COOLDOWN_MS;
     const canSwing =
-      dist <= NPC_ATTACK_RANGE &&
-      now - n.lastSwing >= NPC_ATTACK_COOLDOWN_MS &&
+      dist <= range &&
+      now - n.lastSwing >= cooldown &&
       n.pose !== 'hurt' &&
       !wallBetween(n.x, n.y, e.x, e.y);
     const swing = () => {
@@ -1745,25 +1886,33 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       n.poseUntil = now + NPC_ATTACK_POSE_MS;
       n.frame = 0;
       n.dirty = true;
-      // A townsperson that equipped a looted weapon hits harder for it.
-      const dmg = NPC_DAMAGE + (n.weaponBonus | 0);
+      // Entity damage + any equipped-weapon bonus, rolled through the SAME
+      // crit/dodge resolver enemies use (n.crit vs the target's dodge).
+      const base = (n.damage | 0) + (n.weaponBonus | 0);
+      const res = resolveMelee(n.crit || 0, e.dodge || 0, base, rng);
       if (foe.isPlayer) {
-        // Swing at a PK player: HP lives on the host, so apply it there. Flat
-        // NPC_DAMAGE (no crit/dodge) — townsfolk are a deliberate PK deterrent.
-        if (onPlayerHitCb)
-          onPlayerHitCb(
-            e.id,
-            dmg,
-            null,
-            knockbackPlayerSpot(e.x, e.y, n.x, n.y, dmg, {
-              amass: massOf(n),
-              vmass: massOf(e),
-            })
-          );
+        // Swing at a PK player: HP lives on the host, so apply it there.
+        if (res.miss) emitCombat('miss', e.x, e.y, null, e.id);
+        else {
+          if (onPlayerHitCb)
+            onPlayerHitCb(
+              e.id,
+              res.dmg,
+              null,
+              knockbackPlayerSpot(e.x, e.y, n.x, n.y, res.dmg, {
+                amass: massOf(n),
+                vmass: massOf(e),
+              })
+            );
+          if (res.crit) emitCombat('crit', e.x, e.y, null, e.id);
+        }
+      } else if (res.miss) {
+        emitCombat('miss', e.x, e.y, null, null); // whiffed at an enemy
       } else {
         // Townsfolk knock enemies back but don't paralyze them (a deliberate
         // deterrent, not a lockdown) — no status inflict.
-        applyDamage(e, dmg, now, null, { x: n.x, y: n.y, amass: massOf(n), inflict: [] });
+        applyDamage(e, res.dmg, now, null, { x: n.x, y: n.y, amass: massOf(n), inflict: [] });
+        if (res.crit) emitCombat('crit', e.x, e.y, null, null);
         e.aggressor = n; // the enemy remembers (and may turn on) whoever hit it
         e.aggroUntil = now + ENEMY_AGGRO_MEMORY_MS;
       }
@@ -1772,10 +1921,19 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     n.dir = faceDir(e.x - n.x, e.y - n.y); // watch the threat by default
 
     switch (npcCombatPersonality(n)) {
+      case 'pursuer':
+        // COP: run the bad guy down — chase at full chase speed with NO home
+        // leash (Infinity), swinging once in range. tickNpc's hysteresis holds
+        // the lock out to giveUpRange; losing the foe drops `pursuing` and the
+        // walk-home in tickNpc returns the cop to its beat.
+        if (dist > range)
+          moveToward(n, e.x, e.y, n.chaseSpeed || NPC_COMBAT_SPEED, players, Infinity);
+        else if (canSwing) swing();
+        break;
+
       case 'brave':
         // Press the attack: close the gap, stand and swing once adjacent.
-        if (dist > NPC_ATTACK_RANGE)
-          moveToward(n, e.x, e.y, NPC_COMBAT_SPEED, players, NPC_COMBAT_LEASH);
+        if (dist > range) moveToward(n, e.x, e.y, NPC_COMBAT_SPEED, players, NPC_COMBAT_LEASH);
         else if (canSwing) swing();
         break;
 
@@ -1796,8 +1954,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       case 'skirmisher':
       default:
         // Hit-and-run: close in, swing when ready, then peel off (back/strafe).
-        if (dist > NPC_ATTACK_RANGE)
-          moveToward(n, e.x, e.y, NPC_COMBAT_SPEED, players, NPC_COMBAT_LEASH);
+        if (dist > range) moveToward(n, e.x, e.y, NPC_COMBAT_SPEED, players, NPC_COMBAT_LEASH);
         else if (canSwing) swing();
         else if (!fleeFrom(n, e.x, e.y, NPC_COMBAT_SPEED, players, NPC_COMBAT_LEASH))
           strafe(n, e.x, e.y, players, NPC_COMBAT_LEASH);
@@ -1819,17 +1976,33 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       // Put picked-up loot to use: heal if hurt, else equip a weapon/armor. Done
       // before combat so a fresh weapon's damage applies on this same swing.
       npcUseCarried(n);
-      const foe = nearestFoeTo(n, NPC_DETECT_RANGE, ppos);
+      // Defend-on-sight radius is the entity's resolved detectRange (NPC_DETECT_RANGE
+      // is just the floor) — a vigilant guard notices threats from farther off.
+      // A 'pursuer' (cop) that's already locked on widens its acquisition to
+      // giveUpRange so it doesn't lose the bad guy the instant he steps past
+      // detect — true hysteresis, like an enemy chase.
+      const pursuer = npcCombatPersonality(n) === 'pursuer';
+      const acqRange =
+        pursuer && n.pursuing ? n.giveUpRange || GIVE_UP_RANGE : n.detectRange || NPC_DETECT_RANGE;
+      const foe = nearestFoeTo(n, acqRange, ppos);
       if (foe) {
+        n.pursuing = pursuer; // lock on (only meaningful for cops)
         tickNpcCombat(n, foe, ppos, now);
         return; // combat owns this tick — skip the wander AI
       }
+      n.pursuing = false; // no foe in range — drop the chase; walk-home pulls it back
     }
+
+    // Wander/leash radius from home: the entity's RESOLVED wanderRadius (Entity
+    // Manager default / per-placement override), else the LEASH floor. 0 = a
+    // stationary NPC (a clerk/guard that holds its spot). KEEP IN SYNC with the
+    // EntityProps wanderRadius semantics (`!= null` so 0 is honored, not OR'd away).
+    const wr = n.wanderRadius != null ? n.wanderRadius : LEASH;
 
     // No threat, but a fight may have carried us off our home spot: walk back
     // before resuming the leashed wander (the wander itself can't path beyond
-    // LEASH, so it would otherwise stay stranded out in the street).
-    if (Math.hypot(n.x - n.homeX, n.y - n.homeY) > LEASH) {
+    // `wr`, so it would otherwise stay stranded out in the street).
+    if (Math.hypot(n.x - n.homeX, n.y - n.homeY) > wr) {
       n.dir = faceDir(n.homeX - n.x, n.homeY - n.y);
       if (moveToward(n, n.homeX, n.homeY, SPEED, ppos, Infinity)) return;
       // Wedged on the way home — fall through to the normal AI and try again.
@@ -1842,8 +2015,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         blocked(nx - COL_W / 2, ny + COL_OY, COL_W, COL_H) ||
         hitsPlayer(nx - COL_W / 2, ny + COL_OY, COL_W, COL_H, ppos) ||
         hitsActor(n, nx - COL_W / 2, ny + COL_OY, COL_W, COL_H) ||
-        Math.abs(nx - n.homeX) > LEASH ||
-        Math.abs(ny - n.homeY) > LEASH;
+        Math.abs(nx - n.homeX) > wr ||
+        Math.abs(ny - n.homeY) > wr;
       if (!stop) {
         n.x = nx;
         n.y = ny;
@@ -3651,6 +3824,38 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       }));
     },
 
+    /**
+     * Anchor positions of every LIVE static interactable (person/prop) — shop
+     * clerks, ATMs, phones, etc. — for server-side proximity gating. The host
+     * checks a transacting player against these so buy/sell/ATM can't be invoked
+     * from across the map (see GameHost _nearShop/_nearAtm). Uses live x/y (a
+     * clerk that wandered is checked where it actually is). Iterates the FULL npc
+     * list, not `actors` (which excludes props — ATMs are often props).
+     */
+    interactableAnchors() {
+      const out = [];
+      for (const n of npcs) {
+        if (!n || n.dead) continue;
+        if (n.kind !== 'person' && n.kind !== 'prop') continue;
+        out.push({ sprite: n.sprite, npcId: n.npcConfigId ?? -1, x: n.x, y: n.y });
+      }
+      return out;
+    },
+
+    /** Authoritative player collision (walls + weight-class solid actors) for the
+     *  server-side movement sim — see playerBlocked. (px,py) = foot-box top-left. */
+    playerBlocked(px, py, level, curX, curY) {
+      return playerBlocked(px, py, level, curX, curY);
+    },
+
+    /** The door trigger at (x,y) — `{x,y,destX,destY}` or null. Server-authoritative
+     *  door validation: a warp is only honored if the player is actually standing on
+     *  a real door, and the destination is the door's OWN dest (not client-chosen).
+     *  Same triggers the chase AI uses (resolveDoor). */
+    doorAt(x, y) {
+      return resolveDoor(x, y);
+    },
+
     /** Every live ground drop (wire shape), for a newly joining client. */
     dropsSnapshot() {
       return groundDrops.map(dropWire);
@@ -3660,6 +3865,28 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     spawnMoneyDrop(x, y, amount) {
       if ((amount | 0) <= 0) return null;
       return spawnDrop('money', x, y, { amount: amount | 0 });
+    },
+
+    /** Player death: scatter `total` cash as a fountain of "cash object" drops
+     *  (the `sprite` item art, e.g. c001). Object count = min(maxObjects, total) so
+     *  each is worth ≥ $1; `total` is split as evenly as possible (the remainder
+     *  spread one-per-object) so the values sum to EXACTLY `total` — no cash
+     *  created or lost. Each object ejects up from (x,y) and lands a short random
+     *  hop away (the existing eject arc), so they pop out and scatter. */
+    spawnCashFountain(x, y, total, sprite, maxObjects = 20) {
+      total = total | 0;
+      if (total <= 0) return [];
+      const cap = maxObjects | 0 || 1;
+      const n = Math.max(1, Math.min(cap, total));
+      const base = Math.floor(total / n);
+      const rem = total - base * n; // first `rem` objects carry one extra dollar
+      const out = [];
+      for (let i = 0; i < n; i++) {
+        const amount = base + (i < rem ? 1 : 0);
+        const land = ejectLanding(x, y); // random non-solid spot a short hop away
+        out.push(spawnDrop('money', land.x, land.y, { amount, sprite }, { x, y }));
+      }
+      return out;
     },
 
     /** Spawn an item ground drop (no eject → immediately claimable). For tests. */

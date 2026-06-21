@@ -20,6 +20,7 @@ export interface GroundDrop {
   item?: number; // item drops: catalog id
   name?: string;
   amount?: number; // money drops: cash value
+  sprite?: string; // money drops: item id to render as (death cash → c001); else a coin
   // Ejection: present only while a fresh drop is still flying out of the corpse.
   // The drop arcs from (fromX,fromY) to (x,y) over ejectMs, then rests.
   fromX?: number;
@@ -76,8 +77,11 @@ export function renderDrops(ctx: CanvasRenderingContext2D, camX: number, camY: n
     const groundY = Math.round(gy - camY);
     const sy = groundY - Math.round(hop);
 
-    // Soft shadow on the ground while airborne, so the arc reads as height.
-    if (hop > 0.5) {
+    const isCash = d.kind === 'money';
+
+    // Non-cash item drops: soft ellipse shadow on the ground while airborne, so
+    // the eject arc reads as height. Cash gets its own silhouette shadow below.
+    if (!isCash && hop > 0.5) {
       ctx.save();
       ctx.globalAlpha = 0.3;
       ctx.fillStyle = '#000';
@@ -87,37 +91,75 @@ export function renderDrops(ctx: CanvasRenderingContext2D, camX: number, camY: n
       ctx.restore();
     }
 
-    if (d.kind === 'money') {
-      drawCoin(ctx, sx, sy);
-    } else {
-      // Center the icon on the anchor, resting just above the feet. Items with no
-      // authored held art fall back to a small sparkle so the drop is still visible.
-      const ok =
-        d.item != null &&
-        drawItemIcon(ctx, String(d.item), sx - ITEM_SIZE / 2, sy - ITEM_SIZE, ITEM_SIZE);
-      if (!ok) drawSparkle(ctx, sx, sy - ITEM_SIZE / 2);
+    // Money drops render as the cash item art (c001); item drops as their own
+    // held art. Center the icon on the anchor, resting just above the feet; a
+    // sprite with no loaded art falls back to a small sparkle so it's still visible.
+    const spriteId = isCash ? d.sprite : d.item != null ? String(d.item) : null;
+    let ok = false;
+    if (spriteId != null) {
+      if (isCash) {
+        // Each scattered cash object sits at its own tilt so a pile reads as a
+        // jumble, not a stack of identical icons. Rotate about the icon's center.
+        const angle = rotFor(d.id);
+        const cx = sx;
+        const cy = sy - ITEM_SIZE / 2;
+        // Drop shadow: a black silhouette of the cash, same tilt, nudged down-right
+        // a few px in screen space so it reads as the bill casting onto the ground.
+        const sil = silhouette(spriteId);
+        if (sil) {
+          ctx.save();
+          ctx.globalAlpha = 0.35;
+          ctx.translate(cx + SHADOW_DX, cy + SHADOW_DY);
+          ctx.rotate(angle);
+          ctx.drawImage(sil, -ITEM_SIZE / 2, -ITEM_SIZE / 2, ITEM_SIZE, ITEM_SIZE);
+          ctx.restore();
+        }
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(angle);
+        ok = drawItemIcon(ctx, spriteId, -ITEM_SIZE / 2, -ITEM_SIZE / 2, ITEM_SIZE);
+        ctx.restore();
+      } else {
+        ok = drawItemIcon(ctx, spriteId, sx - ITEM_SIZE / 2, sy - ITEM_SIZE, ITEM_SIZE);
+      }
     }
+    if (!ok) drawSparkle(ctx, sx, sy - ITEM_SIZE / 2);
   }
 }
 
-// A small gold coin for money drops (no ROM art for cash — drawn from primitives).
-function drawCoin(ctx: CanvasRenderingContext2D, x: number, y: number): void {
-  ctx.save();
-  ctx.translate(x, y - 5);
-  ctx.fillStyle = '#caa21a';
-  ctx.beginPath();
-  ctx.ellipse(0, 0, 5, 6, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#ffe14d';
-  ctx.beginPath();
-  ctx.ellipse(-1, -1, 3, 4, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#8a6d00';
-  ctx.fillRect(-1, -3, 2, 6);
-  ctx.restore();
+// A stable per-drop tilt (radians) so every scattered cash object lands at its
+// own angle. Derived from the drop id, so it's identical for all viewers and
+// across rejoins, and never flickers frame-to-frame. ±~46°.
+const CASH_MAX_TILT = 0.8;
+function rotFor(id: string): number {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+  const u = ((h >>> 0) % 1000) / 1000; // [0,1)
+  return (u - 0.5) * 2 * CASH_MAX_TILT;
 }
 
-// Fallback marker for an item with no held sprite — a tiny diamond glint.
+// Screen-space offset of the cash drop shadow (down-right, a few px).
+const SHADOW_DX = 2;
+const SHADOW_DY = 2.5;
+
+// A black silhouette of an item's art, cached per id (built once the art loads).
+// Used as the cash drop shadow — same shape as the bill, drawn tinted + offset.
+const silCache = new Map<string, HTMLCanvasElement>();
+function silhouette(id: string): HTMLCanvasElement | null {
+  const cached = silCache.get(id);
+  if (cached) return cached;
+  const c = document.createElement('canvas');
+  c.width = c.height = ITEM_SIZE;
+  const sctx = c.getContext('2d')!;
+  if (!drawItemIcon(sctx, id, 0, 0, ITEM_SIZE)) return null; // art not loaded yet — retry next frame
+  sctx.globalCompositeOperation = 'source-atop'; // tint only the opaque pixels black
+  sctx.fillStyle = '#000';
+  sctx.fillRect(0, 0, ITEM_SIZE, ITEM_SIZE);
+  silCache.set(id, c);
+  return c;
+}
+
+// Fallback marker for a drop whose art hasn't loaded — a tiny diamond glint.
 function drawSparkle(ctx: CanvasRenderingContext2D, x: number, y: number): void {
   ctx.save();
   ctx.translate(x, y);

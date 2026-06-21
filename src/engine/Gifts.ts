@@ -10,12 +10,12 @@
  * unique ROM Event Flag. Authored edits (Gift Manager tool) layer on top via
  * overrides/gifts.json — same overrides pattern as enemies/npcs.
  *
- * Visual: a PRESENT (sprite 195) packs BOTH states in its OWN sheet — the
- * wrapped/closed box faces South (row 1, the baked direction of every ROM
- * present), the lidless/OPEN box faces North (row 0). Opening flips the box to
- * face North; it PERSISTS showing that open frame (it is NOT removed). Other
- * containers (trash cans, jars…) have no open frame — they grant once and stay
- * unchanged. (Sprite 196 is a "?" thought bubble, NOT an open box — never used.)
+ * Visual: EVERY container sprite packs BOTH states in its OWN sheet — the
+ * closed box faces South (row 1, the baked direction of every ROM container),
+ * the lidless/OPEN (empty) box faces North (row 0). Opening flips the box to
+ * face North; it PERSISTS showing that open frame (it is NOT removed). This
+ * holds for ALL types: present (195), trash can (214), gift box (233), crate
+ * (262), jar (322), basket (33) — verified frame-by-frame from the sheets.
  *
  * Per-PLAYER one-time open: the ROM's single global "opened" flag can't work in
  * an MMO (the world is shared, progress is personal), so each gift maps to a
@@ -68,14 +68,10 @@ export interface GiftOverrides {
 }
 
 export const GIFT_SPRITE_CLOSED = 195;
-// Present box (sprite 195) state is encoded by FACING within its own sheet:
-// South = closed (row 1, the baked direction), North = open/lidless (row 0).
+// Every container sprite encodes its state by FACING within its own sheet:
+// South = closed (row 1, the baked direction of every ROM container), North =
+// open/lidless/empty (row 0). Opening just flips the facing to North.
 const GIFT_OPEN_DIR = Direction.N;
-
-/** Is this a present box? Only presents have an open frame (flip-to-North). */
-export function isPresentSprite(sprite: number): boolean {
-  return sprite === GIFT_SPRITE_CLOSED;
-}
 
 // Default display names for the ROM container sprites (the admin can rename a
 // sprite group in Entity Manager to override these). Used for Gift Manager tabs.
@@ -173,9 +169,10 @@ export function tagGift(npc: NPC): void {
   if (!g) return;
   npc.giftItem = g.item;
   npc.giftRomFlag = g.romFlag;
-  // A present already opened in a PRIOR session (its flag persists) starts open:
-  // flip it to the lidless North frame so it loads showing the open box.
-  if (isPresentSprite(npc.spriteGroupId) && hasFlag(giftFlagId(g.romFlag))) {
+  // A container already emptied in a PRIOR session (its flag persists) starts
+  // open: flip it to the lidless/empty North frame so it loads showing the open
+  // box. Applies to every container type (present, trash can, jar, …).
+  if (hasFlag(giftFlagId(g.romFlag))) {
     npc.giftOpenedAt = 1; // nonzero marker — "already opened" (blocks re-open)
     npc.direction = GIFT_OPEN_DIR;
   }
@@ -189,14 +186,13 @@ export function giftOpened(npc: NPC): boolean {
 /**
  * React to the server confirming a grant ('gift_opened'). Marks the per-player
  * flag (setFlag persists it; the server already has it, so its set_flag handler
- * is a harmless no-op). A PRESENT additionally flips to the lidless OPEN frame
- * (sprite 195 facing North) and PERSISTS that way; other containers (trash cans,
- * jars…) have no open frame and simply stay put now that they're emptied.
+ * is a harmless no-op) and flips the container to its lidless/empty North frame,
+ * which PERSISTS. Every container type packs that open frame (present, trash
+ * can, gift box, crate, jar, basket), so this is uniform across all of them.
  */
 export function beginGiftOpen(npc: NPC): void {
   if (npc.giftRomFlag == null) return;
   setFlag(giftFlagId(npc.giftRomFlag));
-  if (!isPresentSprite(npc.spriteGroupId)) return;
   npc.giftOpenedAt = Date.now();
-  npc.direction = GIFT_OPEN_DIR; // show the lidless box, and keep it that way
+  npc.direction = GIFT_OPEN_DIR; // show the lidless/empty box, and keep it that way
 }

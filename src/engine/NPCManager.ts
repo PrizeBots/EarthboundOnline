@@ -20,7 +20,7 @@ import { loadShops, shopStoreForNpc } from './Shop';
 import { DEFAULT_ENTITY_STATS, DEFAULT_BEHAVIOR_RANGES } from './EntityStats';
 import type { EntityCol, EntityProps, EntityPropsOverride, EntityDefs } from './EntityStats';
 import { hasFlag } from './PlayerFlags';
-import { loadGifts, tagGift, giftAdditions, GIFT_SPRITE_CLOSED } from './Gifts';
+import { loadGifts, tagGift, giftAdditions, giftForKey, GIFT_SPRITE_CLOSED } from './Gifts';
 
 /** ROM NPC config id from a placement key "areaIdx:npcId:occ", or -1. */
 function npcIdFromKey(k: string | undefined): number {
@@ -49,6 +49,9 @@ export interface RawNPC {
    *  resolveProps over the sprite-group/kind defaults. Absent fields inherit.
    *  KEEP IN SYNC with server/npcSim.js (reads `r.props`). */
   props?: EntityPropsOverride;
+  /** Set by mergeNpcOverrides on editor edits/additions: their explicit `kind` is
+   *  authoritative (not force-upgraded to enemy by the enemy-sprite heuristic). */
+  _authored?: boolean;
 }
 
 /**
@@ -68,10 +71,10 @@ export function mergeNpcOverrides(base: RawNPC[], ov: NpcOverrides | null): (Raw
   const merged: (RawNPC | null)[] = base.map((e) => {
     const o = e.k !== undefined ? ov?.edits?.[e.k] : undefined;
     if (o === null) return null; // deleted — slot kept so wire ids align
-    if (o) return { ...o, k: e.k };
+    if (o) return { ...o, k: e.k, _authored: true };
     return e;
   });
-  for (const a of ov?.additions ?? []) merged.push({ ...a });
+  for (const a of ov?.additions ?? []) merged.push({ ...a, _authored: true });
   return merged;
 }
 
@@ -441,9 +444,19 @@ function buildStaticNpcs(raw: RawNPC[], overrides: NpcOverrides | null): (NPC | 
   let addIdx = 0;
   const arr = mergeNpcOverrides(raw, overrides).map((r) => {
     if (!r) return null; // override-deleted slot
-    // Enemy if explicitly placed as one (PlacementTool) OR a legacy enemy
+    // A placement with a gift-catalog entry (present/trash can/jar/…) is an
+    // item-container — kind 'gift' (behaves like a prop, but labelled). Else:
+    // enemy if explicitly placed as one (PlacementTool) OR a legacy enemy
     // sprite. KEEP IN SYNC with server/npcSim.js isEnemyPlacement.
-    const kind: NPCKind = r.kind === 'enemy' || enemySpriteSet.has(r.sprite) ? 'enemy' : r.kind;
+    const kind: NPCKind = giftForKey(r.k ?? null)
+      ? 'gift'
+      : r.kind === 'enemy'
+        ? 'enemy'
+        : r._authored
+          ? r.kind // editor edit/addition: explicit kind wins over the heuristic
+          : enemySpriteSet.has(r.sprite)
+            ? 'enemy'
+            : r.kind;
     const npc = new NPC(r.x, r.y, r.sprite, r.dir as Direction, kind, r.t ?? null);
     const props = resolveProps(kind, r.sprite, r.props);
     npc.level = props.level; // weight-class push (blockedByNPC)
@@ -473,7 +486,7 @@ function buildStaticNpcs(raw: RawNPC[], overrides: NpcOverrides | null): (NPC | 
   // server's enemy/car pool, which knows nothing about authored gifts.
   for (const g of giftAdditions()) {
     if (npcByKey.has(g.k)) continue; // never shadow a real placement
-    const npc = new NPC(g.x, g.y, g.sprite ?? GIFT_SPRITE_CLOSED, Direction.S, 'prop', null);
+    const npc = new NPC(g.x, g.y, g.sprite ?? GIFT_SPRITE_CLOSED, Direction.S, 'gift', null);
     npc.placementKey = g.k;
     npcByKey.set(g.k, npc);
     tagGift(npc);
@@ -796,6 +809,21 @@ export function colBoxFor(sprite: number, x: number, y: number): [number, number
   return [x - NPC_COL_W / 2, y + NPC_COL_OY, NPC_COL_W, NPC_COL_H];
 }
 
+/** True if this sprite group has an authored collision box (Entity Manager /
+ *  harvested furniture). A `prop` with one is solid; without one it's walkable.
+ *  Used by the debug overlay to decide whether to draw a prop's col box. */
+export function hasEntityCol(sprite: number): boolean {
+  return entityCols.has(sprite);
+}
+
+/** Set a sprite group's collision box live (Furniture Cutter), so a just-created
+ *  furniture prop is solid + drawn immediately without a reload. Mirrors what
+ *  loadNPCs builds from overrides/entities.json; the caller still persists it. */
+export function setEntityCol(sprite: number, col: EntityCol): void {
+  entityCols.set(sprite, col);
+  entityDefs.set(sprite, { ...(entityDefs.get(sprite) ?? {}), col });
+}
+
 /** World-space whole-body box `[x,y,w,h]` for a VEHICLE (kind 'car') facing
  *  `dir` at (x,y), or null if its sprite sheet hasn't loaded. Priority mirrors
  *  blockedByNPC + the server's actorBox: manual Entity Manager `col` override,
@@ -857,12 +885,25 @@ export function blockedByNPC(
   };
   const hits = (npc: NPC): boolean => {
     if (npc.dead) return false;
-    if (npc.kind !== 'person' && npc.kind !== 'enemy' && npc.kind !== 'car') return false;
+    // person/enemy/car are always solid. A `prop` is solid ONLY when it has an
+    // authored col box (furniture, harvested into a placeable object): ROM props
+    // without a col are invisible hotspots (phones/signs) whose body lives in the
+    // map tile collision, so they stay walkable. KEEP IN SYNC with npcSim.
+    const propSolid =
+      (npc.kind === 'prop' || npc.kind === 'gift') && entityCols.has(npc.spriteGroupId);
+    if (npc.kind !== 'person' && npc.kind !== 'enemy' && npc.kind !== 'car' && !propSolid)
+      return false;
     // Weight-class walk-push: a heavier (higher-level) mover isn't blocked by a
     // lighter person/enemy — they walk INTO it and the server (pushFromPlayers)
-    // shoves it aside. Cars never yield (you don't push a car); equal/heavier
-    // NPCs still block. KEEP the rule (strict >) IN SYNC with npcSim massOf.
-    if (pusherLevel !== undefined && npc.kind !== 'car' && pusherLevel > npc.level) {
+    // shoves it aside. Cars and solid props never yield (furniture is fixed);
+    // equal/heavier NPCs still block. KEEP the rule (strict >) IN SYNC with npcSim massOf.
+    if (
+      pusherLevel !== undefined &&
+      npc.kind !== 'car' &&
+      npc.kind !== 'prop' &&
+      npc.kind !== 'gift' &&
+      pusherLevel > npc.level
+    ) {
       return false;
     }
     const box = boxOf(npc);

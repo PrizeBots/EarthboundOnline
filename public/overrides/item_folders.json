@@ -296,9 +296,9 @@
     "251": "food",
     "252": "drinks",
     "253": "key",
-    "bat": "custom",
-    "pan": "custom",
-    "yoyo": "custom",
-    "custom-1": "custom"
+    "c001": "custom",
+    "c002": "custom",
+    "c003": "custom",
+    "c004": "custom"
   }
 }

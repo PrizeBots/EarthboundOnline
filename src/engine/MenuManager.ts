@@ -24,7 +24,7 @@ import {
   consumeWheelDelta,
 } from './Input';
 import { getGoods, goodsCount } from './Inventory';
-import { getMoney, getBank } from './Wallet';
+import { getMoney, getBank, formatMoney } from './Wallet';
 import {
   sendUseItem,
   sendUsePsi,
@@ -75,6 +75,8 @@ import {
   shopRootRowAt,
   hotbarBoxAt,
   wrapText,
+  settingsLayout,
+  settingsRowAt,
   ListLayout,
 } from './menu/layout';
 import { MenuName, MenuHooks, EquipRow, MenuView, ShopPreview } from './menu/types';
@@ -86,10 +88,13 @@ import {
   renderEquipSelect,
   renderPsi,
   renderMessage,
+  renderSettings,
+  renderMoney,
   renderHotbar,
   renderDragGhost,
 } from './menu/render';
 import { PSI_TABS, familiesInTab, PsiMove } from './PsiTuning';
+import { SETTINGS_ROWS, adjustSlider, flipToggle, showMoneyAlways } from './Settings';
 export type { MenuHooks }; // public API: Game wires the equipment hooks
 
 // Hooks into the local player's equipment, wired by Game (MenuManager has no
@@ -283,9 +288,9 @@ let savePrompt = SAVE_PROMPT;
  */
 export function applyDadReport(earned: number, spent: number, bank: number): void {
   if (menuState !== 'save') return; // call was cancelled before the reply landed
-  let line = `It's Dad. Since we last chatted, I put $${earned} in your account`;
-  if (spent > 0) line += `, minus the $${spent} you spent`;
-  line += `. You have $${bank} in your account. Want me to save your progress?`;
+  let line = `It's Dad. Since we last chatted, I put $${formatMoney(earned)} in your account`;
+  if (spent > 0) line += `, minus the $${formatMoney(spent)} you spent`;
+  line += `. You have $${formatMoney(bank)} in your account. Want me to save your progress?`;
   savePrompt = line;
 }
 
@@ -317,10 +322,11 @@ function atmMax(): number {
 }
 
 /** How many digit places the odometer shows — enough for the current balance
- *  (min 1), so you can never even dial a place past what you have. */
+ *  (min 1), so you can never even dial a place past what you have. String length
+ *  is exact (Math.log10 has float edges, e.g. log10(1000) = 2.9999…). */
 function atmPlaces(): number {
   const max = atmMax();
-  return max <= 0 ? 1 : Math.floor(Math.log10(max)) + 1;
+  return max <= 0 ? 1 : String(max).length;
 }
 
 /** Open the ATM/bank menu (called from Game.tryTalk for an ATM sprite). */
@@ -646,6 +652,7 @@ function hotbarActive(): boolean {
 
 let cursorIndex = 0;
 let goodsCursor = 0;
+let settingsCursor = 0; // highlighted row on the Settings screen
 // PSI menu (canon-style): active tab → family in that tab → tier popup.
 let psiTab = 0; // index into PSI_TABS
 let psiFamilyCursor = 0; // family row within the active tab
@@ -781,6 +788,57 @@ export function updateMenu(): void {
     // Any action/cancel key (or a click) returns to the command grid, as in EB.
     if (toggle || confirm || click || justPressed('Backspace')) {
       menuState = 'command';
+    }
+  } else if (menuState === 'settings') {
+    if (toggle || justPressed('Backspace')) {
+      menuState = 'command';
+    } else {
+      const n = SETTINGS_ROWS.length;
+      const prev = settingsCursor;
+      if (justPressed('ArrowUp') || justPressed('KeyW'))
+        settingsCursor = (settingsCursor + n - 1) % n;
+      if (justPressed('ArrowDown') || justPressed('KeyS'))
+        settingsCursor = (settingsCursor + 1) % n;
+      if (settingsCursor !== prev) playEventSfx('cursor-vertical');
+
+      // Mouse: wheel + scrollbar (future-proofs a longer list), then hover-select.
+      const lay = settingsLayout(settingsCursor);
+      const sc = applyListScroll(lay, n, settingsCursor);
+      settingsCursor = sc.cursor;
+      const p = getPointer();
+      const hov =
+        lay.scroll || sc.active || !mouseMoved ? -1 : settingsRowAt(p.x, p.y, settingsCursor);
+      if (hov >= 0) settingsCursor = hov;
+
+      // ←/→ adjust the highlighted row: ±10% for a slider, flip for a toggle.
+      // Confirm (Z/Space/Enter) flips a toggle too; sliders ignore it.
+      const row = SETTINGS_ROWS[settingsCursor];
+      const left = justPressed('ArrowLeft') || justPressed('KeyA');
+      const right = justPressed('ArrowRight') || justPressed('KeyD');
+      if (row.kind === 'slider') {
+        if (left) {
+          adjustSlider(row.key, -1);
+          playEventSfx('cursor-horizontal');
+        }
+        if (right) {
+          adjustSlider(row.key, 1);
+          playEventSfx('cursor-horizontal');
+        }
+      } else if (left || right || confirm) {
+        flipToggle(row.key);
+        playEventSfx('cursor-confirm');
+      }
+      // Click a row to select it; clicking a toggle row also flips it.
+      if (click) {
+        const ci = settingsRowAt(click.x, click.y, settingsCursor);
+        if (ci >= 0) {
+          settingsCursor = ci;
+          if (SETTINGS_ROWS[ci].kind === 'toggle') {
+            flipToggle(SETTINGS_ROWS[ci].key);
+            playEventSfx('cursor-confirm');
+          }
+        }
+      }
     }
   } else if (menuState === 'goods') {
     const items = getGoods();
@@ -1254,6 +1312,13 @@ export function renderHotbarOverlay(ctx: CanvasRenderingContext2D): void {
   renderHotbar(ctx, buildView());
 }
 
+/** Draw just the top-right money window as an always-on HUD element, when the
+ *  player has enabled "Show $ in corner" in Settings. Game calls this when the
+ *  menu is CLOSED (the menu's own screens draw the money window themselves). */
+export function renderMoneyOverlay(ctx: CanvasRenderingContext2D): void {
+  if (showMoneyAlways()) renderMoney(ctx);
+}
+
 // Snapshot the mutable menu state into the immutable view the renderer reads.
 // (menu/render.ts never touches state; the state machine lives here.)
 function buildView(): MenuView {
@@ -1281,6 +1346,7 @@ function buildView(): MenuView {
     equipSlotSel,
     equipSelectCursor,
     equipSelectItems: equipSelectItems(),
+    settingsCursor,
   };
 }
 
@@ -1297,6 +1363,11 @@ function renderMenuBody(ctx: CanvasRenderingContext2D, view: MenuView): void {
   }
   if (menuState === 'status') {
     renderStatus(ctx);
+    return;
+  }
+  if (menuState === 'settings') {
+    renderCommand(ctx, view); // keep the command grid + money window behind it
+    renderSettings(ctx, view);
     return;
   }
   if (menuState === 'goods') {
@@ -1366,32 +1437,69 @@ function phoneRowAt(px: number, py: number): number {
   return -1;
 }
 
-// ATM/bank window — balances on top, the Withdraw/Deposit chooser with a ">"
-// cursor below, and the typed amount (blinking caret). Top-left, same window
-// family as the phone.
+// A small pixel-drawn vertical arrow (the EB font has no caret glyph — '_' renders
+// as Ω). `up` apexes at the top; widths 1/3/5 (or reversed) over 3 rows.
+function drawVArrow(ctx: CanvasRenderingContext2D, cx: number, y: number, up: boolean): void {
+  ctx.fillStyle = '#f0f0f0';
+  for (let r = 0; r < 3; r++) {
+    const w = up ? r * 2 + 1 : 5 - r * 2;
+    ctx.fillRect(cx - Math.floor(w / 2), y + r, w, 1);
+  }
+}
+
+// ATM/bank window — balances on top, then either the Withdraw/Deposit chooser
+// (action stage) or the odometer amount entry (amount stage: Up/Down roll the
+// arrowed digit, Left/Right move places). Top-left, same family as the phone.
 function renderAtm(ctx: CanvasRenderingContext2D): void {
   const winX = 8;
   const winY = 8;
   const lineH = FONT_LINE_HEIGHT;
   const innerX = winX + BORDER + PADDING;
   const innerW = 96;
-  const lines = 6; // Bank, Cash, gap, Withdraw, Deposit, Amount
+  const lines = 6; // Bank, Cash, gap, then 2 rows of either chooser or label+odometer
   const winH = lines * lineH + PADDING * 2 + BORDER * 2;
   drawWindow(ctx, winX, winY, innerW + PADDING * 2 + BORDER * 2, winH, MENU_STYLE);
 
   let y = winY + BORDER + PADDING;
-  drawText(ctx, `Bank:  $${getBank()}`, innerX, y, FONT_ID);
+  drawText(ctx, `Bank:  $${formatMoney(getBank())}`, innerX, y, FONT_ID);
   y += lineH;
-  drawText(ctx, `Cash:  $${getMoney()}`, innerX, y, FONT_ID);
+  drawText(ctx, `Cash:  $${formatMoney(getMoney())}`, innerX, y, FONT_ID);
   y += lineH * 2; // blank spacer row
-  for (let i = 0; i < ATM_ACTIONS.length; i++) {
-    if (i === atmCursor) drawCursor(ctx, innerX, y + 3);
-    drawText(ctx, ATM_ACTIONS[i], innerX + CURSOR_W, y, FONT_ID);
-    y += lineH;
+
+  if (atmStage === 'action') {
+    for (let i = 0; i < ATM_ACTIONS.length; i++) {
+      if (i === atmCursor) drawCursor(ctx, innerX, y + 3);
+      drawText(ctx, ATM_ACTIONS[i], innerX + CURSOR_W, y, FONT_ID);
+      y += lineH;
+    }
+    return;
   }
-  // The amount is a TYPED entry — a blinking caret signals "punch in a number".
-  const caret = Date.now() % 1000 < 500 ? '_' : ' ';
-  drawText(ctx, `Amount: $${atmAmount}${caret}`, innerX, y, FONT_ID);
+
+  // Amount stage: chosen action, then the zero-padded odometer with up/down
+  // arrows flanking the selected place.
+  drawText(ctx, ATM_ACTIONS[atmCursor], innerX, y, FONT_ID);
+  y += lineH;
+  const places = atmPlaces();
+  const padded = String(atmAmount).padStart(places, '0');
+  const formatted = padded.replace(/\B(?=(\d{3})+(?!\d))/g, ','); // commas for legibility
+  const prefix = '$';
+  drawText(ctx, prefix, innerX, y, FONT_ID);
+  const digitsX = innerX + measureText(prefix, FONT_ID) + 1;
+  drawText(ctx, formatted, digitsX, y, FONT_ID);
+  // Find the selected digit's index in the FORMATTED string (atmDigit-th digit
+  // from the right, skipping commas) so the arrows land on it, not on a comma.
+  let seen = -1;
+  let fi = 0;
+  for (let i = formatted.length - 1; i >= 0; i--) {
+    if (formatted[i] !== ',' && ++seen === atmDigit) {
+      fi = i;
+      break;
+    }
+  }
+  const offset = fi === 0 ? 0 : measureText(formatted.slice(0, fi), FONT_ID) + 1;
+  const cx = digitsX + offset + Math.floor(measureText(formatted[fi], FONT_ID) / 2);
+  drawVArrow(ctx, cx, y - 4, true); // ▲ above — Up raises this digit
+  drawVArrow(ctx, cx, y + lineH - 4, false); // ▼ below — Down lowers it
 }
 
 function renderPhone(ctx: CanvasRenderingContext2D): void {
@@ -1502,6 +1610,11 @@ function onSelect(action: string): void {
   if (action === 'equip') {
     equipCursor = 0;
     menuState = 'equip';
+    return;
+  }
+  if (action === 'settings') {
+    settingsCursor = 0;
+    menuState = 'settings';
     return;
   }
   if (action === 'pk') {

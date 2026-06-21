@@ -31,6 +31,7 @@ import {
   STRIP_FRAME_H,
   DIR_BASE,
   DISPLAY_ROWS,
+  DISPLAY_ROWS_FULL,
   DisplaySet,
   CustomFrame,
   FramesDoc,
@@ -152,6 +153,9 @@ export async function loadGroupIntoEditor(id: number): Promise<void> {
   }
   S.viewOnly = false;
   S.groupId = id;
+  // Per-group mirror setting (absent/true = mirror; false = independent W frames).
+  S.mirrorLR = S.overridesDoc.groups?.[String(id)]?.mirror !== false;
+  if (S.mirrorToggle) S.mirrorToggle.checked = S.mirrorLR;
   S.sheet = live;
   S.sheetCtx = live.getContext('2d', { willReadFrequently: true })!;
   S.pristineSheet = getPristineSheet(id);
@@ -279,15 +283,20 @@ export function captureGroupDiff(): void {
   }
   const groups = (S.overridesDoc.groups ??= {});
   const key = String(S.groupId);
+  const mirrorOff = S.mirrorLR === false;
   if (paintCount === 0 && eraseCount === 0) {
-    delete groups[key]; // back to the generated frames — drop the entry
+    // No pixel diff: keep a bare entry only to remember a non-default mirror
+    // setting; otherwise drop back to the generated frames.
+    if (mirrorOff) groups[key] = { mirror: false };
+    else delete groups[key];
     return;
   }
   paint.getContext('2d')!.putImageData(paintD, 0, 0);
   erase.getContext('2d')!.putImageData(eraseD, 0, 0);
-  const entry: { paint?: string; erase?: string; band?: number } = { band: 0 };
+  const entry: { paint?: string; erase?: string; band?: number; mirror?: boolean } = { band: 0 };
   if (paintCount > 0) entry.paint = paint.toDataURL();
   if (eraseCount > 0) entry.erase = erase.toDataURL();
+  if (mirrorOff) entry.mirror = false;
   groups[key] = entry;
 }
 
@@ -530,7 +539,9 @@ export function allDisplayRows(): DisplaySet[][] {
   const custom: DisplaySet[][] = S.customFrames.map((f) => [
     { label: f.name, row: 0, col: 0, single: { w: f.w, h: f.h }, px: f.x, py: f.y },
   ]);
-  return [...DISPLAY_ROWS, ...custom];
+  // Mirror OFF → show all 8 directions (each west cell is editable).
+  const base = S.mirrorLR ? DISPLAY_ROWS : DISPLAY_ROWS_FULL;
+  return [...base, ...custom];
 }
 /** Current strip canvas height (grows with custom-frame rows). */
 export function stripHeight(): number {

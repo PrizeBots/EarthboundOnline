@@ -69,7 +69,7 @@ import {
 } from './psiEditor';
 import { PSI_DELIVERIES, PsiDelivery } from '../PsiAnim';
 import { onTestDown, onTestMove } from './testWalker';
-import { setEditMode, selectEntity } from './index';
+import { setEditMode, selectEntity, setMirrorLR } from './index';
 
 export function buildDom(): void {
   S.overlay = document.createElement('div');
@@ -273,11 +273,17 @@ function panel(label: string): HTMLDivElement {
 function buildToolPanel(): HTMLDivElement {
   const div = panel('TOOLS');
 
+  // CHARACTER section (picker + rename). Only relevant when editing a character
+  // or a custom entity (both selected from this dropdown) — hidden in Item/PSI
+  // mode, where it's just clutter. setEditMode toggles S.charRow's display.
+  S.charRow = document.createElement('div');
+  S.charRow.style.cssText = 'display:flex;flex-direction:column;gap:6px;';
+
   // Character picker — load any cast member's sheet to fix its anim frames.
   const charHead = document.createElement('div');
   charHead.textContent = 'CHARACTER';
   charHead.style.cssText = 'color:#9af;font-size:11px;letter-spacing:1px;';
-  div.appendChild(charHead);
+  S.charRow.appendChild(charHead);
 
   // Custom dropdown whose trigger AND every row render the real sprite (a native
   // <option> can't). Cast first, then the view-only vehicle groups.
@@ -303,11 +309,11 @@ function buildToolPanel(): HTMLDivElement {
       else void loadGroupIntoEditor(id);
     },
   });
-  div.appendChild(S.charPicker.el);
+  S.charRow.appendChild(S.charPicker.el);
 
   S.charNote = document.createElement('div');
   S.charNote.style.cssText = 'color:#9fd; font-size:10px; min-height:12px;';
-  div.appendChild(S.charNote);
+  S.charRow.appendChild(S.charNote);
 
   // Rename: edit the display name, written to overrides/names.json on save.
   const nameRow = document.createElement('div');
@@ -331,7 +337,9 @@ function buildToolPanel(): HTMLDivElement {
     'border:1px solid #444;border-radius:3px;cursor:pointer;';
   nameBtn.onclick = saveCharName;
   nameRow.appendChild(nameBtn);
-  div.appendChild(nameRow);
+  S.charRow.appendChild(nameRow);
+
+  div.appendChild(S.charRow);
 
   // Edit-target toggle: the character sheet, or a held-item sprite.
   const modeRow = document.createElement('div');
@@ -352,6 +360,30 @@ function buildToolPanel(): HTMLDivElement {
     modeRow.appendChild(btn);
   }
   div.appendChild(modeRow);
+
+  // Mirror toggle — applies to whatever directional sprite is being edited:
+  //  • Character/Entity: ON draws west facings as a flip of the east art (turns
+  //    around); OFF shows each facing's own art (characters then expose all 8
+  //    directions in the strip to paint west by hand).
+  //  • Item: ON flips the held art with the body's facing; OFF keeps one
+  //    orientation no matter which way the player faces.
+  // Hidden in PSI mode (no facing). Per-sprite, saved with that sprite's data.
+  S.mirrorRow = document.createElement('label');
+  // Default flex: the editor opens in Character mode (where it's shown). setEditMode
+  // early-returns when the mode is unchanged, so this default IS the char-open state.
+  S.mirrorRow.style.cssText =
+    'display:flex;align-items:center;gap:6px;cursor:pointer;color:#cdd6e6;font-size:11px;';
+  S.mirrorRow.title =
+    'On: facing left draws the art flipped (the sprite/item turns around).\n' +
+    'Off: same art every direction.\n' +
+    'For characters, Off also reveals all 8 directions in the strip to edit west by hand.';
+  S.mirrorToggle = document.createElement('input');
+  S.mirrorToggle.type = 'checkbox';
+  S.mirrorToggle.checked = S.mirrorLR;
+  S.mirrorToggle.onchange = () => setMirrorLR(S.mirrorToggle!.checked);
+  S.mirrorRow.appendChild(S.mirrorToggle);
+  S.mirrorRow.appendChild(document.createTextNode('↔ Mirror when facing left'));
+  div.appendChild(S.mirrorRow);
 
   // Item UI (item mode only): one tab per item CATEGORY (the same Food/Weapons/…
   // folders the Item Manager organizes — see ItemFolders), the item dropdown
@@ -646,7 +678,8 @@ function buildStripPanel(): HTMLDivElement {
   div.appendChild(S.stripCanvas);
 
   const note = document.createElement('div');
-  note.textContent = 'W · NW · SW auto-mirror from E · NE · SE';
+  note.textContent =
+    'W · NW · SW auto-mirror from E · NE · SE (turn off "Mirror L/R" to edit them)';
   note.style.cssText = 'color:#888;font-size:10px;margin-top:4px;';
   div.appendChild(note);
   return div;

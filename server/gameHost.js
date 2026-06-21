@@ -26,10 +26,66 @@ const buffs = require('./buffs'); // temporary timed stat boosts (consumables / 
 
 const POSES = ['walk', 'climb', 'attack', 'hurt'];
 const MAX_SLOTS = 14; // EarthBound's Goods menu holds 14 items per character
+// EarthBound's ATM (cash machine) sprite groups. KEEP IN SYNC with
+// src/engine/NPC.ts ATM_SPRITE_GROUPS — the server uses these to know which
+// static NPCs are ATMs for withdraw/deposit proximity gating.
+const ATM_SPRITE_GROUPS = new Set([259, 447]);
+
+// --- Server-authoritative player movement (input-driven sim) ---
+// The client sends INPUTS (held direction + a sequence number); the server
+// simulates the actual movement and owns the position. These MUST mirror
+// src/engine/Player.ts (moveSpeedFor + COL_* + the per-frame step) so the
+// client's local prediction matches the server's result with no drift.
+const PLAYER_COL_W = 14;
+const PLAYER_COL_H = 8;
+const PLAYER_COL_OY = -8;
+const SPEED_BASE = 0.5;
+const SPEED_PER_STAT = 0.07;
+const SPEED_MIN = 0.9;
+const SPEED_MAX = 2.6;
+function moveSpeedFor(speedStat) {
+  return Math.max(SPEED_MIN, Math.min(SPEED_MAX, SPEED_BASE + (speedStat || 0) * SPEED_PER_STAT));
+}
+const SQRT1_2 = Math.SQRT1_2;
+const ANIM_INTERVAL = 8; // frames between walk-cycle toggles (mirror Entity.ts)
+const SIM_TICK_MS = 33; // ~30Hz player-movement sim
+const MAX_INPUT_QUEUE = 240; // ~4s of 60fps inputs — drop overflow (anti-flood)
+
+// Direction enum (src/types.ts) from an input vector — mirror Player.dirFromInput.
+function dirFromInput(dx, dy) {
+  if (dx === 0 && dy < 0) return 1; // N
+  if (dx === 0 && dy > 0) return 0; // S
+  if (dx < 0 && dy === 0) return 2; // W
+  if (dx > 0 && dy === 0) return 3; // E
+  if (dx < 0 && dy < 0) return 4; // NW
+  if (dx > 0 && dy < 0) return 7; // NE
+  if (dx < 0 && dy > 0) return 5; // SW
+  return 6; // SE
+}
+// How close (px, Euclidean to the interactable's anchor) a player must be to
+// transact at a shop clerk / ATM. Generous on purpose: the client already did
+// the precise facing+counter-depth check (tryTalk REACH_FORWARD 60 + lateral),
+// so this just stops transacting from across the map. False-rejecting a legit
+// player is worse than a slightly roomy radius.
+const INTERACT_REACH = 80;
 // Present boxes: each ROM gift's Event Flag maps to a PRIVATE per-player flag at
 // this base, so every player can open each gift exactly once. KEEP IN SYNC with
 // src/engine/Gifts.ts GIFT_FLAG_BASE.
 const GIFT_FLAG_BASE = 910000;
+// Canon EarthBound flavor text shown when a player checks a container that has
+// nothing to give (an "empty"/special gift — no resolvable item). Keyed by the
+// container's sprite group so a trash can reads like a trash can. Mirrors the
+// ROM opener script (eb_project/ccscript/data_33.ccs).
+function emptyContainerText(sprite) {
+  switch (sprite) {
+    case 214:
+      return "There was just plain ol' garbage in the trash can.";
+    case 195:
+      return 'But the present was empty.';
+    default:
+      return 'But it was empty.';
+  }
+}
 // Ness's mom (sprite 145) cooks the player's favorite food on request: heals a
 // fixed amount, then won't cook again until the wall-clock cooldown elapses. The
 // ready-at timestamp persists in the save, so relogging can't reset the timer.
@@ -45,6 +101,8 @@ const HOTBAR_PSI_TAG = 'psi:';
 const BAG_FULL_NOTICE_MS = 2500; // min gap between "bag full" popups (anti-spam)
 const STARTING_MONEY = 1000; // every player joins with $1000
 const DEATH_CASH_PCT = 0.5; // fraction of ON-HAND cash dropped on death (bank is safe)
+const DEATH_CASH_ITEM = 'c001'; // custom "cash" item the dropped money renders as
+const DEATH_CASH_MAX_OBJECTS = 20; // cap on cash objects per death (each worth ≥ $1)
 // KO/downed window: HP→0 lays the player out for this long instead of dying. During
 // it, allies can revive them; the cash-drop penalty is DEFERRED to true death, so a
 // revived player loses nothing. Elapsing it (or "giving up the ghost") = true death.
@@ -427,10 +485,11 @@ class GameHost {
     // Server-authoritative goods registry + shop catalog (shared loader in
     // server/shops.js). Each player's inventory is an array of numeric-string
     // item ids (EarthBound-style slots); effects/transactions resolve here.
-    const { goods, storeHas, startingInventory } = loadShops(assetsDir);
+    const { goods, storeHas, startingInventory, npcShops } = loadShops(assetsDir);
     this.GOODS = goods;
     this.storeHas = storeHas;
     this.STARTING_INVENTORY = startingInventory;
+    this.npcShops = npcShops; // clerk configId → {store} for proximity gating
 
     // Spawn point: editor override (public/overrides/spawn.json) wins over the
     // src/spawn.json default the client also uses. Read once at startup.
@@ -469,6 +528,8 @@ class GameHost {
     this._heartbeat = null;
     // Player status-condition tick handle (DoT + expiry; set in start()).
     this._statusTimer = null;
+    // Server-authoritative player-movement sim handle (set in start()).
+    this._simTimer = null;
     // Gift-override file watcher handle (set in start()).
     this._giftsWatchPath = null;
     // Shop-override (equip_stats.json) file watcher handle (set in start()).
@@ -524,7 +585,8 @@ class GameHost {
       return gifts; // not extracted yet
     }
     for (const g of base) {
-      if (g && typeof g.k === 'string') gifts.set(g.k, { romFlag: g.romFlag, item: g.item });
+      if (g && typeof g.k === 'string')
+        gifts.set(g.k, { romFlag: g.romFlag, item: g.item, sprite: g.sprite });
     }
     try {
       const ov = JSON.parse(
@@ -536,7 +598,8 @@ class GameHost {
       }
       // Admin-placed gift boxes (Gift Manager additions).
       for (const a of ov?.additions || []) {
-        if (a && typeof a.k === 'string') gifts.set(a.k, { romFlag: a.romFlag, item: a.item });
+        if (a && typeof a.k === 'string')
+          gifts.set(a.k, { romFlag: a.romFlag, item: a.item, sprite: a.sprite });
       }
     } catch {
       /* no authored overrides yet */
@@ -590,6 +653,12 @@ class GameHost {
     this._statusTimer = setInterval(() => this._tickPlayerStatuses(), STATUS_TICK_MS);
     if (this._statusTimer.unref) this._statusTimer.unref();
 
+    // Server-authoritative player movement: drain queued client inputs and
+    // simulate each player's position. No-op for players still on the legacy
+    // `move` path (empty input queue), so this is safe to run pre-cutover.
+    this._simTimer = setInterval(() => this._simPlayers(), SIM_TICK_MS);
+    if (this._simTimer.unref) this._simTimer.unref();
+
     // Event runtime tick (countdowns, warps, timers, end conditions). 10Hz is
     // plenty for second-resolution timers and a smooth countdown.
     this._eventTimer = setInterval(() => this.eventRuntime.tick(Date.now()), 100);
@@ -617,10 +686,11 @@ class GameHost {
     try {
       fs.watchFile(this._shopsWatchPath, { interval: 1500 }, () => {
         try {
-          const { goods, storeHas, startingInventory } = loadShops(this._assetsDir);
+          const { goods, storeHas, startingInventory, npcShops } = loadShops(this._assetsDir);
           this.GOODS = goods;
           this.storeHas = storeHas;
           this.STARTING_INVENTORY = startingInventory;
+          this.npcShops = npcShops;
           for (const entry of this.players.values()) this.recomputeEquipStats(entry);
         } catch (e) {
           console.warn('[shops] hot-reload failed; keeping previous catalog', e);
@@ -717,6 +787,8 @@ class GameHost {
     this._heartbeat = null;
     if (this._statusTimer) clearInterval(this._statusTimer);
     this._statusTimer = null;
+    if (this._simTimer) clearInterval(this._simTimer);
+    this._simTimer = null;
     if (this._eventTimer) clearInterval(this._eventTimer);
     this._eventTimer = null;
     if (this.eventRuntime) this.eventRuntime.stop();
@@ -1060,6 +1132,143 @@ class GameHost {
     this.recomputeEquipStats(p);
   }
 
+  // True if player `entry` is within INTERACT_REACH of a live static interactable
+  // (clerk/ATM) that `matchFn` accepts. The sim owns the anchor positions; we
+  // measure against the player's tracked position. NOTE: that position is itself
+  // client-reported (movement is client-authoritative today), so this stops the
+  // trivial "transact from anywhere" cheat but isn't fully airtight until
+  // server-authoritative movement lands — see ARCHITECTURE.md netcode.
+  _nearInteractable(entry, matchFn) {
+    if (!entry) return false;
+    const r2 = INTERACT_REACH * INTERACT_REACH;
+    for (const a of this.npcSim.interactableAnchors()) {
+      if (!matchFn(a)) continue;
+      const dx = a.x - entry.x;
+      const dy = a.y - entry.y;
+      if (dx * dx + dy * dy <= r2) return true;
+    }
+    return false;
+  }
+
+  /** Is the player at an ATM (a static NPC with an ATM sprite within reach)? */
+  _nearAtm(entry) {
+    return this._nearInteractable(entry, (a) => ATM_SPRITE_GROUPS.has(a.sprite));
+  }
+
+  // Apply ONE client input (= one client frame) to a player, AUTHORITATIVELY:
+  // mirror src/engine/Player.update movement (speed from stats, axis-separated
+  // slide) against npcSim.playerBlocked. Deterministic + identical to the client's
+  // local prediction, so reconciliation is a no-op in the common case.
+  _stepPlayer(entry, input) {
+    const dx = input.dx;
+    const dy = input.dy;
+    if (dx === 0 && dy === 0) {
+      // Idle frame: reset the walk cycle (mirror Entity.resetAnimation).
+      entry.frame = 0;
+      entry._animTimer = 0;
+      entry.pose = 'walk';
+      return;
+    }
+    entry.direction = dirFromInput(dx, dy);
+    entry.pose = 'walk';
+    const diagonal = dx !== 0 && dy !== 0;
+    const base = moveSpeedFor(entry.speed);
+    const sp = diagonal ? base * SQRT1_2 : base;
+    const lvl = entry.level || 1;
+    // Start-of-step foot box (the "already inside → let out" reference, like the client).
+    const curX = entry.x - PLAYER_COL_W / 2;
+    const curY = entry.y + PLAYER_COL_OY;
+    const sim = this.npcSim;
+    const nx = entry.x + dx * sp;
+    const ny = entry.y + dy * sp;
+    if (!sim.playerBlocked(nx - PLAYER_COL_W / 2, ny + PLAYER_COL_OY, lvl, curX, curY)) {
+      entry.x = nx;
+      entry.y = ny;
+    } else {
+      const hx = entry.x + dx * sp; // horizontal-only retry (entry.x still original here)
+      if (!sim.playerBlocked(hx - PLAYER_COL_W / 2, entry.y + PLAYER_COL_OY, lvl, curX, curY)) {
+        entry.x = hx;
+      }
+      const vy = entry.y + dy * sp; // vertical-only retry (uses possibly-updated entry.x)
+      if (!sim.playerBlocked(entry.x - PLAYER_COL_W / 2, vy + PLAYER_COL_OY, lvl, curX, curY)) {
+        entry.y = vy;
+      }
+    }
+    // 2-frame walk cycle (mirror Entity.stepAnimation).
+    entry._animTimer = (entry._animTimer || 0) + 1;
+    if (entry._animTimer >= ANIM_INTERVAL) {
+      entry._animTimer = 0;
+      entry.frame = entry.frame === 1 ? 0 : 1;
+    }
+  }
+
+  // Server movement tick: drain each player's queued inputs (in order), step them
+  // authoritatively, broadcast the result, and ACK the last-processed input seq to
+  // the owner so its client can reconcile its prediction. Players with no queued
+  // inputs are untouched — so the legacy client-position `move` path (still used
+  // until the client cuts over to inputs) is unaffected.
+  _simPlayers() {
+    const now = Date.now();
+    for (const [id, entry] of this.players) {
+      const q = entry._inputs;
+      if (!q || q.length === 0) continue;
+      if (entry.editor) {
+        q.length = 0;
+        continue;
+      }
+      // Frozen (paralysis/sleep/diamond) or mid door-fade: consume the inputs but
+      // don't move (mirror the client's frozen/warp holds), so seq still advances.
+      const held = status.isActionBlocked(entry, now) || (entry.warping && now < entry.warpUntil);
+      let lastSeq = entry._ackSeq || 0;
+      let x0 = entry.x;
+      let y0 = entry.y;
+      for (const input of q) {
+        if (!held) this._stepPlayer(entry, input);
+        lastSeq = input.seq;
+      }
+      q.length = 0;
+      entry._ackSeq = lastSeq;
+      const moved = entry.x !== x0 || entry.y !== y0;
+      // Tell the OWNER the authoritative spot + which input it reflects (reconcile).
+      if (entry._ws) {
+        entry._ws.send(
+          JSON.stringify({
+            type: 'pos',
+            x: entry.x,
+            y: entry.y,
+            direction: entry.direction,
+            frame: entry.frame,
+            seq: lastSeq,
+          })
+        );
+      }
+      // Tell everyone else (remote interpolation).
+      if (moved || held) {
+        this.broadcastExcept(
+          {
+            type: 'player_move',
+            id,
+            x: entry.x,
+            y: entry.y,
+            direction: entry.direction,
+            frame: entry.frame,
+            pose: entry.pose || 'walk',
+          },
+          id
+        );
+      }
+    }
+  }
+
+  /** Is the player at a shop clerk? `store` null = any clerk (sell works at any
+   *  shop); a number requires the clerk that runs THAT store (buy). */
+  _nearShop(entry, store) {
+    return this._nearInteractable(entry, (a) => {
+      const m = this.npcShops[String(a.npcId)];
+      return !!m && (store == null || m.store === store);
+    });
+  }
+
   // Apply an enemy's landed hit to a player (server-authoritative HP). Broadcast
   // the new HP so every client updates that player's bar; the victim's own
   // client plays the hurt pose. At 0 HP the player respawns at the spawn point.
@@ -1138,7 +1347,9 @@ class GameHost {
     if (dropped > 0) {
       p.money -= dropped;
       if (p._ws) p._ws.send(JSON.stringify({ type: 'money', money: p.money }));
-      this.npcSim.spawnMoneyDrop(p.x, p.y, dropped);
+      // Fountain the dropped cash out of the corpse as up to 20 "cash object"
+      // pickups (the c001 item art), each worth an even share of `dropped`.
+      this.npcSim.spawnCashFountain(p.x, p.y, dropped, DEATH_CASH_ITEM, DEATH_CASH_MAX_OBJECTS);
     }
     p.hp = p.maxHp;
     p.x = this.SPAWN.x;
@@ -1531,11 +1742,44 @@ class GameHost {
         // killed (which would respawn-yank the admin's free camera).
         const entry = this.players.get(playerId);
         if (!entry) break;
-        entry.editor = !!msg.on;
+        const turningOn = !!msg.on;
+        if (turningOn && !entry.editor) {
+          // The editor reports its free CAMERA center as `move`, which overwrites
+          // entry.x/y. Stash the real gameplay spot first so we can restore it on
+          // exit — otherwise the client (which now reconciles to the server) gets
+          // snapped to wherever the camera was panned, often unwalkable = stuck.
+          entry._preEditor = { x: entry.x, y: entry.y, direction: entry.direction };
+        } else if (!turningOn && entry.editor && entry._preEditor) {
+          entry.x = entry._preEditor.x;
+          entry.y = entry._preEditor.y;
+          entry.direction = entry._preEditor.direction;
+          entry._preEditor = null;
+          if (entry._inputs) entry._inputs.length = 0; // drop stale queued inputs
+          // Re-assert the authoritative spot so the client's prediction resets here
+          // (warpTo clears its pending inputs), not at the editor camera.
+          if (entry._ws) entry._ws.send(JSON.stringify({ type: 'warp', x: entry.x, y: entry.y }));
+        }
+        entry.editor = turningOn;
         // Leaving the editor: the avatar may have been teleported far while
         // parked, so exempt the rejoin jump from enemy door-warp follow (else
         // chasers teleport along with the admin).
         if (!entry.editor) this.npcSim.noteEditorExit(playerId);
+        break;
+      }
+
+      // Editor click-to-teleport (dev-only, editor mode required): a DELIBERATE
+      // reposition — set the authoritative spot AND the restore target, so it
+      // STICKS when the editor closes. A plain camera pan never sends this, so
+      // panning still reverts you to where you entered.
+      case 'editor_teleport': {
+        const entry = this.players.get(playerId);
+        if (!entry || !entry.editor) break;
+        const tx = Math.round(Number(msg.x));
+        const ty = Math.round(Number(msg.y));
+        if (!Number.isFinite(tx) || !Number.isFinite(ty)) break;
+        entry.x = tx;
+        entry.y = ty;
+        entry._preEditor = { x: tx, y: ty, direction: entry.direction || 0 };
         break;
       }
 
@@ -1580,6 +1824,78 @@ class GameHost {
         entry.pose = POSES.includes(msg.pose) ? msg.pose : 'walk';
         this.broadcastExcept(
           { type: 'player_move', id: playerId, x: nx, y: ny, direction, frame, pose: entry.pose },
+          playerId
+        );
+        break;
+      }
+
+      // Server-authoritative movement: the client sends INPUTS (held direction +
+      // a monotonic seq), never a position. Queued here; `_simPlayers` drains and
+      // simulates them each sim tick, then ACKs the seq for client reconciliation.
+      // This is the cheat-proof replacement for `move` (which trusts a client
+      // position) — once every client sends inputs, `move` is retired.
+      case 'input': {
+        const entry = this.players.get(playerId);
+        if (!entry || entry.editor) break;
+        const seq = Number(msg.seq);
+        if (!Number.isFinite(seq)) break;
+        // Only ever accept an ADVANCING seq (drops replays / out-of-order packets).
+        if (entry._lastSeqIn != null && seq <= entry._lastSeqIn) break;
+        entry._lastSeqIn = seq;
+        if (!entry._inputs) entry._inputs = [];
+        entry._inputs.push({
+          seq,
+          dx: Math.sign(Number(msg.dx) || 0),
+          dy: Math.sign(Number(msg.dy) || 0),
+        });
+        if (entry._inputs.length > MAX_INPUT_QUEUE) {
+          entry._inputs.splice(0, entry._inputs.length - MAX_INPUT_QUEUE);
+        }
+        entry.lastSeen = Date.now();
+        break;
+      }
+
+      // Server-authoritative door warp: the client requests to use the door it's
+      // standing on; the server confirms (the player's AUTHORITATIVE position is
+      // actually on a door trigger) and warps to the door's OWN destination — the
+      // client never picks the spot, so "warp anywhere" is impossible. On a bad
+      // request (not on a door) we snap the player back to truth. Pre-warp queued
+      // inputs are dropped so they don't apply at the destination.
+      case 'use_door': {
+        const entry = this.players.get(playerId);
+        if (!entry || entry.editor) break;
+        const door = this.npcSim.doorAt(entry.x, entry.y);
+        if (!door) {
+          // Not on a door — reject and re-assert the authoritative position.
+          if (entry._ws)
+            entry._ws.send(
+              JSON.stringify({
+                type: 'pos',
+                x: entry.x,
+                y: entry.y,
+                direction: entry.direction,
+                frame: entry.frame,
+                seq: entry._ackSeq || 0,
+              })
+            );
+          break;
+        }
+        entry.x = Math.round(door.destX);
+        entry.y = Math.round(door.destY);
+        entry.warping = true;
+        entry.warpUntil = Date.now() + WARP_SHIELD_MAX_MS;
+        if (entry._inputs) entry._inputs.length = 0; // stale pre-warp inputs don't carry over
+        if (entry._ws) entry._ws.send(JSON.stringify({ type: 'warp', x: entry.x, y: entry.y }));
+        this.broadcastExcept(
+          {
+            type: 'player_move',
+            id: playerId,
+            x: entry.x,
+            y: entry.y,
+            direction: entry.direction,
+            frame: entry.frame,
+            pose: 'walk',
+          },
           playerId
         );
         break;
@@ -1870,10 +2186,17 @@ class GameHost {
         const itemId = String(msg.item);
         const def = GOODS[itemId];
         // Real item, stocked by that store, affordable, room in the bag. Price is
-        // the catalog's, never the client's. Reject with a notice (not a silent
-        // drop) so the client shows WHY a buy failed instead of a false "Bought!".
-        if (!def || !this.storeHas(store, itemId)) {
+        // the catalog's, never the client's, and validated as a real non-negative
+        // number so a malformed catalog entry can't NaN/inflate the wallet. Reject
+        // with a notice (not a silent drop) so the client shows WHY a buy failed.
+        const cost = def ? Math.floor(Number(def.cost)) : NaN;
+        if (!def || !this.storeHas(store, itemId) || !Number.isFinite(cost) || cost < 0) {
           entry._ws.send(JSON.stringify({ type: 'notice', text: "That's not for sale here." }));
+          break;
+        }
+        // Must actually be standing at that store's clerk — no buying from afar.
+        if (!this._nearShop(entry, store)) {
+          entry._ws.send(JSON.stringify({ type: 'notice', text: "You're not at the shop." }));
           break;
         }
         if (entry.inventory.length >= MAX_SLOTS) {
@@ -1882,12 +2205,12 @@ class GameHost {
           );
           break;
         }
-        if (entry.money < def.cost) {
+        if (entry.money < cost) {
           entry._ws.send(JSON.stringify({ type: 'notice', text: 'Not enough money.' }));
           break;
         }
-        entry.money -= def.cost;
-        entry.spentSinceCall = (entry.spentSinceCall | 0) + def.cost; // for Dad's report
+        entry.money -= cost;
+        entry.spentSinceCall = (entry.spentSinceCall | 0) + cost; // for Dad's report
         entry.inventory.push(itemId);
         entry._ws.send(
           JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) })
@@ -1903,9 +2226,17 @@ class GameHost {
         const itemId = String(msg.item);
         const def = GOODS[itemId];
         const slot = entry.inventory.indexOf(itemId);
-        if (!def || slot === -1) break; // must own a slot of a known item
+        const cost = def ? Math.floor(Number(def.cost)) : NaN;
+        // Must own a slot of a known item with a valid catalog price (guards a
+        // malformed cost from NaN-ing the wallet — see 'buy').
+        if (!def || slot === -1 || !Number.isFinite(cost) || cost < 0) break;
+        // Must be at a shop clerk to sell (any store buys back).
+        if (!this._nearShop(entry, null)) {
+          entry._ws.send(JSON.stringify({ type: 'notice', text: "You're not at the shop." }));
+          break;
+        }
         entry.inventory.splice(slot, 1);
-        entry.money += Math.floor(def.cost / 2); // EB buys back at half price
+        entry.money += Math.floor(cost / 2); // EB buys back at half price
         entry._ws.send(
           JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) })
         );
@@ -1922,9 +2253,15 @@ class GameHost {
       case 'atm_withdraw': {
         const entry = this.players.get(playerId);
         if (!entry) break;
+        if (!this._nearAtm(entry)) {
+          entry._ws.send(JSON.stringify({ type: 'notice', text: "You're not at an ATM." }));
+          break;
+        }
         const want = Math.floor(Number(msg.amount));
         if (!Number.isFinite(want) || want <= 0) break;
-        const amount = Math.min(want, entry.bank | 0);
+        // NOTE: Math.floor, NOT `| 0` — bitwise OR truncates to int32 and would
+        // wrap (corrupt the clamp) once a balance passes ~2.1B.
+        const amount = Math.min(want, Math.max(0, Math.floor(entry.bank || 0)));
         if (amount <= 0) break;
         entry.bank -= amount;
         entry.money += amount;
@@ -1937,9 +2274,14 @@ class GameHost {
       case 'atm_deposit': {
         const entry = this.players.get(playerId);
         if (!entry) break;
+        if (!this._nearAtm(entry)) {
+          entry._ws.send(JSON.stringify({ type: 'notice', text: "You're not at an ATM." }));
+          break;
+        }
         const want = Math.floor(Number(msg.amount));
         if (!Number.isFinite(want) || want <= 0) break;
-        const amount = Math.min(want, entry.money | 0);
+        // Math.floor, NOT `| 0` (int32 wrap at ~2.1B) — see atm_withdraw.
+        const amount = Math.min(want, Math.max(0, Math.floor(entry.money || 0)));
         if (amount <= 0) break;
         entry.money -= amount;
         entry.bank += amount;
@@ -2275,13 +2617,22 @@ class GameHost {
         const gift = typeof msg.k === 'string' ? this.GIFTS.get(msg.k) : null;
         if (!p || !set || !gift || !Number.isInteger(gift.romFlag)) break;
         const flagId = GIFT_FLAG_BASE + gift.romFlag;
-        if (set.has(flagId)) break; // already opened by this player
+        if (set.has(flagId)) break; // already emptied — the open frame shows it
 
-        // A real item needs bag room; a "special" gift (item null/unknown) opens
-        // with no grant. A full bag leaves the present closed so they can return.
         const itemId = gift.item != null ? String(gift.item) : null;
         const givable = itemId != null && this.GOODS[itemId];
-        if (givable && p.inventory.length >= MAX_SLOTS) {
+
+        // An empty / "special" container (no resolvable item) has nothing to
+        // grant: show the canon flavor line so checking it isn't silent, and
+        // DON'T consume the flag — an empty container stays closed + checkable.
+        if (!givable) {
+          p._ws.send(JSON.stringify({ type: 'notice', text: emptyContainerText(gift.sprite) }));
+          break;
+        }
+
+        // A real item needs bag room; a full bag leaves the gift unopened so
+        // they can return for it once they've made space.
+        if (p.inventory.length >= MAX_SLOTS) {
           const now = Date.now();
           if (now - (p._bagFullAt || 0) >= BAG_FULL_NOTICE_MS) {
             p._bagFullAt = now;
@@ -2293,13 +2644,11 @@ class GameHost {
         }
 
         set.add(flagId); // mark opened (persists below)
-        if (givable) {
-          p.inventory.push(itemId);
-          p._ws.send(JSON.stringify({ type: 'inventory', items: this.inventoryView(p.inventory) }));
-          p._ws.send(
-            JSON.stringify({ type: 'loot', item: itemId, name: this.GOODS[itemId].name || '' })
-          );
-        }
+        p.inventory.push(itemId);
+        p._ws.send(JSON.stringify({ type: 'inventory', items: this.inventoryView(p.inventory) }));
+        p._ws.send(
+          JSON.stringify({ type: 'loot', item: itemId, name: this.GOODS[itemId].name || '' })
+        );
         p._ws.send(JSON.stringify({ type: 'gift_opened', k: msg.k }));
         this._saveCharacter(playerId);
         break;

@@ -37,7 +37,7 @@ const entityPropsShape = {
   crit: z.number().min(0).max(100).optional(),
   dodge: z.number().min(0).max(100).optional(),
   col: EntityColSchema.optional(),
-  combat: z.enum(['brave', 'skirmisher', 'coward', 'nervous']).optional(),
+  combat: z.enum(['brave', 'skirmisher', 'coward', 'nervous', 'pursuer']).optional(),
   // documentation extras kept on EarthBound enemies — not read by the runtime
   name: z.string().optional(),
   defense: z.number().optional(),

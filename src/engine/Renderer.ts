@@ -2,7 +2,7 @@ import { Camera } from './Camera';
 import { Player } from './Player';
 import { NPC } from './NPC';
 import { getTileAt, getSectorForTile } from './MapManager';
-import { colBoxFor, carColBoxFor } from './NPCManager';
+import { colBoxFor, carColBoxFor, hasEntityCol } from './NPCManager';
 import { drawTile, drawForegroundTile, hasForegroundTile } from './TilesetManager';
 import { isComposite, drawComposite, drawCompositeFg } from './CompositeTiles';
 import { drawSprite, getSpriteGroupMeta, SpritePart } from './SpriteManager';
@@ -988,6 +988,11 @@ export class Renderer {
     for (const npc of npcs) {
       if (npc.kind === 'person' || npc.kind === 'enemy') {
         hurt(npc.x, npc.y);
+        col(npc.spriteGroupId, npc.x, npc.y);
+      } else if ((npc.kind === 'prop' || npc.kind === 'gift') && hasEntityCol(npc.spriteGroupId)) {
+        // Harvested furniture / solid container: a prop or gift with an authored
+        // col box is solid, so draw its blue collision box (matches blockedByNPC).
+        // Hotspot props (no col) stay invisible in the overlay.
         col(npc.spriteGroupId, npc.x, npc.y);
       } else if (npc.kind === 'car') {
         // A vehicle's whole-body box is BOTH its collision box and its hurtbox

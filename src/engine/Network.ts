@@ -86,6 +86,11 @@ type NetworkCallback = {
    * reports from there, remote players just snap their interpolated copy.
    */
   onPlayerPush?: (id: string, x: number, y: number) => void;
+  /** Server-authoritative position for OUR player (reconcile prediction): the
+   *  server-simulated spot + the last input `seq` it reflects. */
+  onPos?: (x: number, y: number, direction: Direction, frame: number, seq: number) => void;
+  /** Server-authoritative door warp for OUR player: jump to (x,y). */
+  onWarp?: (x: number, y: number) => void;
   /** A player's active status-condition set changed (paralysis, poison, …). */
   onPlayerStatus?: (id: string, statuses: string[]) => void;
   /** A PSI was cast — play its effect. (x,y)=caster, (tx,ty)=target (projectile
@@ -401,6 +406,12 @@ function openSocket() {
       case 'player_push':
         callbacks?.onPlayerPush?.(msg.id, msg.x, msg.y);
         break;
+      case 'pos':
+        callbacks?.onPos?.(msg.x, msg.y, msg.direction, msg.frame, msg.seq ?? 0);
+        break;
+      case 'warp':
+        callbacks?.onWarp?.(msg.x, msg.y);
+        break;
       case 'player_status':
         callbacks?.onPlayerStatus?.(msg.id, Array.isArray(msg.statuses) ? msg.statuses : []);
         break;
@@ -541,6 +552,22 @@ export function sendPosition(
   }
 }
 
+/** Server-authoritative movement: send the held-direction INPUT for one frame
+ *  (never a position). The server simulates it and ACKs `seq` via a `pos`. */
+export function sendInput(seq: number, dx: number, dy: number) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'input', seq, dx, dy }));
+  }
+}
+
+/** Ask the server to use the door we're standing on. The server validates we're
+ *  actually on a door and warps us to ITS destination (replies with a `warp`). */
+export function sendUseDoor() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'use_door' }));
+  }
+}
+
 /** ATM: ask the server to move `amount` from the bank to on-hand cash. */
 export function sendAtmWithdraw(amount: number) {
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -596,6 +623,14 @@ export function sendEditorMode(on: boolean) {
     ws.send(JSON.stringify({ type: 'editor', on }));
   }
   // If the socket is still connecting / reconnecting, onopen reads editorModeActive.
+}
+
+/** Editor click-to-teleport: authoritatively set the player's position (dev-only;
+ *  the server honors it only while in editor mode). Persists into gameplay on exit. */
+export function sendEditorTeleport(x: number, y: number) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'editor_teleport', x: Math.round(x), y: Math.round(y) }));
+  }
 }
 
 /** Request a melee swing; the server resolves the hit against enemies. */

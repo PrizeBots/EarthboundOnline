@@ -43,82 +43,16 @@ interface ItemDef {
   pixels: string[];
 }
 
-// Placeholder starter set — tune the art freely, it's plain text.
-const ITEM_DEFS: Record<string, ItemDef> = {
-  bat: {
-    name: 'Baseball Bat',
-    grip: { x: 3, y: 13 },
-    palette: { o: '#502800', b: '#c08850', h: '#7a4a20' },
-    pixels: [
-      '................',
-      '............oo..',
-      '...........obbo.',
-      '..........obbbo.',
-      '.........obbbbo.',
-      '........obbbbo..',
-      '.......obbbbo...',
-      '......obbbbo....',
-      '.....obbbbo.....',
-      '....obbbbo......',
-      '...obbbbo.......',
-      '..obbbbo........',
-      '..obbo..........',
-      '.ohho...........',
-      '.oo.............',
-      '................',
-    ],
-  },
-  pan: {
-    name: 'Frying Pan',
-    grip: { x: 14, y: 8 },
-    palette: { o: '#181818', g: '#a8a8b0', d: '#484850', h: '#7a4a20' },
-    pixels: [
-      '................',
-      '................',
-      '................',
-      '................',
-      '...oooooo.......',
-      '..oggggggo......',
-      '.odddddddo......',
-      '.odddddddooooooo',
-      '.odddddddhhhhhho',
-      '..ooooooo..oooo.',
-      '................',
-      '................',
-      '................',
-      '................',
-      '................',
-      '................',
-    ],
-  },
-  yoyo: {
-    name: 'Yo-yo',
-    grip: { x: 8, y: 0 },
-    palette: { s: '#d8d8d8', o: '#400808', r: '#d82820', w: '#f8f8f8' },
-    pixels: [
-      '........s.......',
-      '........s.......',
-      '........s.......',
-      '........s.......',
-      '......ooooo.....',
-      '....oorrrrroo...',
-      '...orrrrrrrrro..',
-      '...orrrwwrrrro..',
-      '...orrrwwrrrro..',
-      '...orrrrrrrrro..',
-      '....oorrrrroo...',
-      '......ooooo.....',
-      '................',
-      '................',
-      '................',
-      '................',
-    ],
-  },
-};
+// Built-in seed art, keyed by id. Empty now: the former bat/pan/yoyo seeds were
+// migrated into data-driven custom items (c002/c003/c004 in custom_items.json,
+// art in item_sprites.json) so EVERY custom item follows the `cNNN` convention.
+// Kept as a typed map so getItemCanvas/gripFor/getItemName can still fall back to
+// a seed if we ever ship one again.
+const ITEM_DEFS: Record<string, ItemDef> = {};
 
-// Legacy hand-authored art ids (bat/pan/yoyo) — kept as seed/defaults. Real
-// held gear is now keyed by CATALOG item id (shops.json) via the data store
-// below; the Item Manager + Sprite Editor author per-item art shared by all.
+// Built-in seed item ids (none currently — see ITEM_DEFS). Held gear is keyed by
+// CATALOG item id (shops.json) or custom item id; the Item Manager + Sprite
+// Editor author per-item art shared by all clients.
 export const HELD_ITEM_IDS = Object.keys(ITEM_DEFS);
 
 /** Where the hand grips an item if its art carries no grip. Bottom-ish center. */
@@ -147,6 +81,10 @@ export interface ItemSpriteData {
    *  the item is WORN at this spot (static, no swing) instead of held in the hand
    *  — e.g. a badge on the chest. Authored by dragging in the editor's live test. */
   offset?: { x: number; y: number };
+  /** Whether the held art mirrors with the body's left/right facing (default true).
+   *  false = the item draws the SAME orientation every direction — for art with a
+   *  baked-in direction or an asymmetric emblem that shouldn't flip. */
+  mirror?: boolean;
 }
 const itemSprites = new Map<string, ItemSpriteData>();
 
@@ -291,9 +229,8 @@ function nearestPaletteIndex(r: number, g: number, b: number): number {
 // --- Admin-authored custom items (overrides/custom_items.json) -------------
 // shops.json is ROM-derived and can't grow, so brand-new items the admin makes
 // in the Sprite Editor live here: an id + display name. Their pixel art is stored
-// in item_sprites.json like any other item. The legacy ITEM_DEFS seeds
-// (bat/pan/yoyo) also show under the editor's "Custom" tab, but they're built in
-// (HELD_ITEM_IDS), not stored here.
+// in item_sprites.json like any other item. (The old bat/pan/yoyo seeds are now
+// regular custom items here too — c002/c003/c004 — not built-in ITEM_DEFS.)
 export interface CustomItem {
   id: string;
   name: string;
@@ -316,11 +253,12 @@ export function customItemsDoc(): { items: CustomItem[] } {
   return { items: [...customItems].map(([id, name]) => ({ id, name })) };
 }
 
-/** Mint a new custom item with `name`, returning its fresh id (`custom-N`). */
+/** Mint a new custom item with `name`, returning its fresh id (`cNNN`, e.g. c001). */
 export function addCustomItem(name: string): string {
   let n = 1;
-  while (customItems.has(`custom-${n}`)) n++;
-  const id = `custom-${n}`;
+  const pad = (k: number) => `c${String(k).padStart(3, '0')}`;
+  while (customItems.has(pad(n))) n++;
+  const id = pad(n);
   customItems.set(id, name.trim() || id);
   return id;
 }
@@ -332,7 +270,8 @@ export function isEquippable(type: number): boolean {
   return type >= 0x10 && type < 0x20;
 }
 
-/** Cycle helper for the placeholder equip key: none -> bat -> ... -> none. */
+/** Cycle helper for the placeholder equip key, over the built-in seed ids
+ *  (HELD_ITEM_IDS). Currently empty, so this just returns null. */
 export function nextHeldItem(current: string | null): string | null {
   if (current === null) return HELD_ITEM_IDS[0] ?? null;
   const i = HELD_ITEM_IDS.indexOf(current);
@@ -556,9 +495,24 @@ export function isItemBehind(direction: Direction): boolean {
 /** True if an item's art mirrors for this facing — the same left/right axis the
  *  body sprite mirrors on (W/NW/SW + S). Worn-item offsets are stored in canonical
  *  (right-facing) space, so an editor authoring a position must mirror its drag
- *  delta when this is true. */
-export function isItemFlipped(direction: Direction): boolean {
+ *  delta when this is true. Honors the item's own mirror flag (off = never flips). */
+export function isItemFlipped(direction: Direction, itemId?: string): boolean {
+  if (itemId && !itemMirrors(itemId)) return false;
   return HAND_ANCHORS[direction].flip;
+}
+
+/** Whether an item's held art flips with the body's facing. Default true (mirrors
+ *  like the character); false = same orientation no matter which way the player
+ *  faces. Stored per item in overrides/item_sprites.json. */
+export function itemMirrors(itemId: string): boolean {
+  return itemSprites.get(itemId)?.mirror !== false;
+}
+
+/** Live-set an item's mirror flag in memory so the editor's test pane + the world
+ *  reflect a toggle immediately (the editor also persists it via persistItem). */
+export function setItemMirror(itemId: string, on: boolean): void {
+  const d = itemSprites.get(itemId);
+  if (d) d.mirror = on;
 }
 
 /**
@@ -582,7 +536,8 @@ export function drawHeldItem(
   // exactly as the character does. Offsets are authored in canonical (right-
   // facing) space, so negate x for a flipped facing. Swing still plays normally.
   const off = offsetFor(itemId);
-  const flip = anchor.flip;
+  // Item may opt out of mirroring — then it keeps one orientation every facing.
+  const flip = anchor.flip && itemMirrors(itemId);
 
   // During a swing the weapon plays its 3 authored frames; otherwise it rests on
   // frame 0. The body sprite only has 2 attack frames (it clamps), but the

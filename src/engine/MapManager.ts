@@ -51,6 +51,16 @@ interface CustomRoomsDoc {
   rooms: CustomRoom[];
 }
 
+/** Per-map-cell tile-arrangement override (Room Builder "Edit map" →
+ *  overrides/map_tiles.json). `cells` maps "tileX,tileY" → arrangement id (a
+ *  composite id when ≥ COMPOSITE_BASE); `composites` defines any such ids. Pure
+ *  indices, never pixels. Applied on top of the ROM base + custom-room band. */
+export interface MapTilesOverride {
+  version: number;
+  cells?: Record<string, number>;
+  composites?: Record<string, number[]>;
+}
+
 const DEFAULT_BAND_SECTOR: SectorMeta = {
   tilesetId: 0,
   paletteId: 0,
@@ -159,6 +169,26 @@ export async function buildCustomRoomBand(): Promise<void> {
   for (const r of custom) {
     for (const [id, refs] of Object.entries(r.composites ?? {})) composites.set(Number(id), refs);
   }
+
+  // Per-map-cell TILE override (Room Builder "Edit map" — overrides/map_tiles.json):
+  // replace the arrangement at specific cells of ANY room (not just the custom
+  // band), so baked furniture can be moved/covered/added. Applied LAST so it wins
+  // over both the ROM base and the band. Collision follows for free: both client
+  // (Collision.effectiveRow) and server (blocked) read the cell's arrangement, so
+  // a changed tile brings its own collision. Cells are interpreted with the
+  // target cell's own sector tileset/palette, so the editor matches styles.
+  const mapOv = await loadJSON<MapTilesOverride>('/overrides/map_tiles.json').catch(() => null);
+  if (mapOv?.cells) {
+    for (const [k, arr] of Object.entries(mapOv.cells)) {
+      const [tx, ty] = k.split(',').map(Number);
+      const i = ty * MAP_WIDTH_TILES + tx;
+      if (i >= 0 && i < mapTiles.length) mapTiles[i] = arr;
+    }
+  }
+  if (mapOv?.composites) {
+    for (const [id, refs] of Object.entries(mapOv.composites)) composites.set(Number(id), refs);
+  }
+
   setComposites(composites);
   await preloadCompositeAssets(composites);
 

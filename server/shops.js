@@ -132,7 +132,11 @@ function loadShops(assetsDir) {
     return Array.isArray(list) && list.some((i) => String(i) === String(item));
   }
 
-  return { goods, stores, storeHas, startingInventory };
+  // Clerk → store map (npcConfigId → {store, mode}), for server-side proximity
+  // gating: a buy/sell is only honored near the clerk that runs that store.
+  const npcShops = data.npcShops || {};
+
+  return { goods, stores, storeHas, startingInventory, npcShops };
 }
 
 module.exports = { loadShops };

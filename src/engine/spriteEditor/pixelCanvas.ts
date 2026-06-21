@@ -20,6 +20,10 @@ import {
   Tool,
   PixelRect,
   mirrorTargetFor,
+  MIRROR,
+  DIR_BASE,
+  ATTACK_ROW_START,
+  HURT_ROW_START,
   parseHexColor,
   itemPaletteRGB,
   strokeRectAnts,
@@ -305,9 +309,10 @@ function applyToolAt(e: MouseEvent): void {
 
   if (S.editMode !== 'char') {
     commitActive(); // push the buffer to its live preview (item override / PSI thumb)
-  } else {
+  } else if (S.mirrorLR) {
     // Auto-mirror: keep the west/diagonal-left partner cell a flipped copy of the
     // canonical cell being edited (selection is always canonical — see strip click).
+    // Skipped when this group authors its west frames independently (mirror OFF).
     syncMirrorCell(S.selRow, S.selCol);
   }
   S.strokeChanged = true;
@@ -326,6 +331,20 @@ export function syncMirrorCell(row: number, col: number): void {
   ctx.scale(-1, 1);
   ctx.drawImage(S.sheet!, col * FRAME_W, row * FRAME_H, FRAME_W, FRAME_H, 0, 0, FRAME_W, FRAME_H);
   ctx.restore();
+}
+
+/** Re-flip every west/diagonal-left cell from its east partner across all pose
+ *  blocks. Used when mirroring is switched back ON, so the W frames snap back to
+ *  exact flips of E (discarding any independent west art). */
+export function remirrorAll(): void {
+  if (!S.sheetCtx) return;
+  for (const off of [0, ATTACK_ROW_START, HURT_ROW_START]) {
+    for (const [canon] of MIRROR) {
+      const c = DIR_BASE[canon];
+      syncMirrorCell(c.row + off, c.col); // frame 0
+      syncMirrorCell(c.row + off, c.col + 1); // frame 1
+    }
+  }
 }
 
 export function pushUndo(): void {

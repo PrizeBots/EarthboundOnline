@@ -12,8 +12,8 @@
 // ./pixelCanvas (shared engine), ./castEditor, ./itemEditor, ./testWalker; the
 // DOM is built in ./dom; mutable state is centralized in ./state.
 import { setMuteButtonHidden } from '../MuteButton';
-import { nextHeldItem, getItemName } from '../Items';
-import { CUSTOM_GROUP_BASE } from '../SpriteManager';
+import { nextHeldItem, getItemName, setItemMirror } from '../Items';
+import { CUSTOM_GROUP_BASE, setGroupMirror } from '../SpriteManager';
 import { DEFAULT_GROUP, EditMode, SpriteEditorCallbacks } from './constants';
 import { S } from './state';
 import { flashSaved, postOverride, setSaveStatus } from './saveChannel';
@@ -28,6 +28,8 @@ import {
   sheetReady,
   drawEditCanvas,
   finishEditInteraction,
+  pushUndo,
+  remirrorAll,
 } from './pixelCanvas';
 import {
   loadRoster,
@@ -148,6 +150,9 @@ export function closeSpriteEditor(): void {
   S.itemRow = null;
   S.itemPickerHost = null;
   S.charPicker = null;
+  S.charRow = null;
+  S.mirrorToggle = null;
+  S.mirrorRow = null;
   S.psiPicker = null;
   S.psiRow = null;
   S.psiPickerHost = null;
@@ -188,7 +193,67 @@ function cancelEditor(): void {
  *  (custom ids) and the Entity Manager handoff. */
 export async function selectEntity(id: number): Promise<void> {
   await loadEntityIntoBuffer(id);
+  // Per-entity mirror setting (custom ids default OFF — stay as-is every facing).
+  const mv = S.overridesDoc.groups?.[String(id)]?.mirror;
+  S.mirrorLR = mv !== undefined ? mv : id < CUSTOM_GROUP_BASE;
+  if (S.mirrorToggle) S.mirrorToggle.checked = S.mirrorLR;
   setEditMode('entity');
+}
+
+/** Toggle left↔right mirroring for the current sprite (character OR entity). ON:
+ *  west facings render as a flip of east. OFF: each facing renders its own cell
+ *  as-is (independent west art / a static entity). Applies live to the world +
+ *  test pane and persists per group to overrides/sprites.json. */
+export function setMirrorLR(on: boolean): void {
+  if (S.mirrorLR === on) return;
+  S.mirrorLR = on;
+  if (S.mirrorToggle) S.mirrorToggle.checked = on;
+
+  if (S.editMode === 'item') {
+    // Held items mirror via their own flag in item_sprites.json (a different art
+    // pipeline from character/entity sheets).
+    setItemMirror(S.itemEditId, on); // live: drawHeldItem stops/starts flipping
+    persistItem(); // writes the flag (persistItem carries mirror through)
+    S.dirty = true;
+    return;
+  }
+
+  const id = S.editMode === 'entity' ? S.entityEditId : S.groupId;
+  setGroupMirror(id, on); // live: the renderer flips (or stops) immediately
+
+  if (S.editMode === 'char') {
+    // Character sheets edit only the east cells when mirroring; turning it back
+    // ON resyncs the west cells to flips of east so the strip/export stay tidy.
+    if (on) {
+      pushUndo();
+      remirrorAll();
+    }
+    persistGroup(true); // captureGroupDiff writes the flag (+ any resync'd pixels)
+  } else {
+    persistMirrorFlag(id, on); // entity: write just the flag to sprites.json
+  }
+  S.dirty = true; // char strip switches between 5-dir and 8-dir layouts
+}
+
+/** Write a group's mirror flag into the editor's sprites.json doc and save it.
+ *  Used for entities (whose pixels live in custom_sprites.json), so the runtime
+ *  renderer — which reads sprites.json — picks the flag up on reload. */
+function persistMirrorFlag(id: number, on: boolean): void {
+  const groups = (S.overridesDoc.groups ??= {});
+  const key = String(id);
+  if (on === id < CUSTOM_GROUP_BASE) {
+    // Back to the default for this id: drop the flag (and a now-empty entry).
+    if (groups[key]) {
+      delete groups[key].mirror;
+      if (!groups[key].paint && !groups[key].erase) delete groups[key];
+    }
+  } else {
+    groups[key] = { ...(groups[key] ?? {}), mirror: on };
+  }
+  setSaveStatus('saving');
+  void postOverride('sprites.json', S.overridesDoc)
+    .then(() => setSaveStatus('saved'))
+    .catch(() => setSaveStatus('error'));
 }
 
 export function setEditMode(m: EditMode): void {
@@ -199,6 +264,12 @@ export function setEditMode(m: EditMode): void {
   if (S.editMode === m) return;
   S.editMode = m;
   clearSelection(); // char cells, item buffers, and PSI frames differ in geometry
+  // CHARACTER picker/rename only belong to Character + Entity modes (both pick
+  // from that dropdown). In Item/PSI mode it's irrelevant clutter — hide it.
+  if (S.charRow) S.charRow.style.display = m === 'char' || m === 'entity' ? 'flex' : 'none';
+  // Mirror toggle applies to any directional sprite — character, entity, or item;
+  // only PSI (no facing) hides it.
+  if (S.mirrorRow) S.mirrorRow.style.display = m === 'psi' ? 'none' : 'flex';
   if (S.itemRow) S.itemRow.style.display = m === 'item' ? 'flex' : 'none';
   if (S.psiRow) S.psiRow.style.display = m === 'psi' ? 'flex' : 'none';
   if (S.entityRow) S.entityRow.style.display = m === 'entity' ? 'flex' : 'none';
@@ -218,7 +289,15 @@ export function setEditMode(m: EditMode): void {
     // Returning to Character mode while the selection is a custom entity (or the
     // cast sheet was torn down) would paint the wrong surface — reload a real cast
     // group so Character mode always has a 16×24 sheet.
-    if (S.groupId >= CUSTOM_GROUP_BASE || !S.sheet) void loadGroupIntoEditor(DEFAULT_GROUP);
+    if (S.groupId >= CUSTOM_GROUP_BASE || !S.sheet) {
+      void loadGroupIntoEditor(DEFAULT_GROUP); // sets the mirror toggle itself
+    } else {
+      // Sheet kept — refresh the mirror toggle to THIS character's saved flag
+      // (it was showing the item/entity we switched away from).
+      const mv = S.overridesDoc.groups?.[String(S.groupId)]?.mirror;
+      S.mirrorLR = mv !== undefined ? mv : S.groupId < CUSTOM_GROUP_BASE;
+      if (S.mirrorToggle) S.mirrorToggle.checked = S.mirrorLR;
+    }
     if (S.itemNote) S.itemNote.textContent = 'Item: none (G cycles)';
   } else {
     // entity mode: the buffer + palette were set by loadEntityIntoBuffer already.

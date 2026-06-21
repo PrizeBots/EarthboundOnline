@@ -1,4 +1,4 @@
-# EarthBound Online
+# Zexonyte Online
 
 Always reply with concise language. I do not great reading comprehension or attention skills. Give me what matters most and get to the point always.
 

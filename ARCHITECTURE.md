@@ -1,6 +1,6 @@
 # Architecture
 
-Living document describing how EarthBound Online actually works. **If you change
+Living document describing how Zexonyte Online actually works. **If you change
 the engine, the servers, or the extraction pipeline, update this file in the same
 change.** High-level project rules (ROM distribution policy, dev ports, what not
 to commit) live in CLAUDE.md; this file is the technical map.
@@ -63,6 +63,24 @@ the 16×16 `ITEM_PALETTE` held art (`itemPixelsFromImage`), writes
 `custom_items.json` + `item_sprites.json`, and opens the **Item Manager**. Both
 respect the ROM-distribution rule: entity art is a by-reference pointer into the
 player's own extraction; item art is re-quantized to our own non-ROM palette.
+
+**Furniture from map tiles (the third custom-sprite source).** MOST EarthBound
+furniture is already a ROM sprite OBJECT (Bench/Plant/Stove/Jar/Painting/Crate/…,
+extracted into `npcs.json`, placed/moved in the Placement editor like any prop) —
+those need no special handling. Only a MINORITY (structural built-ins fused into
+the BG/FG tile atlas) is tile-only; for THOSE, the **Room Builder**'s "→ Furniture"
+button
+harvests a sampled tile region into a movable, solid prop: it mints a custom
+sprite group whose art is a **tile-arrangement region** (`CustomSpriteTiles` on
+the `custom_sprites.json` entry — `{tilesetId, paletteId, w, h, bg[]}`, pure
+arrangement INDICES, never pixels) that `renderTiles` re-draws from the player's
+own atlas at boot (BG + FG of each arrangement, so it looks identical to the
+baked tile). It also writes a full-footprint collision box to
+`overrides/entities.json` so the furniture is solid (see "props with a col are
+solid", below), then hands off to the **Placement** editor (`requestPlaceProp`)
+ready to drop as a `prop`. Harvested furniture is for placing in custom rooms /
+new spots — it can't erase the baked original from a ROM map (the ROM
+`tiles.json` is never touched).
 
 **Editing a custom entity (Sprite Editor `entity` mode).** Custom entities are
 paintable in the Sprite Editor — a 4th `EditMode` ('char'/'item'/'psi'/'entity')
@@ -159,10 +177,16 @@ sector load + room crop — use it from the console or verification scripts.
   tile-animation system).
 - **NPCManager / NPC.ts** — loads placements, buckets them into the ROM's
   256px area grid, lazy-loads sprite sheets, applies server `npc_update` rows.
-  `blockedByNPC` makes `person` NPCs solid for the player (the player's move
-  combines it with `checkPlayerCollision`); `prop` placements stay walkable
-  because many are invisible interaction hotspots whose body is already in
-  the map collision.
+  `blockedByNPC` makes `person`/`enemy`/`car` NPCs solid for the player (the
+  player's move combines it with `checkPlayerCollision`). A `prop` is solid
+  ONLY if it has an authored collision box (`col` in `entities.json` —
+  harvested furniture); a `prop` WITHOUT one stays walkable because many ROM
+  props are invisible interaction hotspots whose body is already in the map
+  collision. Solid props never yield to weight-push (furniture is fixed), and
+  the debug-box overlay (`drawDebugBoxes`) draws a prop's `col` when it has
+  one. This is client-side only — the server is client-authoritative for player
+  movement, so a placed furniture prop blocks the local player without a server
+  change (enemies don't yet path around it).
 - **DialogueManager** — NPC talk/check text window (see below).
 - **ChatManager** — Enter opens typing box; messages float as speech bubbles.
 - **RemoteInterp** — snapshot interpolation for remote players: clients send
@@ -523,17 +547,28 @@ Enemy is a third NPC kind, **selectable per placement** in the Placement Editor
 `npcSim` (server) apply the SAME rule (`isEnemyPlacement`), so they never
 disagree.
 
-**Stat layering (the cascade).** Every placed entity draws from one shared
-property shape (`EntityProps`, `src/engine/EntityStats.ts`) resolved through a
-single cascade by `resolveProps` — mirrored in `server/npcSim.js` and
-`src/engine/NPCManager.ts` (KEEP IN SYNC):
+**Stat layering (the cascade).** Every entity of EVERY kind (person/prop/enemy/
+car) draws from one shared property shape (`EntityProps`,
+`src/engine/EntityStats.ts`) resolved through a single cascade by `resolveProps`
+— mirrored in `server/npcSim.js` and `src/engine/NPCManager.ts` (KEEP IN SYNC):
 
-    kind default  ->  sprite-group entity table  ->  instance override
+    kind default (floor)  ->  sprite-group entity table  ->  instance override
+
+The **Entity Manager is the master for every entity** — the sprite-group layer
+applies to all kinds, not just enemies. The kind value (NPC*HP / VEHICLE_HP /
+level 1 / …) is only the \_floor default* when the entity table doesn't set a
+field; author a townsperson's hp/level/speed in the Entity Manager and every
+placed instance of that sprite inherits it.
 
 The **sprite-group** layer is itself `DEFAULT_ENTITY_STATS < enemies.json (ROM
-catalog) < enemy_spawns.json entities (authored, Entity Manager)`, merged into
-`entityDefs` (keep `buildEntityDefs` in sync). The **instance** layer is the
-per-thing override that WINS over the sprite group: a placement's sparse
+catalog) < entities.json (authored, Entity Manager)`, merged into `entityDefs`
+(keep `buildEntityDefs`/`loadEntities` in sync). The master table lives in its
+own file — **`overrides/entities.json`** — separate from `enemy_spawns.json`,
+which is purely the **enemy-spawner config** (spawner instances +
+`enemySpriteGroups` classification, owned by the Enemy Spawner tool). Both
+runtimes + both editor tools read entities with a back-compat fallback to the
+legacy `enemy_spawns.json` `entities` for pre-split saves. The **instance** layer
+is the per-thing override that WINS over the sprite group: a placement's sparse
 `props` (npcs.json, authored in the **Placement** tool's properties panel — the
 shared `EntityPropsForm` component), or a **spawner**'s own fields (the Enemy
 Spawner panel uses the same `EntityPropsForm`; blank = inherit the entity's
@@ -636,22 +671,29 @@ crit-burst scale, the per-popup colors, and an optional big-hit color ramp). It
 loads from `overrides/combat_juice.json` and is dialed in real time by the dev
 **Combat** editor tool (numbers/colors only — combat MATH stays server-side).
 
-**Netcode / client-side prediction.** Model: the **local player** is client-authoritative
-and predicted (moves instantly, reports position); **remote players + NPCs/enemies/cars**
-are snapshot-interpolated ~100-160ms in the past (`RemoteInterp.ts`). The weak point was
-server-authoritative REACTIONS to the local player's actions (a walk-push, a melee
-knockback) — they only return a broadcast+interp-delay later, which felt "loose." So
-those are **predicted then reconciled**: `RemoteInterp.applyPredOffset`/`injectPredOffset`
-maintain a `predOff` displacement layered on top of the interpolated position and decayed
-each frame (`PRED_DECAY`), so the authoritative stream bleeds it back to zero. The
-injectors mirror the server's exact math so the prediction lands where the result will:
-`predictPlayerPush`/`predictMeleeKnockback` (NPCManager, for NPCs) and
-`Game.predictPushRemotePlayers`/`predictPvpKnockback` (remote players). Prediction is
-movement-only — flash/hitstop/damage numbers stay server-confirmed, so a server-side
-dodge never shows a false hit. NOT YET BUILT (the two big ones): server-authoritative
-player movement with input-replay reconciliation (would close the speedhack/teleport
-exploit the current client-authoritative model allows), and lag-compensated hit
-resolution (server rewinds targets to the attacker's render-time view).
+**Netcode — server-authoritative movement + client prediction.** The **client is
+"dumb": it sends INPUTS, never positions**, and the **server owns every position**.
+Each moving frame the client emits `{type:'input', seq, dx, dy}` (`Network.sendInput`)
+and PREDICTS locally (`Player.applyInput` — the movement step, an exact mirror of the
+server's `gameHost._stepPlayer`). The server's 30Hz sim (`_simPlayers`) drains the
+queue, steps each player against authoritative collision (`npcSim.playerBlocked` =
+walls + weight-class solid actors, mirroring `Player.blocked`), and replies
+`{type:'pos', x, y, seq}`; the client **reconciles** (`Player.reconcile`: snap to the
+server spot for that seq, replay un-acked inputs) so prediction stays ahead with no
+rubber-band. **Doors are server-validated**: the client `sendUseDoor()` and the server
+(`case 'use_door'` → `npcSim.doorAt`) warps to the door's OWN dest only if the player is
+truly on it (`onWarp` → `Player.warpTo`); escalator/event warps still ride the legacy
+shielded `move`. **Remote players + NPCs/enemies/cars** are snapshot-interpolated
+~100-160ms back (`RemoteInterp.ts`). Server-authoritative REACTIONS to your actions (a
+walk-push, a melee knockback) are **predicted then reconciled** via a `predOff`
+displacement (`applyPredOffset`/`injectPredOffset`, decayed by `PRED_DECAY`) — injectors
+(`predictPlayerPush`/`predictMeleeKnockback`/`Game.predictPushRemotePlayers`/
+`predictPvpKnockback`) mirror the server math so it lands where the result will;
+movement-only (flash/hitstop/damage numbers stay server-confirmed). REMAINING: the
+server `move` handler is not yet GATED (walking is server-driven for honest clients but
+not yet _enforced_ — pending a playtest before locking `move` to editor/warp-shielded);
+escalator/event teleports aren't server-validated yet; lag-compensated hit resolution
+(server rewinds to the attacker's view) is future.
 
 **Status conditions + inflict model.** `server/status.js` is the single catalog +
 timer/immunity/DoT engine (paralysis, sleep, diamond, poison, …), shared by
@@ -767,15 +809,34 @@ offense/defense/crit/dodge/attackSpeed/ranged/range/projSpeed/pierce/projSprite/
 **NPC self-defense.** Every `person` carries HP (`NPC_HP`, matching the client's
 Entity default so full-HP folk need no sync) and defends itself on
 **defend-on-sight** (no first hit needed) against the nearest living enemy within
-`NPC_DETECT_RANGE`, dealing `NPC_DAMAGE` on a cooldown. Rather than freezing in
-place, it **maneuvers per a combat personality** (`tickNpcCombat`): `brave`
+its **resolved `detectRange`** (floor `NPC_DETECT_RANGE`). Combat numbers come
+from the **resolved entity stats** — `damage`, `attackCooldown`, `attackRange`,
+and `crit`/`dodge` (rolled through the same `resolveMelee` as enemies), with the
+`NPC_*` constants only as floors. So townsfolk are full Entity-class citizens: a
+Master-Roshi entity (high level/damage/crit) genuinely out-fights a generic one,
+and an entity authored with **`damage: 0` can't fight at all** — it keeps its
+distance instead of swinging (a civilian, not a brawler). Rather than freezing in
+place, a combatant **maneuvers per a combat personality** (`tickNpcCombat`): `brave`
 closes in and presses, `skirmisher` darts in to swing then peels off,
 `coward` flees and only swings when cornered, `nervous` trades blows while
-shuffling restlessly. The personality is assigned per sprite group in the Entity
-Manager (`entities[sprite].combat`); unassigned entities get a stable seeded pick
-by id so a crowd reacts diversely. Combat ranges up to `NPC_COMBAT_LEASH` from
-home (`NPC_FLEE_LEASH` for cowards); once the threat clears, an NPC walks back
-inside its wander `LEASH` before resuming the ambient wander. A downed
+shuffling restlessly, and `pursuer` is a **COP** — it locks onto a bad guy and
+chases it down with **no home leash** (at `chaseSpeed`), holding the chase out to
+its `giveUpRange` (hysteresis via `n.pursuing`, set in `tickNpc`) before the
+walk-home returns it to its beat. Personality resolves through the same cascade as
+every stat: **per-placement override** (the Placement editor `combat` dropdown →
+`props.combat`) **> entity default** (Entity Manager `entities[sprite].combat`) **>
+a stable seeded pick by id**. The seeded fallback draws from the NON-pursuer set
+(`COMBAT_PERSONALITIES`) so an unassigned crowd varies but a cop is always opt-in,
+never random (`VALID_PERSONALITIES` adds `pursuer`). The resolved value rides the
+actor as `n.combat` (set in `resolveProps`/build), read by `npcCombatPersonality`.
+The behavior
+RANGES (`detectRange`/`giveUpRange` aggro & chase, plus the `wanderRadius` roam
+radius) are all authorable at the entity level (Entity Manager) and overridable
+per placement. Non-pursuer combat ranges up to `NPC_COMBAT_LEASH` from home
+(`NPC_FLEE_LEASH` for cowards); once the threat clears, an NPC walks back inside
+its **resolved `wanderRadius`** (the `LEASH` constant is just the floor when none
+is authored — `wanderRadius: 0` = a STATIONARY clerk/guard that holds its spot)
+before resuming the ambient wander. A downed
 townsperson hides (hp 0, like a dead enemy — the client's `NPC.dead` getter now
 covers persons) and `reviveNpcs` revives it at its home spot after
 `NPC_RESPAWN_MS` (backlog: a hospital / per-entity respawn point). Enemies target the nearest living
@@ -981,6 +1042,20 @@ wire new doors to it.
   place while the client (player movement is client-side) walks the room fine.
   Custom-room composite cells (id ≥ `COMPOSITE_BASE`) carry per-source-minitile
   collision, mirrored from `Collision.ts` `compositeRow` in `npcSim.compositeByte`.
+- **Editing EXISTING rooms (map-tile override).** `overrides/map_tiles.json` is a
+  per-map-cell tile override (`{cells: {"tx,ty": arrangementId}, composites}`) that
+  lets the Room Builder repaint ANY room — not just the band — so baked-in
+  furniture can be moved, covered (paint floor over it), or added. It's applied
+  LAST in `buildCustomRoomBand` (client) / `buildRoomBand` (server, file-watched
+  like `rooms.json`), so it wins over the ROM base + band. **Collision follows for
+  free**: both `Collision.effectiveRow` and `npcSim.blocked()` read the cell's
+  arrangement, so a changed tile brings its own collision — no `collision.json`
+  edit needed. A painted arrangement is interpreted with the TARGET cell's own
+  sector tileset/palette, so the Room Builder enforces a style match (reject a
+  mismatched brush). Toggle via Room Builder's "Edit map" button; furniture
+  OBJECTS (sprite props like Bench/Stove/Jar — most EB furniture) are instead
+  moved/added in the **Placement** editor, since they're sprite placements, not
+  tiles.
 - **Registry.** `src/engine/Rooms.ts` loads `rooms.json`
   (`{id,label,town,type,rect,spawn}`), maps a point→room, and tracks the active
   room (`Game.updateRoomBounds`). The editor's **Places** column
@@ -1061,19 +1136,24 @@ container type). Authored changes layer on via `overrides/gifts.json` =
 a ROM container's contents; `additions` are brand-NEW containers the admin placed
 (click-to-place; the active tab picks the type) with a minted key (`gift+N`) and
 a private flag (romFlag ≥ 1000, clear of ROM containers). NPCManager spawns a
-prop for each addition (into the area buckets + npcByKey, NOT npcsById — that
-stays aligned with the server's enemy/car pool). The server hot-reloads
+**`gift`-kind** NPC for each container — both ROM placements (classified by
+catalog membership) and additions (into the area buckets + npcByKey, NOT
+npcsById — that stays aligned with the server's enemy/car pool). `kind: 'gift'`
+behaves exactly like a `prop` (inert, no health bar, solid only with an authored
+col box) but is labelled so the Placement Editor shows `(gift)` not `(prop)`.
+The server hot-reloads
 `overrides/gifts.json` (fs.watchFile) so new containers are openable without a
 restart.
 
-**Visual.** A present (sprite 195) packs BOTH states in its own sheet: the
-wrapped/closed box faces **South** (row 1 — the baked direction of every ROM
-present), the lidless/**open** box faces **North** (row 0). Opening just flips
-the box to face North (`beginGiftOpen`), and it PERSISTS that way — the box is
-never removed. On load, a present whose flag is already set starts North (open).
-Other containers (trash cans, jars…) have no open frame — they grant once and
-stay unchanged. (Sprite 196 is a "?" thought-bubble, NOT an open box — unused.)
-`giftOpened(npc)` = the player's flag is set; it gates re-opening.
+**Visual.** EVERY container sprite packs BOTH states in its own sheet: the
+closed box faces **South** (row 1 — the baked direction of every ROM container),
+the lidless/**open** (empty) box faces **North** (row 0). This holds for all six
+types — present (195), trash can (214), gift box (233), crate (262), jar (322),
+basket (33) — verified frame-by-frame. Opening just flips the box to face North
+(`beginGiftOpen`), and it PERSISTS that way — the box is never removed. On load,
+a container whose flag is already set starts North (open). `giftOpened(npc)` =
+the player's flag is set; it gates re-opening (and the open frame already shows
+it's done, so the client doesn't re-ping an opened container).
 
 **Per-player one-time open.** The ROM's single global "opened" flag can't model
 an MMO (shared world, personal progress), so each gift maps to a PRIVATE
@@ -1082,11 +1162,19 @@ PlayerFlag at `GIFT_FLAG_BASE (910000) + romFlag` (kept in sync between
 server-authoritative: pressing Talk on a box (`Game.tryTalk` → `sendOpenGift(k)`)
 sends `open_gift`; the host checks the flag, the bag has room, grants the item
 (`inventory` + `loot`), sets the flag, and acks `gift_opened`. The client then
-plays open (swap to 196) → fade (`Gifts.beginGiftOpen`/`giftAlpha`) and marks
-the flag locally. A box the player already opened is hidden on load
-(`giftGone` filters it out of `getNearbyNPCs`); the editor's `getNpcsInRect`
-shows every box so the Gift Manager always lists them all. Special gifts (no
-resolved item) still open + set the flag, just grant nothing until authored.
+flips the container to its open North frame (`Gifts.beginGiftOpen`) and marks
+the flag locally. The editor's `getNpcsInRect` shows every box so the Gift
+Manager always lists them all.
+
+**Empty / "special" containers.** A container with no resolvable item (a
+`special` gift) has nothing to grant, so instead of doing nothing it replies
+with the canon EarthBound flavor line: `emptyContainerText(sprite)` ("There was
+just plain ol' garbage in the trash can." for 214, "But the present was empty."
+for 195, else "But it was empty."; mirrors `eb_project/ccscript/data_33.ccs`),
+sent as a `notice`. It does NOT consume the flag, so an empty container stays
+CLOSED and re-checkable (you can keep digging — always garbage). A container
+that DID grant an item is flipped open and its flag set, so re-checking it is a
+no-op (the open frame already shows it's emptied).
 
 ### Ness's mom (favorite-food heal)
 

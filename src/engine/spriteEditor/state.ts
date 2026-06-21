@@ -170,8 +170,16 @@ export const S = {
   itemRow: null as HTMLDivElement | null, // the whole item UI (tabs + picker + new)
   itemPickerHost: null as HTMLDivElement | null, // the picker is rebuilt in here per tab
   itemTab: '' as ItemTab,
+  charRow: null as HTMLDivElement | null, // CHARACTER section (picker + rename); hidden off Character/Entity modes
   charNote: null as HTMLDivElement | null,
   nameInput: null as HTMLInputElement | null,
+  // Left↔right mirroring for the CURRENT group. true (default) = the editor only
+  // edits/shows the east cells and auto-flips them into the west partner cells;
+  // false = west/diagonal-left frames are authored independently. Persisted per
+  // group as `mirror:false` in overrides/sprites.json.
+  mirrorLR: true,
+  mirrorToggle: null as HTMLInputElement | null, // the mirror checkbox
+  mirrorRow: null as HTMLLabelElement | null, // its row; shown in char/entity/item modes
   rafId: 0,
 
   // --- WASD walker state for the test pane ---

@@ -258,26 +258,49 @@ check('use_item on equippable gear is refused (never consumed)', () => {
   assert(host.players.get(aliceId).inventory.includes(BAT), 'gear must still be owned');
 });
 
-// Find an affordable, stocked item from the real catalog.
+// Find an affordable, stocked item from a store that has a PLACED clerk (buy/sell
+// are now proximity-gated, so we need a clerk anchor to stand at). Pin the player
+// to that clerk before each economy test so the transaction is in range.
+const clerkAnchorFor = (store) => {
+  for (const a of host.npcSim.interactableAnchors()) {
+    const m = host.npcShops[String(a.npcId)];
+    if (m && m.store === store) return a;
+  }
+  return null;
+};
 let buyStore = null;
 let buyItem = null;
+let buyAnchor = null;
 for (const [sid, list] of Object.entries(shop.stores)) {
   if (!Array.isArray(list)) continue;
+  const anchor = clerkAnchorFor(Number(sid));
+  if (!anchor) continue; // can't test a store with no reachable clerk
   for (const it of list) {
     const g = shop.goods[String(it)];
     if (g && g.cost > 0 && g.cost <= 1000) {
       buyStore = Number(sid);
       buyItem = String(it);
+      buyAnchor = anchor;
       break;
     }
   }
   if (buyItem) break;
 }
+// Stand the player at the clerk so the proximity gate passes (their tracked
+// position is what the server checks).
+const standAtClerk = () => {
+  const p = host.players.get(aliceId);
+  if (buyAnchor) {
+    p.x = buyAnchor.x;
+    p.y = buyAnchor.y;
+  }
+};
 
 check('buy stocked affordable item → money debited by catalog cost, item added', () => {
   assert(buyItem, 'no affordable stocked item found in catalog');
   const cost = shop.goods[buyItem].cost;
   const before = host.players.get(aliceId).money;
+  standAtClerk();
   alice.clear();
   alice.recv({ type: 'buy', store: buyStore, item: buyItem });
   assert.strictEqual(host.players.get(aliceId).money, before - cost, 'wrong money after buy');
@@ -290,6 +313,7 @@ check('buy stocked affordable item → money debited by catalog cost, item added
 check('sell owned item → money credited half the catalog cost', () => {
   const cost = shop.goods[buyItem].cost;
   const before = host.players.get(aliceId).money;
+  standAtClerk();
   alice.clear();
   alice.recv({ type: 'sell', item: buyItem });
   assert.strictEqual(
@@ -303,11 +327,150 @@ check('buy is rejected when unaffordable (no money/inventory change)', () => {
   const p = host.players.get(aliceId);
   p.money = 0; // force broke
   const invLen = p.inventory.length;
+  standAtClerk();
   alice.clear();
   alice.recv({ type: 'buy', store: buyStore, item: buyItem });
   assert.strictEqual(p.money, 0, 'money should be untouched');
   assert.strictEqual(p.inventory.length, invLen, 'inventory should be untouched');
 });
+
+// ===================== 2b. Proximity gating (anti-cheat) =====================
+// Buy/sell/ATM are only honored when the player is actually AT the shop/ATM, so a
+// forged message from across the map can't transact.
+
+check('buy is rejected when NOT at the shop', () => {
+  const p = host.players.get(aliceId);
+  p.money = 100000;
+  p.x = -99999; // nowhere near any clerk
+  p.y = -99999;
+  const invLen = p.inventory.length;
+  alice.recv({ type: 'buy', store: buyStore, item: buyItem });
+  assert.strictEqual(p.money, 100000, 'money must not change away from the shop');
+  assert.strictEqual(p.inventory.length, invLen, 'no item granted away from the shop');
+});
+
+check('ATM withdraw is rejected when NOT at an ATM', () => {
+  const p = host.players.get(aliceId);
+  p.bank = 500;
+  p.money = 0;
+  p.x = -99999;
+  p.y = -99999;
+  alice.recv({ type: 'atm_withdraw', amount: 100 });
+  assert.strictEqual(p.bank, 500, 'bank must not change away from an ATM');
+  assert.strictEqual(p.money, 0, 'cash must not change away from an ATM');
+});
+
+// Positive ATM path — only if the map actually has an ATM placement to stand at.
+const atmAnchor = host.npcSim
+  .interactableAnchors()
+  .find((a) => a.sprite === 259 || a.sprite === 447);
+if (atmAnchor) {
+  check('ATM withdraw works when standing at an ATM', () => {
+    const p = host.players.get(aliceId);
+    p.bank = 500;
+    p.money = 0;
+    p.x = atmAnchor.x;
+    p.y = atmAnchor.y;
+    alice.recv({ type: 'atm_withdraw', amount: 100 });
+    assert.strictEqual(p.bank, 400, 'bank should drop by the withdrawn amount at an ATM');
+    assert.strictEqual(p.money, 100, 'cash should rise by the withdrawn amount at an ATM');
+  });
+}
+
+// ============== 2c. Server-authoritative movement (input sim) ==============
+// The client sends inputs (seq + held dir); the server simulates the position.
+
+check('input sim moves the player on a clear step, acks the seq, drains the queue', () => {
+  const p = host.players.get(aliceId);
+  // 1296,1168 = spawn street (open/walkable — see combat.test).
+  p._inputs = null;
+  p._lastSeqIn = null;
+  p._ackSeq = 0;
+  let moved = false;
+  let seq = 1;
+  for (const [dx, dy] of [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ]) {
+    p.x = 1296;
+    p.y = 1168;
+    alice.clear();
+    alice.recv({ type: 'input', seq, dx, dy });
+    host._simPlayers();
+    if (p.x !== 1296 || p.y !== 1168) moved = true;
+    assert.strictEqual(p._ackSeq, seq, 'server should ack the processed input seq');
+    assert(!p._inputs || p._inputs.length === 0, 'input queue should drain each tick');
+    const pos = alice.last('pos');
+    assert(pos && pos.seq === seq, 'owner should get a pos ack carrying the seq');
+    seq++;
+  }
+  assert(moved, 'at least one direction must be walkable from spawn');
+});
+
+check('input sim ignores a stale / replayed seq (no double-processing)', () => {
+  const p = host.players.get(aliceId);
+  p.x = 1296;
+  p.y = 1168;
+  p._inputs = null;
+  p._lastSeqIn = null;
+  p._ackSeq = 0;
+  alice.recv({ type: 'input', seq: 5, dx: 0, dy: 0 });
+  host._simPlayers();
+  assert.strictEqual(p._ackSeq, 5, 'fresh seq processed');
+  alice.recv({ type: 'input', seq: 3, dx: 1, dy: 0 }); // stale — must be dropped at intake
+  host._simPlayers();
+  assert.strictEqual(p._ackSeq, 5, 'a stale seq must never be processed');
+});
+
+// Server-authoritative doors: a use_door is only honored if the player is actually
+// on a door trigger, and warps to the door's OWN dest (never a client-chosen spot).
+{
+  // Find a real door trigger from the loaded map (if any).
+  const sim = host.npcSim;
+  let doorPos = null;
+  // Probe a grid for a trigger via the exposed doorAt (cheap; map has ~1000).
+  // We don't know coords, so scan candidate triggers through resolveDoor by
+  // asking doorAt at each trigger — but we can't enumerate; instead place the
+  // player at known door positions is impossible without the list. Use a coarse
+  // scan over the world in big steps until doorAt returns one.
+  outer: for (let y = 0; y < host.WORLD.h; y += 16) {
+    for (let x = 0; x < host.WORLD.w; x += 16) {
+      const d = sim.doorAt(x, y);
+      if (d) {
+        doorPos = { x, y, d };
+        break outer;
+      }
+    }
+  }
+  if (doorPos) {
+    check('use_door warps to the door dest when standing on a door', () => {
+      const p = host.players.get(aliceId);
+      p.editor = false;
+      p.x = doorPos.x;
+      p.y = doorPos.y;
+      alice.clear();
+      alice.recv({ type: 'use_door' });
+      assert.strictEqual(p.x, Math.round(doorPos.d.destX), 'warped to door destX');
+      assert.strictEqual(p.y, Math.round(doorPos.d.destY), 'warped to door destY');
+      const w = alice.last('warp');
+      assert(w && w.x === p.x && w.y === p.y, 'owner told the authoritative warp dest');
+    });
+  }
+
+  check('use_door is rejected when NOT on a door (snapped back)', () => {
+    const p = host.players.get(aliceId);
+    p.editor = false;
+    p.x = -99999; // nowhere near any door
+    p.y = -99999;
+    alice.clear();
+    alice.recv({ type: 'use_door' });
+    assert.strictEqual(p.x, -99999, 'no warp away from a door');
+    const pos = alice.last('pos');
+    assert(pos && pos.x === -99999, 'server re-asserted the authoritative position');
+  });
+}
 
 // ===================== 3. Door-transition shield =====================
 // While a player is mid door-fade its client freezes (no moves), so the server
@@ -745,7 +908,7 @@ check('open_gift on an unknown key is ignored', () => {
   s.close();
 });
 
-check('a special (unresolved) gift opens once but grants no item', () => {
+check('an empty (unresolved) container shows flavor text, grants nothing, stays checkable', () => {
   let found = null;
   for (const [k, g] of host.GIFTS) {
     if (g.item == null) {
@@ -762,9 +925,12 @@ check('a special (unresolved) gift opens once but grants no item', () => {
   const before = host.players.get(id).inventory.length;
   s.clear();
   s.recv({ type: 'open_gift', k });
-  assert(host.flags.get(id).has(GIFT_FLAG_BASE + g.romFlag), 'special flag not set');
-  assert.strictEqual(host.players.get(id).inventory.length, before, 'special granted an item');
-  assert(s.last('gift_opened'), 'special gift should still ack');
+  // No grant, no permanent open: an empty container just reports its canon
+  // flavor line and stays checkable (flag NOT consumed, no gift_opened ack).
+  assert.strictEqual(host.players.get(id).inventory.length, before, 'empty granted an item');
+  assert(!host.flags.get(id).has(GIFT_FLAG_BASE + g.romFlag), 'empty consumed the one-time flag');
+  assert(!s.last('gift_opened'), 'empty container should not ack gift_opened');
+  assert(s.last('notice') && s.last('notice').text, 'no flavor notice for empty container');
   s.close();
 });
 

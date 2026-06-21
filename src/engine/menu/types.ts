@@ -20,7 +20,8 @@ export type MenuName =
   | 'confirm'
   | 'atm'
   | 'equip'
-  | 'equip_select';
+  | 'equip_select'
+  | 'settings';
 
 // Hooks into the local player's equipment + PK state, wired by Game (the menu
 // has no player ref). getEquipped reads a slot; equip sets it (held sprite for a
@@ -90,4 +91,6 @@ export interface MenuView {
   equipSelectCursor: number;
   /** Items shown in the sub-modal for equipSlotSel (id '' = the Take off row). */
   equipSelectItems: { id: string; name: string }[];
+  /** Settings screen: the highlighted option row. */
+  settingsCursor: number;
 }

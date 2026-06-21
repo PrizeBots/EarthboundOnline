@@ -11,6 +11,7 @@
 import { measureText, FONT_LINE_HEIGHT } from '../TextRenderer';
 import { getGoods } from '../Inventory';
 import { getStoreItems, sellPrice } from '../Shop';
+import { formatMoney } from '../Wallet';
 import { EQUIP_SLOTS } from '../Equipment';
 import {
   PSI_BASE,
@@ -22,6 +23,7 @@ import {
   tierLabel,
 } from '../PsiTuning';
 import { SCREEN_WIDTH, SCREEN_HEIGHT } from '../../types';
+import { SETTINGS_ROWS } from '../Settings';
 
 export const MENU_STYLE = 0; // EB "Plain" dark-blue window flavor
 export const BORDER = 6;
@@ -149,10 +151,11 @@ export const MENU_ITEMS = [
   { label: 'Equip', action: 'equip' },
   { label: 'Status', action: 'status' },
   { label: 'PK', action: 'pk' },
+  { label: 'Settings', action: 'settings' },
 ];
 export const COLS = 2;
-// 5 items in a 2-wide grid → 3 rows (the last has one cell; nav guards the empty
-// slot, see MenuManager). Window height uses ROWS so it sizes to all items.
+// 6 items in a 2-wide grid → 3 full rows (no empty cell). Window height uses ROWS
+// so it sizes to all items. (The nav still guards `next < MENU_ITEMS.length`.)
 export const ROWS = 3;
 
 // PSI abilities castable from the PSI command. DEV: every family is available to
@@ -331,6 +334,26 @@ export function equipSelectRowAt(px: number, py: number, itemCount: number, curs
   return listRowAt(equipSelectLayout(itemCount, cursor), px, py);
 }
 
+// --- Settings screen ---------------------------------------------------------
+// A centered, scroll-if-needed list of option rows (volume sliders + toggles).
+// Each row shows its label at the left and a value widget (slider bar / ON-OFF)
+// right-aligned; the widths below reserve room for both. Shares scrollList so
+// the layout, the mouse hit-test, and the renderer never drift.
+export const SETTINGS_BAR_W = 50; // pixel width of a slider bar
+const SETTINGS_GAP = 12; // gap between the label and its value widget
+export function settingsLayout(cursor = 0): ListLayout {
+  const labelW = Math.max(...SETTINGS_ROWS.map((r) => measureText(r.label, FONT_ID)));
+  const valueW = SETTINGS_BAR_W + 6 + measureText('100%', FONT_ID);
+  const innerW = CURSOR_W + labelW + SETTINGS_GAP + valueW;
+  const winW = innerW + PADDING * 2 + BORDER * 2;
+  const winX = (SCREEN_WIDTH - winW) >> 1; // centered
+  return scrollList(winX, 8, winW, SETTINGS_ROWS.length, cursor);
+}
+
+export function settingsRowAt(px: number, py: number, cursor = 0): number {
+  return listRowAt(settingsLayout(cursor), px, py);
+}
+
 // --- PSI menu (canon-style): a TAB BAR (Offense/Recover/Assist/Other) across the
 // top, the FAMILY list under it, and — when a family is opened — a TIER popup to
 // its right (α/β/γ/Ω/Σ). The whole cluster is pinned UNDER the command window (so
@@ -465,7 +488,7 @@ export function shopListItems(
     mode === 'buy'
       ? getStoreItems(store).map((i) => ({ id: i.id, name: i.name, price: i.cost }))
       : getGoods().map((g) => ({ id: g.id, name: g.name, price: sellPrice(g.id) }));
-  return src.map((r) => ({ id: r.id, label: `${r.name}  $${r.price}` }));
+  return src.map((r) => ({ id: r.id, label: `${r.name}  $${formatMoney(r.price)}` }));
 }
 
 export function shopListLayout(mode: 'buy' | 'sell', store: number, cursor = 0): ListLayout {

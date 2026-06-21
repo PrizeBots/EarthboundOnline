@@ -44,6 +44,17 @@ const DIAG_REMAP: Partial<Record<Direction, Direction>> = {
   [Direction.NW]: Direction.W,
 };
 
+// Westward facings and the eastward cell they mirror. When a group's `mirror`
+// flag is on, a westward sprite is sampled from its eastward counterpart and
+// drawn horizontally flipped — so a single-image entity "turns around" when it
+// faces left, and the cast (whose west cells are already exact flips of east)
+// renders identically. `mirror` off draws each facing's own cell as-is.
+const WEST_TO_EAST: Partial<Record<Direction, Direction>> = {
+  [Direction.W]: Direction.E,
+  [Direction.NW]: Direction.NE,
+  [Direction.SW]: Direction.SE,
+};
+
 const MIN_DIAG_PIXELS = 20; // per-cell threshold for "real" diagonal art
 
 /** True if all 8 diagonal cells (grid rows 2-3) contain real art. */
@@ -153,11 +164,38 @@ export async function loadSpriteMetadata(): Promise<void> {
 // sheet regenerates from the player's own extraction (PoseGen) at load.
 export interface SpriteOverrides {
   version: number;
-  groups?: Record<string, { paint?: string; erase?: string; band?: number }>;
+  // `mirror` controls left/right facing at RENDER time: on = west facings draw
+  // their east cell flipped (the sprite turns around); off = each facing draws its
+  // own cell as-is (no flip, used for independently-authored west art or for
+  // entities that should look identical every way). Absent defaults per group:
+  // ON for ROM/cast ids (west art is already a flip of east), OFF for custom
+  // entities (single-image imports keep one look until opted in). See groupMirror.
+  groups?: Record<string, { paint?: string; erase?: string; band?: number; mirror?: boolean }>;
 }
 
 let spriteOverrides: SpriteOverrides | null = null;
 let spriteOverridesLoading: Promise<void> | null = null;
+
+/** Whether `groupId` mirrors (flips) when facing west. Reads the saved flag, with
+ *  a per-id default: ROM/cast groups mirror, custom entities don't. */
+export function groupMirror(groupId: number): boolean {
+  const v = spriteOverrides?.groups?.[String(groupId)]?.mirror;
+  return v !== undefined ? v : groupId < CUSTOM_GROUP_BASE;
+}
+
+/** Live-set a group's mirror flag in the in-memory overrides so the world + the
+ *  editor's test pane reflect a toggle immediately (the editor also persists it
+ *  to overrides/sprites.json). Setting back to the default drops the flag. */
+export function setGroupMirror(groupId: number, on: boolean): void {
+  spriteOverrides ??= { version: 1, groups: {} };
+  const groups = (spriteOverrides.groups ??= {});
+  const key = String(groupId);
+  if (on === groupId < CUSTOM_GROUP_BASE) {
+    if (groups[key]) delete groups[key].mirror;
+  } else {
+    groups[key] = { ...(groups[key] ?? {}), mirror: on };
+  }
+}
 // Original ROM sheets + pristine generated sheets, for the animator's diffing.
 const romImages = new Map<number, HTMLImageElement>();
 // The composited sheet BEFORE any saved override is applied (generated bands +
@@ -527,10 +565,15 @@ export function drawSprite(
   const meta = getSpriteGroupMeta(groupId);
   if (!meta) return;
 
+  // Mirror: a westward facing can be drawn from its eastward cell, flipped (when
+  // the group opts in). Resolve the cell we actually sample + whether to flip.
+  const flip = WEST_TO_EAST[direction] !== undefined && groupMirror(groupId);
+  const faceDir = flip ? WEST_TO_EAST[direction]! : direction;
+
   // Diagonals fall back to the side view, but ONLY for directions this sprite
   // lacks art for — an authored diagonal renders as soon as it's painted.
-  const remap = DIAG_REMAP[direction];
-  const dir = remap !== undefined && !diagDirs.get(groupId)?.has(direction) ? remap : direction;
+  const remap = DIAG_REMAP[faceDir];
+  const dir = remap !== undefined && !diagDirs.get(groupId)?.has(faceDir) ? remap : faceDir;
 
   const frameIndex = Math.min(frame, 1);
   const rows = sheetRowCount.get(groupId) ?? 4;
@@ -579,7 +622,20 @@ export function drawSprite(
 
   const destX = Math.floor(x - meta.width / 2);
   const destY = Math.floor(y - meta.height - 1) + sliceOffset;
-  ctx.drawImage(img, srcX, srcY, meta.width, sliceH, destX, destY, meta.width, sliceH);
+
+  // Blit a slice to the dest, mirrored about the sprite's center when flipping.
+  const blit = (source: CanvasImageSource, sx: number, sy: number) => {
+    if (flip) {
+      ctx.save();
+      ctx.translate(destX + meta.width, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(source, sx, sy, meta.width, sliceH, 0, destY, meta.width, sliceH);
+      ctx.restore();
+    } else {
+      ctx.drawImage(source, sx, sy, meta.width, sliceH, destX, destY, meta.width, sliceH);
+    }
+  };
+  blit(img, srcX, srcY);
 
   // Hit flash: overlay a white silhouette of this exact slice. Tinting in a
   // scratch buffer (source-atop) keeps the blink to the sprite's opaque pixels
@@ -593,6 +649,6 @@ export function drawSprite(
     sctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
     sctx.fillRect(0, 0, meta.width, sliceH);
     sctx.globalCompositeOperation = 'source-over';
-    ctx.drawImage(canvas, 0, 0, meta.width, sliceH, destX, destY, meta.width, sliceH);
+    blit(canvas, 0, 0);
   }
 }

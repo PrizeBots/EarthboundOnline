@@ -11,7 +11,7 @@
 import { drawWindow } from '../WindowRenderer';
 import { drawText, measureText, FONT_LINE_HEIGHT } from '../TextRenderer';
 import { getGoods, goodsCount } from '../Inventory';
-import { getMoney } from '../Wallet';
+import { getMoney, formatMoney } from '../Wallet';
 import { itemEquip } from '../Shop';
 import { drawItemIcon } from '../Items';
 import { drawPsiIcon } from '../PsiFx';
@@ -45,9 +45,12 @@ import {
   shopListItems,
   hotbarLayout,
   wrapText,
+  settingsLayout,
+  SETTINGS_BAR_W,
   ListLayout,
 } from './layout';
 import { PSI_TABS, PSI_CATEGORY_LABEL, familiesInTab } from '../PsiTuning';
+import { SETTINGS_ROWS, getSlider, getToggle } from '../Settings';
 
 /** Shop UI: a Buy/Sell chooser top-left, the active list beside it, money
  *  top-right, and an optional note line at the bottom. */
@@ -144,16 +147,20 @@ export function renderCommand(ctx: CanvasRenderingContext2D, v: MenuView): void 
   renderMoney(ctx); // EB-style cash window, shown whenever the menu is open
 }
 
-/** The money window: a small EB cash window in the top-right ("$N"). */
+/** The money window: a small EB cash window pinned to the very top-right ("$N").
+ *  Tight to the corner — a small uniform margin and NO extra top/bottom padding
+ *  inside the frame, so the box hugs the text (used both in-menu and, when the
+ *  player enables it in Settings, as an always-on HUD via renderMoneyOverlay). */
+const MONEY_MARGIN = 3; // gap from the top + right screen edges
 export function renderMoney(ctx: CanvasRenderingContext2D): void {
-  const label = `$${getMoney()}`;
+  const label = `$${formatMoney(getMoney())}`;
   const innerW = Math.max(40, measureText(label, FONT_ID));
   const winW = innerW + PADDING * 2 + BORDER * 2;
-  const winH = ITEM_H + PADDING * 2 + BORDER * 2;
-  const winX = SCREEN_WIDTH - 8 - winW; // right-aligned, 8px margin like the menu
-  const winY = 8; // same top edge as the command window
+  const winH = ITEM_H + BORDER * 2; // drop the vertical PADDING → no above/below gap
+  const winX = SCREEN_WIDTH - MONEY_MARGIN - winW; // hard against the right edge
+  const winY = MONEY_MARGIN; // hard against the top edge
   drawWindow(ctx, winX, winY, winW, winH, MENU_STYLE);
-  drawText(ctx, label, winX + BORDER + PADDING, winY + BORDER + PADDING, FONT_ID);
+  drawText(ctx, label, winX + BORDER + PADDING, winY + BORDER, FONT_ID);
 }
 
 export function renderGoods(ctx: CanvasRenderingContext2D, v: MenuView): void {
@@ -293,6 +300,40 @@ export function renderPsi(ctx: CanvasRenderingContext2D, v: MenuView): void {
     }
     drawScrollbar(ctx, tl.scroll);
   }
+}
+
+/** The Settings screen: a centered list of option rows. Slider rows (BGM / SFX)
+ *  show a fill bar + percentage; toggle rows show ON/OFF. The value widget is
+ *  right-aligned within each row; ←/→ adjust the highlighted row (see MenuManager). */
+export function renderSettings(ctx: CanvasRenderingContext2D, v: MenuView): void {
+  const lay = settingsLayout(v.settingsCursor);
+  drawWindow(ctx, lay.winX, lay.winY, lay.winW, lay.winH, MENU_STYLE);
+  for (const r of lay.rows) {
+    const row = SETTINGS_ROWS[r.index];
+    if (!row) continue;
+    if (r.index === v.settingsCursor) drawCursor(ctx, r.x, r.y + 3);
+    drawText(ctx, row.label, r.x + CURSOR_W, r.y, FONT_ID);
+    const rowRight = r.x + r.w;
+    if (row.kind === 'slider') {
+      const val = getSlider(row.key);
+      const pct = `${Math.round(val * 100)}%`;
+      const pctW = measureText('100%', FONT_ID); // fixed width so the bar doesn't jitter
+      const pctX = rowRight - pctW;
+      drawText(ctx, pct, rowRight - measureText(pct, FONT_ID), r.y, FONT_ID);
+      const barX = pctX - 6 - SETTINGS_BAR_W;
+      const barH = 5;
+      const barY = r.y + Math.floor((FONT_LINE_HEIGHT - barH) / 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.18)';
+      ctx.fillRect(barX, barY, SETTINGS_BAR_W, barH);
+      ctx.fillStyle = '#aebbd6';
+      ctx.fillRect(barX, barY, Math.round(SETTINGS_BAR_W * val), barH);
+    } else {
+      const on = getToggle(row.key);
+      const text = on ? 'ON' : 'OFF';
+      drawText(ctx, text, rowRight - measureText(text, FONT_ID), r.y, FONT_ID);
+    }
+  }
+  drawScrollbar(ctx, lay.scroll);
 }
 
 export function renderMessage(ctx: CanvasRenderingContext2D, v: MenuView): void {

@@ -335,6 +335,11 @@ export function setMusicVolume(v: number): void {
   applyVolume();
 }
 
+/** Current BGM volume (0..1), for the Settings slider. */
+export function getMusicVolume(): number {
+  return volume;
+}
+
 function applyVolume(): void {
   const v = muted ? 0 : volume;
   if (gainNode) gainNode.gain.value = v;
@@ -372,6 +377,9 @@ const activeSfxSources = new Set<AudioBufferSourceNode>();
 // SFX have their own mute, separate from music: the editor force-mutes MUSIC
 // while authoring, but a door's SFX still needs to audition when you pick it.
 let sfxMuted = false;
+// Master SFX volume (0..1), driven by the Settings slider. Scales the whole sfx
+// bus; per-shot authored volumes (playSfx's `vol`) ride on top of it.
+let sfxVolume = 1;
 
 export function setSfxMuted(m: boolean): void {
   sfxMuted = m;
@@ -379,6 +387,17 @@ export function setSfxMuted(m: boolean): void {
 
 export function isSfxMuted(): boolean {
   return sfxMuted;
+}
+
+/** Current SFX master volume (0..1), for the Settings slider. */
+export function getSfxVolume(): number {
+  return sfxVolume;
+}
+
+/** Set the SFX master volume (0..1). Applies to the shared sfx bus immediately. */
+export function setSfxVolume(v: number): void {
+  sfxVolume = Math.max(0, Math.min(1, v));
+  if (sfxGain) sfxGain.gain.value = sfxVolume;
 }
 
 async function loadSfx(id: string): Promise<AudioBuffer | null> {
@@ -412,7 +431,7 @@ export function playSfx(id: string | undefined | null, vol = 1): void {
   const ctx = audioContext;
   if (!sfxGain) {
     sfxGain = ctx.createGain();
-    sfxGain.gain.value = 1;
+    sfxGain.gain.value = sfxVolume; // honor the Settings master SFX volume
     sfxGain.connect(ctx.destination);
   }
   const v = Math.max(0, Math.min(1, vol));
@@ -503,7 +522,7 @@ export function playSfxAt(id: string | undefined | null, x: number, y: number, v
   const ctx = audioContext;
   if (!sfxGain) {
     sfxGain = ctx.createGain();
-    sfxGain.gain.value = 1;
+    sfxGain.gain.value = sfxVolume; // honor the Settings master SFX volume
     sfxGain.connect(ctx.destination);
   }
   void loadSfx(id).then((buf) => {

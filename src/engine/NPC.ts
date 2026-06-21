@@ -1,8 +1,14 @@
 /**
  * NPC — a world character or prop placed from the ROM's sprite tables.
  *
- * kind "prop": inert scenery (trash cans, signs, present boxes) — never
- * moves, never gets a health bar.
+ * kind "prop": inert scenery (signs, furniture, hotspots) — never moves,
+ * never gets a health bar.
+ *
+ * kind "gift": an item-container you check/open (presents, trash cans, jars,
+ * crates, boxes, baskets). Behaves exactly like a `prop` for collision and
+ * rendering, but is distinguished so the editor labels it and the open/grant
+ * flow (see Gifts.ts) is obvious. Contents + identity come from the gift
+ * catalog (gifts.json), keyed by placementKey — not from this kind.
  *
  * kind "person": SERVER-AUTHORITATIVE. The wander/glance life AI runs in
  * server/npcSim.js so every client sees identical positions and animation;
@@ -22,7 +28,7 @@
 import { Entity } from './Entity';
 import { Direction, Pose } from '../types';
 
-export type NPCKind = 'person' | 'prop' | 'enemy' | 'car';
+export type NPCKind = 'person' | 'prop' | 'enemy' | 'car' | 'gift';
 
 // EarthBound's telephones — talking to one calls Dad to save instead of
 // showing check text. Sprite groups: 215/216 (overworld phones), 412/427
@@ -74,11 +80,12 @@ export class NPC extends Entity {
   placementKey: string | null = null;
 
   /**
-   * Gift (present box) state — set by NPCManager via Gifts.tagGift when this is
-   * a sprite-195 prop with a catalog entry. `giftItem` is the item inside (null
-   * = unresolved special), `giftRomFlag` the ROM Event Flag (its identity, →
-   * per-player flag). `giftOpenedAt` is the epoch-ms the open→fade started (0 =
-   * unopened); set by Gifts.beginGiftOpen on the server's confirmation.
+   * Gift (item-container) state — set by NPCManager via Gifts.tagGift when this
+   * placement has a catalog entry (any container: present, trash can, jar, …).
+   * `giftItem` is the item inside (null = unresolved special), `giftRomFlag` the
+   * ROM Event Flag (its identity, → per-player flag). `giftOpenedAt` is the
+   * epoch-ms the container was opened (0 = unopened); set by Gifts.beginGiftOpen
+   * on the server's confirmation, which also flips it to its open North frame.
    */
   giftItem: number | null | undefined = undefined;
   giftRomFlag: number | undefined = undefined;

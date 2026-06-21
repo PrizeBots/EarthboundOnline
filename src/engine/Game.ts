@@ -53,6 +53,9 @@ import {
 import {
   connect,
   sendPosition,
+  sendInput,
+  sendUseDoor,
+  sendEditorTeleport,
   sendEquip,
   sendAttack,
   sendWarpState,
@@ -98,6 +101,7 @@ import {
   disarmCharSelectAudioUnlock,
   playSfx,
 } from './MusicManager';
+import { initSettings } from './Settings';
 import {
   loadCharacterSelect,
   updateCharacterSelect,
@@ -120,6 +124,7 @@ import {
   isMenuOpen,
   renderMenu,
   renderHotbarOverlay,
+  renderMoneyOverlay,
   triggerHotbarSlot,
   setHotbar,
   autoHotbarNewItems,
@@ -177,7 +182,7 @@ import { setDrops, addDrop, removeDrop } from './DropManager';
 import { playEventSfx, loadSfxEvents } from './SfxEvents';
 import { loadCombatJuice } from './CombatJuice';
 import { setGoods } from './Inventory';
-import { setMoney, setBank } from './Wallet';
+import { setMoney, setBank, formatMoney } from './Wallet';
 import {
   RemotePlayer,
   CharacterAppearance,
@@ -493,6 +498,7 @@ export class Game {
     // mirror optimistically (so the screen reflects it at once), set the held
     // sprite for a weapon change, and tell the server (which applies the
     // equipped offense/defense to combat and echoes back the authoritative set).
+    initSettings(); // apply saved BGM/SFX volumes to the audio engine
     initMenu(getKeySet(), {
       getEquipped: (slot) => getEquipped(slot),
       equip: (slot, id) => {
@@ -562,6 +568,14 @@ export class Game {
             const rp = this.remotePlayers.get(id);
             if (rp) rp.pk = pk;
           }
+        },
+        // Server-authoritative position for OUR player: reconcile prediction.
+        onPos: (x, y, _direction, _frame, seq) => {
+          this.player.reconcile(x, y, seq);
+        },
+        // Server-authoritative door warp landed: jump our prediction to the dest.
+        onWarp: (x, y) => {
+          this.player.warpTo(x, y);
         },
         onPlayerJoin: (player) => {
           this.remotePlayers.set(player.id, player);
@@ -673,10 +687,12 @@ export class Game {
         },
         onLoot: (loot) => {
           // We picked something up — float a gold toast off the player.
-          const isItem = typeof loot.money !== 'number';
-          const label = isItem ? `Found ${loot.name || 'item'}!` : `Got $${loot.money}`;
+          const label =
+            typeof loot.money === 'number'
+              ? `Got $${formatMoney(loot.money)}`
+              : `Found ${loot.name || 'item'}!`;
           spawnLootText(this.player.x, this.player.y, label);
-          if (isItem) playEventSfx('get-item'); // grabbed an item off the ground
+          if (typeof loot.money !== 'number') playEventSfx('get-item'); // grabbed an item off the ground
         },
         onNotice: (text) => {
           if (text) spawnNoticeText(this.player.x, this.player.y, text);
@@ -1308,11 +1324,16 @@ export class Game {
     }
   }
 
-  private startTransition(door: DoorData, style: 'fade' | 'swirl' = 'fade') {
+  private startTransition(door: DoorData, style: 'fade' | 'swirl' = 'fade', serverDoor = false) {
     this.transitioning = true;
     this.transitionAlpha = 0;
     this.transitionStyle = style;
     this.pendingDoor = door;
+    // A real walk-through door: ask the server to warp us authoritatively (it
+    // validates we're on the door + uses the door's OWN dest). We're still on the
+    // trigger right now, so the server confirms. Escalator floor-exits and
+    // server-initiated event warps don't go through this (serverDoor=false).
+    if (serverDoor) sendUseDoor();
     // Prefetch the destination's visible sectors NOW, during the fade-out — so by
     // the time the screen is black the tiles are usually already in, and we fade
     // straight back in instead of stalling on black. The loading bar (if the load
@@ -1343,9 +1364,9 @@ export class Game {
         this.pendingDoor = null;
         this.waitingForSectors = true;
 
-        // Move player to destination area so the right tiles are in view
-        this.player.x = door.destX;
-        this.player.y = door.destY;
+        // Move player to destination area so the right tiles are in view. warpTo
+        // also drops stale pre-warp predicted inputs so they don't replay here.
+        this.player.warpTo(door.destX, door.destY);
 
         // Wait on the prefetch started at fade-out — usually already resolved, so
         // this continues immediately (no black stall). The wider neighborhood
@@ -1447,9 +1468,11 @@ export class Game {
    */
   async debugTeleport(x: number, y: number): Promise<void> {
     if (this.phase !== 'playing') return;
-    this.player.x = x;
-    this.player.y = y;
+    this.player.warpTo(x, y); // set pos + drop stale predicted inputs
     this.player.moving = false;
+    // Tell the server this is a deliberate reposition (not a camera pan), so it
+    // persists as the authoritative spot when we exit the editor.
+    sendEditorTeleport(x, y);
     await this.loadNearbySectors();
     this.updateRoomBounds(x, y);
     this.camera.follow(x, y);
@@ -1658,11 +1681,11 @@ export class Game {
       if (!door) this.doorSuppressed = false;
     } else if (door) {
       if (this.player.moving) {
-        this.startTransition(door);
+        this.startTransition(door, 'fade', true); // real door → server-validated warp
         return;
       }
       if (isActionPressed()) {
-        this.startTransition(door);
+        this.startTransition(door, 'fade', true);
         return;
       }
     }
@@ -1670,18 +1693,11 @@ export class Game {
     // Update music based on current sector
     updateMusic(this.player.x, this.player.y);
 
-    // Send position to server every 3 frames
-    this.sendTimer++;
-    if (this.sendTimer >= 3) {
-      this.sendTimer = 0;
-      sendPosition(
-        this.player.x,
-        this.player.y,
-        this.player.direction,
-        this.player.frame,
-        this.player.pose
-      );
-    }
+    // Server-authoritative movement: send this frame's INPUT (never a position).
+    // The server simulates it and ACKs via `pos` → reconcile. Idle frames send
+    // nothing (the server holds position).
+    const inp = this.player.lastInputToSend;
+    if (inp) sendInput(inp.seq, inp.dx, inp.dy);
 
     if (!this.loadingPromise) {
       this.loadingPromise = this.loadNearbySectors().finally(() => {
@@ -1930,7 +1946,8 @@ export class Game {
       }
       // An item-container (present/trash can/jar…): ask the server to open it
       // (server grants the item once per player and acks 'gift_opened', which
-      // flips a present to its open frame). Already-opened → nothing to do.
+      // flips the container to its lidless/empty open frame). Already-opened
+      // containers stay visibly open, so there's nothing to do — don't re-ping.
       if (target.isGift) {
         if (target.placementKey && !giftOpened(target)) {
           sendOpenGift(target.placementKey);
@@ -2198,6 +2215,11 @@ export class Game {
       renderHotbarOverlay(this.ctx);
       renderXpBar(this.ctx); // top-middle progress to next level
     }
+
+    // Always-on money window (top-right), when the player enables it in Settings.
+    // Hidden while the menu is open (its own screens draw it) and while the editor
+    // is up (the editor owns the screen — no game HUD over it).
+    if (!isMenuOpen() && !this.editor?.isActive()) renderMoneyOverlay(this.ctx);
 
     // Draw menu on top of game world (including during transitions)
     renderMenu(this.ctx);

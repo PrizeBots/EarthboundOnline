@@ -29,3 +29,17 @@ export function setBank(amount: number): void {
 export function getBank(): number {
   return bank;
 }
+
+/** Format a money value with thousands separators for legibility (no `$` — the
+ *  caller adds it): 1234567 → "1,234,567". Rounds to a whole number. Used by
+ *  EVERY money display so balances/prices/loot read consistently. */
+export function formatMoney(n: number): string {
+  const v = Math.round(n);
+  const sign = v < 0 ? '-' : '';
+  return (
+    sign +
+    Math.abs(v)
+      .toString()
+      .replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+  );
+}

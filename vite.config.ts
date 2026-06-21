@@ -31,6 +31,7 @@ const OVERRIDE_ALLOW = new Set([
   'custom_items.json',
   'custom_sprites.json', // Source Assets — standalone custom entity sprite groups (id/name/src refs, no pixels)
   'rooms.json',
+  'map_tiles.json', // Room Builder — per-map-cell tile-arrangement override for editing ANY room (pure indices)
   'stamps.json', // Room Builder sampler — reusable tile-stamp library (pure arrangement indices)
   'custom_tiles.json', // Room Builder pixel editor — author-drawn 8x8 RGBA tiles for custom rooms
   'sprite_frames.json',

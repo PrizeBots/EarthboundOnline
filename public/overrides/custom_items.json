@@ -1,8 +1,20 @@
 {
   "items": [
     {
-      "id": "custom-1",
+      "id": "c001",
       "name": "cash"
+    },
+    {
+      "id": "c002",
+      "name": "Baseball Bat"
+    },
+    {
+      "id": "c003",
+      "name": "Frying Pan"
+    },
+    {
+      "id": "c004",
+      "name": "Yo-yo"
     }
   ]
 }

@@ -38,6 +38,7 @@ import { FolderDesktop, FolderDesktopStore } from '../FolderDesktop';
 import { openSpriteEditor } from '../../engine/spriteEditor';
 import { registerSaveHandler } from '../registry';
 import { saveOverride, loadOverride } from '../saveOverride';
+import { formatMoney } from '../../engine/Wallet';
 
 // Status ids selectable in the inflict editor — KEEP IN SYNC with server/status.js
 // STATUS (the wire-stable strings the inflict model + status engine use).
@@ -442,7 +443,7 @@ class ItemManagerTool implements EditorTool {
       this.setOv(id, 'cost', v)
     );
     const sell = document.createElement('div');
-    sell.textContent = `sell: $${sellPrice(id)}  (half of buy)`;
+    sell.textContent = `sell: $${formatMoney(sellPrice(id))}  (half of buy)`;
     sell.style.cssText = 'color:#667;font-size:10px;margin-left:62px;';
     this.statsEl.appendChild(sell);
 

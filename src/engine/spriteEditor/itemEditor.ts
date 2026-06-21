@@ -21,6 +21,7 @@ import {
   loadCustomItems,
   addCustomItem,
   customItemsDoc,
+  itemMirrors,
 } from '../Items';
 import { allItems, loadShops } from '../Shop';
 import {
@@ -138,6 +139,8 @@ export function loadItemIntoBuffer(id: string): void {
   seedFrameBuffers(id);
   commitItemEdit(); // push all frames as live overrides so the previews animate
   S.walkerItem = id; // show it on the test-pane character immediately
+  S.mirrorLR = itemMirrors(id); // reflect this item's mirror flag on the toggle
+  if (S.mirrorToggle) S.mirrorToggle.checked = S.mirrorLR;
   if (S.itemNote)
     S.itemNote.textContent = `Editing ${getItemName(id) ?? id} — frame ${S.itemEditFrame + 1}/${ITEM_FRAMES}`;
   renderItemThumb();
@@ -188,6 +191,7 @@ export function persistItem(): void {
     frames,
     ...(grip ? { grip } : {}),
     ...(offset ? { offset } : {}),
+    ...(existing?.mirror === false ? { mirror: false } : {}), // off = don't flip with facing
   });
   void postOverride('item_sprites.json', buildItemSpriteDoc()).catch(() => {
     if (S.itemNote) S.itemNote.textContent = 'Item save failed (dev save channel?)';

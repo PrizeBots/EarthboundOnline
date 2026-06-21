@@ -35,7 +35,7 @@ REPO_ROOT = TOOLS_DIR.parent  # scripts expect to run from the repo root
 
 
 def main() -> int:
-    print(f"== EarthBound Online extraction pipeline ({len(STEPS)} steps) ==")
+    print(f"== Zexonyte Online extraction pipeline ({len(STEPS)} steps) ==")
     for i, step in enumerate(STEPS, 1):
         script = TOOLS_DIR / step
         if not script.exists():

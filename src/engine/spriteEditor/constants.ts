@@ -110,8 +110,12 @@ export const MIRROR: [string, string][] = [
   ['NE', 'NW'],
   ['SE', 'SW'],
 ];
-// Canonical (editable + shown) directions.
+// Canonical (editable + shown) directions when left↔right mirroring is ON.
 export const CANON_DIRS = ['N', 'S', 'E', 'NE', 'SE'];
+// All 8 directions, shown when a group opts OUT of mirroring (each west cell is
+// authored independently). Ordered so each east cell pairs with its west partner
+// on the same strip row.
+export const ALL_DIRS = ['N', 'S', 'E', 'W', 'NE', 'SE', 'SW', 'NW'];
 
 // Per-block layout: which sheet rows it occupies and the label prefix.
 export const BLOCKS = [
@@ -165,12 +169,15 @@ export function setSrc(set: DisplaySet): { x: number; y: number; w: number; h: n
     h: set.single ? set.single.h : FRAME_H,
   };
 }
-export const DISPLAY_ROWS: DisplaySet[][] = (() => {
+// Build the strip's pose rows for a given direction set (canonical vs all-8).
+// Walk / attack / hurt each lay their directions two-per-row; climb + hero poses
+// are appended once regardless of the direction set.
+function buildDisplayRows(dirs: string[]): DisplaySet[][] {
   const rows: DisplaySet[][] = [];
   const addBlock = (prefix: string, off: number) => {
-    for (let i = 0; i < CANON_DIRS.length; i += 2) {
+    for (let i = 0; i < dirs.length; i += 2) {
       rows.push(
-        CANON_DIRS.slice(i, i + 2).map((d) => ({
+        dirs.slice(i, i + 2).map((d) => ({
           label: prefix + d,
           row: DIR_BASE[d].row + off,
           col: DIR_BASE[d].col,
@@ -191,7 +198,10 @@ export const DISPLAY_ROWS: DisplaySet[][] = (() => {
     { label: 'lay E', row: LAYING_ROW, col: 0, single: { w: 24, h: 16 } },
   ]);
   return rows;
-})();
+}
+// Mirroring ON: edit only the east cells. OFF: every direction is editable.
+export const DISPLAY_ROWS: DisplaySet[][] = buildDisplayRows(CANON_DIRS);
+export const DISPLAY_ROWS_FULL: DisplaySet[][] = buildDisplayRows(ALL_DIRS);
 
 // User-defined frames (Sheet panel): named rectangles carved from the sheet. They
 // can sit below/right of the base pose rows; the live sheet canvas grows to fit.

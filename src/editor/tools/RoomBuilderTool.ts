@@ -5,6 +5,7 @@ import {
   getSectorForTile,
   getOverworldHeightTiles,
   buildCustomRoomBand,
+  MapTilesOverride,
 } from '../../engine/MapManager';
 import { drawTile, drawMinitile, loadAtlas } from '../../engine/TilesetManager';
 import { COMPOSITE_BASE, isComposite, packRef, unpackRef } from '../../engine/CompositeTiles';
@@ -21,6 +22,14 @@ import { primeJSONCache } from '../../engine/AssetLoader';
 import { TILE_SIZE, MINITILE_SIZE, SECTOR_TILES_X, SECTOR_TILES_Y, SectorMeta } from '../../types';
 import { saveOverride, loadOverride } from '../saveOverride';
 import { loadWorldDoc, saveWorldDoc } from '../../engine/Auth';
+import {
+  addFurnitureSprite,
+  customSpritesDoc,
+  CustomSpriteTiles,
+} from '../../engine/CustomSprites';
+import { setEntityCol } from '../../engine/NPCManager';
+import { EntityCol, EntityPropsOverride } from '../../engine/EntityStats';
+import { placementTool } from './PlacementTool';
 
 // Room Builder — author CUSTOM rooms that don't exist in the ROM, stamped into an
 // "interiors band" below the overworld (overrides/rooms.json; the ROM tiles.json
@@ -134,6 +143,14 @@ class RoomBuilderTool implements EditorTool {
   private selUnit = TILE_SIZE; // 32 for tile sampling, 8 for minitile sampling
   private sampleMini = false; // the Sample button captures 8x8 minitiles
 
+  // "Edit map" mode — paint/erase/stamp directly onto ANY room's tiles (not just
+  // the custom band), persisted to overrides/map_tiles.json. Off by default so a
+  // stray click can't repaint the world.
+  private editMap = false;
+  private mapTilesOv: MapTilesOverride = { version: 1, cells: {}, composites: {} };
+  private mapOvBefore: MapTilesOverride | null = null; // undo snapshot for a stroke
+  private editMapBtn: HTMLButtonElement | null = null;
+
   // paint-stroke bookkeeping
   private hoverTile: { tx: number; ty: number } | null = null;
   private hoverMini: { mx: number; my: number } | null = null;
@@ -190,6 +207,7 @@ class RoomBuilderTool implements EditorTool {
     this.sel = null;
     this.hoverTile = null;
     this.resizing = null;
+    this.mapOvBefore = null;
   }
 
   private onContextMenu = (e: MouseEvent): void => {
@@ -230,6 +248,14 @@ class RoomBuilderTool implements EditorTool {
       if (sdoc?.folders) this.folders = sdoc.folders;
       const rdoc = await loadOverride<CustomRoomsDoc>('rooms.json');
       if (rdoc?.rooms) this.rooms = rdoc.rooms;
+
+      const mdoc = await loadOverride<MapTilesOverride>('map_tiles.json');
+      if (mdoc?.cells)
+        this.mapTilesOv = {
+          version: 1,
+          cells: { ...mdoc.cells },
+          composites: { ...(mdoc.composites ?? {}) },
+        };
 
       // Default the palette to the first room's style so it's relevant on open.
       if (this.rooms[0] && this.palTs === 0 && this.palPal === 0) {
@@ -310,7 +336,8 @@ class RoomBuilderTool implements EditorTool {
       this.lastPaintedKey = '';
       this.strokeDirty = false;
       this.warnedStyle = false;
-      this.strokeBefore = this.cloneRooms();
+      if (this.editMap) this.mapOvBefore = this.cloneMapOv();
+      else this.strokeBefore = this.cloneRooms();
       this.paintHere(p);
       return true;
     }
@@ -371,6 +398,20 @@ class RoomBuilderTool implements EditorTool {
       return;
     }
     if (this.painting) {
+      if (this.editMap) {
+        if (this.strokeDirty && this.mapOvBefore) {
+          const before = this.mapOvBefore;
+          const after = this.cloneMapOv();
+          this.shell!.run({
+            label: this.erasing ? 'Erase map tiles' : 'Paint map tiles',
+            do: () => void this.applyMapOvState(after),
+            undo: () => void this.applyMapOvState(before),
+          });
+        }
+        this.mapOvBefore = null;
+        this.strokeDirty = false;
+        return;
+      }
       if (this.strokeDirty && this.strokeBefore) {
         const before = this.strokeBefore;
         const after = this.cloneRooms();
@@ -591,6 +632,20 @@ class RoomBuilderTool implements EditorTool {
   // ── minitile (sub-tile) painting ───────────────────────────────────────────
 
   private paintHere(p: WorldPoint): void {
+    if (this.editMap) {
+      if (this.isMiniBrush()) {
+        if (!this.warnedStyle) {
+          this.shell!.toast(
+            'Minitile stamps only paint into custom rooms — use a 32px tile/stamp',
+            true
+          );
+          this.warnedStyle = true;
+        }
+        return;
+      }
+      this.paintMapCell(Math.floor(p.x / TILE_SIZE), Math.floor(p.y / TILE_SIZE));
+      return;
+    }
     if (this.isMiniBrush()) {
       this.paintMinis(Math.floor(p.x / MINITILE_SIZE), Math.floor(p.y / MINITILE_SIZE));
     } else {
@@ -728,6 +783,108 @@ class RoomBuilderTool implements EditorTool {
     }
   }
 
+  // ── edit map (per-cell tile override on ANY room) ──────────────────────────
+
+  private toggleEditMap(): void {
+    this.editMap = !this.editMap;
+    if (this.editMap) {
+      // Default the brush palette to the sector under the cursor so painted tiles
+      // match the room's style without garbling (mismatched tileset = garbage).
+      const h = this.hoverTile;
+      const sec = h ? getSectorForTile(h.tx, h.ty) : null;
+      if (sec) {
+        this.palTs = sec.tilesetId;
+        this.palPal = sec.paletteId;
+        void this.renderPalette();
+      }
+      this.setPainting(true);
+      this.shell?.toast('Edit map ON — paint/erase tiles in ANY room (saved to map_tiles.json)');
+    } else {
+      this.setPainting(false);
+      this.shell?.toast('Edit map OFF');
+    }
+    this.syncEditMapBtn();
+  }
+
+  private syncEditMapBtn(): void {
+    const b = this.editMapBtn;
+    if (!b) return;
+    b.textContent = this.editMap ? 'Edit map: ON (any room)' : 'Edit map: off';
+    b.style.background = this.editMap ? '#3d2a10' : '#1d2530';
+    b.style.borderColor = this.editMap ? '#e8a33d' : '#3a4a5a';
+    b.style.color = this.editMap ? '#ffd23e' : '#cde';
+  }
+
+  /** Paint/erase ONE map cell into the tile override (with the brush's top-left at
+   *  tx,ty for a stamp). A painted arrangement is interpreted with the target
+   *  cell's own sector tileset/palette, so the brush must match it. */
+  private paintMapCell(tx: number, ty: number): void {
+    const key = `${tx},${ty}`;
+    if (key === this.lastPaintedKey) return;
+    this.lastPaintedKey = key;
+    const sec = getSectorForTile(tx, ty);
+    if (!sec) return; // off the map
+
+    this.mapTilesOv.cells = this.mapTilesOv.cells ?? {};
+    if (this.erasing) {
+      if (this.mapTilesOv.cells[key] !== undefined) {
+        delete this.mapTilesOv.cells[key];
+        this.strokeDirty = true;
+      }
+    } else {
+      const foot = this.brushFoot();
+      if (!foot) return;
+      if (foot.tilesetId !== sec.tilesetId || foot.paletteId !== sec.paletteId) {
+        if (!this.warnedStyle) {
+          this.shell!.toast(
+            `Cell is ts${sec.tilesetId}/pal${sec.paletteId}; brush is ts${foot.tilesetId}/pal${foot.paletteId}. Match the room's style (Tiles tab steppers / sample from this room).`,
+            true
+          );
+          this.warnedStyle = true;
+        }
+        return;
+      }
+      for (let ly = 0; ly < foot.h; ly++) {
+        for (let lx = 0; lx < foot.w; lx++) {
+          const cx = tx + lx;
+          const cy = ty + ly;
+          const s = getSectorForTile(cx, cy);
+          // Only paint cells whose sector matches the brush — a stamp straddling
+          // two tilesets won't garble the neighbor.
+          if (!s || s.tilesetId !== foot.tilesetId || s.paletteId !== foot.paletteId) continue;
+          this.mapTilesOv.cells[`${cx},${cy}`] = foot.tiles[ly * foot.w + lx] ?? 0;
+          this.strokeDirty = true;
+        }
+      }
+    }
+    if (!this.strokeDirty) return;
+    primeJSONCache('/overrides/map_tiles.json', this.mapTilesOv);
+    void buildCustomRoomBand();
+  }
+
+  private cloneMapOv(): MapTilesOverride {
+    return {
+      version: 1,
+      cells: { ...(this.mapTilesOv.cells ?? {}) },
+      composites: { ...(this.mapTilesOv.composites ?? {}) },
+    };
+  }
+
+  private async applyMapOvState(snapshot: MapTilesOverride): Promise<void> {
+    this.mapTilesOv = {
+      version: 1,
+      cells: { ...(snapshot.cells ?? {}) },
+      composites: { ...(snapshot.composites ?? {}) },
+    };
+    primeJSONCache('/overrides/map_tiles.json', this.mapTilesOv);
+    await buildCustomRoomBand();
+    try {
+      await saveOverride('map_tiles.json', this.mapTilesOv);
+    } catch (e) {
+      this.shell?.toast(`Save failed: ${e}`, true);
+    }
+  }
+
   // ── overlay ──────────────────────────────────────────────────────────────
 
   drawOverlay(ctx: CanvasRenderingContext2D, camera: Camera): void {
@@ -844,13 +1001,22 @@ class RoomBuilderTool implements EditorTool {
       const room = this.roomAt(ox, oy);
       const w = this.erasing ? 1 : (foot?.w ?? 1);
       const h = this.erasing ? 1 : (foot?.h ?? 1);
-      const ok =
-        !!room &&
-        (this.erasing ||
-          (!!foot &&
-            (room.tiles.every((t) => !t) ||
-              (room.sector.tilesetId === foot.tilesetId &&
-                room.sector.paletteId === foot.paletteId))));
+      // Edit-map mode targets ANY cell; "ok" = the brush matches the cell's
+      // sector tileset/palette. Otherwise the target must be a custom room.
+      const editSec = this.editMap ? getSectorForTile(ox, oy) : null;
+      const ok = this.editMap
+        ? this.erasing
+          ? !!editSec
+          : !!foot &&
+            !!editSec &&
+            editSec.tilesetId === foot.tilesetId &&
+            editSec.paletteId === foot.paletteId
+        : !!room &&
+          (this.erasing ||
+            (!!foot &&
+              (room.tiles.every((t) => !t) ||
+                (room.sector.tilesetId === foot.tilesetId &&
+                  room.sector.paletteId === foot.paletteId))));
       if (foot) {
         ctx.save();
         ctx.globalAlpha = 0.6;
@@ -926,6 +1092,68 @@ class RoomBuilderTool implements EditorTool {
     this.refreshLibrary();
     this.setBrushStamp(stamp);
     this.shell!.toast(`Saved ${w}x${h} stamp — pick a room and paint`);
+  }
+
+  /** Turn the current tile selection into a movable FURNITURE prop: mint a
+   *  tile-region custom sprite (by-reference, no pixels), give it a solid
+   *  collision box (the full footprint), persist both the art metadata and the
+   *  col, then hand off to the Placement editor ready to drop it. */
+  private async saveFurniture(): Promise<void> {
+    if (!this.sel || this.sel.w < 1 || this.sel.h < 1) {
+      this.shell!.toast('Drag a box on the map first (Sample 32)', true);
+      return;
+    }
+    if (this.selUnit !== TILE_SIZE) {
+      this.shell!.toast('Furniture needs a tile selection — use "Sample 32"', true);
+      return;
+    }
+    const { tx, ty, w, h } = this.sel;
+    const name = window.prompt('Furniture name:', `Furniture ${this.stamps.length + 1}`)?.trim();
+    if (!name) return;
+
+    const style = this.sampleStyle(tx, ty, w, h, false);
+    const tiles: CustomSpriteTiles = {
+      tilesetId: style.tilesetId,
+      paletteId: style.paletteId,
+      w,
+      h,
+      bg: this.readRegion(tx, ty, w, h),
+    };
+
+    let id: number;
+    try {
+      id = await addFurnitureSprite(name, tiles);
+    } catch (e) {
+      this.shell!.toast(`Furniture create failed: ${e}`, true);
+      return;
+    }
+
+    // Solid collision box = the full footprint (centered on x, feet at the bottom).
+    // Tune it later per sprite in the Entity Manager.
+    const col: EntityCol = { w: w * TILE_SIZE, h: h * TILE_SIZE, offX: 0, offY: 0 };
+    setEntityCol(id, col); // live → solid + drawn in the overlay immediately
+
+    try {
+      await saveOverride('custom_sprites.json', customSpritesDoc());
+      const entDoc = (await loadOverride<{
+        version?: number;
+        entities?: Record<string, EntityPropsOverride>;
+      }>('entities.json')) ?? { version: 1, entities: {} };
+      const entities: Record<string, EntityPropsOverride> = entDoc.entities ?? {};
+      entities[String(id)] = { ...(entities[String(id)] ?? {}), col };
+      await saveOverride('entities.json', { version: 1, entities });
+    } catch (e) {
+      this.shell!.toast(`Save failed: ${e}`, true);
+      return;
+    }
+
+    this.selecting = false;
+    this.sel = null;
+    this.updateStatus();
+    // Land in the Placement editor ready to drop it as a prop.
+    placementTool.requestPlaceProp(id);
+    this.shell!.openTool('placement');
+    this.shell!.toast(`Saved furniture "${name}" — click the map to place it`);
   }
 
   private async copySelection(): Promise<void> {
@@ -1423,6 +1651,8 @@ class RoomBuilderTool implements EditorTool {
     this.mkBtn('Sample 8', () => this.startSample(true), sampRow, true).title =
       'Sample minitiles (8px — quarter-tile and finer)';
     this.mkBtn('→ Stamp', () => void this.saveStamp(), sampRow);
+    this.mkBtn('→ Furniture', () => void this.saveFurniture(), sampRow).title =
+      'Turn the sampled tiles into a movable, solid prop you place in the Placement editor';
     this.mkBtn('+ Folder', () => void this.createFolder(), sampRow).title =
       'Create a folder, then drag stamps into it';
     this.mkBtn('↻', () => void this.reloadData(), sampRow).title = 'Reload stamps from the DB';
@@ -1435,6 +1665,15 @@ class RoomBuilderTool implements EditorTool {
 
     this.paintBtn = this.mkBtn('Paint: off', () => this.setPainting(!this.painting), this.panel);
     this.paintBtn.style.width = '100%';
+
+    // Edit-map toggle: when ON, the brush/erase/stamp paints onto ANY room's
+    // tiles (overrides/map_tiles.json) instead of a custom band room — for
+    // rearranging baked furniture & redecorating existing rooms.
+    this.editMapBtn = this.mkBtn('Edit map: off', () => this.toggleEditMap(), this.panel);
+    this.editMapBtn.style.width = '100%';
+    this.editMapBtn.title =
+      'Paint/erase/stamp directly onto ANY room (saves to map_tiles.json). Match the room tileset.';
+    this.syncEditMapBtn();
 
     // ── ROOMS section ──
     this.panel.appendChild(this.mkSection('ROOMS'));
@@ -1634,9 +1873,10 @@ class RoomBuilderTool implements EditorTool {
         ? `Selected ${this.sel.w}x${this.sel.h} — Sample→Stamp or Copy→Room`
         : 'Drag a box on the map…';
     } else if (this.painting) {
+      const where = this.editMap ? 'ANY room (map edit)' : 'a custom room';
       this.statusEl.textContent = this.erasing
-        ? 'Erasing — click/drag inside a room'
-        : 'Painting — click/drag inside a room';
+        ? `Erasing — click/drag in ${where}`
+        : `Painting — click/drag in ${where}`;
     } else if (this.resizing) {
       this.statusEl.textContent = `Resizing → ${this.resizing.w}x${this.resizing.h}`;
     } else if (this.selectedRoom()) {

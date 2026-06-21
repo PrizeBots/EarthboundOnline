@@ -235,7 +235,7 @@ export function onTestMove(e: MouseEvent): void {
     if (off) {
       // Offsets store in canonical (right-facing) space; a flipped facing draws
       // mirrored, so a rightward screen drag moves canonical x the other way.
-      const dxs = isItemFlipped(S.walkerDir) ? -1 : 1;
+      const dxs = isItemFlipped(S.walkerDir, S.walkerItem) ? -1 : 1;
       setItemOffset(S.walkerItem, {
         x: Math.round(off.x + dxs * (lx - S.testPointer.lastLX)),
         y: Math.round(off.y + (ly - S.testPointer.lastLY)),

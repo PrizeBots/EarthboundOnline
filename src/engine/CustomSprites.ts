@@ -1,6 +1,7 @@
 import { loadImage } from './AssetLoader';
 import { registerCustomSprite, nextCustomGroupId, reserveCustomGroupId } from './SpriteManager';
 import { setSpriteNameOverride } from './SpriteNames';
+import { loadAtlas, drawTile, drawForegroundTile } from './TilesetManager';
 
 // Standalone custom sprite groups — entities minted from a ROM SOURCE asset
 // (Source Assets tool → "New Entity from this"). Unlike the character creator's
@@ -19,13 +20,29 @@ const SOURCE_BASE = '/assets/rom_sources/';
 // EB actors are <=32px; this leaves headroom for chunky battle sprites.
 const MAX_CELL = 64;
 
+/** Furniture art harvested from the map: a rectangle of tile-ARRANGEMENT ids
+ *  (pure index metadata — never pixels, so it's commit-safe and re-rendered from
+ *  the player's own extracted atlas at boot). Row-major, length w*h. A `null`
+ *  cell is transparent (so the cut can exclude the floor around the furniture).
+ *  Rendered from atlas `{tilesetId}_{paletteId}` — bg behind, fg in front. */
+export interface CustomSpriteTiles {
+  tilesetId: number;
+  paletteId: number;
+  w: number; // tiles wide (×32px)
+  h: number; // tiles tall (×32px)
+  bg: (number | null)[];
+  fg?: (number | null)[];
+}
+
 export interface CustomSpriteEntry {
   id: number;
   name: string;
   /** Path under /assets/rom_sources/, e.g. "BattleSprites/123.png" — the seed art
    *  (a by-reference pointer into the player's own extraction; the source of truth
-   *  until the entity is hand-edited). */
-  src: string;
+   *  until the entity is hand-edited). Optional: a `tiles` furniture cut has none. */
+  src?: string;
+  /** Furniture: a tile-arrangement region rendered from the atlas (by-reference). */
+  tiles?: CustomSpriteTiles;
   /** Authored pixel layer (PNG data URL) once edited in the Sprite Editor. When
    *  present this IS the art (already our own hand-painted pixels), so the entity
    *  no longer depends on the ROM source. Sized to the entity's frame (w×h). */
@@ -68,12 +85,49 @@ function buildSheet(src: CanvasImageSource, w: number, h: number): HTMLCanvasEle
   return sheet;
 }
 
+/** Render a furniture tile-region into a transparent canvas from the player's own
+ *  extracted atlas (by-reference). BG arrangements first, then FG on top. Empty
+ *  (null) cells stay transparent. Awaits the atlas load so the cut isn't blank. */
+async function renderTiles(t: CustomSpriteTiles): Promise<HTMLCanvasElement> {
+  await loadAtlas(t.tilesetId, t.paletteId);
+  const TILE = 32;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, t.w * TILE);
+  canvas.height = Math.max(1, t.h * TILE);
+  const ctx = canvas.getContext('2d')!;
+  ctx.imageSmoothingEnabled = false;
+  for (let i = 0; i < t.w * t.h; i++) {
+    const arr = t.bg[i];
+    if (arr == null) continue;
+    drawTile(ctx, t.tilesetId, t.paletteId, arr, (i % t.w) * TILE, Math.floor(i / t.w) * TILE);
+  }
+  // EB bakes BG+FG into one arrangement id, so the FG pass uses the same ids
+  // unless the cut authored a distinct fg layer. drawForegroundTile is a no-op
+  // for tilesets with no FG atlas, so this is always safe.
+  const fgArr = t.fg ?? t.bg;
+  for (let i = 0; i < t.w * t.h; i++) {
+    const arr = fgArr[i];
+    if (arr == null) continue;
+    drawForegroundTile(
+      ctx,
+      t.tilesetId,
+      t.paletteId,
+      arr,
+      (i % t.w) * TILE,
+      Math.floor(i / t.w) * TILE
+    );
+  }
+  return canvas;
+}
+
 /** Load this entry's current art: the authored png layer if present (already at
- *  frame size), else the seed source graphic from rom_sources. */
+ *  frame size), the furniture tile-region, else the seed source graphic. */
 export async function getCustomSpriteImage(id: number): Promise<HTMLImageElement> {
   const entry = entries.get(id);
   if (!entry) throw new Error(`No custom sprite ${id}`);
-  return entry.png ? loadDataUrlImage(entry.png) : loadImage(`${SOURCE_BASE}${entry.src}`);
+  if (entry.png) return loadDataUrlImage(entry.png);
+  if (entry.tiles) return loadDataUrlImage((await renderTiles(entry.tiles)).toDataURL());
+  return loadImage(`${SOURCE_BASE}${entry.src}`);
 }
 
 function loadDataUrlImage(dataUrl: string): Promise<HTMLImageElement> {
@@ -94,10 +148,21 @@ async function register(entry: CustomSpriteEntry): Promise<void> {
     const w = img.naturalWidth;
     const h = img.naturalHeight;
     registerCustomSprite(entry.id, buildSheet(img, w, h), w, h);
-  } else {
+  } else if (entry.tiles) {
+    // Furniture: render the tile region at native size (no cap — the cut chose it).
+    const canvas = await renderTiles(entry.tiles);
+    registerCustomSprite(
+      entry.id,
+      buildSheet(canvas, canvas.width, canvas.height),
+      canvas.width,
+      canvas.height
+    );
+  } else if (entry.src) {
     const img = await loadImage(`${SOURCE_BASE}${entry.src}`);
     const { w, h } = cellSize(img.naturalWidth, img.naturalHeight);
     registerCustomSprite(entry.id, buildSheet(img, w, h), w, h);
+  } else {
+    throw new Error(`Custom sprite ${entry.id} has no art source`);
   }
   setSpriteNameOverride(entry.id, entry.name);
 }
@@ -136,12 +201,15 @@ export async function loadCustomSprites(): Promise<void> {
     .then((r) => (r.ok ? (r.json() as Promise<CustomSpritesFile>) : null))
     .catch(() => null);
   for (const e of doc?.groups ?? []) {
-    if (!e || typeof e.id !== 'number' || !e.src) continue;
+    // Need an id and at least one art source (rom_sources path, furniture tiles,
+    // or an authored png layer).
+    if (!e || typeof e.id !== 'number' || (!e.src && !e.tiles && !e.png)) continue;
     reserveCustomGroupId(e.id); // keep the minter above persisted ids
     entries.set(e.id, {
       id: e.id,
       name: e.name ?? `Custom ${e.id}`,
-      src: e.src,
+      ...(e.src ? { src: e.src } : {}),
+      ...(e.tiles ? { tiles: e.tiles } : {}),
       ...(e.png ? { png: e.png } : {}),
     });
     try {
@@ -166,12 +234,28 @@ export async function addCustomSprite(name: string, src: string): Promise<number
   return id;
 }
 
+/**
+ * Mint a new FURNITURE sprite from a harvested tile-arrangement region (Furniture
+ * Cutter). Stores only arrangement ids (by-reference, commit-safe), registers the
+ * rendered art now, and returns the new sprite-group id. The caller persists the
+ * doc via saveOverride('custom_sprites.json') and may also author a `col` box in
+ * overrides/entities.json so the furniture is solid.
+ */
+export async function addFurnitureSprite(name: string, tiles: CustomSpriteTiles): Promise<number> {
+  const id = nextCustomGroupId();
+  const entry: CustomSpriteEntry = { id, name: name.trim() || `Furniture ${id}`, tiles };
+  await register(entry);
+  entries.set(id, entry);
+  return id;
+}
+
 /** All minted custom sprite-group ids (for Entity Manager enumeration). */
 export function customSpriteGroupIds(): number[] {
   return [...entries.keys()];
 }
 
-/** The persistable document (OUR metadata only — id/name/src, never pixels). */
+/** The persistable document (OUR metadata only — id/name + a src reference or
+ *  furniture tile-arrangement ids, never ROM pixels; png is our own art). */
 export function customSpritesDoc(): { version: number; groups: CustomSpriteEntry[] } {
   return { version: 1, groups: [...entries.values()] };
 }

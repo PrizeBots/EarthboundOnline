@@ -19,7 +19,9 @@ import {
   entityBaseline,
 } from '../../engine/NPCManager';
 import { NPCKind } from '../../engine/NPC';
-import type { EntityPropsOverride } from '../../engine/EntityStats';
+import { giftForKey } from '../../engine/Gifts';
+import type { EntityPropsOverride, CombatPersonality } from '../../engine/EntityStats';
+import { COMBAT_PERSONALITY_OPTIONS } from '../../engine/EntityStats';
 import { EntityPropsForm, PropFieldDesc } from '../components/EntityPropsForm';
 import { DoorOverrides, EditorDoor, getEditorDoorBase, loadDoors } from '../../engine/DoorManager';
 import { DOOR_SFX, DEFAULT_DOOR_SFX, normalizeDoorSfx } from '../../engine/DoorSfx';
@@ -83,7 +85,7 @@ interface NpcEntry {
 /** Normalize a placement's stored kind for the NPC tab (cars live in the
  *  traffic list, not here). Preserves person + enemy; everything else is a prop. */
 function npcKind(k: string | undefined): NPCKind {
-  return k === 'person' ? 'person' : k === 'enemy' ? 'enemy' : 'prop';
+  return k === 'person' ? 'person' : k === 'enemy' ? 'enemy' : k === 'gift' ? 'gift' : 'prop';
 }
 
 /** Shallow value-equality for sparse prop overrides (numeric/scalar fields). */
@@ -135,6 +137,11 @@ class PlacementTool implements EditorTool {
   private npcs: NpcEntry[] = [];
   private selNpc: NpcEntry | null = null;
   private placingKind: 'person' | 'prop' | null = null;
+  // When set, the next placed prop uses this sprite (a handoff from another tool,
+  // e.g. Room Builder → "→ Furniture"); otherwise a placement defaults to 1.
+  private placingSprite: number | null = null;
+  // Deferred handoff: a sprite to drop as a prop once this tool is active/built.
+  private pendingPlace: number | null = null;
   private nextAddId = 0;
 
   // Vehicles are driven by the traffic system (car_traffic.json), not stored as
@@ -179,6 +186,30 @@ class PlacementTool implements EditorTool {
     this.shell = shell;
     void this.loadAll();
     this.buildPanel();
+    this.applyPendingPlace();
+  }
+
+  /** Tool handoff: arrive ready to drop `sprite` as a prop (Room Builder →
+   *  "→ Furniture" uses this). Deferred until the tool is active/built. */
+  requestPlaceProp(sprite: number): void {
+    this.pendingPlace = sprite;
+    if (this.shell && this.panel) this.applyPendingPlace();
+  }
+
+  private applyPendingPlace(): void {
+    if (this.pendingPlace == null || !this.panel) return;
+    const sprite = this.pendingPlace;
+    this.pendingPlace = null;
+    this.mode = 'npcs';
+    this.selNpc = null;
+    this.selVehicle = null;
+    this.placingVehicle = false;
+    this.placingDoor = false;
+    this.rebuildForm(); // (re)creates the NPC form + sprite picker
+    this.placingKind = 'prop';
+    this.placingSprite = sprite;
+    this.spritePicker?.setValue(String(sprite));
+    this.shell?.toast('Click the map to place the furniture');
   }
 
   deactivate(): void {
@@ -229,7 +260,9 @@ class PlacementTool implements EditorTool {
         y: v.y,
         sprite: v.sprite,
         dir: v.dir,
-        kind: npcKind(v.kind),
+        // A placement in the gift catalog (present/trash can/jar/…) shows as
+        // kind 'gift' regardless of its stored kind — it's an item-container.
+        kind: giftForKey(r.k) ? 'gift' : npcKind(v.kind),
         t: v.t ?? null,
         props: { ...(v.props ?? {}) },
       });
@@ -314,6 +347,18 @@ class PlacementTool implements EditorTool {
     if (value === undefined) delete next[key];
     else next[key] = value;
     if (propsEqual(next, e.props)) return; // no-op (re-typed same value)
+    this.mutate('props', e, { props: next }, 'npcs');
+  }
+
+  /** Set or clear ('' = inherit) this instance's combat-personality override.
+   *  Stored in the same sparse `props` as the numeric fields. */
+  private setCombat(val: CombatPersonality | ''): void {
+    const e = this.selNpc;
+    if (!e) return;
+    const next: EntityPropsOverride = { ...e.props };
+    if (val) next.combat = val;
+    else delete next.combat;
+    if (propsEqual(next, e.props)) return;
     this.mutate('props', e, { props: next }, 'npcs');
   }
 
@@ -577,6 +622,7 @@ class PlacementTool implements EditorTool {
     if (this.placingKind) {
       this.addNpc(p, this.placingKind);
       this.placingKind = null;
+      this.placingSprite = null;
       return true;
     }
     // A vehicle marker takes the click first (it sits where its static prop used
@@ -799,7 +845,7 @@ class PlacementTool implements EditorTool {
       deleted: false,
       x: this.snapV(p.x),
       y: this.snapV(p.y),
-      sprite: 1,
+      sprite: this.placingSprite ?? 1,
       dir: Direction.S,
       kind,
       t: null,
@@ -1422,11 +1468,23 @@ class PlacementTool implements EditorTool {
           ['person', 'person'],
           ['prop', 'prop'],
           ['enemy', 'enemy'],
+          ['gift', 'gift'],
         ],
         (v) => {
-          const kind: NPCKind = v === 'person' ? 'person' : v === 'enemy' ? 'enemy' : 'prop';
+          const kind: NPCKind =
+            v === 'person' ? 'person' : v === 'enemy' ? 'enemy' : v === 'gift' ? 'gift' : 'prop';
           sel((e) => this.mutate('kind', e, { kind }, 'npcs'))();
         }
+      );
+      // Per-instance combat personality override. '' = inherit (the entity-level
+      // default, else npcSim's seeded-by-id random pick). Only meaningful for
+      // townsfolk, so the row is shown for `person` only (toggled in refresh).
+      this.mkSelect(
+        form,
+        'combat',
+        'combat',
+        COMBAT_PERSONALITY_OPTIONS.map((o) => [o.value, o.label] as [string, string]),
+        (v) => this.setCombat((v || '') as CombatPersonality | '')
       );
     }
     this.mkInput(form, 't', 'text id', (v) => {
@@ -1705,6 +1763,10 @@ class PlacementTool implements EditorTool {
       if (sprite != null) this.spritePicker?.setValue(String(sprite));
       if (dir != null) setVal('dir', String(dir));
       if (e) setVal('kind', e.kind); // the kind field only exists for NPCs
+      if (e) setVal('combat', e.props.combat ?? ''); // '' = inherit/seeded
+      // Combat personality only affects townsfolk — hide the row otherwise.
+      const combatRow = this.fields.get('combat')?.parentElement;
+      if (combatRow) combatRow.style.display = !veh && e?.kind === 'person' ? '' : 'none';
       if (veh || e) setVal('t', t === null ? '' : String(t));
 
       if (veh) {

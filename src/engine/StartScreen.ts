@@ -132,7 +132,7 @@ function render(): void {
 // Signed-out landing.
 function renderTitle(): void {
   const p = panel!;
-  p.appendChild(heading('EARTHBOUND'));
+  p.appendChild(heading('ZEXONYTE'));
   p.appendChild(subheading('ONLINE'));
 
   if (import.meta.env.DEV) {

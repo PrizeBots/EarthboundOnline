@@ -1,4 +1,4 @@
--- EarthBound Online — initial persistence schema (accounts / sessions /
+-- Zexonyte Online — initial persistence schema (accounts / sessions /
 -- characters / world_docs). Postgres counterpart of the SQLite schema in
 -- server/store/SqliteStore.js. Kept in sync with SCHEMA_SQL in
 -- server/store/SupabaseStore.js (the server self-heals from that too).

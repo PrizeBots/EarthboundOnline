@@ -46,7 +46,7 @@ host.start();
 wss.on('connection', (ws) => host.handleConnection(ws));
 
 server.listen(PORT, () => {
-  console.log(`EarthBound Online server running on http://localhost:${PORT}`);
+  console.log(`Zexonyte Online server running on http://localhost:${PORT}`);
   console.log(`WebSocket server ready on ws://localhost:${PORT}`);
 });
 

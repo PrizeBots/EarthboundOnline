@@ -14,7 +14,7 @@
     "615": [
       "Mr. Brickroad, the dungeon maker referred you, right?",
       "And not only that...  What?  Who?  My son?  Oh... I... can't... I can't believe it...",
-      "You're $, my son.  It's been maybe 10 years since I last saw you.",
+      "You're $name, my son.  It's been maybe 10 years since I last saw you.",
       "I'm so glad you're such a healthy boy.",
       "Uh, those glasses look good on you.",
       "How about a donut?"
@@ -43,6 +43,18 @@
     ],
     "900010": [
       "These stinkin' punks think they run this town.."
+    ],
+    "900011": [
+      "We will use the Zexonyte to bring all of the people of 199x back."
+    ],
+    "900012": [
+      "Ness mom say me sleep here"
+    ],
+    "900013": [
+      "Future Andonuts' Phaser Distorter VII.\nHe crash landed here."
+    ],
+    "900015": [
+      "Me prOteCT tHis HouSE"
     ]
   }
 }

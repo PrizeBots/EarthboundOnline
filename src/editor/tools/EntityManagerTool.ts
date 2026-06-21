@@ -25,12 +25,13 @@ import { saveOverride, loadOverride } from '../saveOverride';
 import { registerSaveHandler } from '../registry';
 import { openSpriteEditor } from '../../engine/spriteEditor';
 
-// Entity Manager — the single home for per-entity combat stats (HP, level, XP,
-// damage, attack rate, speed), keyed by sprite group. Enemy Spawners reference
-// a sprite and inherit its stats (shown read-only there), so every shark shares
-// one definition edited here. Stats live in enemy_spawns.json under `entities`;
-// the server applies them to spawned enemies. Reuses the sprite-preview
-// dropdown so you can pick (and SEE) any entity.
+// Entity Manager — the MASTER for every entity, keyed by sprite group: per-entity
+// stats (HP, level, XP, damage, attack rate, speed, crit/dodge), collision box,
+// and combat personality, for EVERY kind (person/prop/enemy/car). Every placed
+// NPC, spawner, and vehicle is an INSTANCE that inherits these and may override
+// per-instance. Stats live in overrides/entities.json (its own file, separate
+// from enemy_spawns.json, which is the Enemy Spawner tool's spawner config).
+// Reuses the sprite-preview dropdown so you can pick (and SEE) any entity.
 
 interface EnemyFile {
   version?: number;

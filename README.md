@@ -1,4 +1,4 @@
-# EarthBound Online
+# Zexonyte Online
 
 A browser multiplayer hack-'n-slash recreation of EarthBound's overworld — a
 custom TypeScript Canvas engine (no emulation) renders assets extracted from the
