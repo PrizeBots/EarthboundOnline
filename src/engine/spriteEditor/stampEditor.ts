@@ -8,7 +8,7 @@ import { getStamp, getStamps, renderStampToCanvas, applyEditedPixels, saveStamps
 import { customTilesDoc } from '../CustomTiles';
 import { S } from './state';
 import { postOverride } from './saveChannel';
-import { extractPalette } from './entityEditor';
+import { extractPalette, snapToSnesGrid } from './entityEditor';
 import { clearSelection, renderSwatches, setColor } from './pixelCanvas';
 
 /** Point the engine's (shared) entity buffer at this canvas. */
@@ -29,6 +29,7 @@ export async function loadStampIntoBuffer(id: string): Promise<void> {
   S.entityH = buf.height;
   S.entityUndo = [];
   aliasBuffer(buf);
+  snapToSnesGrid(S.entityCtx!, buf.width, buf.height); // scrub ROM ±1 rounding near-dupes
   S.palette = extractPalette(S.entityCtx!, buf.width, buf.height);
   clearSelection();
   renderSwatches();

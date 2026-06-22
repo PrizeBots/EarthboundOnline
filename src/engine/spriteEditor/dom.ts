@@ -33,6 +33,7 @@ import {
   renderSwatches,
   onEditDown,
   onEditMove,
+  onEditLeave,
   clearSelection,
   flipH,
   flipV,
@@ -737,6 +738,7 @@ function buildEditPanel(): HTMLDivElement {
   S.editCanvas.oncontextmenu = (e) => e.preventDefault();
   S.editCanvas.onmousedown = (e) => onEditDown(e);
   S.editCanvas.onmousemove = (e) => onEditMove(e);
+  S.editCanvas.onmouseleave = () => onEditLeave();
   div.appendChild(S.editCanvas);
 
   const mkBtn = (label: string, fn: () => void, title?: string) => {

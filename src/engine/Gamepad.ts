@@ -25,12 +25,25 @@ const heldKeys = new Set<string>();
 const prevBtn = new Map<number, boolean>();
 // Frames each direction has been held — drives menu-cursor auto-repeat.
 const dirHold = new Map<string, number>();
+// Discrete navigation events (e.key strings) produced this frame for screens that
+// read DOM-style keys rather than the virtual key set — currently char-select.
+const navQueue: string[] = [];
 let hadGamepad = false;
 
 /** True once a gamepad has been seen this session (after the first button press —
  *  browsers hide pads until the user interacts). */
 export function gamepadConnected(): boolean {
   return hadGamepad;
+}
+
+/** Take the discrete pad nav events queued this frame (e.key strings like
+ *  'ArrowLeft' / 'Enter'), clearing the queue. Used by char-select, which reads
+ *  DOM-style keys instead of the shared virtual key set. */
+export function consumeGamepadNav(): string[] {
+  if (!navQueue.length) return [];
+  const out = navQueue.slice();
+  navQueue.length = 0;
+  return out;
 }
 
 function setHeld(code: string, on: boolean): void {
@@ -60,6 +73,31 @@ function edge(buttons: readonly GamepadButton[], index: number, code: string): v
   prevBtn.set(index, pressed);
 }
 
+/** Rising-edge of button `index` as a plain boolean (no virtual-key side effect).
+ *  Shares prevBtn with edge(); only one of the two runs for a given index per
+ *  frame, so they don't fight over the stored state. */
+function edgeRaw(buttons: readonly GamepadButton[], index: number): boolean {
+  const pressed = !!buttons[index]?.pressed;
+  const was = prevBtn.get(index) ?? false;
+  prevBtn.set(index, pressed);
+  return pressed && !was;
+}
+
+/** Auto-repeat a held direction as a discrete nav event (for char-select), using
+ *  the same DAS timing as repeatDir but emitting an e.key string instead of a
+ *  virtual key press. */
+function navRepeat(code: string, on: boolean): void {
+  if (!on) {
+    dirHold.set(code, 0);
+    return;
+  }
+  const frames = dirHold.get(code) ?? 0;
+  if (frames === 0 || (frames >= DAS_DELAY && (frames - DAS_DELAY) % DAS_RATE === 0)) {
+    navQueue.push(code);
+  }
+  dirHold.set(code, frames + 1);
+}
+
 /** Auto-repeat a held direction for menu navigation (a held synthesized arrow
  *  only yields one justPressed edge — there's no OS key-repeat to lean on). */
 function repeatDir(code: string, on: boolean): void {
@@ -80,7 +118,11 @@ function repeatDir(code: string, on: boolean): void {
  * a menu/dialogue is up. getGamepads() must be re-read every frame — Chrome's
  * snapshots are not live.
  */
-export function pollGamepads(ctx: { menuOpen: boolean; dialogueOpen: boolean }): void {
+export function pollGamepads(ctx: {
+  menuOpen: boolean;
+  dialogueOpen: boolean;
+  charSelect?: boolean;
+}): void {
   const pads = navigator.getGamepads ? navigator.getGamepads() : [];
   let gp: Gamepad | null = null;
   for (const p of pads) {
@@ -110,6 +152,21 @@ export function pollGamepads(ctx: { menuOpen: boolean; dialogueOpen: boolean }):
   const right = !!b[15]?.pressed || lx > DEADZONE;
   const up = !!b[12]?.pressed || ly < -DEADZONE;
   const down = !!b[13]?.pressed || ly > DEADZONE;
+
+  if (ctx.charSelect) {
+    // Char-select grid: discrete cursor steps (with auto-repeat) + confirm.
+    // It reads DOM-style e.key strings, not the virtual key set, so we queue
+    // nav events here for Game to forward to handleCharSelectInput — rather
+    // than latching arrows like field movement does.
+    releaseAllHeld();
+    navRepeat('ArrowLeft', left);
+    navRepeat('ArrowRight', right);
+    navRepeat('ArrowUp', up);
+    navRepeat('ArrowDown', down);
+    // A (0) or Start (9) confirm the highlighted character.
+    if (edgeRaw(b, 0) || edgeRaw(b, 9)) navQueue.push('Enter');
+    return;
+  }
 
   const uiMode = ctx.menuOpen || ctx.dialogueOpen;
   if (ctx.menuOpen) {
@@ -162,6 +219,19 @@ export function mountGamepadDebug(): void {
     connectedEver = true;
   });
 
+  // Many Android handhelds (Retroid, etc.) DON'T surface their pad through the
+  // Gamepad API — the d-pad/buttons arrive as keyboard events instead, often
+  // with non-Arrow codes. Log the last few so we can see exactly what to map.
+  const keyLog: string[] = [];
+  window.addEventListener(
+    'keydown',
+    (e) => {
+      keyLog.unshift(`code=${e.code || '?'} key=${e.key || '?'} kc=${e.keyCode}`);
+      if (keyLog.length > 6) keyLog.length = 6;
+    },
+    true
+  );
+
   const tick = () => {
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     const lines: string[] = ['GAMEPAD DEBUG (?gpdebug)'];
@@ -186,6 +256,9 @@ export function mountGamepadDebug(): void {
       lines.push('Press a face button / move a stick');
       lines.push('with this page focused.');
     }
+    lines.push('');
+    lines.push('KEYBOARD EVENTS (press d-pad/buttons):');
+    lines.push(...(keyLog.length ? keyLog : ['(none yet)']));
     el.textContent = lines.join('\n');
     requestAnimationFrame(tick);
   };

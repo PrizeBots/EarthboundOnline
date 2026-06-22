@@ -22,6 +22,24 @@ import { clearSelection, renderSwatches, setColor } from './pixelCanvas';
 const MAX_PALETTE = 48; // pick-list cap; the buffer itself stays full RGBA
 const MAX_DIM = 256; // scale guard — keep frames sane
 
+/** SNES palettes are 5-bit/channel, so genuine colors land on multiples of 8 once
+ *  expanded to 8-bit (c5<<3). The ROM→atlas render pipeline leaves ±1 rounding
+ *  noise, which surfaces as near-duplicate swatches AND splits the fill tool —
+ *  every noisy variant becomes its own palette index, so a fill stops at the seam
+ *  between (80,128,96) and (80,128,97). Snapping each channel to the nearest /8
+ *  level collapses that noise losslessly (true colors are already on-grid). */
+export function snapToSnesGrid(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] < 128) continue;
+    d[i] = Math.min(248, Math.round(d[i] / 8) * 8);
+    d[i + 1] = Math.min(248, Math.round(d[i + 1] / 8) * 8);
+    d[i + 2] = Math.min(248, Math.round(d[i + 2] / 8) * 8);
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
 /** Distinct opaque colors in a frame → a palette (index 0 = transparent). */
 export function extractPalette(
   ctx: CanvasRenderingContext2D,
@@ -75,6 +93,7 @@ export async function loadEntityIntoBuffer(id: number): Promise<void> {
   S.entityH = h;
   S.entityUndo = [];
   aliasBuffer(buf);
+  snapToSnesGrid(ctx, w, h); // scrub ROM ±1 rounding near-dupes (clean palette + working fill)
   S.palette = extractPalette(ctx, w, h);
   clearSelection();
   renderSwatches();

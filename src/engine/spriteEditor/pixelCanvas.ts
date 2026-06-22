@@ -32,6 +32,7 @@ import { S } from './state';
 import { commitItemEdit, persistItem } from './itemEditor';
 import { commitPsiEdit, persistPsi } from './psiEditor';
 import { commitEntityEdit, persistEntity, recolorEntityPalette } from './entityEditor';
+import { persistStamp, rebuildStampList } from './stampEditor';
 import { PSI_W, PSI_H } from '../PsiAnim';
 import { requestAutosave } from './autosave';
 
@@ -198,7 +199,25 @@ export function onEditDown(e: MouseEvent): void {
   applyToolAt(e);
 }
 
+/** Forget the hover position (cursor left the edit canvas) so no brush outline draws. */
+export function onEditLeave(): void {
+  if (S.hoverPx !== null || S.hoverPy !== null) {
+    S.hoverPx = null;
+    S.hoverPy = null;
+    S.dirty = true;
+  }
+}
+
 export function onEditMove(e: MouseEvent): void {
+  // Brush outline: track the pixel under the cursor so drawEditCanvas can draw it.
+  const hov = pixelAt(e);
+  const nx = hov ? hov.px : null;
+  const ny = hov ? hov.py : null;
+  if (nx !== S.hoverPx || ny !== S.hoverPy) {
+    S.hoverPx = nx;
+    S.hoverPy = ny;
+    S.dirty = true;
+  }
   // Hover hint: a move cursor over a draggable selection signals you can grab it.
   if (!S.marqueeAnchor && !S.xformState && !S.moveState && !S.painting && S.editCanvas) {
     const hp = pixelAt(e, true);
@@ -398,6 +417,11 @@ export function persistActive(): void {
   if (S.editMode === 'item') persistItem();
   else if (S.editMode === 'psi') persistPsi();
   else if (S.editMode === 'entity') persistEntity();
+  else if (S.editMode === 'stamp') {
+    // Save the edited stamp back to custom_tiles.json + the stamp library, then
+    // refresh the in-editor thumbnails so the change shows immediately.
+    void persistStamp().then(rebuildStampList);
+  }
 }
 
 /** Re-commit the active buffer to its live preview (item / PSI / entity). */
@@ -405,6 +429,8 @@ function commitActive(): void {
   if (S.editMode === 'item') commitItemEdit();
   else if (S.editMode === 'psi') commitPsiEdit();
   else if (S.editMode === 'entity') commitEntityEdit();
+  // 'stamp' has no live world preview to update mid-stroke; it saves on stroke
+  // end via persistActive() → persistStamp().
 }
 
 /** Human label for a sheet cell (selection is always a canonical strip cell). */
@@ -502,28 +528,48 @@ function floodFill(px: number, py: number): void {
   const img = ctx.getImageData(ox, oy, w, h);
   const data = img.data;
   const at = (x: number, y: number) => (y * w + x) * 4;
-  // The palette index a pixel reads as: alpha<128 => transparent (0).
-  const indexAt = (i: number) =>
-    data[i + 3] < 128 ? 0 : nearestActiveIndex(data[i], data[i + 1], data[i + 2]);
-  const target = indexAt(at(px, py));
+  // Match by COLOR PROXIMITY to the clicked pixel — NOT palette index. Genuine
+  // SNES colors are ≥8 apart per channel, but ROM sampling leaves ±1 rounding
+  // noise, so a single "color" can exist as a cluster of near-duplicate bytes. An
+  // index match treats each variant as a different region and leaves the others
+  // behind ("random same-color pixels"). A squared-distance tolerance that sits
+  // BETWEEN the noise (~±2) and the real-color gap (≥8) absorbs the noise while
+  // still stopping at any genuinely different shade — independent of whether the
+  // buffer was snapped. Transparent (alpha<128) is its own region.
+  const TOL2 = 16; // ≈ up to ±2 per channel; well under the 64 of a real color step
+  const si = at(px, py);
+  const seedClear = data[si + 3] < 128;
+  const sr = data[si],
+    sg = data[si + 1],
+    sb = data[si + 2];
+  const match = (i: number): boolean => {
+    const clear = data[i + 3] < 128;
+    if (seedClear || clear) return seedClear && clear;
+    const dr = data[i] - sr,
+      dg = data[i + 1] - sg,
+      db = data[i + 2] - sb;
+    return dr * dr + dg * dg + db * db <= TOL2;
+  };
   const [fr, fg, fb, fa] = fillRGBA(); // current color (transparent if clear index)
-  const isFillExact = (i: number) =>
-    data[i] === fr && data[i + 1] === fg && data[i + 2] === fb && data[i + 3] === fa;
-  if (isFillExact(at(px, py))) return; // start pixel already the exact fill color
   pushUndo();
-  // Match the start region by index, but skip pixels already written to the
-  // exact fill color so the scan terminates even when fill index == target.
-  const match = (i: number) => indexAt(i) === target && !isFillExact(i);
+  // A `visited` array (not a color test) guarantees termination, so pixels that
+  // already hold the fill color aren't treated as walls that chop the fill apart.
+  const visited = new Uint8Array(w * h);
   const stack = [[px, py]];
   while (stack.length) {
     const [x, y] = stack.pop()!;
     if (x < bound.x || x >= bound.x + bound.w || y < bound.y || y >= bound.y + bound.h) continue;
-    const i = at(x, y);
+    const pi = y * w + x;
+    if (visited[pi]) continue;
+    visited[pi] = 1;
+    const i = pi * 4;
     if (!match(i)) continue;
     data[i] = fr;
     data[i + 1] = fg;
     data[i + 2] = fb;
     data[i + 3] = fa;
+    // 4-connected: only spill across shared EDGES, so the fill respects diagonal
+    // pixel boundaries instead of leaking through corner gaps (user's choice).
     stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
   }
   ctx.putImageData(img, ox, oy);
@@ -867,4 +913,37 @@ export function drawEditCanvas(): void {
   } else if (S.selection) {
     strokeRectAnts(ctx, S.selection.x, S.selection.y, S.selection.w, S.selection.h);
   }
+
+  drawBrushOutline(ctx, gw, gh);
+}
+
+/** Outline the N×N block the pencil/eraser would paint under the cursor, so you
+ *  can aim before clicking. Mirrors the block geometry in applyToolAt. */
+function drawBrushOutline(ctx: CanvasRenderingContext2D, gw: number, gh: number): void {
+  if (S.hoverPx === null || S.hoverPy === null) return;
+  if (S.tool !== 'pencil' && S.tool !== 'eraser') return;
+  // Suppress while an interaction is mid-flight — its own visuals own the canvas.
+  if (S.painting || S.moveState || S.xformState || S.marqueeAnchor) return;
+
+  const n = Math.max(1, S.brushSize);
+  const off = Math.floor((n - 1) / 2);
+  const bx0 = Math.max(0, S.hoverPx - off);
+  const by0 = Math.max(0, S.hoverPy - off);
+  const bx1 = Math.min(gw - 1, S.hoverPx - off + n - 1);
+  const by1 = Math.min(gh - 1, S.hoverPy - off + n - 1);
+  const bw = bx1 - bx0 + 1;
+  const bh = by1 - by0 + 1;
+  if (bw <= 0 || bh <= 0) return;
+
+  const x = bx0 * ZOOM;
+  const y = by0 * ZOOM;
+  const w = bw * ZOOM;
+  const h = bh * ZOOM;
+  // White outline with a dark backing so it reads on any sprite color. Eraser
+  // tints red so the destructive tool is unmistakable while aiming.
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  ctx.strokeStyle = S.tool === 'eraser' ? 'rgba(255,80,80,0.95)' : 'rgba(255,255,255,0.95)';
+  ctx.strokeRect(x + 1.5, y + 1.5, w - 3, h - 3);
 }

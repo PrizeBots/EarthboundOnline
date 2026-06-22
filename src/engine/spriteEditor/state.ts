@@ -151,6 +151,10 @@ export const S = {
   selOY: 0,
   painting: false,
   strokeChanged: false,
+  // Cursor pixel position over the edit canvas (null when off-canvas). Drives the
+  // pencil/eraser brush outline so you can see where the next stroke will land.
+  hoverPx: null as number | null,
+  hoverPy: null as number | null,
   undoStack: [] as ImageData[],
   dirty: true,
   // Copied pixels (a whole frame, or a marquee selection).

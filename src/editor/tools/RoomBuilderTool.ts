@@ -161,6 +161,7 @@ class RoomBuilderTool implements EditorTool {
   // shared collisionPaint core instead (Solid/Walk/FG + advanced pri/clear).
   private tool: RoomTool = 'select';
   private wallsErase = false;
+  private fgSeg: HTMLDivElement | null = null;
   private paintMode: 'tiles' | CollisionOp = 'tiles';
   private colHover: WorldPoint = { x: 0, y: 0 };
   private advOpen = false;
@@ -941,7 +942,7 @@ class RoomBuilderTool implements EditorTool {
         ctx.strokeStyle = '#ffd23e';
         ctx.lineWidth = 1;
         ctx.strokeRect(rx + 0.5, ry + 0.5, rw - 1, rh - 1);
-        const hs = 4;
+        const hr = 2.5; // handle radius
         ctx.fillStyle = '#ffd23e';
         const corners: [number, number][] = [
           [rx, ry],
@@ -949,7 +950,11 @@ class RoomBuilderTool implements EditorTool {
           [rx, ry + rh],
           [rx + rw, ry + rh],
         ];
-        for (const [hx, hy] of corners) ctx.fillRect(hx - hs, hy - hs, hs * 2, hs * 2);
+        for (const [hx, hy] of corners) {
+          ctx.beginPath();
+          ctx.arc(hx, hy, hr, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
     }
 
@@ -1534,6 +1539,18 @@ class RoomBuilderTool implements EditorTool {
     clr.title = 'Remove walls so you can walk here.';
     this.colControls.appendChild(this.wallsSeg);
 
+    // Place / Erase segment (Front tool only) — mirrors Walls Block/Clear so a
+    // painted front tile can be erased instead of relying on a toggle gesture.
+    this.fgSeg = document.createElement('div');
+    this.fgSeg.style.cssText = 'display:none;gap:4px;align-items:center;flex-wrap:wrap;';
+    const fgPlace = this.mkBtn('Place', () => this.setFrontErase(false), this.fgSeg);
+    fgPlace.dataset.fg = 'place';
+    fgPlace.title = 'Paint front tiles you hide behind.';
+    const fgErase = this.mkBtn('Erase', () => this.setFrontErase(true), this.fgSeg);
+    fgErase.dataset.fg = 'erase';
+    fgErase.title = 'Remove front tiles so they no longer cover players.';
+    this.colControls.appendChild(this.fgSeg);
+
     const cRow = document.createElement('div');
     cRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;align-items:center;';
     this.mkBtn('Brush size', () => this.cycleColBrush(), cRow).title =
@@ -1758,6 +1775,13 @@ class RoomBuilderTool implements EditorTool {
     this.updateStatus();
   }
 
+  /** Front sub-toggle: Place sets the 0x40 front bit, Erase clears it. */
+  private setFrontErase(erase: boolean): void {
+    collisionPaint.fgErase = erase;
+    this.syncTool();
+    this.updateStatus();
+  }
+
   /** Advanced collision op (native priority / wipe). Keeps the current tool. */
   private setMode(mode: CollisionOp): void {
     this.paintMode = mode;
@@ -1787,7 +1811,7 @@ class RoomBuilderTool implements EditorTool {
       case 'walls':
         return 'Paint where you can walk — red = wall. Block adds walls, Clear removes them.';
       case 'front':
-        return 'Paint tiles you hide BEHIND (trees, roofs, signs). Yellow = foreground.';
+        return 'Paint front tiles that cover players (trees, roofs, signs). Yellow = foreground. Place adds, Erase removes.';
     }
   }
 
@@ -1806,6 +1830,7 @@ class RoomBuilderTool implements EditorTool {
     }
     if (this.colControls) this.colControls.style.display = showCol ? 'flex' : 'none';
     if (this.wallsSeg) this.wallsSeg.style.display = this.tool === 'walls' ? 'flex' : 'none';
+    if (this.fgSeg) this.fgSeg.style.display = this.tool === 'front' ? 'flex' : 'none';
     if (this.advEl) this.advEl.style.display = showCol && this.advOpen ? 'flex' : 'none';
 
     // Highlight the active tool.
@@ -1818,6 +1843,12 @@ class RoomBuilderTool implements EditorTool {
     // Highlight Block/Clear by current erase state.
     this.panel?.querySelectorAll<HTMLButtonElement>('button[data-wall]').forEach((b) => {
       const on = (b.dataset.wall === 'clear') === this.wallsErase;
+      b.style.color = on ? '#7CFC6A' : '#cde';
+      b.style.borderColor = on ? '#7CFC6A' : '#3a4a5a';
+    });
+    // Highlight Front Place/Erase by current erase state.
+    this.panel?.querySelectorAll<HTMLButtonElement>('button[data-fg]').forEach((b) => {
+      const on = (b.dataset.fg === 'erase') === collisionPaint.fgErase;
       b.style.color = on ? '#7CFC6A' : '#cde';
       b.style.borderColor = on ? '#7CFC6A' : '#3a4a5a';
     });

@@ -51,6 +51,10 @@ const cellKey = (c: CellRef) => `${c.tileX},${c.tileY},${c.idx}`;
 export class CollisionPaint {
   private shell: EditorShellApi | null = null;
   brush = 1; // brush size in minitiles (1/2/4)
+  // Front tool sub-mode: false = Place (set 0x40), true = Erase (clear 0x40).
+  // Mirrors the Walls tool's Block/Clear so erasing a front tile is explicit
+  // instead of the old "re-paint to toggle off" gesture.
+  fgErase = false;
 
   // Authored per-map-cell bytes: key -> byte (only where it differs from the
   // tile's arrangement default). Saved as the override file's `cells` section.
@@ -193,11 +197,8 @@ export class CollisionPaint {
     const hit = getCellCollisionAt(p.x, p.y);
     if (!hit) return false;
     this.op = op;
-    if (op === 'fg') {
-      // Toggle off the first cell's current state, so a second pass un-hides.
-      const cell: CellRef = { tileX: hit.tileX, tileY: hit.tileY, idx: hit.idx };
-      this.fgSetting = (this.currentByte(cell) & HIDE_BIT) === 0;
-    }
+    // Front: Place sets 0x40, Erase clears it (explicit, like Walls Block/Clear).
+    if (op === 'fg') this.fgSetting = !this.fgErase;
     this.painting = true;
     this.strokeChanges = new Map();
     this.lastPaintPoint = { ...p };

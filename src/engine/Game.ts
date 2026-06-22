@@ -17,7 +17,7 @@ import {
   releaseVirtualTaps,
 } from './Input';
 import { mountTouchControls, setTouchContext } from './TouchControls';
-import { pollGamepads, mountGamepadDebug } from './Gamepad';
+import { pollGamepads, mountGamepadDebug, consumeGamepadNav } from './Gamepad';
 import { hotbarBoxAt } from './menu/layout';
 import { loadMapData, getSector, getDrawTilesetId } from './MapManager';
 import { loadDoors, getDoorAt, getStairAt, DoorData } from './DoorManager';
@@ -1557,20 +1557,12 @@ export class Game {
       if (this.transitionAlpha <= 0) {
         this.transitionAlpha = 0;
         this.transitioning = false;
-        // Report our post-warp position to the server WHILE STILL warp-shielded,
-        // BEFORE lifting the shield. Position sends are frozen during the fade, so
-        // this is the first time the server hears the big door jump; sending it
-        // under the shield exempts it from the speed-hack move clamp so the server
-        // records the real jump — which is exactly what npcSim reads as a door warp
-        // to make chasing enemies follow you through (clamped to 96px, it never
-        // looked like a warp and they'd give up at the door). THEN end the shield.
-        sendPosition(
-          this.player.x,
-          this.player.y,
-          this.player.direction,
-          this.player.frame,
-          this.player.pose
-        );
+        // Just lift the warp shield — DON'T volunteer a position. The door warp is
+        // fully server-authoritative now: the server validated the door, resolved a
+        // clear landing (findPlayerLanding) and sent it back via `warp` (adopted in
+        // onWarp). That server-side jump is also what npcSim reads to let chasing
+        // enemies follow through — so the old client `move` report (a trusted
+        // client position) is gone, closing the last movement cheat vector.
         sendWarpState(false);
       }
     }
@@ -1643,13 +1635,28 @@ export class Game {
     // Physical gamepad (Steam Deck / Retroid / any controller) → virtual keys.
     // Polled every step, before any input is read, so it drives the same code
     // paths the keyboard does. Action buttons adapt to whether UI is open.
-    pollGamepads({ menuOpen: isMenuOpen(), dialogueOpen: isDialogueOpen() });
+    pollGamepads({
+      menuOpen: isMenuOpen(),
+      dialogueOpen: isDialogueOpen(),
+      charSelect: this.phase === 'charselect',
+    });
 
     if (this.phase === 'charselect') {
       updateCharacterSelect();
       // While the account overlay is up it owns input (DOM); don't also drive
       // the canvas grid underneath it.
       if (isStartScreenOpen()) return;
+      // Gamepad → char-select grid. The grid reads DOM-style e.key strings, so
+      // the pad's virtual-key path can't reach it; forward discrete nav/confirm
+      // events here, mirroring the keydown handler above.
+      for (const key of consumeGamepadNav()) {
+        playCharSelectMusic();
+        if (handleCharSelectInput(key) === 'confirm') {
+          initMusic();
+          void this.startGame();
+          return;
+        }
+      }
       // Mouse: a click selects a character; clicking the selected one confirms.
       // The click is also a user gesture, so it can start the naming music.
       const click = consumePointerClick();

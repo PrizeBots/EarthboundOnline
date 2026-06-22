@@ -892,10 +892,10 @@ export class Renderer {
       });
     }
 
-    // The FG layer over the BG for areas with NO sprite (sprites re-cover their
-    // own footprint below). Native foreground tiles are transparent except their
-    // FG pixels; "Behind"/0x40 tiles are already in the BG pass, so they're only
-    // re-drawn per-sprite to occlude a hidden sprite — not here.
+    // The native FG layer over the BG for areas with NO sprite (sprites re-cover
+    // their own footprint below). Native foreground tiles are transparent except
+    // their FG pixels; painted "Front"/0x40 tiles are handled separately by
+    // drawPromotedFgPass() AFTER all sprites (a true over-everything FG layer).
     if (drawFG) {
       for (let row = startRow; row <= endRow; row++) {
         for (let col = startCol; col <= endCol; col++) {
@@ -931,15 +931,6 @@ export class Renderer {
     // item is always visible where it lies, like the ROM's item boxes.
     renderDrops(this.ctx, camX, camY);
 
-    // "See-through while hiding": when the LOCAL player is behind a building, a
-    // soft CIRCLE of reveal ghosts the Behind/0x40 redraw so you can see yourself
-    // and anyone else tucked behind the same building. Radial falloff keeps the
-    // edge soft; the rest of the building stays solid.
-    const REVEAL_IN = 52; // fully ghosted within this radius (world px)
-    const REVEAL_OUT = 108; // back to fully solid past this radius
-    const MIN_ALPHA = 0.1; // building opacity at the centre of the reveal (~10%)
-    const playerHidden = getSpritePriority(player.x, player.y) !== 0;
-
     // Re-draw the FG layer over one sprite's footprint, occluding its behind-FG
     // part. Footprint = a box around the feet generous enough to cover the body
     // and the health bar above the head.
@@ -967,19 +958,29 @@ export class Renderer {
           if (hasForegroundTile(sector.tilesetId, sector.paletteId)) {
             drawForegroundTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, sx, sy);
           }
+        }
+      }
+    };
+
+    // Painted "Front" (0x40) tiles are a TRUE foreground layer. The promote bit
+    // marks WHICH minitiles to lift to the front; here we copy that BG tile's art
+    // (clipped to the promoted minitiles) onto a foreground pass drawn over the
+    // WHOLE visible map AFTER every sprite — so anything standing where those
+    // pixels are is genuinely behind them, fully opaque (no see-through).
+    // Gated by drawFG, so the editor's FG layer toggle shows/hides these too.
+    const drawPromotedFgPass = () => {
+      if (!drawFG) return;
+      for (let row = startRow; row <= endRow; row++) {
+        for (let col = startCol; col <= endCol; col++) {
           const mask = getPromotedMinitiles(col, row);
           if (mask.length === 0) continue;
-          let alpha = 1;
-          if (playerHidden) {
-            const dx = col * TILE_SIZE + TILE_SIZE / 2 - player.x;
-            const dy = row * TILE_SIZE + TILE_SIZE / 2 - player.y;
-            const d = Math.sqrt(dx * dx + dy * dy);
-            if (d <= REVEAL_IN) alpha = MIN_ALPHA;
-            else if (d < REVEAL_OUT)
-              alpha = MIN_ALPHA + (1 - MIN_ALPHA) * ((d - REVEAL_IN) / (REVEAL_OUT - REVEAL_IN));
-          }
+          const sector = getSectorForTile(col, row);
+          if (!sector) continue;
+          const arrangementId = getTileAt(col, row);
+          const sx = col * TILE_SIZE - camX;
+          const sy = row * TILE_SIZE - camY;
           // Clip to just the painted minitiles, then draw the tile art — only the
-          // Behind cells show through, giving sub-tile (8px) hide precision.
+          // Front cells show through, giving sub-tile (8px) precision.
           this.ctx.save();
           this.ctx.beginPath();
           for (const idx of mask) {
@@ -991,9 +992,13 @@ export class Renderer {
             );
           }
           this.ctx.clip();
-          if (alpha < 1) this.ctx.globalAlpha = alpha;
-          drawTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, sx, sy);
-          if (alpha < 1) this.ctx.globalAlpha = 1;
+          // Composite (custom-room) cells assemble their art from mixed source
+          // minitiles, so they draw through drawComposite, not drawTile.
+          if (isComposite(arrangementId)) {
+            drawComposite(this.ctx, arrangementId, sx, sy);
+          } else {
+            drawTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, sx, sy);
+          }
           this.ctx.restore();
         }
       }
@@ -1016,12 +1021,16 @@ export class Renderer {
           job.drawPart('upper');
           job.drawBar?.();
         } else {
-          // In front of the FG layer — drawn over the global FG pass above.
+          // In front of the native FG layer — drawn over the global FG pass above.
           job.drawPart('full');
           job.drawBar?.();
         }
       }
     }
+
+    // Painted Front (0x40) tiles ride a foreground pass OVER all sprites, so the
+    // player ends up genuinely behind whatever was lifted to the front.
+    drawPromotedFgPass();
 
     // Black out minitiles of neighboring rooms that share an edge tile with
     // the current room (sub-tile leftovers of the room mask).

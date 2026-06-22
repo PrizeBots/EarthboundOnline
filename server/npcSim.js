@@ -157,7 +157,11 @@ const DETECT_RANGE = 220; // px — default aggro radius; per-SPAWNER `detectRan
 // `giveUpRange` (Enemy Spawner tool) overrides it; never smaller than detectRange.
 const GIVE_UP_RANGE = 560; // px — chase breaks off when the target exceeds this
 const ATTACK_RANGE = 24; // px — enemy must be this close to land a hit
-const ENEMY_CHASE_SPEED = 1.6; // px/frame while pursuing (player is 2.0) — fast enough to be a real threat, slow enough to outrun
+const ENEMY_CHASE_SPEED = 1.3; // px/frame while pursuing. Tuned just UNDER a fresh
+// player's baseline walk (~1.56 px/f at Speed 8, SPEED_BASE=1.0 in gameHost.js) so an
+// unallocated character can just barely outrun a chaser, and points spent on Speed
+// widen the lead. Re-tune together with the player SPEED_* constants — keep this below
+// moveSpeedFor(BASE_STATS.speed) or fresh players can't escape.
 const ENEMY_ATTACK_COOLDOWN_MS = 700; // min time between one enemy's swings
 const ENEMY_ATTACK_POSE_MS = 250; // how long the swing pose shows
 const ENEMY_DAMAGE = 7; // HP per landed hit
@@ -265,7 +269,7 @@ function poseCode(n) {
   return POSE_CODE[n.pose] || 0;
 }
 const STATIC_RESPAWN_MS = 12000; // ROM-placed enemies revive at home after this
-const ENEMY_SPEED = 0.7; // roamers move a touch faster than ambling townsfolk
+const ENEMY_SPEED = 0.6; // roamers move a touch faster than ambling townsfolk
 // Chase speed scales with the spawner's wander speed by this ratio, so the
 // per-spawner `speed` field controls both (chase stays proportionally faster).
 const CHASE_RATIO = ENEMY_CHASE_SPEED / ENEMY_SPEED;
@@ -3904,6 +3908,22 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
      *  Same triggers the chase AI uses (resolveDoor). */
     doorAt(x, y) {
       return resolveDoor(x, y);
+    },
+
+    /** Resolve a door-EXIT landing for a player so a warp never stacks two bodies
+     *  on the doorway. Returns the destination if its foot box is clear of walls,
+     *  NPCs and OTHER players; otherwise the nearest free tile (spiral out to
+     *  ~96px). Shares the foot box + free-spot search with NPC door-follow
+     *  placement (findFreeNear; COL_* === the player's PLAYER_COL_*), so people and
+     *  enemies land by the same rule. The per-tick `unstack` is the backstop if
+     *  even the spiral finds no room. `players` is the live player list; `selfId`
+     *  is the warping player, excluded so it never blocks itself. */
+    findPlayerLanding(destX, destY, players, selfId) {
+      const self = { id: selfId }; // not in `actors` → hitsActor scans every NPC
+      const others = Array.isArray(players) ? players.filter((p) => p && p.id !== selfId) : [];
+      return (
+        findFreeNear(destX, destY, self, others) || { x: Math.round(destX), y: Math.round(destY) }
+      );
     },
 
     /** True if (x,y) sits on an escalator/stairway trigger. The escalator ride

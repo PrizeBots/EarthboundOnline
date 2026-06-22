@@ -6,13 +6,15 @@ import { blockedByNPC } from './NPCManager';
 import { nextHeldItem } from './Items';
 import spawn from '../spawn.json';
 
-// Walk speed scales with the Speed STAT (server-authoritative; grows on
-// level-up — see GROWTH in server/gameHost.js). A fresh level-1 character
-// (Speed ~8) starts deliberately slow and quickens as Speed climbs, so leveling
-// is felt in the legs. Clamped so a low allocation never crawls and a maxed one
-// never blurs past the colliders. Replaces the old flat SPEED=2, which made
+// Walk speed scales with the Speed STAT (server-authoritative). Speed does NOT
+// grow automatically on level-up — GROWTH.speed is 0 in server/gameHost.js — it
+// rises ONLY when the player spends a per-level skill point on it. A fresh
+// level-1 character (Speed ~8) starts deliberately slow; a character that never
+// allocates Speed stays slow no matter its level, while one that pours points in
+// quickens up to the cap. Clamped so a low allocation never crawls and a maxed
+// one never blurs past the colliders. Replaces the old flat SPEED=2, which made
 // level 1 feel sprint-fast. `moveSpeedFor` is the single source of truth.
-const SPEED_BASE = 0.5; // px/frame floor contribution
+const SPEED_BASE = 1.0; // px/frame floor contribution (KEEP IN SYNC with gameHost.js)
 const SPEED_PER_STAT = 0.07; // px/frame added per point of the Speed stat
 const SPEED_MIN = 0.9; // never slower than this (a crawl isn't fun)
 const SPEED_MAX = 2.6; // never faster than this (camera/collision stay sane)
@@ -63,8 +65,9 @@ export class Player extends Entity {
   attackSpeed = 1;
   /** PK (player-kill) flag — server-authoritative; red nameplate when on. */
   pk = false;
-  /** The Speed STAT (server-authoritative; grows on level-up). Drives walk
-   *  speed via moveSpeedFor. Defaults to the level-1 base until stats arrive. */
+  /** The Speed STAT (server-authoritative; rises only when a skill point is
+   *  spent on it — not automatically on level-up). Drives walk speed via
+   *  moveSpeedFor. Defaults to the level-1 base until stats arrive. */
   speed = DEFAULT_SPEED_STAT;
   /** Level (server-authoritative; grows on level-up). Drives the weight-class
    *  walk-push: the player walks THROUGH any person/enemy below this level (the

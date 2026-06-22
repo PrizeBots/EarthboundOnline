@@ -9,7 +9,7 @@
 - [x] Basic melee attack (bat swing) — player swing deals `ATTACK_DAMAGE`, enemies flinch/die/respawn; attack/hurt poses synced over the wire
 - [x] Enemy AI (aggro range, chase, attack) — `npcSim` roamers detect within `DETECT_RANGE`, chase at `chaseSpeed`, swing on cooldown; per-spawner damage/rate/speed/level
 - [x] Health/damage system — server-authoritative HP for enemies AND players (`onPlayerHp`/`onPlayerRespawn`, `player_hp`/`player_respawn` msgs), death + respawn, floating damage numbers (Emitter)
-- [x] Experience/leveling — per-spawner **XP** (Enemy Spawner editor) → server-authoritative EXP-on-kill + level-up with **full stat growth** (geometric curve `30·1.5^(lvl-1)`; HP/offense/defense wired into combat, all 7 stats grow + display); pushed to client via `player_stats` → StatusModal. **Persists** now (per-character save: level/exp/all stats survive rejoin)
+- [x] Experience/leveling — per-spawner **XP** (Enemy Spawner editor) → server-authoritative EXP-on-kill + level-up (geometric curve `30·1.5^(lvl-1)`; HP/offense/defense wired into combat). Level-up auto-grows **only maxHp** (survival drip) + banks a skill point — offense/defense/speed/etc. grow by SPENDING points on the pentagon, not automatically; all 7 stats display. Pushed to client via `player_stats` → StatusModal. **Persists** now (per-character save: level/exp/all stats survive rejoin)
 - [x] Ground loot + banking — first-touch ground drops + ATM/bank money model (spec in LOOT_AND_BANKING.md). Dad's phone call reports money banked / spent since the last call (`dad_call` → `dad_report`).
 
 ## Dev Editor Tools (in-engine authoring layer — full checklist in EDITOR_TOOLS.md) — done

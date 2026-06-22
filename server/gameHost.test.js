@@ -108,51 +108,52 @@ check("Bob's welcome roster includes Alice", () => {
 
 alice.clear();
 bob.clear();
-// Move relative to Alice's actual spawn: a small step the validation accepts (a
-// huge teleport from spawn would be clamped as a speed hack — covered below).
 const aSpawn = host.players.get(aliceId);
+const origX = aSpawn.x;
+const origY = aSpawn.y;
 const moveX = Math.round(aSpawn.x + 10);
 const moveY = Math.round(aSpawn.y + 10);
-alice.recv({ type: 'move', x: moveX, y: moveY, direction: 2, frame: 1, pose: 'walk' });
 
-check('move → others get player_move with the coords', () => {
-  const m = bob.last('player_move');
-  assert(m, 'Bob got no player_move');
-  assert.strictEqual(m.x, moveX);
-  assert.strictEqual(m.y, moveY);
-});
-
-// --- Server-side move validation (anti-cheat) ---
-check('move validation: a teleport (huge non-warp jump) is clamped, not trusted', () => {
-  alice.clear();
-  const before = host.players.get(aliceId);
-  const fromX = before.x;
-  const fromY = before.y;
-  alice.recv({ type: 'move', x: fromX + 5000, y: fromY, direction: 3, frame: 0, pose: 'walk' });
-  const m = bob.last('player_move'); // bob is still in range; reuse him
-  const moved = Math.hypot(m.x - fromX, m.y - fromY);
-  assert(moved <= 96 + 0.5, `clamped step should be <= 96px, was ${moved}`);
-  assert.strictEqual(host.players.get(aliceId).x, m.x, 'server position matches the clamp');
-});
-
-check('move validation: garbage coords are dropped', () => {
-  const before = { ...host.players.get(aliceId) };
-  alice.recv({ type: 'move', x: 'NaN', y: null, direction: 0, frame: 0, pose: 'walk' });
-  assert.strictEqual(host.players.get(aliceId).x, before.x, 'x unchanged');
-  assert.strictEqual(host.players.get(aliceId).y, before.y, 'y unchanged');
-});
-
-check('move validation: a door warp is exempt from the speed cap', () => {
+// 'move' is an EDITOR-ONLY channel now (the dev free-camera anchor). Normal play
+// is server-authoritative via 'input' (_simPlayers) + server-resolved door warps,
+// so a gameplay client that volunteers a position is rejected — no client teleport
+// or speedhack via 'move'.
+check('move from a normal (non-editor) player is rejected — no trusted position', () => {
   const p = host.players.get(aliceId);
-  const fromX = p.x;
-  alice.recv({ type: 'warp', warping: true });
-  alice.recv({ type: 'move', x: fromX + 5000, y: p.y, direction: 3, frame: 0, pose: 'walk' });
-  // Warp shield lets the big jump through (clamped only to the map bounds).
-  assert(host.players.get(aliceId).x > fromX + 96, 'warp jump should not be speed-clamped');
+  p.editor = false;
+  alice.clear();
+  bob.clear();
+  alice.recv({ type: 'move', x: moveX, y: moveY, direction: 2, frame: 1, pose: 'walk' });
+  assert.strictEqual(p.x, origX, 'server position unchanged');
+  assert.strictEqual(p.y, origY, 'server position unchanged');
+  assert.strictEqual(bob.ofType('player_move').length, 0, 'no broadcast for a rejected move');
 });
 
-check('move → sender does NOT echo to itself', () => {
-  assert.strictEqual(alice.ofType('player_move').length, 0);
+check('move from an EDITOR player anchors the sim + broadcasts (sender does not echo)', () => {
+  const p = host.players.get(aliceId);
+  p.editor = true;
+  alice.clear();
+  bob.clear();
+  alice.recv({ type: 'move', x: moveX, y: moveY, direction: 2, frame: 1, pose: 'walk' });
+  assert.strictEqual(p.x, moveX, 'editor anchor sets the server position');
+  assert.strictEqual(p.y, moveY);
+  const m = bob.last('player_move');
+  assert(m && m.x === moveX && m.y === moveY, 'others get the editor anchor');
+  assert.strictEqual(alice.ofType('player_move').length, 0, 'sender does not echo to itself');
+  p.editor = false;
+});
+
+check('move validation: garbage coords are dropped (editor channel)', () => {
+  const p = host.players.get(aliceId);
+  p.editor = true;
+  const x0 = p.x;
+  const y0 = p.y;
+  alice.recv({ type: 'move', x: 'NaN', y: null, direction: 0, frame: 0, pose: 'walk' });
+  assert.strictEqual(p.x, x0, 'x unchanged');
+  assert.strictEqual(p.y, y0, 'y unchanged');
+  p.editor = false;
+  p.x = origX; // restore Alice to spawn so later tests start from a known spot
+  p.y = origY;
 });
 
 alice.clear();
@@ -484,6 +485,35 @@ check('input sim throttles a flood to the per-tick step cap (anti-speedhack)', (
     });
   }
 
+  check('door landing avoids stacking on an entity already on the exit', () => {
+    // Spawn street (1296,1168) is open/walkable (see input-sim tests). Park Bob on
+    // the exact exit tile; the server's landing resolver must hand the warping
+    // player a DIFFERENT, clear spot so the two don't stack and wedge.
+    const other = host.players.get(bobId);
+    other.editor = false;
+    other.x = 1296;
+    other.y = 1168;
+    const spot = host.npcSim.findPlayerLanding(
+      1296,
+      1168,
+      Array.from(host.players.values()),
+      aliceId
+    );
+    assert(
+      !(spot.x === other.x && spot.y === other.y),
+      'resolver must not return the occupied tile'
+    );
+    const COL_W = 14;
+    const COL_H = 8;
+    const COL_OY = -8;
+    const ax = spot.x - COL_W / 2;
+    const ay = spot.y + COL_OY;
+    const bx = other.x - COL_W / 2;
+    const by = other.y + COL_OY;
+    const overlap = ax < bx + COL_W && ax + COL_W > bx && ay < by + COL_H && ay + COL_H > by;
+    assert(!overlap, 'resolved landing must not overlap the occupant');
+  });
+
   check('use_door is rejected when NOT on a door (snapped back)', () => {
     const p = host.players.get(aliceId);
     p.editor = false;
@@ -565,15 +595,6 @@ check('warp:false lifts the shield (damage lands again)', () => {
   assert(host.players.get(aliceId).hp < p.maxHp, 'hit should land once the fade is over');
 });
 
-check('a move clears the shield even without a warp:false', () => {
-  const p = host.players.get(aliceId);
-  p.hp = p.maxHp;
-  alice.recv({ type: 'warp', warping: true });
-  alice.recv({ type: 'move', x: 50, y: 60, direction: 0, frame: 0, pose: 'walk' });
-  host.damagePlayer(aliceId, 20);
-  assert(host.players.get(aliceId).hp < p.maxHp, 'move should have dropped the shield');
-});
-
 // ===================== 3b. Dev editor mode =====================
 // While a client is in the editor its avatar is pulled from the world sim, so it
 // must take no damage (a death would respawn-yank the admin's free camera).
@@ -596,8 +617,9 @@ check('editor:false rejoins the world (damage lands again)', () => {
 
 // ===================== 4. Progression / leveling =====================
 // awardXp is the server-authoritative leveling path: accrue EXP, apply level-ups
-// (geometric curve), grow stats, heal on level-up, and push a player_stats
-// payload. Driven directly — no enemy kill needed.
+// (geometric curve), drip maxHp + bank a skill point, heal on level-up, and push
+// a player_stats payload. Combat stats grow by SPENDING points, not on level-up.
+// Driven directly — no enemy kill needed.
 
 check('XP below the threshold accrues without leveling', () => {
   const p = host.players.get(aliceId);
@@ -614,8 +636,10 @@ check('XP below the threshold accrues without leveling', () => {
   assert.strictEqual(host.players.get(aliceId).level, 1);
 });
 
-check('crossing the EXP threshold levels up, grows stats, and full-heals', () => {
+check('crossing the EXP threshold levels up, drips maxHp, and full-heals', () => {
   const p = host.players.get(aliceId);
+  // Only maxHp auto-grows (GROWTH); offense/defense/speed/etc. grow ONLY by
+  // spending banked skill points — so they must NOT move on a bare level-up.
   const offBefore = p.offense,
     maxHpBefore = p.maxHp;
   p.hp = 1; // hurt, so the level-up heal is observable
@@ -623,8 +647,8 @@ check('crossing the EXP threshold levels up, grows stats, and full-heals', () =>
   host.awardXp(aliceId, 100); // well past the level-2 threshold (30)
   const after = host.players.get(aliceId);
   assert(after.level >= 2, `should have leveled up, got level ${after.level}`);
-  assert(after.offense > offBefore, 'offense should grow on level-up');
   assert(after.maxHp > maxHpBefore, 'maxHp should grow on level-up');
+  assert.strictEqual(after.offense, offBefore, 'offense must NOT auto-grow (spend-only)');
   assert.strictEqual(after.hp, after.maxHp, 'a level-up fully heals');
   const ps = alice.last('player_stats');
   assert.strictEqual(ps.leveled, true);

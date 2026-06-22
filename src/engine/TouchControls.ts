@@ -17,6 +17,7 @@
 // surface, so they live entirely client-side and synthesize the same button codes.
 
 import { setVirtualKey, pressVirtualKey } from './Input';
+import { gamepadConnected } from './Gamepad';
 
 /** True on phones/tablets (coarse pointer, no hover) where we want touch controls.
  *  We gate on a coarse primary pointer rather than mere touch capability, so a
@@ -45,6 +46,9 @@ let root: HTMLDivElement | null = null;
 let actionBtn: HTMLDivElement | null = null;
 let attackBtn: HTMLDivElement | null = null;
 let mounted = false;
+// Last-seen gamepad presence, so we re-apply visibility the frame a pad appears
+// or disconnects (setTouchContext otherwise only reacts to game-state changes).
+let lastGamepad = false;
 
 /** Currently-held joystick arrow keys, so we can release exactly what we set. */
 const heldArrows = new Set<string>();
@@ -265,7 +269,11 @@ export function mountTouchControls(): void {
 
 function applyContext(): void {
   if (!root) return;
-  root.classList.toggle('visible', ctx.playing);
+  // A physical gamepad (Retroid / Steam Deck / any controller) supersedes the
+  // on-screen overlay — hide it once a pad is active so handhelds aren't cluttered
+  // with thumb controls they'll never use. Pads only surface after the first
+  // button press, so the overlay shows until then, then disappears.
+  root.classList.toggle('visible', ctx.playing && !gamepadConnected());
   // Attack is meaningless inside a menu/dialogue — hide it to cut clutter and
   // avoid a stray swing-intent. Joystick + action + menu stay (cursor nav,
   // confirm, close).
@@ -280,12 +288,15 @@ function applyContext(): void {
  *  isn't active, any held joystick direction is released so the player can't get
  *  stuck walking through a screen transition. */
 export function setTouchContext(next: TouchContext): void {
+  const gp = gamepadConnected();
   const changed =
     next.playing !== ctx.playing ||
     next.menuOpen !== ctx.menuOpen ||
     next.dialogueOpen !== ctx.dialogueOpen ||
-    next.downed !== ctx.downed;
+    next.downed !== ctx.downed ||
+    gp !== lastGamepad;
   ctx = next;
+  lastGamepad = gp;
   if (!next.playing && heldArrows.size) clearArrows();
   if (changed) applyContext();
 }

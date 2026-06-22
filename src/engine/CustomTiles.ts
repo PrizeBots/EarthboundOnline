@@ -30,6 +30,22 @@ const pixels = new Map<number, number[]>(); // id -> 256 RGBA
 const rendered = new Map<number, HTMLCanvasElement>(); // id -> cached 8x8 canvas
 let nextId = 1;
 
+/** SNES colors are 5-bit/channel, so genuine values are multiples of 8 once
+ *  expanded to 8-bit (c5<<3). Sampling/compositing in the Room Builder leaves ±1
+ *  rounding noise, which explodes one color into near-duplicate palette entries —
+ *  cluttering the Sprite Editor palette and splitting its fill tool (each variant
+ *  is its own index, so a fill stops at the seam). Snapping every RGB channel to
+ *  the nearest /8 level collapses that noise losslessly (true colors are on-grid).
+ *  Applied at every store point so custom_tiles.json is always palette-clean. */
+function snapPixels(px: number[]): number[] {
+  const out = px.slice();
+  for (let i = 0; i < out.length; i++) {
+    if (i % 4 === 3) continue; // leave alpha
+    out[i] = Math.min(248, Math.round(out[i] / 8) * 8);
+  }
+  return out;
+}
+
 /** Load the custom-tile library (overrides/custom_tiles.json). 404 = none yet. */
 export async function loadCustomTiles(): Promise<void> {
   let doc: CustomTilesDoc | null = null;
@@ -44,7 +60,7 @@ export async function loadCustomTiles(): Promise<void> {
   nextId = 1;
   for (const [k, px] of Object.entries(doc?.tiles ?? {})) {
     const id = Number(k);
-    pixels.set(id, px);
+    pixels.set(id, snapPixels(px)); // scrub any ±1 noise from older saves on load
     nextId = Math.max(nextId, id + 1);
   }
 }
@@ -84,7 +100,7 @@ export function getCustomPixels(id: number): number[] | undefined {
 /** Add a new custom tile from 256 RGBA values; returns its stable id. */
 export function mintCustomTile(px: number[]): number {
   const id = nextId++;
-  pixels.set(id, px.slice());
+  pixels.set(id, snapPixels(px));
   rendered.delete(id);
   return id;
 }
@@ -94,7 +110,7 @@ export function mintCustomTile(px: number[]): number {
  *  orphans). No-op for an unknown id. */
 export function setCustomTile(id: number, px: number[]): void {
   if (!pixels.has(id)) return;
-  pixels.set(id, px.slice());
+  pixels.set(id, snapPixels(px));
   rendered.delete(id);
 }
 

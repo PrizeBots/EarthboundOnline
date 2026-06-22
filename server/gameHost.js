@@ -39,7 +39,7 @@ const ATM_SPRITE_GROUPS = new Set([259, 447]);
 const PLAYER_COL_W = 14;
 const PLAYER_COL_H = 8;
 const PLAYER_COL_OY = -8;
-const SPEED_BASE = 0.5;
+const SPEED_BASE = 1.0; // KEEP IN SYNC with src/engine/Player.ts
 const SPEED_PER_STAT = 0.07;
 const SPEED_MIN = 0.9;
 const SPEED_MAX = 2.6;
@@ -552,6 +552,8 @@ class GameHost {
     this._giftsWatchPath = null;
     // Shop-override (equip_stats.json) file watcher handle (set in start()).
     this._shopsWatchPath = null;
+    // Spawn-override (spawn.json) file watcher handle (set in start()).
+    this._spawnWatchPath = null;
   }
 
   static _readSpawn(root) {
@@ -717,6 +719,18 @@ class GameHost {
     } catch {
       /* watch unavailable — shop edits still apply on restart */
     }
+
+    // Hot-reload the spawn point when the Placement Editor saves overrides/spawn.json
+    // (dev), so a moved spawn applies to respawns/joins WITHOUT a server restart
+    // (SPAWN is otherwise read once at boot). Polling watcher (cross-platform).
+    this._spawnWatchPath = path.join(this._root, 'public', 'overrides', 'spawn.json');
+    try {
+      fs.watchFile(this._spawnWatchPath, { interval: 1500 }, () => {
+        this.SPAWN = GameHost._readSpawn(this._root);
+      });
+    } catch {
+      /* watch unavailable — spawn edits still apply on restart */
+    }
   }
 
   // Per-tick player status upkeep: apply due DoT, drop worn-off statuses, and
@@ -818,7 +832,10 @@ class GameHost {
     if (this.eventRuntime) this.eventRuntime.stop();
     if (this._giftsWatchPath) fs.unwatchFile(this._giftsWatchPath);
     if (this._shopsWatchPath) fs.unwatchFile(this._shopsWatchPath);
+    if (this._spawnWatchPath) fs.unwatchFile(this._spawnWatchPath);
     this._giftsWatchPath = null;
+    this._shopsWatchPath = null;
+    this._spawnWatchPath = null;
   }
 
   // Project an inventory (array of ids) to the wire shape the client renders:
@@ -1943,8 +1960,15 @@ class GameHost {
       case 'move': {
         const entry = this.players.get(playerId);
         if (!entry) break;
-        // --- Server-side validation (anti-cheat; lenient so honest play is never
-        // affected). Drop garbage, clamp into the map, cap implausible jumps. ---
+        // 'move' trusts a CLIENT-SENT position, so it is EDITOR-ONLY — the dev
+        // free-camera anchor (the only legitimate sender). Normal play is fully
+        // server-authoritative: walking goes through 'input'/_simPlayers and door
+        // warps are resolved + positioned server-side (use_door + findPlayerLanding,
+        // adopted via the 'warp' message). A gameplay client never sends 'move', so
+        // anyone who does is rejected here — no client teleport / speedhack.
+        if (!entry.editor) break;
+        // --- Validation (still belt-and-suspenders for the editor channel). Drop
+        // garbage, clamp into the map. ---
         let nx = Number(msg.x);
         let ny = Number(msg.y);
         if (!Number.isFinite(nx) || !Number.isFinite(ny)) break;
@@ -2037,8 +2061,20 @@ class GameHost {
             );
           break;
         }
-        entry.x = Math.round(door.destX);
-        entry.y = Math.round(door.destY);
+        // Land on a CLEAR tile: if the door's exit is blocked by a wall, an NPC,
+        // or another player, drop onto the nearest free spot instead — so a warp
+        // never stacks two bodies on the doorway and gets them stuck. (The same
+        // free-spot rule NPCs use when they door-follow; the per-tick unstack is
+        // the backstop.) The resolved spot is authoritative — the client adopts it
+        // from the `warp` message below, so no client-volunteered position.
+        const spot = this.npcSim.findPlayerLanding(
+          door.destX,
+          door.destY,
+          Array.from(this.players.values()),
+          playerId
+        );
+        entry.x = Math.round(spot.x);
+        entry.y = Math.round(spot.y);
         entry.warping = true;
         entry.warpUntil = Date.now() + WARP_SHIELD_MAX_MS;
         if (entry._inputs) entry._inputs.length = 0; // stale pre-warp inputs don't carry over
