@@ -17,30 +17,30 @@ from coilsnake.model.eb.table import eb_table_from_offset
 from coilsnake.util.eb.pointer import from_snes_address
 
 from palette_anim import combo_animations
-from tile_anim import tile_animations
+from tile_anim import tile_animations, anim_graphics
 
-# Graphics tilesets whose TILE-GRAPHIC animation we bake.
-# DISABLED (empty) for now: the frame GRAPHICS source is wrong — EB's animation
-# minitiles live in a SEPARATE per-tileset asset (decompressed to $7EC000), NOT in
-# the tileset's own 896 minitiles (verified: the graphics block is exactly 896, no
-# frames appended). Using consecutive minitiles flashed unrelated tiles in-game.
-# TODO2.md: locate that animation-graphics source, then re-enable {12,13} (escalators)
-# and the rest (water/waterfalls: 0,1,5,6,7,8,16,17,18,19). The bake/manifest/renderer
-# path (tile_anim.py + the merge below) is ready — only the frame source is missing.
-ESCALATOR_DRAW_TS = set()
+# Graphics tilesets whose TILE-GRAPHIC animation we bake. The frames are drawn from
+# the per-tileset $7EC000 animation buffer (tile_anim.anim_graphics) — the separate
+# 256-minitile asset EB DMAs into VRAM, NOT the tileset's own minitiles. {12,13} are
+# the dept-store escalators (Twoson drawTS 12, Fourside drawTS 13). The water/
+# waterfall tilesets (0,1,5,6,7,8,16,17,18,19) animate the same way and are now
+# unblocked too — left off pending an in-game look (some target the FG layer).
+ESCALATOR_DRAW_TS = {12, 13}
 
 TILE_SIZE = 32
 MINI_SIZE = 8
 ATLAS_COLS = 32
 
 
-def render_atlas(tileset, pal_colors, mt_remap=None):
+def render_atlas(tileset, pal_colors, mt_remap=None, anim_tiles=None):
     """Render one (tileset, palette) into BG + FG atlas images.
 
     `pal_colors` = list[6] of list[16] of (r, g, b, a) — the resolved subpalette
-    colors. `mt_remap` (optional) = {minitileIdx: substituteIdx} that swaps which
+    colors. `mt_remap` (optional) = {liveMinitileIdx: animBufferIdx} that swaps which
     minitile GRAPHICS a BG cell draws — used for tile-graphic animation frames
-    (escalator steps etc.); the FG layer is untouched (animation is BG-only).
+    (escalator steps etc.). The substitute is drawn from `anim_tiles` (the tileset's
+    $7EC000 animation buffer from tile_anim.anim_graphics), NOT the tileset's own
+    minitiles. The FG layer is untouched (escalator animation is BG-only).
     Returns (bg_img, fg_img, has_fg). Used for the static atlas and each
     palette/tile animation frame."""
     atlas_w = ATLAS_COLS * TILE_SIZE  # 1024
@@ -75,9 +75,18 @@ def render_atlas(tileset, pal_colors, mt_remap=None):
                 sp = pal_colors[pal_idx] if pal_idx < len(pal_colors) else pal_colors[0]
 
                 # --- Background minitile (tile-animation frames swap which one) ---
-                bg_mt = mt_remap.get(mt_index, mt_index) if mt_remap else mt_index
-                if bg_mt < len(tileset.minitiles.tiles) and tileset.minitiles.tiles[bg_mt] is not None:
-                    minitile = tileset.minitiles.tiles[bg_mt]
+                # A remapped cell draws from the animation buffer ($7EC000); every
+                # other cell draws its normal minitile from the tileset.
+                minitile = None
+                if mt_remap and mt_index in mt_remap and anim_tiles is not None:
+                    sub = mt_remap[mt_index]
+                    if sub < len(anim_tiles):
+                        minitile = anim_tiles[sub]
+                if minitile is None:
+                    bg_mt = mt_index
+                    if bg_mt < len(tileset.minitiles.tiles):
+                        minitile = tileset.minitiles.tiles[bg_mt]
+                if minitile is not None:
                     dx = atlas_x + cx * MINI_SIZE
                     dy = atlas_y + cy * MINI_SIZE
                     for py in range(8):
@@ -215,6 +224,9 @@ def main():
     # Tile-graphic animations (escalator steps), keyed by GRAPHICS (draw) tileset.
     tile_anims = tile_animations(rom)
     print(f"Tile animations on draw tilesets: {sorted(tile_anims.keys())} (baking {sorted(ESCALATOR_DRAW_TS)})")
+    # The $7EC000 animation-graphics buffer (256 minitiles) for each baked tileset —
+    # the frame source the remaps index into. Decompressed once per draw tileset.
+    anim_gfx = {ts: anim_graphics(rom, ts) for ts in ESCALATOR_DRAW_TS}
     anim_manifest = {}
 
     # Render atlases
@@ -292,8 +304,9 @@ def main():
         # Bake one atlas per animation frame ({key}_f{k}.png). Frame 0 == the static
         # atlas (seamless), so the renderer can swap to it without a visible jump.
         if frames:
+            anim_tiles = anim_gfx.get(draw_ts_id)
             for k, (fc, rm) in enumerate(frames):
-                fbg, ffg, fhas_fg = render_atlas(tileset, fc, rm)
+                fbg, ffg, fhas_fg = render_atlas(tileset, fc, rm, anim_tiles)
                 fbg.save(str(atlas_dir / f"{key}_f{k}.png"))
                 if fhas_fg:
                     ffg.save(str(atlas_dir / f"{key}_f{k}_fg.png"))

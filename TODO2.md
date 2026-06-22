@@ -212,17 +212,15 @@ Engine code should still be written to port cleanly (see CLAUDE.md Architecture)
 - [~] **Tile animation system** — EB has TWO systems; both wired into the per-frame-atlas
   - `anim.json` pipeline (build_atlases bakes `{key}_f{k}.png`, `TilesetManager` swaps on a
     clock). DONE: **palette cycling** — all 8 Flash-Effect combos (`tools/palette_anim.py`,
-    water/lava/the 29_3 palette). NOT DONE: **tile-graphic animation** (the moving escalator/
-    conveyor/waterfall STEPS). The properties table is parsed (`tools/tile_anim.py`, ROM
-    0x2F126B) and the bake/merge path is ready, but the frame GRAPHICS source is unsolved —
-    currently **disabled** (`ESCALATOR_DRAW_TS=set()` in build_atlases.py) because the first
-    guess (consecutive tileset minitiles) flashed WRONG sprites in-game (the 896-minitile
-    graphics block has nothing appended). **NEXT:** find EB's per-tileset animation-graphics
-    asset (what it decompresses to $7EC000) + its ROM pointer table, decode its minitiles,
-    point the `tile_anim.py` remap at those. Then re-enable draw tilesets 12+13 (dept-store
-    escalators) first, then the rest (water/waterfalls: 0,1,5,6,7,8,16,17,18,19). Verify
-    in-game (frame 0 == static, so a correct source is safe). Combos using BOTH systems
-    (Fourside 29_3/29_4) already merge to lcm(frames) with the tile delay.
+    water/lava/the 29_3 palette). DONE: **tile-graphic animation** frame source FOUND —
+    `MAP_DATA_TILE_ANIMATION_PTR_TABLE` (file `0x2F11CB`) → compressed 256-minitile buffer
+    per tileset (EB's $7EC000), decoded by `tile_anim.anim_graphics`; the properties' src/dst
+    index into it (frame 0 == live minitiles at rest, later frames scrolled). `build_atlases`
+    draws frames from it; **dept-store escalators enabled** (`ESCALATOR_DRAW_TS={12,13}`,
+    Twoson + Fourside). REMAINING: enable the water/waterfall tilesets (0,1,5,6,7,8,16,17,18,19)
+    — same mechanism, just add to `ESCALATOR_DRAW_TS` and check in-game (some target the FG
+    layer; verify before shipping). Combos using BOTH systems (Fourside 29_3/29_4) already
+    merge to lcm(frames) with the tile delay.
 - [ ] Knockback + stun tuning pass — knockback distance + stun frequency/duration are best felt in-game; nudge the `KB_*` / `STUN_*` constants in `npcSim.js` after a playtest. (Knockback + basic stun already shipped; this is polish, folded into the Status System above as it matures.)
 - [ ] Player settings screen — selectable chat font (default: regular EB font; Mr. Saturn font as a fun option via ChatManager.setChatFont)
 - [ ] Build visual sprite catalog (HTML page showing all 463 groups with IDs)

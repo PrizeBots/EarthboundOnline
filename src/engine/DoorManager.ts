@@ -1,8 +1,7 @@
 import { loadJSON } from './AssetLoader';
 import { RoomBounds } from './Camera';
-import { checkCollision, setDoorCells, isSolidAtPoint } from './Collision';
-import { isRoomCroppableTile } from './MapManager';
-import { MINITILE_SIZE, TILE_SIZE, MAP_WIDTH_TILES } from '../types';
+import { checkCollision, setDoorCells } from './Collision';
+import { MINITILE_SIZE, MAP_WIDTH_TILES } from '../types';
 import { DEFAULT_DOOR_SFX, normalizeDoorSfx } from './DoorSfx';
 import worldFlags from '../world_flags.json';
 
@@ -93,19 +92,24 @@ export interface EditorDoor {
  * An escalator/stairway trigger. EB's `EscalatorOrStairwayDoor` is NOT a warp —
  * it carries no destination, only a diagonal `direction` (CoilSnake
  * StairDirection: NW=0, NE=0x100, SW=0x200, SE=0x300). The floors are stacked
- * in the tilemap and the steps are SOLID; stepping a trigger auto-walks the
- * player diagonally across the (solid) steps to the landing on the next floor.
+ * CONTIGUOUSLY in the tilemap and the steps are SOLID; stepping a trigger
+ * auto-walks the player diagonally across the (solid) steps to the PAIRED
+ * trigger at the far end of the ramp. Every ROM stair pairs along its diagonal
+ * (audited: all directional ends march to a partner; all NOWHERE ends are some
+ * directional's partner), so the destination is fully deterministic — computed
+ * once at load (see loadDoors), not guessed at ride time. There is no warp.
  */
 export interface StairData {
   worldX: number;
   worldY: number;
-  dx: -1 | 0 | 1; // diagonal step vector (0,0 when nowhere — Game infers it)
+  // Ride direction toward the paired landing, and that landing's world coords.
+  // (0,0)/self when this trigger has no partner — Game then starts no ride.
+  // EB `StairDirection.NOWHERE` (0x8000) ends carry no encoded diagonal; their
+  // direction is the REVERSE of the partner that points at them (set at load).
+  dx: -1 | 0 | 1;
   dy: -1 | 0 | 1;
-  // EB `StairDirection.NOWHERE` (0x8000): the escalator's FAR landing end, which
-  // carries no encoded diagonal. It's still a real ride entry (it carries you
-  // back into the ramp), so Game infers the diagonal from the ramp geometry +
-  // the player's heading at ride start instead of from a fixed vector.
-  nowhere?: boolean;
+  destX: number;
+  destY: number;
 }
 
 // StairDirection value -> diagonal unit vector. NOWHERE (0x8000) is absent on
@@ -117,6 +121,74 @@ const STAIR_DIR_VEC: Record<number, { dx: -1 | 1; dy: -1 | 1 }> = {
   0x300: { dx: 1, dy: 1 }, // SE
 };
 const STAIR_NOWHERE = 0x8000;
+
+// A stair trigger while it's being paired at load time (carries its raw ROM
+// direction + its resolved ride vector/destination).
+interface FlatStair {
+  worldX: number;
+  worldY: number;
+  dir: number;
+  area: number;
+  dx: -1 | 0 | 1;
+  dy: -1 | 0 | 1;
+  destX: number;
+  destY: number;
+}
+
+// March the 45° diagonal (dx,dy) from `from` and return the nearest OTHER stair
+// trigger it passes over — the paired landing. Every ROM stair pairs this way
+// (the two ends of a ramp sit on the same diagonal); used once per stair at load.
+function marchToPartner(
+  from: FlatStair,
+  dx: -1 | 1,
+  dy: -1 | 1,
+  all: FlatStair[]
+): FlatStair | null {
+  const STEP = MINITILE_SIZE;
+  for (let s = 1; s <= 64; s++) {
+    const px = from.worldX + dx * STEP * s;
+    const py = from.worldY + dy * STEP * s;
+    for (const cand of all) {
+      if (cand === from) continue;
+      // Skip anything still touching the start (a paired up/down trigger sits
+      // right next to us); we want the OTHER end of the ramp.
+      if (
+        Math.abs(cand.worldX - from.worldX) <= STAIR_TRIGGER &&
+        Math.abs(cand.worldY - from.worldY) <= STAIR_TRIGGER
+      )
+        continue;
+      if (
+        Math.abs(cand.worldX - px) <= STAIR_TRIGGER + 1 &&
+        Math.abs(cand.worldY - py) <= STAIR_TRIGGER + 1
+      )
+        return cand;
+    }
+  }
+  return null;
+}
+
+// Resolve every stair's paired landing in one pass. A directional end marches its
+// encoded diagonal to its partner; if that partner is a NOWHERE landing (no
+// encoded direction of its own) it inherits the REVERSE vector — it just rides
+// back the way it came. Stairs with no partner keep dx=dy=0 (Game starts no ride).
+function pairStairs(stairs: FlatStair[]): void {
+  for (const s of stairs) {
+    const vec = STAIR_DIR_VEC[s.dir];
+    if (!vec) continue; // NOWHERE end — gets resolved as some directional's partner
+    const partner = marchToPartner(s, vec.dx, vec.dy, stairs);
+    if (!partner) continue;
+    s.dx = vec.dx;
+    s.dy = vec.dy;
+    s.destX = partner.worldX;
+    s.destY = partner.worldY;
+    if (!STAIR_DIR_VEC[partner.dir]) {
+      partner.dx = -vec.dx as -1 | 1;
+      partner.dy = -vec.dy as -1 | 1;
+      partner.destX = s.worldX;
+      partner.destY = s.worldY;
+    }
+  }
+}
 
 // Raw JSON format from extraction
 interface RawDoor {
@@ -234,28 +306,33 @@ export async function loadDoors(): Promise<void> {
   const MAP_W_MT = MAP_WIDTH_TILES * 4;
   const AREA_MT = DOOR_AREA_PX / MINITILE_SIZE;
   const cells = new Set<number>();
-  // Escalator/stairway triggers: a diagonal `direction` and NO destination —
-  // the player rides the (walkable) ramp; Game owns the ride (see getStairAt).
+  // Escalator/stairway triggers: a diagonal `direction` and NO destination — the
+  // player rides the (walkable) ramp to the PAIRED trigger at its far end. Collect
+  // them flat first, then pair each along its diagonal (one deterministic pass) so
+  // the ride glides straight to a known landing — no runtime guessing. Game owns
+  // the ride (see getStairAt). The floors are contiguous in map coords; the ride
+  // never warps.
   stairsByArea = raw.map(() => []);
+  const flatStairs: FlatStair[] = [];
   raw.forEach((area, idx) => {
     const ox = (idx % DOOR_GRID_COLS) * AREA_MT;
     const oy = Math.floor(idx / DOOR_GRID_COLS) * AREA_MT;
     for (const d of area) {
       if (d.type === 'stair') {
         const dir = d.direction ?? -1;
+        if (dir !== STAIR_NOWHERE && !STAIR_DIR_VEC[dir]) continue; // invalid direction
         const worldX = (ox + d.x) * MINITILE_SIZE + MINITILE_SIZE / 2;
         const worldY = (oy + d.y) * MINITILE_SIZE + MINITILE_SIZE / 2;
-        if (dir === STAIR_NOWHERE) {
-          // Far-landing end: a real ride trigger whose diagonal Game infers from
-          // the ramp + player heading. Without this the (solid) escalator steps
-          // have no ride to cross them and the player gets stuck (Twoson dept
-          // store: the up/down escalator landings were dead — bugs.md).
-          stairsByArea[idx].push({ worldX, worldY, dx: 0, dy: 0, nowhere: true });
-          continue;
-        }
-        const vec = STAIR_DIR_VEC[dir];
-        if (!vec) continue; // invalid direction
-        stairsByArea[idx].push({ worldX, worldY, dx: vec.dx, dy: vec.dy });
+        flatStairs.push({
+          worldX,
+          worldY,
+          dir,
+          area: idx,
+          dx: 0,
+          dy: 0,
+          destX: worldX,
+          destY: worldY,
+        });
         continue;
       }
       if (d.type !== 'door') continue;
@@ -267,6 +344,17 @@ export async function loadDoors(): Promise<void> {
       }
     }
   });
+  pairStairs(flatStairs);
+  for (const s of flatStairs) {
+    stairsByArea[s.area].push({
+      worldX: s.worldX,
+      worldY: s.worldY,
+      dx: s.dx,
+      dy: s.dy,
+      destX: s.destX,
+      destY: s.destY,
+    });
+  }
   for (const o of Object.values(edits)) {
     if (!o) continue;
     cells.add(Math.floor(o.destY / MINITILE_SIZE) * MAP_W_MT + Math.floor(o.destX / MINITILE_SIZE));
@@ -355,104 +443,4 @@ export function getStairAt(px: number, py: number): StairData | null {
     }
   }
   return null;
-}
-
-/**
- * The PAIRED landing of an escalator/stairway ride. EB stairway/escalator triggers
- * come in pairs: each end carries the diagonal that points at its partner, so the
- * ride runs trigger-to-trigger. We march out along the ride diagonal from the
- * start trigger and return the FIRST other stair trigger we pass over — that's the
- * exact landing where the ride must stop (every directional trigger in the ROM has
- * one). Far more reliable than "stop when the tile ahead is solid": a dept-store
- * stairway lands on open floor (no wall), so the solid test would never fire and
- * the ride overshoots. Returns null if nothing pairs (then the caller falls back
- * to the solid/runaway-cap stop). startX/startY = the ride's feet position.
- */
-export function getStairLanding(
-  startX: number,
-  startY: number,
-  dx: -1 | 1,
-  dy: -1 | 1
-): { x: number; y: number } | null {
-  const STEP = MINITILE_SIZE;
-  const MAX_STEPS = 64; // the longest ROM ramp is ~31 minitiles; 64 is generous
-  for (let s = 1; s <= MAX_STEPS; s++) {
-    const px = startX + dx * STEP * s;
-    const py = startY + dy * STEP * s;
-    const ax = Math.floor(px / DOOR_AREA_PX);
-    const ay = Math.floor(py / DOOR_AREA_PX);
-    for (let oy = -1; oy <= 1; oy++) {
-      for (let ox = -1; ox <= 1; ox++) {
-        const cx = ax + ox;
-        const cy = ay + oy;
-        if (cx < 0 || cy < 0 || cx >= DOOR_GRID_COLS) continue;
-        const idx = cy * DOOR_GRID_COLS + cx;
-        if (idx < 0 || idx >= stairsByArea.length) continue;
-        for (const stair of stairsByArea[idx]) {
-          // Skip the start trigger itself (and anything still touching it).
-          if (
-            Math.abs(stair.worldX - startX) <= STAIR_TRIGGER &&
-            Math.abs(stair.worldY - startY) <= STAIR_TRIGGER
-          )
-            continue;
-          if (
-            Math.abs(stair.worldX - px) <= STAIR_TRIGGER + 1 &&
-            Math.abs(stair.worldY - py) <= STAIR_TRIGGER + 1
-          ) {
-            return { x: stair.worldX, y: stair.worldY };
-          }
-        }
-      }
-    }
-  }
-  return null;
-}
-
-/**
- * The floor-change door an escalator/stairway delivers you to. EB escalators
- * are a short connecting SHAFT (solid-bounded walkable region) with a `door`
- * warp at the end that teleports to the next floor's map region. We flood the
- * shaft from the trigger and pick the door inside it that (a) warps to an
- * indoor/croppable floor (not the building's outdoor exit) and (b) lies in the
- * ride's vertical direction (an UP escalator → the highest floor = smallest
- * destY; DOWN → largest). Returns null for shafts that are too big to be a
- * clean escalator (e.g. open-floor banks) — the caller then just stops.
- */
-export function getStairExit(px: number, py: number, dy: number): DoorData | null {
-  const MAP_W_MT = MAP_WIDTH_TILES * 4;
-  const seedX = Math.floor(px / MINITILE_SIZE);
-  const seedY = Math.floor(py / MINITILE_SIZE);
-  // Flood the shaft (bounded by solid). Cap small: a real escalator shaft is a
-  // few dozen minitiles; a huge flood means we're on an open floor, not a shaft.
-  const SHAFT_CAP = 200;
-  const shaft = new Set<number>();
-  const stack = [seedY * MAP_W_MT + seedX];
-  while (stack.length) {
-    const k = stack.pop()!;
-    if (shaft.has(k)) continue;
-    const mx = k % MAP_W_MT;
-    const my = (k - mx) / MAP_W_MT;
-    if (isSolidAtPoint(mx * MINITILE_SIZE + 4, my * MINITILE_SIZE + 4)) continue;
-    shaft.add(k);
-    if (shaft.size > SHAFT_CAP) return null; // not a clean shaft
-    stack.push(k + 1, k - 1, k + MAP_W_MT, k - MAP_W_MT);
-  }
-
-  let best: DoorData | null = null;
-  for (const area of doorsByArea) {
-    for (const door of area) {
-      const mtKey =
-        Math.floor(door.worldY / MINITILE_SIZE) * MAP_W_MT +
-        Math.floor(door.worldX / MINITILE_SIZE);
-      if (!shaft.has(mtKey)) continue;
-      const destTX = Math.floor(door.destX / TILE_SIZE);
-      const destTY = Math.floor(door.destY / TILE_SIZE);
-      if (!isRoomCroppableTile(destTX, destTY)) continue; // outdoor exit — skip
-      // UP escalators climb toward smaller destY, DOWN toward larger.
-      if (!best || (dy < 0 ? door.destY < best.destY : door.destY > best.destY)) {
-        best = door;
-      }
-    }
-  }
-  return best;
 }

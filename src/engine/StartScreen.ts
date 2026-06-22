@@ -21,6 +21,7 @@ import {
   logout,
   me,
   listCharacters,
+  deleteCharacter,
 } from './Auth';
 import { runRomIntake } from '../extract/romAssets';
 import { mountCreateFlow } from './charcreate/CreateFlow';
@@ -219,23 +220,66 @@ function emptySlot(): HTMLElement {
 }
 
 function filledSlot(char: CharacterSummary): HTMLElement {
-  const box = el('button', 'eb-ss-slot eb-win') as unknown as HTMLButtonElement;
-  const cv = document.createElement('canvas');
-  cv.width = 40;
-  cv.height = 48;
-  cv.className = 'eb-ss-slot-sprite';
-  box.appendChild(cv);
-  const info = el('div', 'eb-ss-slot-info');
-  const level = typeof char.save?.level === 'number' ? char.save.level : 1;
-  info.appendChild(ebText(char.name, 2, '#ffffff'));
-  info.appendChild(ebText(`Lv ${level}`, 1, '#f8e85a'));
-  box.appendChild(info);
-  box.addEventListener('click', () => play(char));
-  // Draw the sprite once its sheet loads.
-  void loadSpriteImage(char.spriteGroupId, char.appearance).then((img) => {
-    drawSouthFrame(cv.getContext('2d')!, img, char.spriteGroupId, cv.width, cv.height, 2);
-  });
-  return box;
+  // A relative wrapper so the corner ✕ delete button can sit over the slot (a
+  // <button> can't legally nest another <button>). The wrapper swaps between the
+  // normal slot and an inline "Delete NAME?" confirm — deleting is permanent, so
+  // never one-click.
+  const wrap = el('div', 'eb-ss-slot-wrap');
+
+  const showNormal = (): void => {
+    wrap.innerHTML = '';
+    const box = el('button', 'eb-ss-slot eb-win') as unknown as HTMLButtonElement;
+    box.type = 'button';
+    const cv = document.createElement('canvas');
+    cv.width = 40;
+    cv.height = 48;
+    cv.className = 'eb-ss-slot-sprite';
+    box.appendChild(cv);
+    const info = el('div', 'eb-ss-slot-info');
+    const level = typeof char.save?.level === 'number' ? char.save.level : 1;
+    info.appendChild(ebText(char.name, 2, '#ffffff'));
+    info.appendChild(ebText(`Lv ${level}`, 1, '#f8e85a'));
+    box.appendChild(info);
+    box.addEventListener('click', () => play(char));
+    // Draw the sprite once its sheet loads.
+    void loadSpriteImage(char.spriteGroupId, char.appearance).then((img) => {
+      drawSouthFrame(cv.getContext('2d')!, img, char.spriteGroupId, cv.width, cv.height, 2);
+    });
+    const del = el('button', 'eb-ss-del') as unknown as HTMLButtonElement;
+    del.type = 'button';
+    del.textContent = '✕';
+    del.title = `Delete ${char.name}`;
+    del.addEventListener('click', (e) => {
+      e.stopPropagation(); // don't fall through to play(char)
+      showConfirm();
+    });
+    wrap.appendChild(box);
+    wrap.appendChild(del);
+  };
+
+  const showConfirm = (): void => {
+    wrap.innerHTML = '';
+    const box = el('div', 'eb-ss-slot eb-win eb-ss-slot-confirm');
+    box.appendChild(ebText(`Delete ${char.name}? This can't be undone.`, 1, '#ff8a8a'));
+    const row = div('eb-ss-confirm-row');
+    const del = button('Delete', 'primary', async () => {
+      del.disabled = true;
+      try {
+        await deleteCharacter(char.id);
+        render(); // refresh the slots — the freed slot reopens as "+ Create New"
+      } catch {
+        del.disabled = false;
+        box.appendChild(ebText('Could not delete. Try again.', 1, '#ff6a6a'));
+      }
+    });
+    row.appendChild(del);
+    row.appendChild(button('Cancel', 'ghost', showNormal));
+    box.appendChild(row);
+    wrap.appendChild(box);
+  };
+
+  showNormal();
+  return wrap;
 }
 
 // Close the overlay and hand the character to the game to spawn.
@@ -470,6 +514,19 @@ function injectStyles(): void {
   .eb-ss-slot-sprite { image-rendering: pixelated; background: #0a0a14; border-radius: 3px; flex: none; }
   .eb-ss-slot-info { display: flex; flex-direction: column; gap: 4px; }
   .eb-ss-slot-info canvas { image-rendering: pixelated; }
+  /* Corner delete (✕): floats over the slot's top-right; the wrapper is relative. */
+  .eb-ss-slot-wrap { position: relative; display: block; width: 100%; }
+  .eb-ss-del {
+    position: absolute; top: 6px; right: 6px; z-index: 2;
+    width: 18px; height: 18px; padding: 0; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+    background: #1a1020; color: #ff8a8a; font: 12px monospace; cursor: pointer;
+    border: 1px solid #5a2030; border-radius: 3px;
+  }
+  .eb-ss-del:hover, .eb-ss-del:focus-visible { background: #d8281c; color: #fff; border-color: #f8e85a; outline: none; }
+  .eb-ss-slot-confirm { flex-direction: column; align-items: stretch; gap: 8px; cursor: default; }
+  .eb-ss-confirm-row { display: flex; gap: 8px; }
+  .eb-ss-confirm-row button { flex: 1; }
   `;
   const style = document.createElement('style');
   style.id = 'eb-ss-styles';

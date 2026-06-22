@@ -20,6 +20,38 @@ Format:
 
 ## Fixed
 
+### Escalators inconsistent / "getting off is weird" — unified to one model (FIXED 2026-06-21)
+
+- **Symptom:** dept-store escalators (Twoson/Fourside) behaved inconsistently from
+  one to the next; dismount ("getting off") was weird. (Separately: the steps don't
+  animate — still OPEN, see the tile-graphic entry below.)
+- **Root cause:** the engine ran TWO competing ride models and picked between them
+  at runtime per-escalator: (a) glide to the paired trigger, vs (b) flood a "shaft"
+  and **warp** through a floor `door` (`getStairExit`). Plus the stop had four
+  conditions (`getStairAt` 5px window / precomputed-landing 8px / solid-ahead /
+  256px runaway cap) and NOWHERE-landing direction was guessed from the player's
+  heading (`inferStairDir`). Which path/stop fired depended on data quirks, so
+  escalators felt different from each other and the dismount was unpredictable.
+- **Data finding (the key insight):** every ROM stair is a **deterministic diagonal
+  pair**. Audit of `doors.json`: all 82 directional ends march their 45° diagonal to
+  a partner (max 31 minitiles); all 10 NOWHERE ends are exactly one directional's
+  partner. The Twoson dept-store shaft has **zero doors** → the warp model was always
+  a misfire there. The floors are CONTIGUOUS map coords (partner is 19mt away in the
+  same space), just drawn stacked and flood-separated by the solid steps.
+- **Fix (one model, applied to all):** `DoorManager.loadDoors` now **precomputes the
+  pairing once** (`pairStairs`/`marchToPartner`): each `StairData` carries its ride
+  vector + the partner's coords (`destX/destY`); a NOWHERE end inherits the reverse
+  vector toward the partner that points at it. The ride is now trivial and identical
+  for every escalator: glide straight to the known landing, **one** stop condition
+  (reached/passed dest on both axes), snap on, re-crop (cross-floor only), nudge off
+  the seam, `sendRideWarp` resync. **Deleted:** `getStairExit` (warp model),
+  `getStairLanding` (folded into load-time pairing), `Game.inferStairDir` (NOWHERE
+  guess), the 4-way stop, and the `exit`/`startTransition` branch. Server unchanged.
+- **Verified:** typecheck clean; lint clean (only 2 pre-existing unrelated warnings);
+  `gameHost` `ride_warp` tests pass (other failures are pre-existing shop/equip);
+  pairing audit 82/82 directional + 10/10 NOWHERE resolve. Needs an in-game ride
+  check across the Twoson + Fourside dept stores.
+
 ### Escalator ride overshoots the landing / can't get off (FIXED 2026-06-20)
 
 - **Symptom:** dept-store escalators (Twoson/Fourside) — the UP ride doesn't stop
@@ -65,22 +97,29 @@ Format:
   to dodge — and the client is immediately live). Door-exit rides still fade+shield
   via their own `warp` message.
 
-### Escalator STEP animation is tile-graphic (OPEN — pipeline built, frame SOURCE wrong)
+### Escalator STEP animation is tile-graphic — frame source found (FIXED 2026-06-21)
 
 - **Finding:** the escalator STEPS animate via EB's _Tile Animation Properties Table_
   (ROM 0x2F126B unheadered; swaps minitile GRAPHICS in VRAM — escalators/conveyors/
   waterfalls), NOT palette cycling. Table parsed OK (`tools/tile_anim.py`): Twoson
   drawTS 12 = 3f delay 5; Fourside drawTS 13 = 8f delay 3.
-- **WRONG ASSUMPTION (caused "flashing with the wrong sprites"):** I assumed the per-
-  frame graphics were consecutive tileset minitiles (M, M+stride, ...). They are NOT —
-  the graphics block is exactly 896 minitiles with nothing appended; EB decompresses a
-  SEPARATE per-tileset animation-graphics asset to $7EC000. Using tileset minitiles
-  swapped in unrelated tiles in-game. **Disabled** (`ESCALATOR_DRAW_TS = set()`) so
-  escalators are static, not garbled.
-- **What's left (TODO2.md):** locate the per-tileset animation-graphics source (the
-  $7EC000 asset) + its ROM pointer, decode its minitiles, then the `tile_anim.py` frame
-  remap points at THOSE. The bake/manifest/`TilesetManager` path already works (the
-  palette system uses it); only the frame source is missing.
+- **The missing piece (now found):** the per-frame graphics are a SEPARATE per-tileset
+  asset (the tileset's own 896 minitiles really do end with nothing appended). EB
+  decompresses it to $7EC000 from **`MAP_DATA_TILE_ANIMATION_PTR_TABLE`** — 20 pointers
+  at file **0x2F11CB** (NOT the properties table 0x2F126B; the adjacent WEIRD table at
+  0x2F121B is just per-tileset offsets into the properties data). Each points to a
+  compressed **256-minitile** buffer. The properties `src/dst` index into THIS buffer.
+  Verified: ts12/ts13 buffer **frame 0 == the live tileset minitiles** (steps at rest),
+  and frames 1+ are the same stripes SCROLLED (rendered the strip — they move).
+  The earlier "M+stride into the tileset" read landed on furniture past mt18 → garbage.
+- **Fix:** `tile_anim.anim_graphics(rom, ts)` decompresses the buffer; `build_atlases`
+  draws each frame's remapped minitiles from it (new `anim_tiles` arg to `render_atlas`)
+  and `ESCALATOR_DRAW_TS = {12, 13}` is re-enabled. `TilesetManager` already cycles the
+  baked `{key}_f{k}.png` frames generically (Twoson combo 20 = 3f@5, Fourside 27/28 =
+  8f@3). Water/waterfall tilesets (0,1,5,6,7,8,16,17,18,19) animate the same way and are
+  now unblocked — left off pending an in-game look (some target the FG layer).
+- **Verified:** `build_atlases` runs clean; frame strip shows the steps scrolling;
+  anim.json carries the escalator combos. Needs an in-game look.
 
 ### Escalator ride — stuck at the top (room-seal seam) (FIXED 2026-06-21)
 

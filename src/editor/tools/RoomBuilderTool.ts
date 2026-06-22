@@ -32,6 +32,7 @@ import { setEntityCol } from '../../engine/NPCManager';
 import { EntityCol, EntityPropsOverride } from '../../engine/EntityStats';
 import { openSpriteEditor } from '../../engine/spriteEditor';
 import { placementTool } from './PlacementTool';
+import { collisionPaint, CollisionOp } from './collisionPaint';
 
 // Room Builder — author CUSTOM rooms that don't exist in the ROM, stamped into an
 // "interiors band" below the overworld (overrides/rooms.json; the ROM tiles.json
@@ -150,6 +151,17 @@ class RoomBuilderTool implements EditorTool {
   private strokeBefore: CustomRoom[] | null = null;
   private roomsCollapsed = false;
 
+  // Collision / layer paint (embedded — replaces the old standalone tool).
+  // 'tiles' = normal tile painting; any CollisionOp routes the mouse to the
+  // shared collisionPaint core instead (Solid/Walk/FG + advanced pri/clear).
+  private paintMode: 'tiles' | CollisionOp = 'tiles';
+  private colHover: WorldPoint = { x: 0, y: 0 };
+  private advOpen = false;
+  private modeRow: HTMLDivElement | null = null;
+  private colControls: HTMLDivElement | null = null;
+  private advEl: HTMLDivElement | null = null;
+  private advOut: HTMLPreElement | null = null;
+
   // selection + corner resize
   private selectedRoomId: string | null = null;
   private resizing: {
@@ -178,6 +190,8 @@ class RoomBuilderTool implements EditorTool {
 
   activate(shell: EditorShellApi): void {
     this.shell = shell;
+    collisionPaint.setShell(shell);
+    void collisionPaint.load();
     this.buildPanel();
     this.refreshList();
     this.refreshLibrary();
@@ -308,6 +322,10 @@ class RoomBuilderTool implements EditorTool {
   // ── mouse ────────────────────────────────────────────────────────────────
 
   onMouseDown(p: WorldPoint): boolean {
+    if (this.paintMode !== 'tiles') {
+      // Collision/layer paint: a left-drag paints cells via the shared core.
+      return collisionPaint.beginStroke(p, this.paintMode);
+    }
     if (this.painting) {
       this.lastPaintedKey = '';
       this.strokeDirty = false;
@@ -340,6 +358,11 @@ class RoomBuilderTool implements EditorTool {
   onMouseMove(p: WorldPoint, dragging: boolean): void {
     this.hoverTile = { tx: Math.floor(p.x / TILE_SIZE), ty: Math.floor(p.y / TILE_SIZE) };
     this.hoverMini = { mx: Math.floor(p.x / MINITILE_SIZE), my: Math.floor(p.y / MINITILE_SIZE) };
+    if (this.paintMode !== 'tiles') {
+      this.colHover = p;
+      if (dragging) collisionPaint.dragStroke(p);
+      return;
+    }
     if (this.resizing) {
       if (dragging) this.updateResize(p);
       return;
@@ -369,6 +392,10 @@ class RoomBuilderTool implements EditorTool {
   }
 
   onMouseUp(): void {
+    if (this.paintMode !== 'tiles') {
+      collisionPaint.endStroke();
+      return;
+    }
     if (this.resizing) {
       this.commitResize();
       return;
@@ -864,6 +891,18 @@ class RoomBuilderTool implements EditorTool {
   // ── overlay ──────────────────────────────────────────────────────────────
 
   drawOverlay(ctx: CanvasRenderingContext2D, camera: Camera): void {
+    if (this.paintMode !== 'tiles') {
+      // Each mode tints ONLY its own layer so the overlay isn't a wall of color:
+      // Solid/Walk → walls (red); FG → foreground (yellow); Advanced → priority too.
+      const advanced = this.paintMode === 'prilo' || this.paintMode === 'prihi';
+      const show = {
+        solid: this.paintMode === 'solid' || this.paintMode === 'walk' || advanced,
+        pri: advanced || this.paintMode === 'clear',
+        fg: this.paintMode === 'fg' || this.paintMode === 'clear',
+      };
+      collisionPaint.drawOverlay(ctx, camera, this.colHover, show);
+      return;
+    }
     // Room footprints: blue tint on empty cells (recedes as you paint) + a bright
     // dashed amber boundary (the TRUE editable extent — stamps only stick inside).
     for (const r of this.rooms) {
@@ -1452,6 +1491,74 @@ class RoomBuilderTool implements EditorTool {
     this.statusEl.style.cssText = 'color:#9fb8cc;font-size:11px;line-height:1.4;min-height:16px;';
     this.panel.appendChild(this.statusEl);
 
+    // ── MODE section (what the mouse paints) ──
+    this.panel.appendChild(this.mkSection('MODE'));
+    this.modeRow = document.createElement('div');
+    this.modeRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;';
+    const mkMode = (label: string, mode: 'tiles' | CollisionOp, tip: string) => {
+      const b = this.mkBtn(label, () => this.setMode(mode), this.modeRow!);
+      b.dataset.mode = mode;
+      b.title = tip;
+    };
+    mkMode('Tiles', 'tiles', 'Paint map tiles & build rooms (the normal brush below).');
+    mkMode('Solid', 'solid', 'Paint walls that block movement (collision 0x80).');
+    mkMode('Walk', 'walk', 'Clear walls/priority so you can walk here (keeps the FG flag).');
+    mkMode('FG', 'fg', 'Mark a tile as FOREGROUND so you hide behind it (0x40). Click toggles.');
+    this.panel.appendChild(this.modeRow);
+
+    // Collision controls (brush size + advanced) — shown only in a paint mode.
+    this.colControls = document.createElement('div');
+    this.colControls.style.cssText = 'display:none;flex-direction:column;gap:6px;';
+    const cRow = document.createElement('div');
+    cRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;align-items:center;';
+    this.mkBtn('Brush', () => this.cycleColBrush(), cRow).title =
+      'Cycle brush size 1→2→4 minitiles (8px each).';
+    this.mkBtn('Room@cursor', () => collisionPaint.refreshRoomPreview(this.colHover), cRow).title =
+      'Preview the room-crop (cyan = walkable minitiles) at the cursor.';
+    const advBtn = this.mkBtn(
+      'Advanced ▸',
+      () => {
+        this.advOpen = !this.advOpen;
+        this.syncMode();
+      },
+      cRow
+    );
+    advBtn.dataset.adv = '1';
+    advBtn.title = 'Native ROM priority bits + room verifier (rarely needed).';
+    this.colControls.appendChild(cRow);
+
+    this.advEl = document.createElement('div');
+    this.advEl.style.cssText =
+      'display:none;flex-direction:column;gap:4px;border-top:1px solid #243;padding-top:6px;';
+    const advRow = document.createElement('div');
+    advRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;';
+    const mkAdv = (label: string, mode: CollisionOp, tip: string) => {
+      const b = this.mkBtn(label, () => this.setMode(mode), advRow);
+      b.dataset.mode = mode;
+      b.title = tip;
+    };
+    mkAdv(
+      'Pri-lo',
+      'prilo',
+      'Native 0x01 — lower half behind FG (only bites where ROM has FG art).'
+    );
+    mkAdv(
+      'Pri-hi',
+      'prihi',
+      'Native 0x02 — whole body behind FG (only bites where ROM has FG art).'
+    );
+    mkAdv('Clear', 'clear', 'Wipe the cell back to 0 (all bits).');
+    this.mkBtn('Verify rooms', () => void this.runColVerify(), advRow).title =
+      'Run the room-crop verifier against painted collision (takes a minute).';
+    this.advEl.appendChild(advRow);
+    this.advOut = document.createElement('pre');
+    this.advOut.style.cssText =
+      'display:none;max-height:160px;overflow:auto;background:#0c1014;color:#9fb8cc;' +
+      'font:10px monospace;padding:6px;border:1px solid #243;border-radius:3px;white-space:pre-wrap;';
+    this.advEl.appendChild(this.advOut);
+    this.colControls.appendChild(this.advEl);
+    this.panel.appendChild(this.colControls);
+
     // ── BRUSH section ──
     this.panel.appendChild(this.mkSection('BRUSH'));
 
@@ -1576,6 +1683,7 @@ class RoomBuilderTool implements EditorTool {
 
     this.shell!.panelHost.appendChild(this.panel);
     this.syncTabs();
+    this.syncMode();
     this.updateBrushUi();
     void this.renderPalette();
   }
@@ -1584,6 +1692,42 @@ class RoomBuilderTool implements EditorTool {
     this.brushTab = tab;
     this.syncTabs();
     if (tab === 'tiles') void this.renderPalette();
+  }
+
+  // ── collision / layer paint mode ───────────────────────────────────────────
+
+  private setMode(mode: 'tiles' | CollisionOp): void {
+    this.paintMode = mode;
+    if (mode !== 'tiles') this.setPainting(false); // collision modes own the mouse
+    this.syncMode();
+    this.updateStatus();
+  }
+
+  private cycleColBrush(): void {
+    collisionPaint.brush = collisionPaint.brush === 1 ? 2 : collisionPaint.brush === 2 ? 4 : 1;
+    this.shell?.toast(`Brush: ${collisionPaint.brush}x${collisionPaint.brush} minitiles`);
+  }
+
+  private async runColVerify(): Promise<void> {
+    if (!this.advOut) return;
+    this.advOut.style.display = 'block';
+    this.advOut.textContent = 'running rooms verifier (takes a minute)...';
+    this.advOut.textContent = await collisionPaint.runVerifier();
+  }
+
+  /** Reflect the active paint mode: show collision controls + highlight buttons. */
+  private syncMode(): void {
+    const tilesMode = this.paintMode === 'tiles';
+    if (this.colControls) this.colControls.style.display = tilesMode ? 'none' : 'flex';
+    if (this.advEl) this.advEl.style.display = !tilesMode && this.advOpen ? 'flex' : 'none';
+    const mark = (b: HTMLButtonElement) => {
+      const on = b.dataset.mode === this.paintMode;
+      b.style.color = on ? '#7CFC6A' : '#cde';
+      b.style.borderColor = on ? '#7CFC6A' : '#3a4a5a';
+    };
+    this.panel?.querySelectorAll<HTMLButtonElement>('button[data-mode]').forEach(mark);
+    const adv = this.panel?.querySelector<HTMLButtonElement>('button[data-adv]');
+    if (adv) adv.textContent = this.advOpen ? 'Advanced ▾' : 'Advanced ▸';
   }
 
   private syncTabs(): void {

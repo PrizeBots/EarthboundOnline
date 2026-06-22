@@ -156,6 +156,19 @@ sector load + room crop — use it from the console or verification scripts.
   the live frame on a shared wall clock. Only the ~8 animated combos cost extra
   atlases; everything else renders the single static atlas. (On real SNES this is
   a CGRAM palette write per frame — same model, baked into atlases for the browser.)
+- **Animated tiles (tile-graphic animation)** — EB's SECOND system swaps minitile
+  GRAPHICS in VRAM (escalator/conveyor steps, waterfalls), keyed per GRAPHICS tileset.
+  Two ROM tables: the _properties_ (file `0x2F126B` — frames/delay/transfer/src/dst,
+  `tools/tile_anim.py:tile_animations`) and the _graphics_
+  (`MAP_DATA_TILE_ANIMATION_PTR_TABLE`, file `0x2F11CB` → a compressed 256-minitile
+  buffer per tileset that EB DMAs to `$7EC000`, `tile_anim.anim_graphics`). The
+  properties' `src/dst` index into THAT buffer, NOT the tileset's own 896 minitiles
+  (frame 0 of the buffer == the live minitiles at rest; later frames are the scrolled
+  steps). `build_atlases.py` (`ESCALATOR_DRAW_TS`) draws each frame's swapped minitiles
+  from the buffer into the same `{ts}_{pal}_f{k}.png` + `anim.json` path the palette
+  system uses, so `TilesetManager` cycles them identically. Baked for the dept-store
+  escalators (drawTS 12 Twoson, 13 Fourside); water/waterfalls use it too (unblocked,
+  not yet enabled). On real SNES this is the per-frame tile-graphics DMA EB already does.
 - **Collision.ts** — minitile collision; byte bit 7 = solid, bits 0–1 = sprite
   priority: 0x01 = lower body behind FG (tall grass, counters), 0x02 = WHOLE
   body behind FG (canopies, behind signs; 0x03 = whole wins). There is NO
@@ -184,26 +197,28 @@ sector load + room crop — use it from the console or verification scripts.
   **Escalators/stairways**: EB's `EscalatorOrStairwayDoor` is NOT a warp — it
   carries only a diagonal `direction`. An escalator is a walkable diagonal RAMP
   (two landing strips joined by the ramp) bounded by solid; too narrow/corner-
-  connected for normal foot-box movement, so the player is _glided_ across it
-  (see DoorManager/Game). `isSolidAtPoint()` is the raw look-ahead the ride uses
-  to find the ramp's end. The floor change is either a `door` warp at the strip
-  end (fade) OR — for stacked floors with no door between them — the ride just
-  re-crops onto the destination floor. Those stacked floors are SEPARATE crop
-  regions joined only by the solid ramp, so during such a ride `Game` shows the
-  UNION of both floors + the ramp (`computeRideBounds`); otherwise the
-  destination (and the down-ramp) render black and you glide into a void
-  (bugs.md, dept-store escalators). See bugs.md (escalators) for the full mechanic.
+  connected for normal foot-box movement, so the player is _glided_ across it.
+  ONE deterministic model: every ROM stair pairs along its diagonal with a
+  partner trigger (audited: all directional ends pair; all NOWHERE ends are some
+  directional's partner). `DoorManager.loadDoors` precomputes that pairing once —
+  each trigger stores its ride vector + the partner's coords (`StairData.destX/Y`;
+  NOWHERE ends inherit the REVERSE vector toward the partner that points at them).
+  At ride time `Game` glides straight to the known landing and stops — no warp,
+  no direction guessing, no solid-ahead probing. The floors are CONTIGUOUS map
+  coords but SEPARATE crop regions joined only by the solid ramp, so a cross-floor
+  ride shows the UNION of both floors + the ramp (`computeRideBounds`) then
+  re-crops onto the destination floor on arrival; a same-floor hop keeps its crop
+  (re-cropping a room you never left blacks you out — bugs.md). See bugs.md
+  (escalators) for the full history.
 - **Entity.ts** — base class for Player and NPC (position = sprite center-x /
   feet-y, 2-frame walk cycle). Remote players share the drawable shape only.
 - **DoorManager** — door triggers + fade transitions; also loads escalator/
-  stairway triggers (`getStairAt` → diagonal vector) and resolves their floor
-  warp (`getStairExit` floods the shaft, picks the `door` inside it leading to
-  an indoor floor in the ride's vertical direction, skipping outdoor exits).
-  Game drives the ride: stepping a trigger glides the player diagonally along
-  the ramp (collision + room-seal bypassed) until the cell ahead is solid, then
-  warps through that floor door (fade reveals the next floor fully). Over-large
-  shafts get no warp (ride stops in place). Steps don't animate (no
-  tile-animation system).
+  stairway triggers and pairs them at load (`getStairAt` → `StairData` with ride
+  vector + the paired landing's coords). Game drives the ride: stepping a trigger
+  glides the player diagonally along the ramp (collision + room-seal bypassed)
+  straight to the precomputed landing, then settles + re-crops in place. No warp —
+  the floors are contiguous map coords. The steps scroll via the tile-graphic
+  animation system (see "Animated tiles (tile-graphic animation)" above).
 - **NPCManager / NPC.ts** — loads placements, buckets them into the ROM's
   256px area grid, lazy-loads sprite sheets, applies server `npc_update` rows.
   `blockedByNPC` makes `person`/`enemy`/`car` NPCs solid for the player (the

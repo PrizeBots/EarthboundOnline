@@ -41,13 +41,7 @@ import {
 import { NPC } from './NPC';
 import { beginGiftOpen, giftOpened } from './Gifts';
 import { loadAtlas } from './TilesetManager';
-import {
-  loadCollision,
-  checkPlayerCollision,
-  isSolidAtPoint,
-  computeRoomBounds,
-  setActiveRoom,
-} from './Collision';
+import { loadCollision, checkPlayerCollision, computeRoomBounds, setActiveRoom } from './Collision';
 import {
   loadSpriteMetadata,
   loadSpriteGroup,
@@ -282,17 +276,16 @@ export class Game {
   // Image-load counter snapshot taken at the start of a wait (boot / transition);
   // the loading bar shows progress since this baseline. See loadRatio.
   private loadBaseline = { started: 0, finished: 0 };
-  // Active escalator/stairway ride: the player glides this diagonal along the
-  // walkable ramp; on reaching the end we warp through `exit` to the next floor
-  // (null = no floor door found, just stop and re-crop in place).
+  // Active escalator/stairway ride: the player glides `dx,dy` straight to the
+  // paired landing at `destX,destY` (precomputed at load — see DoorManager). The
+  // ride never warps; on arrival we re-crop to the destination floor in place.
   private riding: {
     dx: number;
     dy: number;
-    dist: number;
-    exit: DoorData | null;
-    landing: { x: number; y: number } | null; // paired ROM trigger = exact stop
+    destX: number; // paired ROM trigger = the exact, known stop
+    destY: number;
+    dist: number; // pixels glided (runaway safety only)
     sameFloor: boolean; // start & landing share one room — never touch the crop
-    leftStart: boolean; // glided clear of the start trigger (arm the arrival check)
   } | null = null;
   private stairSuppressed = false;
   private talkingNpc: NPC | null = null;
@@ -1335,21 +1328,21 @@ export class Game {
    * so without this the destination renders black while you glide. Built once at
    * ride start and held until the ride re-crops to the destination on arrival.
    */
-  private computeRideBounds(dx: number, dy: number): RoomBounds | null {
+  private computeRideBounds(destX: number, destY: number): RoomBounds | null {
     const src = computeRoomBounds(this.player.x, this.player.y);
-    // March along the ramp to the landing (same end test the ride uses),
-    // collecting the tiles the player will glide across.
+    // March straight to the known landing, collecting the tiles glided across.
     const pathTiles = new Set<number>();
     let x = this.player.x;
     let y = this.player.y;
-    for (let i = 0; i < 48; i++) {
+    const dx = Math.sign(destX - x);
+    const dy = Math.sign(destY - y);
+    for (let i = 0; i < 64; i++) {
       pathTiles.add(Math.floor(y / TILE_SIZE) * MAP_WIDTH_TILES + Math.floor(x / TILE_SIZE));
-      const footY = y - MINITILE_SIZE / 2;
-      if (isSolidAtPoint(x + dx * MINITILE_SIZE, footY + dy * MINITILE_SIZE)) break;
+      if (Math.abs(x - destX) <= MINITILE_SIZE && Math.abs(y - destY) <= MINITILE_SIZE) break;
       x += dx * MINITILE_SIZE;
       y += dy * MINITILE_SIZE;
     }
-    const dst = computeRoomBounds(x, y);
+    const dst = computeRoomBounds(destX, destY);
     if (!src && !dst) return null;
 
     const tiles = new Set<number>(pathTiles);
@@ -1375,115 +1368,43 @@ export class Game {
   }
 
   /**
-   * Infer a ride diagonal for a NOWHERE escalator landing (no encoded
-   * direction). The escalator ramp is the only walkable diagonal corridor out
-   * of the landing, so we probe the four diagonals one minitile from the foot
-   * point and keep the OPEN ones (the ramp continues that way). When both ends
-   * of the ramp read open (the trigger sits mid-ramp), the player's heading
-   * breaks the tie: ride the open diagonal they're walking INTO. Returns null
-   * when nothing open lines up with their heading — they're just passing the
-   * landing, so let normal walking handle it. (dx,dy mirror rideStep's frame.)
-   */
-  private inferStairDir(): { dx: -1 | 1; dy: -1 | 1 } | null {
-    const footY = this.player.y - MINITILE_SIZE / 2;
-    const diags: Array<{ dx: -1 | 1; dy: -1 | 1 }> = [
-      { dx: -1, dy: -1 },
-      { dx: 1, dy: -1 },
-      { dx: -1, dy: 1 },
-      { dx: 1, dy: 1 },
-    ];
-    const open = diags.filter(
-      (d) => !isSolidAtPoint(this.player.x + d.dx * MINITILE_SIZE, footY + d.dy * MINITILE_SIZE)
-    );
-    if (open.length === 0) return null;
-    const [vx, vy] = DIR_VECTORS[this.player.direction];
-    let best: { dx: -1 | 1; dy: -1 | 1 } | null = null;
-    let bestDot = 0; // strictly heading into the ramp (dot > 0) to start a ride
-    for (const d of open) {
-      const dot = d.dx * vx + d.dy * vy;
-      if (dot > bestDot) {
-        bestDot = dot;
-        best = d;
-      }
-    }
-    return best;
-  }
-
-  /**
    * Advance an active escalator/stairway ride one frame. EB escalators are a
-   * walkable diagonal ramp bounded by SOLID at each landing strip; the ramp is
-   * too narrow (and corner-connected) for normal foot-box movement, so we glide
-   * the player along it ignoring collision. The ride ends when the next minitile
-   * ahead along the ramp is solid — i.e. we've reached the landing strip. The
-   * room crop already spans the whole shaft, so we don't touch it mid-ride.
+   * walkable diagonal ramp bounded by SOLID at each landing; the ramp is too
+   * narrow (and corner-connected) for normal foot-box movement, so we glide the
+   * player along it ignoring collision. The destination is the PAIRED trigger,
+   * known before the ride starts (DoorManager), so there is exactly ONE stop
+   * condition: we've reached it. No warp — the floors are contiguous map coords.
    */
   private updateRide() {
     const r = this.riding!;
-    const RIDE_MAX = 256; // pixels; a ramp spans only a few tiles — runaway guard
+    const RIDE_MAX = 512; // pixels; longest ROM ramp is ~31 tiles — runaway safety
 
     r.dist += this.player.rideStep(r.dx, r.dy);
     this.camera.follow(this.player.x, this.player.y);
 
-    // Once we've glided clear of the trigger we started on, arm the arrival check
-    // (so the start trigger under our feet can't end the ride at frame 1).
-    if (!r.leftStart && r.dist > MINITILE_SIZE) r.leftStart = true;
-
-    // PRIMARY stop: glided onto the PAIRED landing trigger. We use getStairAt —
-    // the exact same detector that STARTS a ride — so if a ride can start here it
-    // can stop here; robust to the tiny start-position offset that a pure
-    // distance-to-precomputed-landing check can miss (the Twoson overshoot).
-    const onTrigger = r.leftStart ? getStairAt(this.player.x, this.player.y) : null;
-    // Secondary: within a tile of the precomputed landing (covers a landing whose
-    // trigger box we'd skim past between frames at high ride speed).
-    const nearLanding =
-      !!r.landing &&
-      r.leftStart &&
-      Math.abs(this.player.x - r.landing.x) <= MINITILE_SIZE &&
-      Math.abs(this.player.y - r.landing.y) <= MINITILE_SIZE;
-    const atLanding = !!onTrigger || nearLanding;
-
-    // Fallback stop (ramps with no paired trigger, or a bad infer): the tile ahead
-    // along the ramp is solid, or we've run the runaway guard.
-    const footY = this.player.y - MINITILE_SIZE / 2;
-    const aheadSolid = isSolidAtPoint(
-      this.player.x + r.dx * MINITILE_SIZE,
-      footY + r.dy * MINITILE_SIZE
-    );
-    if (atLanding || aheadSolid || r.dist >= RIDE_MAX) {
-      // Snap exactly onto the landing trigger so we settle cleanly on its tile.
-      const snap = onTrigger
-        ? { x: onTrigger.worldX, y: onTrigger.worldY }
-        : nearLanding
-          ? r.landing
-          : null;
-      if (snap) {
-        this.player.x = snap.x;
-        this.player.y = snap.y;
-      }
-      const exit = r.exit;
+    // Stop the moment we've reached/passed the known landing on BOTH axes (the
+    // remaining vector to dest no longer points the way we're riding). The
+    // runaway cap is a pure safety net that should never fire on real data.
+    const reached = (r.destX - this.player.x) * r.dx <= 0 && (r.destY - this.player.y) * r.dy <= 0;
+    if (reached || r.dist >= RIDE_MAX) {
+      // Settle exactly on the landing trigger's tile.
+      this.player.x = r.destX;
+      this.player.y = r.destY;
+      const sameFloor = r.sameFloor;
       this.riding = null;
       this.stairSuppressed = true;
       this.player.moving = false;
       this.player.endRide(); // re-enable reconciliation, drop glide-queued inputs
-      if (exit) {
-        // Warp to the next floor — the fade transition reveals it fully. Tell the
-        // server the landing (it still thinks we're at the escalator's foot) so
-        // post-warp inputs simulate from there instead of reconciling us back.
-        sendRideWarp(exit.destX, exit.destY);
-        this.startTransition(exit);
-      } else {
-        // No floor door. Re-crop ONLY for a true floor change — a same-floor
-        // dept-store hop never left its room, so its crop is still correct and
-        // re-cropping it is what blacked the player out / sealed them (bugs.md).
-        if (!r.sameFloor) this.updateRoomBounds(this.player.x, this.player.y);
-        // The landing trigger sits at the ramp/floor boundary, so the player's foot
-        // box can straddle OUTSIDE the (now re-sealed) room — every move then reads
-        // as a wall and they're stuck at the top. Nudge them off the seam onto the
-        // floor (ride direction first), exactly like a door warp's nudge-out.
-        this.nudgeIntoRoom(r.dx, r.dy);
-        // Resync the server to where the glide actually left us (reconcile fix).
-        sendRideWarp(this.player.x, this.player.y);
-      }
+      // Re-crop ONLY for a true floor change — a same-floor dept-store hop never
+      // left its room, so re-cropping it is what blacked the player out / sealed
+      // them at the top (bugs.md). A cross-floor ride re-crops to the new floor.
+      if (!sameFloor) this.updateRoomBounds(this.player.x, this.player.y);
+      // The landing sits at the ramp/floor boundary, so the foot box can straddle
+      // OUTSIDE the (re-sealed) room and read every move as a wall. Nudge off the
+      // seam onto the floor (ride direction first), like a door warp's nudge-out.
+      this.nudgeIntoRoom(r.dx, r.dy);
+      // Resync the server to where the glide left us (it held us at the foot).
+      sendRideWarp(this.player.x, this.player.y);
     }
   }
 
@@ -1876,59 +1797,37 @@ export class Game {
     const stair = getStairAt(this.player.x, this.player.y);
     if (this.stairSuppressed) {
       if (!stair) this.stairSuppressed = false;
-    } else if (stair && this.player.moving) {
-      // A NOWHERE landing carries no encoded diagonal — infer it from the ramp
-      // and the player's heading. If they're not actually walking into a ramp,
-      // skip the ride and let normal movement handle it (no stuck, no bounce).
-      let dx = stair.dx;
-      let dy = stair.dy;
-      if (stair.nowhere) {
-        // null = not heading into the ramp; dx/dy stay 0 and the ride is skipped
-        // below (fall through to the door check), so the player just walks past.
-        const inferred = this.inferStairDir();
-        if (inferred) {
-          dx = inferred.dx;
-          dy = inferred.dy;
-        }
+    } else if (stair && this.player.moving && !(stair.dx === 0 && stair.dy === 0)) {
+      // Start a ride toward the paired landing (precomputed at load — its vector
+      // and destination are known, including for NOWHERE ends, so no runtime
+      // direction guessing). dx/dy=0 means this trigger has no partner — skip it.
+      const dx = stair.dx;
+      const dy = stair.dy;
+      const destX = stair.destX;
+      const destY = stair.destY;
+      // Same-floor ride? (dept-store stairways hop a few tiles within ONE room.)
+      // If the landing is already inside the room we're standing in, the ride
+      // never changes floors, so we must NOT touch the camera crop — re-cropping
+      // a room we never left is what blacked out / sealed the player (bugs.md).
+      // Only a TRUE floor change gets the reveal-both-floors union below.
+      const cur = this.camera.roomBounds;
+      const landTile =
+        Math.floor(destY / TILE_SIZE) * MAP_WIDTH_TILES + Math.floor(destX / TILE_SIZE);
+      const sameFloor = cur ? cur.tiles.has(landTile) : !computeRoomBounds(destX, destY);
+      this.riding = { dx, dy, destX, destY, dist: 0, sameFloor };
+      // Suppress server reconciliation for the glide — the server doesn't know
+      // we're riding, so its (stale) pos ACKs would yank us back to the foot.
+      this.player.riding = true;
+      // Reveal BOTH floors (and the ramp between) for a TRUE floor change. EB
+      // stacks floors as separate room-crop regions joined only by the solid
+      // ramp, so the source-floor crop leaves the destination floor black — you'd
+      // ride into a black void and not see the landing (bugs.md, dept-store
+      // escalators). Same-floor hops keep their existing crop.
+      if (!sameFloor) {
+        const ride = this.computeRideBounds(destX, destY);
+        if (ride) this.camera.roomBounds = ride;
       }
-      if (!(dx === 0 && dy === 0)) {
-        // Glide the ramp, then warp through the shaft's floor door to the next
-        // level. The shaft is already the active room crop, so leave it alone;
-        // updateRide bypasses collision to cross the narrow diagonal.
-        const exit = getStairExit(this.player.x, this.player.y, dy);
-        // The exact stop: the paired trigger at the other end of the ramp (every
-        // ROM stairway/escalator has one). updateRide ends the glide right there
-        // instead of guessing from "is the tile ahead solid" (which overshoots a
-        // dept-store stairway that lands on open floor — the reported bug).
-        const landing = getStairLanding(this.player.x, this.player.y, dx as -1 | 1, dy as -1 | 1);
-        // Same-floor ride? (dept-store stairways hop 2–8 tiles within ONE room).
-        // If the landing is already inside the room we're standing in, the ride
-        // never changes floors, so we must NOT touch the camera crop — re-cropping
-        // a room we never left is what blacked out / sealed the player at the top
-        // (bugs.md). Only a TRUE floor change (landing in a different/!cropped
-        // region) gets the reveal-both-floors union + re-crop below.
-        const cur = this.camera.roomBounds;
-        const landTile = landing
-          ? Math.floor(landing.y / TILE_SIZE) * MAP_WIDTH_TILES + Math.floor(landing.x / TILE_SIZE)
-          : -1;
-        const sameFloor =
-          !!landing && (cur ? cur.tiles.has(landTile) : !computeRoomBounds(landing.x, landing.y));
-        this.riding = { dx, dy, dist: 0, exit, landing, sameFloor, leftStart: false };
-        // Suppress server reconciliation for the glide — the server doesn't know
-        // we're riding, so its (stale) pos ACKs would yank us back to the foot.
-        this.player.riding = true;
-        // Reveal BOTH floors (and the ramp between) for a TRUE floor change. EB
-        // stacks floors as separate room-crop regions joined only by the solid
-        // ramp, so the source-floor crop leaves the destination floor (and the
-        // down-ramp) black — you ride into a black void and can't see the landing
-        // (bugs.md, dept-store escalators). Door-warp rides fade to their dest, so
-        // leave that path alone; same-floor rides keep their existing crop.
-        if (!exit && !sameFloor) {
-          const ride = this.computeRideBounds(dx, dy);
-          if (ride) this.camera.roomBounds = ride;
-        }
-        return;
-      }
+      return;
     }
 
     // Suppress doors until player has fully left all trigger zones

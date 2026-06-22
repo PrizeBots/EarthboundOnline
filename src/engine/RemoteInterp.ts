@@ -11,7 +11,13 @@ import { Direction, Pose } from '../types';
 // createInterpolator() makes one independent buffer set, so players and NPCs
 // (whose ids would otherwise collide — player "1" vs npc 1) stay separate.
 
-const PLAYER_DELAY_MS = 100; // ~2 packets of headroom at the player send rate
+// Render this far in the past so we always have two snapshots bracketing the
+// render time. The server sims/broadcasts player movement at ~30Hz (33ms), so
+// 150ms is ~4 packets of headroom — enough to ride out real-world prod jitter
+// without the buffer running dry (which freezes a remote, then jumps it: the
+// stutter-step we saw in prod but never on localhost). Costs ~50ms more visible
+// lag on others, imperceptible next to the jitter it removes.
+const PLAYER_DELAY_MS = 150;
 const TELEPORT_DIST = 64; // a gap this large is a door/teleport — snap, don't glide
 const BUFFER_MAX_AGE_MS = 1000;
 

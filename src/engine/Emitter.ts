@@ -68,8 +68,12 @@ interface Popup {
 
 const popups: Popup[] = [];
 
-// Offscreen scratch buffer for tinting the bitmap font (its glyphs have a baked
-// color; we recolor by compositing source-atop onto an isolated canvas).
+// Offscreen scratch buffers. `mask` renders one recolored glyph; `tint` composes
+// the black outline ring + colored fill at SOURCE resolution, then we scale-blit
+// the result once — so the outline is baked a fixed 1 source-px from the fill and
+// stays welded to the digit at any (even fractional/growing) scale.
+const maskCanvas = document.createElement('canvas');
+const mctx = maskCanvas.getContext('2d')!;
 const tintCanvas = document.createElement('canvas');
 const tctx = tintCanvas.getContext('2d')!;
 
@@ -315,27 +319,36 @@ export function renderEmitters(
       ctx.save();
       ctx.globalAlpha = alpha;
       ctx.imageSmoothingEnabled = false;
-      // Black outline: lay the black silhouette down at every surrounding offset
-      // (8-way, 1px ring scaled with the number), then the colored fill on top —
-      // so the number reads against any background, not just below-right.
-      const o = scale;
-      for (const [dx, dy] of OUTLINE_OFFSETS) {
-        blitTinted(ctx, p.text, cx + dx * o, cy + dy * o, SHADOW_COLOR, scale);
-      }
-      blitTinted(ctx, p.text, cx, cy, p.color, scale); // colored fill
+      // Never render BELOW native size — nearest-neighbor mangles a 1px-stroke
+      // pixel-font glyph at sub-1 scale (a "1" loses its stem).
+      blitOutlined(ctx, p.text, cx, cy, p.color, Math.max(1, scale));
       ctx.restore();
     }
   }
 }
 
+// Render the bitmap-font `text` recolored to `col` into the mask scratch (the
+// glyph pixels carry a baked color; source-atop floods the tint over just them).
+// 1px padding all round leaves room for the outline ring.
+function renderGlyph(text: string, col: string, w: number, h: number): void {
+  mctx.globalCompositeOperation = 'source-over';
+  mctx.clearRect(0, 0, w, h);
+  mctx.imageSmoothingEnabled = false;
+  drawText(mctx, text, 1, 1, FONT);
+  mctx.globalCompositeOperation = 'source-atop';
+  mctx.fillStyle = col;
+  mctx.fillRect(0, 0, w, h);
+  mctx.globalCompositeOperation = 'source-over';
+}
+
 /**
- * Draw `text` centered on (centerX, centerY), recolored to `color` and scaled by
- * `scale`. The font sheet pixels carry their own color, so we render glyphs onto
- * an isolated offscreen canvas, flood it with the tint using source-atop (which
- * only touches existing glyph pixels), then blit the result scaled — keeping the
- * tint off the rest of the world and the pixels crisp (no smoothing).
+ * Draw `text` centered on (centerX, centerY) as a colored fill inside a black
+ * outline, scaled by `scale`. The outline + fill are composed at SOURCE resolution
+ * (black glyph stamped at the 8 surrounding 1px offsets, colored glyph on top),
+ * then the whole thing is scaled and blitted ONCE — so the outline is always
+ * exactly 1 source-px from the fill and never drifts off it, at any scale.
  */
-function blitTinted(
+function blitOutlined(
   ctx: CanvasRenderingContext2D,
   text: string,
   centerX: number,
@@ -345,15 +358,19 @@ function blitTinted(
 ): void {
   const w = Math.max(1, measureText(text, FONT) + 2);
   const h = getLineHeight(FONT) + 2;
+  maskCanvas.width = w;
+  maskCanvas.height = h;
   tintCanvas.width = w;
   tintCanvas.height = h;
   tctx.clearRect(0, 0, w, h);
   tctx.imageSmoothingEnabled = false;
-  drawText(tctx, text, 1, 1, FONT);
-  tctx.globalCompositeOperation = 'source-atop';
-  tctx.fillStyle = color;
-  tctx.fillRect(0, 0, w, h);
-  tctx.globalCompositeOperation = 'source-over';
+  // Black silhouette ring: one black glyph stamped at every surrounding offset.
+  renderGlyph(text, SHADOW_COLOR, w, h);
+  for (const [dx, dy] of OUTLINE_OFFSETS) tctx.drawImage(maskCanvas, dx, dy);
+  // Colored fill on top, centered.
+  renderGlyph(text, color, w, h);
+  tctx.drawImage(maskCanvas, 0, 0);
+  // Scale-blit the composed glyph once.
   const dw = w * scale;
   const dh = h * scale;
   ctx.drawImage(tintCanvas, Math.round(centerX - dw / 2), Math.round(centerY - dh / 2), dw, dh);

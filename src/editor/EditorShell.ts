@@ -23,6 +23,8 @@ import {
   debugBoxesOn,
   setDebugCollision,
   debugCollisionOn,
+  setLayerVisible,
+  layerVisible,
 } from '../engine/Renderer';
 import { CommandStack } from './CommandStack';
 import { LocationNav, PlaceAnchor } from './LocationNav';
@@ -1012,6 +1014,26 @@ export class EditorShell {
     collisionBtn.title =
       'Show collision/priority layers live (red=solid, blue=pri-lo, purple=pri-hi, yellow=hide)';
     syncCollisionBtn(collisionBtn);
+
+    // Per-layer visibility: hide BG / FG / Sprites to see what lives on each
+    // render layer while authoring. On = visible (green). Self-syncing color
+    // like the toggles above (not part of the data-toggle grid).
+    for (const [label, layer, tip] of [
+      ['BG', 'bg', 'Show/hide the background tile layer (behind sprites)'],
+      ['FG', 'fg', 'Show/hide the foreground tile layer (drawn over sprites)'],
+      ['Sprites', 'sprites', 'Show/hide all sprites (players, NPCs, enemies, loot)'],
+    ] as const) {
+      const btn = mkBtn(label, () => {
+        setLayerVisible(layer, !layerVisible(layer));
+        const on = layerVisible(layer);
+        btn.style.color = on ? '#7fe07f' : '#cde';
+        btn.style.borderColor = on ? '#7fe07f' : '#3a4a5a';
+      });
+      btn.title = tip;
+      const on = layerVisible(layer);
+      btn.style.color = on ? '#7fe07f' : '#cde';
+      btn.style.borderColor = on ? '#7fe07f' : '#3a4a5a';
+    }
 
     // Reload toggle: when OFF (default) NOTHING refreshes the page — neither
     // editor override saves nor source (.ts) edits via Vite HMR — so you stay in

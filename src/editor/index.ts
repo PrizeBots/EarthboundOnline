@@ -1,7 +1,6 @@
 import { EditorContext } from './types';
 import { EditorShell } from './EditorShell';
 import { placementTool } from './tools/PlacementTool';
-import { collisionTool } from './tools/CollisionTool';
 import { enemySpawnerTool } from './tools/EnemySpawnerTool';
 import { entityManagerTool } from './tools/EntityManagerTool';
 import { trafficEditorTool } from './tools/TrafficEditorTool';
@@ -39,7 +38,6 @@ export function initEditorTools(context: EditorContext): EditorHooks {
   const shell = new EditorShell(context);
 
   registerEditorTool(placementTool);
-  registerEditorTool(collisionTool);
   registerEditorTool(enemySpawnerTool);
   registerEditorTool(entityManagerTool);
   registerEditorTool(trafficEditorTool);

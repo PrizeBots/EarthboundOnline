@@ -17,6 +17,10 @@ const SPEED_PER_STAT = 0.07; // px/frame added per point of the Speed stat
 const SPEED_MIN = 0.9; // never slower than this (a crawl isn't fun)
 const SPEED_MAX = 2.6; // never faster than this (camera/collision stay sane)
 const DEFAULT_SPEED_STAT = 8; // server BASE_STATS.speed — used until stats arrive
+// Reconcile tolerance: ignore authoritative corrections smaller than ~one max
+// move step. Kills the per-ACK micro-jolt under real RTT (localhost never showed
+// it); genuine divergences accumulate past this in a frame or two and still snap.
+const RECON_EPS = 2.5;
 function moveSpeedFor(speedStat: number): number {
   return Math.max(SPEED_MIN, Math.min(SPEED_MAX, SPEED_BASE + speedStat * SPEED_PER_STAT));
 }
@@ -281,9 +285,32 @@ export class Player extends Entity {
   reconcile(sx: number, sy: number, ackSeq: number): void {
     if (this.riding || this.kbFrames > 0 || Date.now() < this.frozenUntil) return;
     this.pendingInputs = this.pendingInputs.filter((i) => i.seq > ackSeq);
+
+    // Snapshot the live prediction (pos + walk-cycle state) BEFORE the snap+replay
+    // recomputes it. On localhost the recompute lands right back here; in prod,
+    // tiny per-ACK disagreements (mainly our collision-vs-other-entities running on
+    // their 100ms-interpolated positions while the server uses live ones) would
+    // otherwise micro-jolt us EVERY tick — the visible rubber-band. So we only
+    // adopt the authoritative result when it diverges past RECON_EPS (a genuine
+    // mispredicted block / anti-cheat correction); a sub-step wobble is reverted.
+    const px = this.x;
+    const py = this.y;
+    const pframe = this.frame;
+    const ptimer = this.animTimer;
+    const pdir = this.direction;
+
     this.x = sx;
     this.y = sy;
     for (const i of this.pendingInputs) this.applyInput(i.dx, i.dy);
+
+    if (Math.hypot(this.x - px, this.y - py) < RECON_EPS) {
+      // Within tolerance — keep the smooth local prediction (incl. walk frame).
+      this.x = px;
+      this.y = py;
+      this.frame = pframe;
+      this.animTimer = ptimer;
+      this.direction = pdir;
+    }
   }
 
   /** An authoritative door warp landed: jump to the server's dest and drop any

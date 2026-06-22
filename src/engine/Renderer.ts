@@ -57,6 +57,23 @@ export function setDebugCollision(on: boolean): void {
 export function debugCollisionOn(): boolean {
   return debugCollision;
 }
+
+// --- Per-layer visibility (editor header "BG"/"FG"/"Sprites" toggles) -------
+// Hide a render layer to inspect what lives on each one while authoring. All on
+// by default; only the editor flips them. When FG is hidden the per-sprite FG
+// re-cover is skipped too, so sprites aren't occluded by an invisible layer.
+let showBg = true;
+let showFg = true;
+let showSprites = true;
+export function setLayerVisible(layer: 'bg' | 'fg' | 'sprites', on: boolean): void {
+  if (layer === 'bg') showBg = on;
+  else if (layer === 'fg') showFg = on;
+  else showSprites = on;
+}
+export function layerVisible(layer: 'bg' | 'fg' | 'sprites'): boolean {
+  return layer === 'bg' ? showBg : layer === 'fg' ? showFg : showSprites;
+}
+
 // Below this editor zoom the world is so shrunk that foreground tiles (canopies,
 // sign tops) are a pixel or two — invisible. Skip the two FG tile passes there
 // to cut the per-frame drawImage count by ~2/3, keeping far-out panning smooth.
@@ -560,17 +577,19 @@ export class Renderer {
     }
 
     // Pass 1: Draw all tiles as background
-    for (let row = startRow; row <= endRow; row++) {
-      for (let col = startCol; col <= endCol; col++) {
-        const sector = getSectorForTile(col, row);
-        if (!sector) continue;
-        const arrangementId = getTileAt(col, row);
-        const screenX = col * TILE_SIZE - camX;
-        const screenY = row * TILE_SIZE - camY;
-        if (isComposite(arrangementId)) {
-          drawComposite(this.ctx, arrangementId, screenX, screenY);
-        } else {
-          drawTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, screenX, screenY);
+    if (showBg) {
+      for (let row = startRow; row <= endRow; row++) {
+        for (let col = startCol; col <= endCol; col++) {
+          const sector = getSectorForTile(col, row);
+          if (!sector) continue;
+          const arrangementId = getTileAt(col, row);
+          const screenX = col * TILE_SIZE - camX;
+          const screenY = row * TILE_SIZE - camY;
+          if (isComposite(arrangementId)) {
+            drawComposite(this.ctx, arrangementId, screenX, screenY);
+          } else {
+            drawTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, screenX, screenY);
+          }
         }
       }
     }
@@ -584,7 +603,8 @@ export class Renderer {
     // building). This replaces the old two-bucket (behind-FG / above-FG) split,
     // which forced EVERY above-FG sprite to paint after EVERY behind-FG one —
     // so an NPC behind you rendered on top whenever you stood on a flagged tile.
-    const drawFG = camera.zoom >= FG_PASS_MIN_ZOOM;
+    // showFg (editor layer toggle) hides the FG layer AND its per-sprite re-cover.
+    const drawFG = camera.zoom >= FG_PASS_MIN_ZOOM && showFg;
 
     // One drawable sprite: feet-Y sort key, FG-priority bits, part + bar draws.
     interface SpriteJob {
@@ -982,22 +1002,24 @@ export class Renderer {
     // Feet-Y order; the local player wins ties so you're never hidden under an
     // NPC you're standing level with.
     jobs.sort((a, b) => a.feetY - b.feetY || (a.local ? 1 : 0) - (b.local ? 1 : 0));
-    for (const job of jobs) {
-      const wholeBehind = (job.pri & 0x02) !== 0;
-      const lowerHalfBehind = (job.pri & 0x01) !== 0;
-      if (wholeBehind) {
-        job.drawPart('full');
-        job.drawBar?.(); // bar hides with the body
-        redrawFGOver(job.worldX, job.feetY);
-      } else if (lowerHalfBehind) {
-        job.drawPart('lower');
-        redrawFGOver(job.worldX, job.feetY);
-        job.drawPart('upper');
-        job.drawBar?.();
-      } else {
-        // In front of the FG layer — drawn over the global FG pass above.
-        job.drawPart('full');
-        job.drawBar?.();
+    if (showSprites) {
+      for (const job of jobs) {
+        const wholeBehind = (job.pri & 0x02) !== 0;
+        const lowerHalfBehind = (job.pri & 0x01) !== 0;
+        if (wholeBehind) {
+          job.drawPart('full');
+          job.drawBar?.(); // bar hides with the body
+          redrawFGOver(job.worldX, job.feetY);
+        } else if (lowerHalfBehind) {
+          job.drawPart('lower');
+          redrawFGOver(job.worldX, job.feetY);
+          job.drawPart('upper');
+          job.drawBar?.();
+        } else {
+          // In front of the FG layer — drawn over the global FG pass above.
+          job.drawPart('full');
+          job.drawBar?.();
+        }
       }
     }
 
