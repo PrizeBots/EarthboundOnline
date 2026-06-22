@@ -72,6 +72,11 @@ type Brush =
   | { kind: 'tile'; tilesetId: number; paletteId: number; arr: number }
   | { kind: 'stamp'; stamp: Stamp };
 
+// The ONE "what does clicking do?" selector. Each tool reveals only its own
+// controls: Select picks/resizes rooms; Paint draws tiles; Walls paints
+// walkability; Front paints the foreground (hide-behind) layer.
+type RoomTool = 'select' | 'paint' | 'walls' | 'front';
+
 interface Footprint {
   w: number;
   h: number;
@@ -154,11 +159,16 @@ class RoomBuilderTool implements EditorTool {
   // Collision / layer paint (embedded — replaces the old standalone tool).
   // 'tiles' = normal tile painting; any CollisionOp routes the mouse to the
   // shared collisionPaint core instead (Solid/Walk/FG + advanced pri/clear).
+  private tool: RoomTool = 'select';
+  private wallsErase = false;
   private paintMode: 'tiles' | CollisionOp = 'tiles';
   private colHover: WorldPoint = { x: 0, y: 0 };
   private advOpen = false;
-  private modeRow: HTMLDivElement | null = null;
+  private toolHelp: HTMLDivElement | null = null;
+  private brushHeader: HTMLDivElement | null = null;
+  private brushTop: HTMLDivElement | null = null;
   private colControls: HTMLDivElement | null = null;
+  private wallsSeg: HTMLDivElement | null = null;
   private advEl: HTMLDivElement | null = null;
   private advOut: HTMLPreElement | null = null;
 
@@ -1491,40 +1501,53 @@ class RoomBuilderTool implements EditorTool {
     this.statusEl.style.cssText = 'color:#9fb8cc;font-size:11px;line-height:1.4;min-height:16px;';
     this.panel.appendChild(this.statusEl);
 
-    // ── MODE section (what the mouse paints) ──
-    this.panel.appendChild(this.mkSection('MODE'));
-    this.modeRow = document.createElement('div');
-    this.modeRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;';
-    const mkMode = (label: string, mode: 'tiles' | CollisionOp, tip: string) => {
-      const b = this.mkBtn(label, () => this.setMode(mode), this.modeRow!);
-      b.dataset.mode = mode;
+    // ── TOOL: the single "what does clicking do?" selector ──
+    this.panel.appendChild(this.mkSection('TOOL — what clicking does'));
+    const toolRow = document.createElement('div');
+    toolRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;';
+    const mkTool = (label: string, tool: RoomTool, tip: string) => {
+      const b = this.mkBtn(label, () => this.setTool(tool), toolRow);
+      b.dataset.tool = tool;
       b.title = tip;
     };
-    mkMode('Tiles', 'tiles', 'Paint map tiles & build rooms (the normal brush below).');
-    mkMode('Solid', 'solid', 'Paint walls that block movement (collision 0x80).');
-    mkMode('Walk', 'walk', 'Clear walls/priority so you can walk here (keeps the FG flag).');
-    mkMode('FG', 'fg', 'Mark a tile as FOREGROUND so you hide behind it (0x40). Click toggles.');
-    this.panel.appendChild(this.modeRow);
+    mkTool('▣ Select', 'select', 'Click a room to select it; drag its corner handles to resize.');
+    mkTool('🖌 Paint', 'paint', 'Draw tiles into rooms or onto the map with the brush.');
+    mkTool('🧱 Walls', 'walls', 'Paint where you can and cannot walk.');
+    mkTool('🌳 Front', 'front', 'Paint tiles you hide BEHIND (trees, roofs, signs).');
+    this.panel.appendChild(toolRow);
 
-    // Collision controls (brush size + advanced) — shown only in a paint mode.
+    this.toolHelp = document.createElement('div');
+    this.toolHelp.style.cssText = 'color:#7fa8c0;font-size:10px;line-height:1.4;min-height:26px;';
+    this.panel.appendChild(this.toolHelp);
+
+    // Collision controls (Walls/Front) — shown only in those tools.
     this.colControls = document.createElement('div');
     this.colControls.style.cssText = 'display:none;flex-direction:column;gap:6px;';
+    // Block / Clear segment (Walls tool only).
+    this.wallsSeg = document.createElement('div');
+    this.wallsSeg.style.cssText = 'display:flex;gap:4px;align-items:center;flex-wrap:wrap;';
+    const blk = this.mkBtn('Block', () => this.setWallsErase(false), this.wallsSeg);
+    blk.dataset.wall = 'block';
+    blk.title = 'Paint walls that block movement.';
+    const clr = this.mkBtn('Clear', () => this.setWallsErase(true), this.wallsSeg);
+    clr.dataset.wall = 'clear';
+    clr.title = 'Remove walls so you can walk here.';
+    this.colControls.appendChild(this.wallsSeg);
+
     const cRow = document.createElement('div');
     cRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;align-items:center;';
-    this.mkBtn('Brush', () => this.cycleColBrush(), cRow).title =
-      'Cycle brush size 1→2→4 minitiles (8px each).';
-    this.mkBtn('Room@cursor', () => collisionPaint.refreshRoomPreview(this.colHover), cRow).title =
-      'Preview the room-crop (cyan = walkable minitiles) at the cursor.';
+    this.mkBtn('Brush size', () => this.cycleColBrush(), cRow).title =
+      'Cycle brush size 1→2→4 cells (8px each).';
     const advBtn = this.mkBtn(
       'Advanced ▸',
       () => {
         this.advOpen = !this.advOpen;
-        this.syncMode();
+        this.syncTool();
       },
       cRow
     );
     advBtn.dataset.adv = '1';
-    advBtn.title = 'Native ROM priority bits + room verifier (rarely needed).';
+    advBtn.title = 'Native ROM priority bits, walkable preview, and room verifier (rarely needed).';
     this.colControls.appendChild(cRow);
 
     this.advEl = document.createElement('div');
@@ -1547,7 +1570,12 @@ class RoomBuilderTool implements EditorTool {
       'prihi',
       'Native 0x02 — whole body behind FG (only bites where ROM has FG art).'
     );
-    mkAdv('Clear', 'clear', 'Wipe the cell back to 0 (all bits).');
+    mkAdv('Wipe cell', 'clear', 'Wipe the cell back to 0 (all bits).');
+    this.mkBtn(
+      'Show walkable',
+      () => collisionPaint.refreshRoomPreview(this.colHover),
+      advRow
+    ).title = 'Preview the room-crop (cyan = walkable cells) at the cursor.';
     this.mkBtn('Verify rooms', () => void this.runColVerify(), advRow).title =
       'Run the room-crop verifier against painted collision (takes a minute).';
     this.advEl.appendChild(advRow);
@@ -1559,11 +1587,13 @@ class RoomBuilderTool implements EditorTool {
     this.colControls.appendChild(this.advEl);
     this.panel.appendChild(this.colControls);
 
-    // ── BRUSH section ──
-    this.panel.appendChild(this.mkSection('BRUSH'));
+    // ── BRUSH section (Paint tool only) ──
+    this.brushHeader = this.mkSection('BRUSH');
+    this.panel.appendChild(this.brushHeader);
 
     // tab row + brush swatch + erase
     const top = document.createElement('div');
+    this.brushTop = top;
     top.style.cssText = 'display:flex;align-items:center;gap:6px;';
     this.tabTilesBtn = this.mkBtn('Tiles', () => this.setTab('tiles'), top);
     this.tabTilesBtn.title = 'Brush from a single tileset arrangement picked in the palette grid.';
@@ -1683,7 +1713,7 @@ class RoomBuilderTool implements EditorTool {
 
     this.shell!.panelHost.appendChild(this.panel);
     this.syncTabs();
-    this.syncMode();
+    this.setTool('select');
     this.updateBrushUi();
     void this.renderPalette();
   }
@@ -1694,18 +1724,51 @@ class RoomBuilderTool implements EditorTool {
     if (tab === 'tiles') void this.renderPalette();
   }
 
-  // ── collision / layer paint mode ───────────────────────────────────────────
+  // ── tool selector (what clicking does) ─────────────────────────────────────
 
-  private setMode(mode: 'tiles' | CollisionOp): void {
+  /** Switch the active tool, configuring the paint state it implies. */
+  private setTool(tool: RoomTool): void {
+    this.tool = tool;
+    this.selecting = false;
+    this.pendingBlank = false;
+    this.sel = null;
+    if (tool !== 'walls' && tool !== 'front') this.advOpen = false;
+    if (tool === 'select') {
+      this.paintMode = 'tiles';
+      this.setPainting(false);
+    } else if (tool === 'paint') {
+      this.paintMode = 'tiles';
+      this.setPainting(!!this.brush || this.erasing);
+    } else if (tool === 'walls') {
+      this.paintMode = this.wallsErase ? 'walk' : 'solid';
+      this.setPainting(false);
+    } else {
+      this.paintMode = 'fg';
+      this.setPainting(false);
+    }
+    this.syncTool();
+    this.updateStatus();
+  }
+
+  /** Walls sub-toggle: Block adds walls (solid), Clear removes them (walk). */
+  private setWallsErase(erase: boolean): void {
+    this.wallsErase = erase;
+    if (this.tool === 'walls') this.paintMode = erase ? 'walk' : 'solid';
+    this.syncTool();
+    this.updateStatus();
+  }
+
+  /** Advanced collision op (native priority / wipe). Keeps the current tool. */
+  private setMode(mode: CollisionOp): void {
     this.paintMode = mode;
-    if (mode !== 'tiles') this.setPainting(false); // collision modes own the mouse
-    this.syncMode();
+    this.setPainting(false);
+    this.syncTool();
     this.updateStatus();
   }
 
   private cycleColBrush(): void {
     collisionPaint.brush = collisionPaint.brush === 1 ? 2 : collisionPaint.brush === 2 ? 4 : 1;
-    this.shell?.toast(`Brush: ${collisionPaint.brush}x${collisionPaint.brush} minitiles`);
+    this.shell?.toast(`Brush: ${collisionPaint.brush}x${collisionPaint.brush} cells`);
   }
 
   private async runColVerify(): Promise<void> {
@@ -1715,19 +1778,58 @@ class RoomBuilderTool implements EditorTool {
     this.advOut.textContent = await collisionPaint.runVerifier();
   }
 
-  /** Reflect the active paint mode: show collision controls + highlight buttons. */
-  private syncMode(): void {
-    const tilesMode = this.paintMode === 'tiles';
-    if (this.colControls) this.colControls.style.display = tilesMode ? 'none' : 'flex';
-    if (this.advEl) this.advEl.style.display = !tilesMode && this.advOpen ? 'flex' : 'none';
-    const mark = (b: HTMLButtonElement) => {
+  private toolHelpText(): string {
+    switch (this.tool) {
+      case 'select':
+        return 'Click a room to select it, drag its corner handles to resize. Build rooms below.';
+      case 'paint':
+        return 'Click/drag to paint the brush. Choose Tiles or Stamps, and where it lands.';
+      case 'walls':
+        return 'Paint where you can walk — red = wall. Block adds walls, Clear removes them.';
+      case 'front':
+        return 'Paint tiles you hide BEHIND (trees, roofs, signs). Yellow = foreground.';
+    }
+  }
+
+  /** Reflect the active tool: show only its controls + highlight buttons. */
+  private syncTool(): void {
+    const showBrush = this.tool === 'paint';
+    const showCol = this.tool === 'walls' || this.tool === 'front';
+    if (this.brushHeader) this.brushHeader.style.display = showBrush ? 'block' : 'none';
+    if (this.brushTop) this.brushTop.style.display = showBrush ? 'flex' : 'none';
+    if (this.paintBtn) this.paintBtn.style.display = showBrush ? 'block' : 'none';
+    if (this.editMapBtn) this.editMapBtn.style.display = showBrush ? 'block' : 'none';
+    if (showBrush) this.syncTabs();
+    else {
+      if (this.tilesPane) this.tilesPane.style.display = 'none';
+      if (this.stampsPane) this.stampsPane.style.display = 'none';
+    }
+    if (this.colControls) this.colControls.style.display = showCol ? 'flex' : 'none';
+    if (this.wallsSeg) this.wallsSeg.style.display = this.tool === 'walls' ? 'flex' : 'none';
+    if (this.advEl) this.advEl.style.display = showCol && this.advOpen ? 'flex' : 'none';
+
+    // Highlight the active tool.
+    this.panel?.querySelectorAll<HTMLButtonElement>('button[data-tool]').forEach((b) => {
+      const on = b.dataset.tool === this.tool;
+      b.style.background = on ? '#10303d' : '#1d2530';
+      b.style.color = on ? '#4db6e8' : '#cde';
+      b.style.borderColor = on ? '#4db6e8' : '#3a4a5a';
+    });
+    // Highlight Block/Clear by current erase state.
+    this.panel?.querySelectorAll<HTMLButtonElement>('button[data-wall]').forEach((b) => {
+      const on = (b.dataset.wall === 'clear') === this.wallsErase;
+      b.style.color = on ? '#7CFC6A' : '#cde';
+      b.style.borderColor = on ? '#7CFC6A' : '#3a4a5a';
+    });
+    // Highlight the active advanced op (if any) by paint mode.
+    this.panel?.querySelectorAll<HTMLButtonElement>('button[data-mode]').forEach((b) => {
       const on = b.dataset.mode === this.paintMode;
       b.style.color = on ? '#7CFC6A' : '#cde';
       b.style.borderColor = on ? '#7CFC6A' : '#3a4a5a';
-    };
-    this.panel?.querySelectorAll<HTMLButtonElement>('button[data-mode]').forEach(mark);
+    });
     const adv = this.panel?.querySelector<HTMLButtonElement>('button[data-adv]');
     if (adv) adv.textContent = this.advOpen ? 'Advanced ▾' : 'Advanced ▸';
+    if (this.toolHelp) this.toolHelp.textContent = this.toolHelpText();
   }
 
   private syncTabs(): void {
@@ -1882,6 +1984,18 @@ class RoomBuilderTool implements EditorTool {
 
   private updateStatus(): void {
     if (!this.statusEl) return;
+    if (this.paintMode !== 'tiles') {
+      const m = this.paintMode;
+      this.statusEl.textContent =
+        m === 'solid'
+          ? 'Walls — click/drag to add walls (red).'
+          : m === 'walk'
+            ? 'Walls — click/drag to remove walls.'
+            : m === 'fg'
+              ? 'Front — click/drag to mark tiles you hide behind (yellow).'
+              : `Advanced (${m}) — click/drag to paint.`;
+      return;
+    }
     if (this.pendingBlank) {
       this.statusEl.textContent = this.sel
         ? `New room ${this.sel.w}x${this.sel.h} — release to create`

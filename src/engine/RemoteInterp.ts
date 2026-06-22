@@ -90,6 +90,56 @@ export function injectPredOffset(
   return true;
 }
 
+// --- Remote melee-swing replay ----------------------------------------------
+// The server broadcasts every player's pose as 'walk' (the authoritative sim in
+// gameHost._stepPlayer hardcodes it), so a swinging player's 'attack' pose never
+// reaches other clients on the position stream. Instead the server broadcasts the
+// swing START (player_attack) and we replay the 3-frame wind-up→swing→follow-
+// through locally, so it animates smoothly at any snapshot rate and clears itself.
+// Frame thresholds MIRROR Player.ts (ATTACK_WINDUP / ATTACK_SWING / ATTACK_TOTAL).
+const SWING_WINDUP = 6; // f0 (wind-up) ends here, in game frames @60fps
+const SWING_MID = 11; // f1 (swing) ends here; f2 (follow-through) runs to total
+const SWING_TOTAL = 16; // whole swing length
+
+/** Drive a remote player's swing pose/frame from `attackStart`. Call each frame
+ *  AFTER interpolate() so it overrides the always-'walk' snapshot pose. Clears
+ *  `attackStart` (back to walk) once the swing completes. No-op when not swinging. */
+export function applyRemoteSwing(
+  t: { pose?: Pose; frame: number; attackStart?: number; attackSpeed?: number },
+  now: number
+): void {
+  if (!t.attackStart) return;
+  const spd = t.attackSpeed && t.attackSpeed > 0 ? t.attackSpeed : 1;
+  // Elapsed game frames, speed-scaled so a fast weapon's swing reads as fast as
+  // it does for its owner (matches Player.ts scaling the thresholds by 1/spd).
+  const f = ((now - t.attackStart) / (1000 / 60)) * spd;
+  if (f >= SWING_TOTAL) {
+    t.attackStart = undefined;
+    return;
+  }
+  t.pose = 'attack';
+  t.frame = f < SWING_WINDUP ? 0 : f < SWING_MID ? 1 : 2;
+}
+
+const HURT_TOTAL = 20; // flinch length in game frames @60fps (mirror Player.ts)
+
+/** Drive a remote player's hurt flinch from `hurtStart`. Call each frame AFTER
+ *  interpolate() AND applyRemoteSwing (a hit interrupts a swing — hurt wins).
+ *  Clears `hurtStart` once the flinch completes. No-op when not flinching. */
+export function applyRemoteHurt(
+  t: { pose?: Pose; frame: number; hurtStart?: number },
+  now: number
+): void {
+  if (!t.hurtStart) return;
+  const f = (now - t.hurtStart) / (1000 / 60);
+  if (f >= HURT_TOTAL) {
+    t.hurtStart = undefined;
+    return;
+  }
+  t.pose = 'hurt';
+  t.frame = 0; // mirror Player.hurt(): a single recoil frame held for the flinch
+}
+
 export interface Interpolator {
   push(id: string, x: number, y: number, direction: Direction, frame: number, pose: Pose): void;
   drop(id: string): void;

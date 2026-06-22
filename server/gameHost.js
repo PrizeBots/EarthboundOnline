@@ -50,6 +50,13 @@ const SQRT1_2 = Math.SQRT1_2;
 const ANIM_INTERVAL = 8; // frames between walk-cycle toggles (mirror Entity.ts)
 const SIM_TICK_MS = 33; // ~30Hz player-movement sim
 const MAX_INPUT_QUEUE = 240; // ~4s of 60fps inputs — drop overflow (anti-flood)
+// Speed authority (anti-speedhack / frame-rate fairness): one movement STEP is
+// one 60Hz frame of motion, so the sim applies at most this many steps per tick
+// regardless of how many inputs a client sends. A 120Hz display, or a client
+// flooding inputs, can't move faster than real time — the server, paced by the
+// fixed SIM_TICK_MS interval, is the sole authority on travel-per-second.
+const SIM_FRAME_MS = 1000 / 60; // wall-clock duration of one movement step
+const MAX_STEPS_PER_TICK = Math.max(1, Math.round(SIM_TICK_MS / SIM_FRAME_MS)); // = 2 @ 33ms
 
 // Direction enum (src/types.ts) from an input vector — mirror Player.dirFromInput.
 function dirFromInput(dx, dy) {
@@ -1239,11 +1246,26 @@ class GameHost {
       let lastSeq = entry._ackSeq || 0;
       let x0 = entry.x;
       let y0 = entry.y;
-      for (const input of q) {
-        if (!held) this._stepPlayer(entry, input);
-        lastSeq = input.seq;
+      if (held) {
+        // Frozen / mid door-fade: consume the whole queue without moving, so the
+        // seq still advances (the client's frozen/warp hold mirrors this).
+        lastSeq = q[q.length - 1].seq;
+        q.length = 0;
+      } else {
+        // Apply at most MAX_STEPS_PER_TICK steps this tick — the speed cap. Any
+        // surplus inputs (a high-refresh or flooding client) stay queued, bounded
+        // by MAX_INPUT_QUEUE, and drain at the capped rate on later ticks. Honest
+        // play (≤2 inputs/tick) never hits the cap, so packet bunching just drains
+        // smoothly while a speedhack is throttled to the legitimate rate.
+        let applied = 0;
+        for (const input of q) {
+          if (applied >= MAX_STEPS_PER_TICK) break;
+          this._stepPlayer(entry, input);
+          lastSeq = input.seq;
+          applied++;
+        }
+        q.splice(0, applied);
       }
-      q.length = 0;
       entry._ackSeq = lastSeq;
       const moved = entry.x !== x0 || entry.y !== y0;
       // Tell the OWNER the authoritative spot + which input it reflects (reconcile).
@@ -2093,6 +2115,14 @@ class GameHost {
       case 'attack': {
         const entry = this.players.get(playerId);
         if (!entry) break;
+        // Tell everyone else to play this player's swing. The authoritative move
+        // sim broadcasts every pose as 'walk', so the attack pose can't ride the
+        // position stream — other clients replay the swing from this signal
+        // (RemoteInterp.applyRemoteSwing). Sent for every swing incl. a whiff.
+        this.broadcastExcept(
+          { type: 'player_attack', id: playerId, attackSpeed: entry.attackSpeed || 1 },
+          playerId
+        );
         // Status accuracy penalties: Crying lowers your hit rate, Nausea makes
         // you fumble — either can whiff the swing outright (broadcast a MISS).
         const nowA = Date.now();

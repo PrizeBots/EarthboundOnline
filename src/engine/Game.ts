@@ -86,6 +86,8 @@ import {
   dropRemoteBuffer,
   interpolateRemotePlayer,
   applyPredOffset,
+  applyRemoteSwing,
+  applyRemoteHurt,
   injectPredOffset,
 } from './RemoteInterp';
 import { loadItemSprites, loadCustomItems } from './Items';
@@ -622,6 +624,16 @@ export class Game {
           const rp = this.remotePlayers.get(id);
           if (rp) rp.itemId = itemId;
         },
+        onPlayerAttack: (id, attackSpeed) => {
+          // Stamp the swing start; applyRemoteSwing animates the attack pose each
+          // frame and reverts to walk on its own (the position stream only ever
+          // carries 'walk' under server-authoritative movement).
+          const rp = this.remotePlayers.get(id);
+          if (rp) {
+            rp.attackStart = performance.now();
+            rp.attackSpeed = attackSpeed;
+          }
+        },
         onEquipped: (slots, attackSpeed) => {
           // Authoritative equipped set for the local player — re-sync the mirror
           // and the held-weapon sprite.
@@ -685,6 +697,8 @@ export class Game {
                 noteHealthDamage(rp as HpHolder, hp + dmg, performance.now());
                 spawnDamageNumber(rp.x, rp.y, dmg);
                 rp.flashUntil = Date.now() + FLASH_MS; // blink, but no shake/freeze — not our hit
+                rp.hurtStart = performance.now(); // play the flinch (server-auth move drops the pose)
+                rp.attackStart = undefined; // a hit interrupts any swing in progress
               }
               if (heal > 0) spawnHealNumber(rp.x, rp.y, heal);
             }
@@ -1563,8 +1577,31 @@ export class Game {
   }
 
   start() {
-    const loop = () => {
-      this.update();
+    // Fixed-timestep simulation. update() runs at a constant 60Hz regardless of
+    // the display's refresh rate, so movement and animation cover the same ground
+    // PER SECOND on a 60/90/120/144Hz screen. They're authored as px/frame, so a
+    // raw rAF loop ran the sim fast on high-refresh handhelds/phones (and slow on
+    // 30Hz) — and the server, which also steps once per input, would have moved a
+    // high-refresh client proportionally faster. render() still runs once per
+    // animation frame at the display's native rate.
+    const FRAME_MS = 1000 / 60;
+    const MAX_CATCHUP = 5; // cap sim steps per frame (a stall/tab-out can't fast-forward)
+    let last = performance.now();
+    let acc = 0;
+    const loop = (now: number) => {
+      let delta = now - last;
+      last = now;
+      // A long gap (backgrounded tab, devtools pause) must not unleash a flood of
+      // catch-up steps — resume at real time, not warp speed.
+      if (delta > 250) delta = FRAME_MS;
+      acc += delta;
+      let steps = 0;
+      while (acc >= FRAME_MS && steps < MAX_CATCHUP) {
+        this.update();
+        acc -= FRAME_MS;
+        steps++;
+      }
+      if (steps === MAX_CATCHUP) acc = 0; // drop the remaining backlog
       this.render();
       requestAnimationFrame(loop);
     };
@@ -1590,8 +1627,21 @@ export class Game {
   }
 
   private update() {
+    // A virtual (touch/gamepad) tap is injected as a one-frame key press. With the
+    // fixed-timestep loop several sim steps can run in a single animation frame, so
+    // the tap must be released at the end of EVERY step — otherwise one tap would
+    // be read by multiple steps (e.g. a menu toggle opening then closing). The
+    // try/finally guards the many early returns in the step body.
+    try {
+      this._stepUpdate();
+    } finally {
+      releaseVirtualTaps();
+    }
+  }
+
+  private _stepUpdate() {
     // Physical gamepad (Steam Deck / Retroid / any controller) → virtual keys.
-    // Polled every frame, before any input is read, so it drives the same code
+    // Polled every step, before any input is read, so it drives the same code
     // paths the keyboard does. Action buttons adapt to whether UI is open.
     pollGamepads({ menuOpen: isMenuOpen(), dialogueOpen: isDialogueOpen() });
 
@@ -1640,6 +1690,8 @@ export class Game {
     advanceKoThrow(this.player); // KO rotate/fling/bounce settles into the laying pose
     for (const [, rp] of this.remotePlayers) {
       interpolateRemotePlayer(rp);
+      applyRemoteSwing(rp, mortalNow); // override snapshot 'walk' with the swing pose
+      applyRemoteHurt(rp, mortalNow); // a hit interrupts the swing — hurt wins (runs after)
       applyPredOffset(rp); // layer predicted push/knockback on top, then decay
       tickMortalRoll(rp as HpHolder, mortalNow); // ally's death-slide too
       advanceKoThrow(rp); // ally's KO throw advances identically (deterministic)
@@ -2257,10 +2309,9 @@ export class Game {
   }
 
   private render() {
-    // Release last frame's momentary touch presses (menu/talk/confirm taps) now
-    // that update() has had its single frame to read them, and sync the on-screen
-    // controls to the current phase (visibility, attack-in-menu, action label).
-    releaseVirtualTaps();
+    // Sync the on-screen touch controls to the current phase (visibility,
+    // attack-in-menu, action label). Virtual-tap release happens per sim step in
+    // update(), not here — render runs at the display rate, which may differ.
     setTouchContext({
       playing: this.phase === 'playing',
       menuOpen: isMenuOpen(),

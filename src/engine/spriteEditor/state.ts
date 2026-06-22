@@ -74,6 +74,9 @@ export const S = {
 
   tool: 'pencil' as Tool,
   colorIndex: 1,
+  // Pencil/eraser brush size in pixels (paints an N×N block) — for blocking in
+  // larger sprites & stamps. 1 = single pixel (classic). [ and ] adjust it.
+  brushSize: 1,
 
   // --- Selection / move state (region-local pixel coords) ---
   selection: null as PixelRect | null,
@@ -171,6 +174,7 @@ export const S = {
   itemNote: null as HTMLDivElement | null,
   copyNote: null as HTMLDivElement | null,
   toolButtons: new Map<Tool, HTMLButtonElement>(),
+  brushButtons: new Map<number, HTMLButtonElement>(),
   swatchEls: [] as HTMLDivElement[],
   paletteGrid: null as HTMLDivElement | null,
   modeButtons: new Map<EditMode, HTMLButtonElement>(),

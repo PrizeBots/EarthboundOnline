@@ -299,13 +299,25 @@ function applyToolAt(e: MouseEvent): void {
     return;
   }
 
+  // Pencil/eraser paint an N×N block centered on the cursor (n=1 = one pixel),
+  // clipped to the frame. Eyedrop above always sampled a single pixel.
+  const n = Math.max(1, S.brushSize);
+  const off = Math.floor((n - 1) / 2);
+  const bx0 = Math.max(0, px - off);
+  const by0 = Math.max(0, py - off);
+  const bx1 = Math.min(w - 1, px - off + n - 1);
+  const by1 = Math.min(h - 1, py - off + n - 1);
+  const bw = bx1 - bx0 + 1;
+  const bh = by1 - by0 + 1;
+  if (bw <= 0 || bh <= 0) return;
+
   const color = colorFor(S.colorIndex);
   if (erase || color === null) {
-    ctx.clearRect(sx, sy, 1, 1);
+    ctx.clearRect(ox + bx0, oy + by0, bw, bh);
   } else {
-    ctx.clearRect(sx, sy, 1, 1); // replace, don't blend
+    ctx.clearRect(ox + bx0, oy + by0, bw, bh); // replace, don't blend
     ctx.fillStyle = color;
-    ctx.fillRect(sx, sy, 1, 1);
+    ctx.fillRect(ox + bx0, oy + by0, bw, bh);
   }
 
   if (S.editMode !== 'char') {
@@ -687,6 +699,16 @@ export function setTool(t: Tool): void {
   for (const [key, btn] of S.toolButtons) {
     btn.style.borderColor = key === t ? '#9af' : '#444';
     btn.style.color = key === t ? '#fff' : '#ddd';
+  }
+}
+
+/** Set the pencil/eraser brush size (N×N block) and highlight its button. */
+export function setBrushSize(n: number): void {
+  S.brushSize = Math.max(1, Math.min(4, n));
+  for (const [key, btn] of S.brushButtons) {
+    const on = key === S.brushSize;
+    btn.style.borderColor = on ? '#9af' : '#444';
+    btn.style.color = on ? '#fff' : '#ddd';
   }
 }
 

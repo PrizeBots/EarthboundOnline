@@ -28,6 +28,7 @@ import {
 import { S } from './state';
 import {
   setTool,
+  setBrushSize,
   setColor,
   renderSwatches,
   onEditDown,
@@ -578,6 +579,29 @@ function buildToolPanel(): HTMLDivElement {
     S.toolButtons.set(t, btn);
     div.appendChild(btn);
   }
+
+  // Brush size for the pencil/eraser (N×N block) — for blocking in larger
+  // sprites & stamps. Keys [ and ] step it down/up.
+  const brushHead = document.createElement('div');
+  brushHead.textContent = 'BRUSH SIZE ( [ ] )';
+  brushHead.style.cssText = 'margin-top:8px;color:#9af;font-size:11px;letter-spacing:1px;';
+  div.appendChild(brushHead);
+  const brushRow = document.createElement('div');
+  brushRow.style.cssText = 'display:flex;gap:4px;';
+  S.brushButtons.clear();
+  for (const n of [1, 2, 3, 4]) {
+    const b = document.createElement('button');
+    b.textContent = `${n}px`;
+    b.title = `Pencil/eraser paints a ${n}×${n} block`;
+    b.style.cssText =
+      'flex:1;font:12px monospace;padding:5px 0;background:#2a2a3a;color:#ddd;' +
+      'border:1px solid #444;border-radius:3px;cursor:pointer;';
+    b.onclick = () => setBrushSize(n);
+    S.brushButtons.set(n, b);
+    brushRow.appendChild(b);
+  }
+  div.appendChild(brushRow);
+  setBrushSize(S.brushSize); // highlight the active size
 
   const palHead = document.createElement('div');
   palHead.textContent = 'PALETTE';

@@ -124,6 +124,19 @@ export interface RemotePlayer {
    *  push/knockback on this remote player show instantly, then reconcile. */
   predOffX?: number;
   predOffY?: number;
+  /** Local melee-swing replay: `attackStart` is the performance.now() the server
+   *  said this player began a swing (player_attack), `attackSpeed` scales its
+   *  duration. The 3-frame attack pose is animated locally from these and reverts
+   *  to walk on its own — the server-authoritative sim broadcasts everyone's pose
+   *  as 'walk', so the swing can't ride along the position stream. See
+   *  RemoteInterp.applyRemoteSwing. */
+  attackStart?: number;
+  attackSpeed?: number;
+  /** Local hurt-flinch replay: the performance.now() this player last took damage
+   *  (from the player_hp broadcast). The 'hurt' pose is animated locally from this
+   *  and reverts to walk — same reason as attackStart (server-auth movement
+   *  broadcasts pose as 'walk'). See RemoteInterp.applyRemoteHurt. */
+  hurtStart?: number;
 }
 
 export enum Direction {

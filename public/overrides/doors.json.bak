@@ -237,6 +237,15 @@
       "worldX": 2416,
       "worldY": 1112
     },
+    "7256,1100": {
+      "destX": 8072,
+      "destY": 1472,
+      "destDir": 0,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 7248,
+      "worldY": 1104
+    },
     "7384,1260": {
       "destX": 7312,
       "destY": 960,
@@ -1057,7 +1066,16 @@
       "worldX": 1280,
       "worldY": 8712
     },
-    "1296,8724": null
+    "1296,8724": null,
+    "6904,9452": {
+      "destX": 4536,
+      "destY": 2728,
+      "destDir": 0,
+      "style": 10,
+      "sfx": "door-open",
+      "worldX": 6896,
+      "worldY": 9456
+    }
   },
   "additions": [
     {

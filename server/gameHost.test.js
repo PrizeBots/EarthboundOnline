@@ -424,6 +424,31 @@ check('input sim ignores a stale / replayed seq (no double-processing)', () => {
   assert.strictEqual(p._ackSeq, 5, 'a stale seq must never be processed');
 });
 
+check('input sim throttles a flood to the per-tick step cap (anti-speedhack)', () => {
+  const p = host.players.get(aliceId);
+  p.x = 1296;
+  p.y = 1168;
+  p._inputs = null;
+  p._lastSeqIn = null;
+  p._ackSeq = 0;
+  const x0 = p.x;
+  const y0 = p.y;
+  // Far more inputs than the per-tick cap, all in a single tick (a 120Hz client
+  // or an input flooder). The server must NOT apply them all at once.
+  for (let s = 1; s <= 50; s++) alice.recv({ type: 'input', seq: s, dx: 1, dy: 0 });
+  host._simPlayers();
+  // Only a couple of steps applied; the rest stay queued to drain at the honest
+  // rate on later ticks — a client can't out-run real time.
+  assert(
+    p._inputs && p._inputs.length >= 40,
+    `most flooded inputs must remain queued (had ${p._inputs ? p._inputs.length : 0})`
+  );
+  assert(
+    Math.hypot(p.x - x0, p.y - y0) < 6,
+    'one tick must not move further than the per-tick step cap'
+  );
+});
+
 // Server-authoritative doors: a use_door is only honored if the player is actually
 // on a door trigger, and warps to the door's OWN dest (never a client-chosen spot).
 {

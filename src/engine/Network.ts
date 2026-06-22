@@ -32,6 +32,9 @@ type NetworkCallback = {
   onChat: (id: string, text: string) => void;
   /** A player equipped (or unequipped) a held item (the weapon, for the sprite). */
   onEquip: (id: string, itemId: string | null) => void;
+  /** A remote player started a melee swing — replay the attack pose locally.
+   *  `attackSpeed` scales the swing duration (1 = baseline). */
+  onPlayerAttack?: (id: string, attackSpeed: number) => void;
   /** The LOCAL player's full equipped set (server-authoritative, per slot).
    *  attackSpeed is the equipped weapon's swing-rate multiplier (1 = baseline). */
   onEquipped: (slots: Record<string, string | null>, attackSpeed?: number) => void;
@@ -406,6 +409,9 @@ function openSocket() {
         break;
       case 'equip':
         callbacks?.onEquip(msg.id, msg.itemId ?? null);
+        break;
+      case 'player_attack':
+        callbacks?.onPlayerAttack?.(msg.id, msg.attackSpeed ?? 1);
         break;
       case 'equipped':
         callbacks?.onEquipped(msg.slots ?? {}, msg.attackSpeed);

@@ -24,6 +24,7 @@ import {
   copySelection,
   pasteClipboard,
   setTool,
+  setBrushSize,
   renderSwatches,
   sheetReady,
   drawEditCanvas,
@@ -471,6 +472,8 @@ function onKeyDown(e: KeyboardEvent): void {
   else if (k === '6' || k === 'b') setTool('fill');
   else if (k === '7' || k === 'r') setTool('rotate');
   else if (k === '8' || k === 'k') setTool('skew');
+  else if (k === '[') setBrushSize(S.brushSize - 1);
+  else if (k === ']') setBrushSize(S.brushSize + 1);
   else if (k === 'w' || k === 'a' || k === 's' || k === 'd') S.heldKeys.add(k);
   else if (k === 'f' && S.walkerPose === 'walk') {
     S.walkerPose = 'attack'; // preview the attack rows
