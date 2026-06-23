@@ -2135,7 +2135,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       });
     }
     // Friendly townsfolk (non-enemy actors): gentle shove out of the lane.
-    for (const o of actors) {
+    for (const o of nearActors(n.x, n.y, 96)) {
       if (o === n || o.dead || o.kind === 'deleted' || o.isEnemy) continue;
       const [ox, oy, ow, oh] = actorBox(o, o.x, o.y);
       if (!aabb(bx, by, bw, bh, ox, oy, ow, oh)) continue;
@@ -2240,7 +2240,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
 
     // Otherwise defend-on-sight: the nearest townsperson it may hurt.
     best = range;
-    for (const o of actors) {
+    for (const o of nearActors(n.x, n.y, range)) {
       if (o.kind !== 'person' || o.dead || o.hp <= 0 || !canHurt(n, o)) continue;
       const d = Math.hypot(o.x - n.x, o.y - n.y);
       if (d <= best && canSense(n, o.x, o.y)) {
@@ -2259,8 +2259,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     let found = null;
     let best = range;
     let isPlayer = false;
-    for (const e of enemies) {
-      if (e.dead || e.hp <= 0 || !canHurt(n, e)) continue;
+    for (const e of nearActors(n.x, n.y, range)) {
+      if (!e.isEnemy || e.dead || e.hp <= 0 || !canHurt(n, e)) continue;
       const d = Math.hypot(e.x - n.x, e.y - n.y);
       if (d <= best && canSense(n, e.x, e.y)) {
         best = d;
@@ -2290,7 +2290,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   function separation(n) {
     let sx = 0;
     let sy = 0;
-    for (const o of actors) {
+    for (const o of nearActors(n.x, n.y, SEP_RADIUS)) {
       if (o === n || o.dead || o.kind === 'deleted') continue;
       const dx = n.x - o.x;
       const dy = n.y - o.y;
@@ -2373,11 +2373,41 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     return true;
   }
 
-  // Two actor centres can't possibly overlap once they're this far apart on
-  // either axis (collision boxes are ~16-32px). A cheap reject BEFORE building
-  // the box kills the O(all-actors) brute force that was the per-tick hot spot:
-  // at a busy spawn this scan ran `near × 1364` times/tick, each allocating a box.
-  const UNSTACK_BROAD = 64;
+  // --- Broad-phase actor grid: kill the O(N^2) per-tick scans -----------------
+  // Several hot functions (unstack, separation, enemy targeting, vehicle shove)
+  // used to scan ALL ~1364 actors for EACH near actor EVERY tick — millions of
+  // iterations/sec → 150-230ms event-loop stalls with just 2 players. Instead we
+  // bucket the live actors into a coarse grid ONCE per tick (rebuildActorGrid)
+  // and query only the local cells (nearActors), turning O(near × allActors) into
+  // O(near × localActors). The grid is over-inclusive at cell granularity, so
+  // callers keep their exact box/distance test — same results, a fraction of the
+  // work. Built from tick-start positions (actors move ≤ a few px/tick, well
+  // under the cell margin), so broad-phase never misses a real neighbour.
+  const GRID_CELL = 64;
+  const actorGrid = new Map(); // "cx,cy" -> actor[]
+  function rebuildActorGrid() {
+    actorGrid.clear();
+    for (const o of actors) {
+      if (o.dead || o.kind === 'deleted') continue;
+      const key = Math.floor(o.x / GRID_CELL) + ',' + Math.floor(o.y / GRID_CELL);
+      let arr = actorGrid.get(key);
+      if (!arr) actorGrid.set(key, (arr = []));
+      arr.push(o);
+    }
+  }
+  function* nearActors(x, y, radius) {
+    const r = Math.max(1, Math.ceil(radius / GRID_CELL));
+    const cx = Math.floor(x / GRID_CELL);
+    const cy = Math.floor(y / GRID_CELL);
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dy = -r; dy <= r; dy++) {
+        const arr = actorGrid.get(cx + dx + ',' + (cy + dy));
+        if (arr) for (const o of arr) yield o;
+      }
+    }
+  }
+
+  const UNSTACK_BROAD = 48;
   function unstack(n) {
     const [bx, by, bw, bh] = actorBox(n, n.x, n.y);
     const mN = massOf(n);
@@ -2385,10 +2415,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     let sy = 0;
     let shareSum = 0;
     let cnt = 0;
-    for (const o of actors) {
+    for (const o of nearActors(n.x, n.y, UNSTACK_BROAD)) {
       if (o === n || o.dead || o.kind === 'deleted') continue;
-      // Broad-phase: skip far actors in 2 subtractions, no allocation.
-      if (Math.abs(o.x - n.x) > UNSTACK_BROAD || Math.abs(o.y - n.y) > UNSTACK_BROAD) continue;
       const [ox, oy, ow, oh] = actorBox(o, o.x, o.y);
       if (!aabb(bx, by, bw, bh, ox, oy, ow, oh)) continue; // not overlapping
       let dx = n.x - o.x;
@@ -3639,6 +3667,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         reviveNpcs(now);
         reviveCars(now);
         if (players.length === 0) return;
+        // Broad-phase grid for this tick: lets unstack/separation/targeting query
+        // only local actors instead of scanning all ~1364 (the O(N^2) stall fix).
+        rebuildActorGrid();
         updateSpawners(now, players);
         // Detect door warps: a player whose reported position jumped > WARP_DELTA
         // in one tick teleported (the client warps on a door and sends the new
