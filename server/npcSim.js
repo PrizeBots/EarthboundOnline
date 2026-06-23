@@ -2373,6 +2373,11 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     return true;
   }
 
+  // Two actor centres can't possibly overlap once they're this far apart on
+  // either axis (collision boxes are ~16-32px). A cheap reject BEFORE building
+  // the box kills the O(all-actors) brute force that was the per-tick hot spot:
+  // at a busy spawn this scan ran `near × 1364` times/tick, each allocating a box.
+  const UNSTACK_BROAD = 64;
   function unstack(n) {
     const [bx, by, bw, bh] = actorBox(n, n.x, n.y);
     const mN = massOf(n);
@@ -2382,6 +2387,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     let cnt = 0;
     for (const o of actors) {
       if (o === n || o.dead || o.kind === 'deleted') continue;
+      // Broad-phase: skip far actors in 2 subtractions, no allocation.
+      if (Math.abs(o.x - n.x) > UNSTACK_BROAD || Math.abs(o.y - n.y) > UNSTACK_BROAD) continue;
       const [ox, oy, ow, oh] = actorBox(o, o.x, o.y);
       if (!aabb(bx, by, bw, bh, ox, oy, ow, oh)) continue; // not overlapping
       let dx = n.x - o.x;
