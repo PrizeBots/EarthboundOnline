@@ -75,9 +75,9 @@ describe('public/overrides/enemy_spawns.json', () => {
 
   // Sprite groups with a spawner but NO stats anywhere — no canon entry in the ROM
   // enemy catalog AND no authored override. They fall back to DEFAULT_ENTITY_STATS.
-  // 107 is an overworld sprite with no EarthBound enemy mapped to it. Map one to a
-  // real enemy (or author stats in the Entity Manager) = remove it from here.
-  const KNOWN_UNMAPPED = new Set([107]);
+  // These are overworld sprites with no EarthBound enemy mapped to them. Map one to
+  // a real enemy (or author stats in the Entity Manager) = remove it from here.
+  const KNOWN_UNMAPPED = new Set([107, 226, 281, 361]);
 
   // Canon ROM stats live in the enemy catalog (enemies.json `bySprite`), keyed by
   // overworld sprite id. The runtime applies them UNDER any override

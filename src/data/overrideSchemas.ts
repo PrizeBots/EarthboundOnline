@@ -81,7 +81,10 @@ export const SpawnerSchema = z
     sprite: z.number().int(),
     x: z.number(),
     y: z.number(),
-    wanderRadius: z.number().nonnegative(),
+    // Optional: the Enemy Spawner tool omits it when blank ("inherit the entity
+    // baseline"), and the server resolves a missing value to the entity stat /
+    // spawner / 256 (see npcSim tickEnemy). Required-here was schema/tool drift.
+    wanderRadius: z.number().nonnegative().optional(),
     detectRange: z.number().positive().optional(), // px aggro radius (per-spawner)
     giveUpRange: z.number().positive().optional(), // px locked-on chase break-off
     poolSize: z.number().int().positive(),
