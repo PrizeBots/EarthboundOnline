@@ -58,7 +58,16 @@ const MAX_INPUT_QUEUE = 240; // ~4s of 60fps inputs — drop overflow (anti-floo
 // flooding inputs, can't move faster than real time — the server, paced by the
 // fixed SIM_TICK_MS interval, is the sole authority on travel-per-second.
 const SIM_FRAME_MS = 1000 / 60; // wall-clock duration of one movement step
-const MAX_STEPS_PER_TICK = Math.max(1, Math.round(SIM_TICK_MS / SIM_FRAME_MS)); // = 2 @ 33ms
+// Nominal steps an on-time tick earns: SIM_TICK_MS / SIM_FRAME_MS ≈ 2 @ 33ms.
+// The actual per-tick budget is time-based (see _simPlayers); this is the baseline.
+const NOMINAL_STEPS_PER_TICK = SIM_TICK_MS / SIM_FRAME_MS; // ≈ 2.0
+// Catch-up ceiling for the time-based step budget (see _simPlayers). A late tick
+// (timer slip / GC / busy prod CPU) earns extra steps so an honest 60Hz input
+// stream still drains in real time — but never more than this per tick, so a
+// resumed stall can't fling a player across the map and a flooding client still
+// can't out-run the wall clock. 3x a nominal tick (~100ms of motion) is enough to
+// absorb timer jitter while bounding a single catch-up burst.
+const MAX_STEPS_BURST = Math.max(2, Math.round(NOMINAL_STEPS_PER_TICK * 3)); // = 6 @ 33ms
 
 // Area-of-interest fan-out (NETWORK_REMODEL.md §4). ON by default now (built +
 // validated: smoke:net 7/7, ~9.4x bandwidth). Set AOI_ENABLED=0 to fall back to
@@ -71,6 +80,14 @@ const BINARY_WIRE = process.env.BINARY_WIRE !== '0';
 // Per-client crowd cap (§4.6): max NPC position rows shipped to one client per
 // tick. Beyond it, nearest-first wins and the remainder rides as an `over` count.
 const AOI_MAX_NPCS = parseInt(process.env.AOI_MAX_NPCS, 10) || 120;
+// Lag compensation (NETWORK_REMODEL.md, combat pillar): when a player swings,
+// rewind enemies to where the attacker SAW them and test the hitbox there, so a
+// fleeing target you aimed at still gets hit. Rewind = NPC interp delay + the
+// player's measured RTT. ON by default; LAG_COMP=0 tests against live positions.
+const LAG_COMP = process.env.LAG_COMP !== '0';
+// How far in the past the client renders enemies (NPCManager npcInterp(100)).
+// Keep in sync with the client; the per-player RTT is added on top per swing.
+const NPC_INTERP_MS = 100;
 // Per-client cap on visible PLAYERS, with a rank-hysteresis buffer so a peer
 // hovering at the cap boundary doesn't flap spawn/despawn. A periodic relevance
 // pass re-ranks each player's neighbourhood so a stationary player in a shifting
@@ -1693,6 +1710,26 @@ class GameHost {
   // until the client cuts over to inputs) is unaffected.
   _simPlayers() {
     const now = Date.now();
+    // Time-based step budget. Real time — not a fixed per-tick count — decides how
+    // many 60Hz movement steps this tick may apply. setInterval(SIM_TICK_MS) drifts
+    // late under GC / a busy prod CPU; with a hard 2-steps cap the server then
+    // drained slower than an honest client's 60Hz input stream, so the queue (and
+    // every remote viewer's picture of that player) fell permanently behind —
+    // multi-second lag in prod though it was crisp locally. We accumulate elapsed
+    // real time into whole steps (carrying the remainder so rounding never drifts),
+    // clamp a single tick's catch-up to MAX_STEPS_BURST, and drop surplus past the
+    // clamp — mirroring the client's own accumulator (Game.ts). Steps stay bounded
+    // by the wall clock, so a high-refresh or flooding client can't speedhack.
+    const dt = Math.min(250, this._lastSimAt ? now - this._lastSimAt : SIM_TICK_MS);
+    this._lastSimAt = now;
+    this._stepAccum = (this._stepAccum || 0) + dt / SIM_FRAME_MS;
+    let stepBudget = Math.floor(this._stepAccum);
+    if (stepBudget > MAX_STEPS_BURST) {
+      stepBudget = MAX_STEPS_BURST;
+      this._stepAccum = 0; // resumed stall: take the wall-clock rate, don't bank a flood
+    } else {
+      this._stepAccum -= stepBudget;
+    }
     for (const [id, entry] of this.players) {
       const q = entry._inputs;
       if (!q || q.length === 0) continue;
@@ -1712,14 +1749,14 @@ class GameHost {
         lastSeq = q[q.length - 1].seq;
         q.length = 0;
       } else {
-        // Apply at most MAX_STEPS_PER_TICK steps this tick — the speed cap. Any
-        // surplus inputs (a high-refresh or flooding client) stay queued, bounded
-        // by MAX_INPUT_QUEUE, and drain at the capped rate on later ticks. Honest
-        // play (≤2 inputs/tick) never hits the cap, so packet bunching just drains
-        // smoothly while a speedhack is throttled to the legitimate rate.
+        // Apply at most this tick's wall-clock-earned step budget. Any surplus
+        // inputs (a high-refresh or flooding client) stay queued, bounded by
+        // MAX_INPUT_QUEUE, and drain as later ticks earn more budget. Honest play
+        // never out-runs the budget, so packet bunching just drains smoothly while
+        // a speedhack is throttled to real time.
         let applied = 0;
         for (const input of q) {
-          if (applied >= MAX_STEPS_PER_TICK) break;
+          if (applied >= stepBudget) break;
           this._stepPlayer(entry, input);
           lastSeq = input.seq;
           applied++;
@@ -2203,16 +2240,21 @@ class GameHost {
   async _handleMessage(playerId, ws, msg) {
     const { GOODS } = this;
     switch (msg.type) {
-      case 'ping':
+      case 'ping': {
         // App-level heartbeat: echo the client's timestamp so it can measure RTT
         // and detect a silently-dead socket. lastSeen is already bumped for every
         // message in handleConnection, so this also keeps us off the idle sweep.
+        // The client also reports its measured RTT here so the server can lag-
+        // compensate this player's hits (rewind enemies to what they saw).
+        const pe = this.players.get(playerId);
+        if (pe && Number.isFinite(msg.rtt)) pe._rtt = Math.max(0, Math.min(400, msg.rtt | 0));
         try {
           ws.send(JSON.stringify({ type: 'pong', t: msg.t }));
         } catch {
           /* socket already gone */
         }
         break;
+      }
       case 'join': {
         // Two paths: a signed-in character (sessionToken + characterId, loaded
         // from the store and saved back), or an anonymous ephemeral player (the
@@ -2676,7 +2718,9 @@ class GameHost {
           entry.level || 1,
           entry.weaponProjSpeed || 0,
           entry.weaponPierce || false,
-          entry.weaponProjSprite || null
+          entry.weaponProjSprite || null,
+          // Lag-comp rewind: interp delay + this player's RTT (clamped in 'ping').
+          LAG_COMP ? NPC_INTERP_MS + (entry._rtt || 0) : 0
         );
         break;
       }

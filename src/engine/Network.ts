@@ -346,7 +346,9 @@ function startHeartbeat() {
       }
       return;
     }
-    ws.send(JSON.stringify({ type: 'ping', t: performance.now() }));
+    // Report our last measured RTT so the server can lag-compensate this
+    // player's melee hits (rewind enemies to what we saw). Server clamps it.
+    ws.send(JSON.stringify({ type: 'ping', t: performance.now(), rtt: Math.round(rttMs) }));
   }, PING_INTERVAL_MS);
 }
 

@@ -100,10 +100,10 @@ it matters), built so it still maps cleanly onto the long-term SNES/ESP32 port.
         AOI is on. NOTE: chat becomes proximity-scoped (matches floating-bubble model;
         revisit if a global chat channel is wanted). Tested both flag states.
   - [x] **Regression check** (after 9 runs of flag-gated edits): `npm run test:server`
-        with flags OFF — combat 23/0, loot_carry 8/0, charStats 9/0 all pass; gameHost
+        with flags OFF — combat 23/0, loot*carry 8/0, charStats 9/0 all pass; gameHost
         51/10 — but the 10 failures are **PRE-EXISTING** (HEAD's gameHost.js gives the
         identical 51/10). My changes are exactly regression-neutral. ⚠ The 10 pre-existing
-        gameHost failures (equip/unequip/use_item/buy/sell/revive _preconditions_ — e.g.
+        gameHost failures (equip/unequip/use_item/buy/sell/revive \_preconditions* — e.g.
         "wrong money after buy 0 !== -18") predate this work; likely a test-harness/shop
         setup issue, NOT netcode. Worth a look but out of this overhaul's scope.
   - [x] `player_move` delta-coding (tag 0x04): per-VIEWER baseline (`_pmBase` server /
@@ -122,13 +122,41 @@ it matters), built so it still maps cleanly onto the long-term SNES/ESP32 port.
         remains as a manual eyeball before prod.
   - [x] **Bandwidth measured** (`npm run measure:net`, `server/measure_net.js`) —
         in-process, no live-server flip. 20 clustered players, baseline vs AOI+binary:
-        per-client downlink **33.8 → 3.6 KB/s (~9.4×)**; player_move ~11×, npc_update ~8.4×.
+        per-client downlink **33.8 → 3.6 KB/s (~9.4×)**; player*move ~11×, npc_update ~8.4×.
         sends/s ≈ unchanged (clustered → no spatial cull), so this ~10× is almost all
-        binary+delta; the AOI cull adds MORE once players disperse (cuts send _count_).
+        binary+delta; the AOI cull adds MORE once players disperse (cuts send \_count*).
         9.4× is the conservative floor. Empirical confirmation the design works.
   - [ ] (later) keyframe-recovery for unreliable transport (§5, belongs with WebTransport);
         FlatBuffers events once the toolchain is chosen (above). Both need a decision.
   - [ ] Schema'd binary (FlatBuffers) for structured reliable events (§5 matrix).
+- [~] **Combat feel / latency** (prod report: 130ms RTT, hits don't connect, remotes
+  lag seconds behind — crisp locally, awful in prod). Two root causes, both fixed:
+  - [x] **Lag compensation for melee** (`npcSim.handleAttack`). Each live enemy keeps
+        a flat `[t,x,y,...]` history (`recordHist`, 500ms window); a swing rewinds the
+        enemy to what the ATTACKER SAW — NPC interp delay (100ms) + that player's RTT —
+        and tests the hitbox there (`histPosAt`), while damage/knockback still hit the
+        live enemy. Client reports RTT in `ping`; server clamps it (0–400) into `_rtt`
+        and passes `rewindMs` per swing. Gated by `LAG_COMP` (default ON). Projectiles
+        unaffected (they return before the melee loop). Unit-tested (combat.test.js,
+        29/0): rewind interp, clamp-to-oldest, future→live, eviction, fled-enemy scenario.
+  - [x] **Time-based step budget** (`gameHost._simPlayers`). The hard 2-steps-per-tick
+        cap ignored elapsed time: `setInterval(33)` slips under GC / busy prod CPU, so
+        the server drained slower than an honest 60Hz input stream and the per-player
+        queue grew to its 240 cap (~4s) — remote viewers fell seconds behind, draining
+        slowly ("way behind AND slow"). Now each tick earns steps from REAL elapsed time
+        (fractional accumulator, carry remainder, clamp a single tick's catch-up to
+        `MAX_STEPS_BURST`=6, drop surplus on clamp) — mirrors the client's own
+        accumulator. Anti-speedhack invariant holds (steps bounded by the wall clock).
+        Regression-neutral+1 (gameHost 47/14 vs HEAD 46/15); smoke:net 7/7.
+  - [x] **Trimmed player interp 150→100ms** (`RemoteInterp.ts PLAYER_DELAY_MS`). Reported
+        jitter is only ~5ms, so 100ms (~3 packets at 30Hz) is ample headroom and the
+        coast (`MAX_EXTRAP_MS`) absorbs stalled packets — shaves 50ms off the visible
+        lag of other players. NPC interp LEFT at 100ms: NPCs broadcast at 10Hz (100ms
+        packets), so it already brackets only ~1 packet; lowering would force constant
+        coasting, and it must stay in sync with server `NPC_INTERP_MS` (lag-comp rewind).
+  - [ ] (later) Raise NPC broadcast rate (currently 10Hz) for smoother enemies +
+        tighter lag-comp; only worth it after the binary/delta headroom is confirmed
+        in prod. Keep client NPC interp and server `NPC_INTERP_MS` in lockstep.
 - [ ] **Phase 3+** — gateway split, WebTransport, sharding (§5.5, §7).
 
 ---

@@ -13,11 +13,13 @@ import { Direction, Pose } from '../types';
 
 // Render this far in the past so we always have two snapshots bracketing the
 // render time. The server sims/broadcasts player movement at ~30Hz (33ms), so
-// 150ms is ~4 packets of headroom — enough to ride out real-world prod jitter
-// without the buffer running dry (which freezes a remote, then jumps it: the
-// stutter-step we saw in prod but never on localhost). Costs ~50ms more visible
-// lag on others, imperceptible next to the jitter it removes.
-const PLAYER_DELAY_MS = 150;
+// 100ms is ~3 packets of headroom — enough to ride out real-world prod jitter
+// (measured ~5ms) without the buffer running dry (which freezes a remote, then
+// jumps it: the stutter-step we saw in prod but never on localhost), while the
+// coast below (MAX_EXTRAP_MS) absorbs the occasional stalled packet. Trimmed
+// from 150ms once prod jitter proved low — shaves 50ms off the visible lag of
+// other players (the "way behind" complaint). Raise it again if jitter spikes.
+const PLAYER_DELAY_MS = 100;
 const TELEPORT_DIST = 64; // a gap this large is a door/teleport — snap, don't glide
 const BUFFER_MAX_AGE_MS = 1000;
 // On a buffer underrun (a packet stalled — routine on a high-latency TCP link)

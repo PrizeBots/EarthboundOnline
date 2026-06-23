@@ -339,5 +339,62 @@ check('inflict model: a carried status lands on a struck enemy', () => {
   assert(applied, 'expected the carried paralysis to land on at least one enemy');
 });
 
+// --- Lag compensation: rewind an enemy to what the attacker saw ---------------
+// The hit TEST uses a rewound position so a fleeing target you aimed at still
+// connects; damage/knockback still apply to the live enemy. These unit-test the
+// rewind primitives (histPosAt/recordHist) directly — the pure novel logic.
+const { recordHist, histPosAt } = sim._lagComp;
+
+check('histPosAt: no history → live position', () => {
+  const n = { x: 50, y: 60 };
+  const p = histPosAt(n, 1000);
+  assert.strictEqual(p.x, 50);
+  assert.strictEqual(p.y, 60);
+});
+
+check('histPosAt: a timestamp newer than newest sample → live position', () => {
+  const n = { x: 50, y: 60, _hist: [1000, 10, 10, 1100, 20, 20] };
+  const p = histPosAt(n, 2000); // future → live
+  assert.strictEqual(p.x, 50);
+  assert.strictEqual(p.y, 60);
+});
+
+check('histPosAt: interpolates between two samples', () => {
+  const n = { x: 999, y: 999, _hist: [1000, 0, 0, 1100, 100, 200] };
+  const p = histPosAt(n, 1050); // halfway → (50, 100)
+  assert.strictEqual(Math.round(p.x), 50);
+  assert.strictEqual(Math.round(p.y), 100);
+});
+
+check('histPosAt: a timestamp older than oldest sample → clamps to oldest', () => {
+  const n = { x: 999, y: 999, _hist: [1000, 7, 8, 1100, 100, 200] };
+  const p = histPosAt(n, 500);
+  assert.strictEqual(p.x, 7);
+  assert.strictEqual(p.y, 8);
+});
+
+check('recordHist: appends samples and evicts beyond the 500ms window', () => {
+  const n = { x: 5, y: 5 };
+  recordHist(n, 1000); // x/y = 5,5
+  n.x = 6;
+  n.y = 6;
+  recordHist(n, 1200);
+  n.x = 7;
+  n.y = 7;
+  recordHist(n, 1600); // 1000 is now >500ms older than 1600 → evicted
+  assert.strictEqual(n._hist.length, 6, 'expected 2 samples (6 numbers)');
+  assert.strictEqual(n._hist[0], 1200, 'oldest sample should be 1200, not 1000');
+});
+
+check('lag-comp scenario: a fled enemy rewinds to where it was seen', () => {
+  // Enemy was at (100,100) 100ms ago, now fled to (400,100). A swing aimed at
+  // where the attacker SAW it must rewind to (100,100), not the live (400,100).
+  const now = 100000;
+  const n = { x: 400, y: 100, _hist: [now - 100, 100, 100, now, 400, 100] };
+  const rewound = histPosAt(n, now - 100);
+  assert.strictEqual(rewound.x, 100, 'rewound to where it was seen');
+  assert.notStrictEqual(n.x, rewound.x, 'live position has moved on');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

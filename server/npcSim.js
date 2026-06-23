@@ -3204,6 +3204,37 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // Resolve a player's melee swing: a hitbox in front of the attacker damages
   // every live enemy whose hurtbox it overlaps. Authoritative — the client only
   // requests the swing; HP, death, and respawn all live here.
+  // --- Lag compensation: hits register against what the ATTACKER SAW ----------
+  // Each enemy keeps a short, flat position history [t,x,y, t,x,y, ...]. When a
+  // player swings, we rewind the enemy to where it was on the attacker's screen
+  // (~interp delay + their latency ago) and test the hitbox against THAT spot, so
+  // a fleeing enemy you aimed at still gets hit instead of the swing landing where
+  // the server has already moved it. Damage/knockback still apply to the LIVE
+  // enemy — only the hit TEST uses the rewound position. Flat number array (no
+  // per-tick object churn). NETWORK_REMODEL.md (the 3rd netcode pillar).
+  const HIST_MS = 500; // history window — must exceed the largest rewind
+  function recordHist(n, now) {
+    let h = n._hist;
+    if (!h) h = n._hist = [];
+    h.push(now, n.x, n.y);
+    while (h.length > 3 && now - h[0] > HIST_MS) h.splice(0, 3);
+  }
+  function histPosAt(n, t) {
+    const h = n._hist;
+    if (!h || h.length < 3) return n;
+    if (t >= h[h.length - 3]) return n; // newer than newest sample → live position
+    if (t <= h[0]) return { x: h[1], y: h[2] };
+    for (let i = h.length - 3; i >= 3; i -= 3) {
+      const t0 = h[i - 3];
+      const t1 = h[i];
+      if (t0 <= t && t <= t1) {
+        const k = t1 > t0 ? (t - t0) / (t1 - t0) : 0;
+        return { x: h[i - 2] + (h[i + 1] - h[i - 2]) * k, y: h[i - 1] + (h[i + 2] - h[i - 1]) * k };
+      }
+    }
+    return n;
+  }
+
   function handleAttack(
     x,
     y,
@@ -3218,7 +3249,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     attackerLevel = 1,
     projSpeed = 0,
     pierce = false,
-    projSprite = null
+    projSprite = null,
+    rewindMs = 0
   ) {
     const now = Date.now();
     // The attacker's weight class drives knockback vs the victim's (see
@@ -3286,8 +3318,11 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     for (const n of enemies) {
       if (n.dead) continue;
       if (!canHurt(attacker, n)) continue; // PK rules decide if this lands
-      if (!aabb(hx, hy, hw, hh, n.x - HURT_W / 2, n.y + HURT_OY, HURT_W, HURT_H)) continue;
-      if (wallBetween(x, y, n.x, n.y)) continue; // no reaching through a wall
+      // Lag comp: test the hitbox against where the attacker SAW this enemy
+      // (rewound), not its live spot. Damage/knockback below still hit the live n.
+      const seen = rewindMs > 0 ? histPosAt(n, now - rewindMs) : n;
+      if (!aabb(hx, hy, hw, hh, seen.x - HURT_W / 2, seen.y + HURT_OY, HURT_W, HURT_H)) continue;
+      if (wallBetween(x, y, seen.x, seen.y)) continue; // no reaching through a wall
       // The hitbox connected — now roll the outcome. The enemy's own dodge can
       // turn a connecting swing into a clean miss; a crit doubles the damage.
       const res = resolveMelee(critChance, n.dodge || 0, base, rng);
@@ -3790,6 +3825,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             tickEnemy(n, players, now, onEnemyHit, recentWarps);
           }
         }
+        // Lag-comp: snapshot each enemy's post-move position so a player's swing
+        // can be resolved against where the attacker saw it (histPosAt).
+        for (const e of enemies) if (!e.dead) recordHist(e, now);
         // Player↔player walk-push: heavier players shove lighter ones off the spot
         // they're standing on (e.g. clearing a blocked doorway). Runs once per tick
         // after actor movement, using this tick's movement set.
@@ -4077,6 +4115,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
 
     /** Resolve a player's melee swing (server-authoritative). */
     handleAttack,
+
+    // Lag-comp internals, exposed for unit tests (combat.test.js). recordHist
+    // appends a [t,x,y] sample; histPosAt rewinds an enemy to a past instant.
+    _lagComp: { recordHist, histPosAt },
 
     // Offense PSI never reaches into another room: like melee/enemy sensing, a
     // candidate is skipped if a wall (wallBetween) OR a door seam (doorBetween)
