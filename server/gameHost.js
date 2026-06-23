@@ -1744,6 +1744,16 @@ class GameHost {
   async _handleMessage(playerId, ws, msg) {
     const { GOODS } = this;
     switch (msg.type) {
+      case 'ping':
+        // App-level heartbeat: echo the client's timestamp so it can measure RTT
+        // and detect a silently-dead socket. lastSeen is already bumped for every
+        // message in handleConnection, so this also keeps us off the idle sweep.
+        try {
+          ws.send(JSON.stringify({ type: 'pong', t: msg.t }));
+        } catch {
+          /* socket already gone */
+        }
+        break;
       case 'join': {
         // Two paths: a signed-in character (sessionToken + characterId, loaded
         // from the store and saved back), or an anonymous ephemeral player (the

@@ -43,7 +43,38 @@ app.use('/assets', express.static(assetsDir));
 const host = new GameHost(assetsDir, store);
 host.start();
 
-wss.on('connection', (ws) => host.handleConnection(ws));
+// WebSocket keepalive (protocol-level ping/pong). The browser can't send ping
+// frames itself, so the SERVER drives them: this detects half-open TCP (a client
+// whose network vanished without a close frame) and keeps NATs/proxies/load
+// balancers from idle-dropping an otherwise-quiet connection — both of which
+// otherwise surface as the other player freezing then teleporting. A socket that
+// misses a pong between sweeps is terminated, firing GameHost's close handler
+// (save-back + player_leave). Complements the app-level ping in Network.ts.
+function heartbeat() {
+  this.isAlive = true;
+}
+const WS_PING_MS = 15000;
+const pingSweep = setInterval(() => {
+  for (const ws of wss.clients) {
+    if (ws.isAlive === false) {
+      ws.terminate();
+      continue;
+    }
+    ws.isAlive = false;
+    try {
+      ws.ping();
+    } catch {
+      /* socket already closing */
+    }
+  }
+}, WS_PING_MS);
+wss.on('close', () => clearInterval(pingSweep));
+
+wss.on('connection', (ws) => {
+  ws.isAlive = true;
+  ws.on('pong', heartbeat);
+  host.handleConnection(ws);
+});
 
 server.listen(PORT, () => {
   console.log(`Zexonyte Online server running on http://localhost:${PORT}`);

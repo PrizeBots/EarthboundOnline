@@ -278,6 +278,80 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let closedByUs = false; // a deliberate disconnect() must not trigger reconnect
 const MAX_RECONNECT_ATTEMPTS = 10;
 
+// --- Heartbeat / latency (app-level ping↔pong) ---
+// The browser WebSocket API can't send protocol ping frames, so we run our own
+// JSON ping↔pong. It does two jobs:
+//   1. Measures RTT + jitter (read via getNetStats / the ?netdebug overlay) so
+//      the interpolation buffer can be tuned against REAL prod numbers.
+//   2. Detects a SILENTLY dead socket — half-open TCP (the client's network
+//      dropped without a close frame) can otherwise keep us glued to a dead
+//      connection for a long time, which shows up as the other player freezing
+//      then teleporting once the browser finally fires onclose. If no pong
+//      arrives within PONG_TIMEOUT_MS we force-close to reconnect fast.
+const PING_INTERVAL_MS = 2000;
+const PONG_TIMEOUT_MS = 8000;
+let pingTimer: ReturnType<typeof setInterval> | null = null;
+let lastPongAt = 0;
+let rttMs = 0;
+let jitterMs = 0;
+const rttSamples: number[] = [];
+
+/** Live connection-quality readout for the ?netdebug overlay (and any HUD). */
+export interface NetStats {
+  connected: boolean;
+  rtt: number; // last round-trip latency, ms
+  jitter: number; // mean abs deviation of recent RTTs, ms
+  reconnects: number; // reconnect attempts since the last clean open
+}
+
+export function getNetStats(): NetStats {
+  return {
+    connected: !!ws && ws.readyState === WebSocket.OPEN,
+    rtt: Math.round(rttMs),
+    jitter: Math.round(jitterMs),
+    reconnects: reconnectAttempt,
+  };
+}
+
+function startHeartbeat() {
+  stopHeartbeat();
+  lastPongAt = performance.now();
+  pingTimer = setInterval(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    // No pong for too long ⇒ the socket is silently dead. Force-close so onclose
+    // fires and the backoff reconnects us fast (instead of waiting on TCP).
+    if (performance.now() - lastPongAt > PONG_TIMEOUT_MS) {
+      try {
+        ws.close();
+      } catch {
+        /* already closing */
+      }
+      return;
+    }
+    ws.send(JSON.stringify({ type: 'ping', t: performance.now() }));
+  }, PING_INTERVAL_MS);
+}
+
+function stopHeartbeat() {
+  if (pingTimer) {
+    clearInterval(pingTimer);
+    pingTimer = null;
+  }
+}
+
+// Record one round-trip sample (from a 'pong') into the RTT + jitter readout.
+function recordPong(sentAt: number) {
+  lastPongAt = performance.now();
+  if (typeof sentAt !== 'number') return;
+  rttMs = performance.now() - sentAt;
+  rttSamples.push(rttMs);
+  if (rttSamples.length > 20) rttSamples.shift();
+  // Jitter = mean absolute difference between consecutive RTTs (RFC 3550-style).
+  let acc = 0;
+  for (let i = 1; i < rttSamples.length; i++) acc += Math.abs(rttSamples[i] - rttSamples[i - 1]);
+  jitterMs = rttSamples.length > 1 ? acc / (rttSamples.length - 1) : 0;
+}
+
 /**
  * Optional signed-in join: load a persistent character by id, authenticated by
  * the session token. When present, the server ignores the anonymous sprite/name/
@@ -339,11 +413,15 @@ function openSocket() {
     if (editorModeActive) {
       ws!.send(JSON.stringify({ type: 'editor', on: true }));
     }
+    startHeartbeat(); // begin app-level ping↔pong (RTT + dead-socket watchdog)
   };
 
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     switch (msg.type) {
+      case 'pong':
+        recordPong(msg.t);
+        break;
       case 'welcome':
         callbacks?.onWelcome(msg.playerId, msg.players);
         if (msg.npcs) callbacks?.onNpcUpdate(msg.npcs);
@@ -556,6 +634,7 @@ function openSocket() {
   };
 
   ws.onclose = () => {
+    stopHeartbeat(); // no live socket to ping; onopen restarts it after reconnect
     if (closedByUs || !joinArgs) return; // deliberate disconnect — stay down
     // Unexpected drop: retry with exponential backoff (1s, 2s, 4s … capped 8s)
     // so a server restart or network blip transparently re-joins. The server
@@ -800,4 +879,32 @@ export function sendSpendPoints(add: Record<string, number>) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'spend_points', add }));
   }
+}
+
+/**
+ * Opt-in on-screen network readout (?netdebug) — RTT, jitter, connection state.
+ * Mirrors mountGamepadDebug (Gamepad.ts): its own rAF loop + fixed overlay, no
+ * console needed. Open prod with ?netdebug to read REAL latency/jitter so the
+ * interpolation buffer can be tuned against measured numbers, not guesses.
+ */
+export function mountNetDebug(): void {
+  if (!/[?&]netdebug/i.test(location.search)) return;
+  const el = document.createElement('pre');
+  el.style.cssText =
+    'position:fixed;right:4px;top:4px;z-index:99999;margin:0;padding:6px 8px;' +
+    'background:rgba(0,0,0,.78);color:#3cd0ff;font:11px/1.35 monospace;' +
+    'white-space:pre;pointer-events:none;border-radius:4px;text-align:right;';
+  document.body.appendChild(el);
+  const tick = () => {
+    const s = getNetStats();
+    el.textContent = [
+      'NET DEBUG (?netdebug)',
+      `state : ${s.connected ? 'connected' : 'DISCONNECTED'}`,
+      `rtt   : ${s.rtt} ms`,
+      `jitter: ${s.jitter} ms`,
+      `recon : ${s.reconnects}`,
+    ].join('\n');
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
 }

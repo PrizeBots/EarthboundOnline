@@ -68,6 +68,7 @@ import {
   sendGiveUp,
   sendUsePsi,
   sendEventTalk,
+  mountNetDebug,
   JoinAuth,
   EventStateWire,
 } from './Network';
@@ -346,6 +347,8 @@ export class Game {
     mountTouchControls();
     // Opt-in live gamepad readout (?gpdebug) for diagnosing handhelds.
     mountGamepadDebug();
+    // Opt-in live network readout (?netdebug) — RTT/jitter for diagnosing lag.
+    mountNetDebug();
     window.addEventListener('keydown', (e) => this.onKeyDown(e));
 
     // Dev-only editor tools — the dynamic import inside a DEV guard compiles
