@@ -41,7 +41,11 @@ const COL_H = 8;
 const COL_OY = -8;
 
 const TICK_HZ = 60;
-const BROADCAST_HZ = 10;
+// NPC/enemy position broadcast rate. Raised 10→20Hz so enemies/townsfolk feel
+// crisp in combat (the client can sit at a ~120ms interp buffer instead of 160ms,
+// shaving felt lag). ~2x NPC firehose bytes — trivial at current scale, and the
+// AOI/binary overhaul (NETWORK_REMODEL.md) absorbs it as the world grows.
+const BROADCAST_HZ = 20;
 const ACTIVE_RADIUS = 512; // px from any player
 
 const CARDINALS = [
