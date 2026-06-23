@@ -254,6 +254,10 @@ export class Game {
   private loadedAtlases = new Set<string>();
   private loadingPromise: Promise<void> | null = null;
   private phase: GamePhase = 'loading';
+  // AOI crowd overflow (§4.6): nearby players beyond the per-client visible cap,
+  // shown as a "+N nearby" aggregate. 0 unless the server has AOI on and a crowd
+  // exceeds the cap. Fed by the 'crowd' message (onCrowd).
+  private crowdOverflow = 0;
   private remotePlayers = new Map<string, RemotePlayer>();
   private localPlayerId = '';
   // Banked skill points + current allocation (server-authoritative; mirrored for
@@ -622,6 +626,9 @@ export class Game {
         },
         onChat: (id, text) => {
           addRemoteBubble(id, text);
+        },
+        onCrowd: (players) => {
+          this.crowdOverflow = players;
         },
         onEquip: (id, itemId) => {
           const rp = this.remotePlayers.get(id);
@@ -2401,6 +2408,13 @@ export class Game {
     // Event overlays (trigger circle + countdown, the "in progress" timer, and
     // the local player's event-timer HUD). Below the fade so warps cover them.
     if (!this.editor?.isActive()) this.drawEventOverlays(this.ctx);
+
+    // AOI crowd aggregate (§4.6): when more nearby players exist than the server
+    // sends individually, show "+N nearby" so a packed square doesn't look empty
+    // beyond the cap. Gameplay only; 0 unless server AOI is on and over the cap.
+    if (this.crowdOverflow > 0 && this.phase === 'playing') {
+      this._eventLabel(this.ctx, `+${this.crowdOverflow} nearby`, SCREEN_WIDTH - 32, 12, '#ffd86b');
+    }
 
     // NPC dialogue window, above bubbles but below the fade and menu.
     renderDialogue(this.ctx);

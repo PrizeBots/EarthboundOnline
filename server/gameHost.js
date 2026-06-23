@@ -18,6 +18,8 @@
 const fs = require('fs');
 const path = require('path');
 const { createNpcSim } = require('./npcSim');
+const { SpatialGrid } = require('./aoi');
+const wire = require('./wire'); // binary codec for the position firehose (§5)
 const { createEventRuntime } = require('./eventRuntime');
 const { loadShops } = require('./shops');
 const { sanitizeAlloc, deriveCombatStats, STAT_KEYS, defaultAlloc } = require('./charStats');
@@ -57,6 +59,27 @@ const MAX_INPUT_QUEUE = 240; // ~4s of 60fps inputs — drop overflow (anti-floo
 // fixed SIM_TICK_MS interval, is the sole authority on travel-per-second.
 const SIM_FRAME_MS = 1000 / 60; // wall-clock duration of one movement step
 const MAX_STEPS_PER_TICK = Math.max(1, Math.round(SIM_TICK_MS / SIM_FRAME_MS)); // = 2 @ 33ms
+
+// Area-of-interest fan-out (NETWORK_REMODEL.md §4). OFF by default: the spatial
+// grid is always maintained (so Phase-0 stats are real and the index stays warm),
+// but positional sends only route through it when AOI_ENABLED — flipping it on
+// before spawn/despawn semantics exist would freeze out-of-range remotes at their
+// last seen spot. Enable once enter/leave lands (iter 2). NET_DEBUG logs fan-out.
+const AOI_ENABLED = process.env.AOI_ENABLED === '1';
+const NET_DEBUG = process.env.NET_DEBUG === '1';
+// Binary wire format for the npc_update firehose (§5). When off, JSON as before.
+// Independent of AOI: applies on both the per-client (AOI) and broadcast paths.
+const BINARY_WIRE = process.env.BINARY_WIRE === '1';
+// Per-client crowd cap (§4.6): max NPC position rows shipped to one client per
+// tick. Beyond it, nearest-first wins and the remainder rides as an `over` count.
+const AOI_MAX_NPCS = parseInt(process.env.AOI_MAX_NPCS, 10) || 120;
+// Per-client cap on visible PLAYERS, with a rank-hysteresis buffer so a peer
+// hovering at the cap boundary doesn't flap spawn/despawn. A periodic relevance
+// pass re-ranks each player's neighbourhood so a stationary player in a shifting
+// crowd stays current (movement-triggered refresh only covers the mover).
+const AOI_MAX_PLAYERS = parseInt(process.env.AOI_MAX_PLAYERS, 10) || 120;
+const AOI_PLAYER_HYST = parseInt(process.env.AOI_PLAYER_HYST, 10) || 20;
+const REL_TICK_MS = 250; // 4Hz crowd re-rank pass
 
 // Direction enum (src/types.ts) from an input vector — mirror Player.dirFromInput.
 function dirFromInput(dx, dy) {
@@ -479,6 +502,12 @@ class GameHost {
   constructor(assetsDir, store = null) {
     this.players = new Map(); // id -> player record incl. _ws
     this.nextId = 1;
+    // AOI spatial index of players (message recipients) — NETWORK_REMODEL.md §4.
+    // Maintained on join/move/leave regardless of AOI_ENABLED.
+    this.aoi = new SpatialGrid();
+    // Phase-0 net instrumentation: rolling per-second send/byte counters, by
+    // message type. Lets us measure the true broadcast ceiling before/after AOI.
+    this._net = { sends: 0, bytes: 0, byType: new Map(), since: Date.now() };
     this.store = store;
     // Persistence handles for signed-in characters: playerId -> {characterId,alloc}.
     // Held OUT of the player record so the DB id never rides along in a broadcast.
@@ -647,7 +676,10 @@ class GameHost {
           // PK flag, so npcSim's canHurt can gate PvP (and NPC aggro on PKers).
           pk: !!p.pk,
         })),
-      (data) => this.broadcastAll(data),
+      // npc_update is the 10Hz NPC position firehose → per-client AOI filter.
+      // Everything else from npcSim (hp/status/equip/death) stays global for now.
+      (data) =>
+        data.type === 'npc_update' ? this.publishNpcUpdate(data.npcs) : this.broadcastAll(data),
       // `inflict` = status procs the hit carries (e.g. paralysis), applied to the
       // victim's status set by damagePlayer; `knock` = the knockback landing spot.
       (playerId, dmg, _enemy, knock, inflict) => this.damagePlayer(playerId, dmg, knock, inflict),
@@ -678,6 +710,36 @@ class GameHost {
     // `move` path (empty input queue), so this is safe to run pre-cutover.
     this._simTimer = setInterval(() => this._simPlayers(), SIM_TICK_MS);
     if (this._simTimer.unref) this._simTimer.unref();
+
+    // Crowd re-rank pass (§4.6): re-evaluate every player's nearest-M visible set
+    // so a stationary player in a shifting crowd stays current (move-triggered
+    // refresh only updates the mover's own view). Only runs when AOI is on.
+    if (AOI_ENABLED) {
+      this._relTimer = setInterval(() => {
+        for (const id of this.players.keys()) this._refreshAoi(id);
+      }, REL_TICK_MS);
+      if (this._relTimer.unref) this._relTimer.unref();
+    }
+
+    // Phase-0 measurement: log fan-out rates every 5s when NET_DEBUG=1. Zero cost
+    // (no interval created) in normal runs. This is how we prove the broadcast
+    // ceiling and, later, the AOI win — NETWORK_REMODEL.md §11 Phase 0.
+    if (NET_DEBUG) {
+      this._netTimer = setInterval(() => {
+        if (this.players.size === 0) return;
+        const s = this.netStats();
+        console.log(
+          `[net] players=${s.players} sends/s=${s.sendsPerSec} egress=${s.mbPerSec}MB/s ` +
+            `aoi{indexed:${s.aoi.indexed},cells:${s.aoi.occupiedCells},max/cell:${s.aoi.maxPerCell}} ` +
+            `top=${Object.entries(s.byType)
+              .sort((a, b) => b[1].kbPerSec - a[1].kbPerSec)
+              .slice(0, 3)
+              .map(([t, v]) => `${t}:${v.kbPerSec}kB/s`)
+              .join(' ')}`
+        );
+      }, 5000);
+      if (this._netTimer.unref) this._netTimer.unref();
+    }
 
     // Event runtime tick (countdowns, warps, timers, end conditions). 10Hz is
     // plenty for second-resolution timers and a smooth countdown.
@@ -848,17 +910,400 @@ class GameHost {
 
   broadcastAll(data) {
     const msg = JSON.stringify(data);
+    let n = 0;
     for (const [, entry] of this.players) {
-      if (entry._ws.readyState === 1) entry._ws.send(msg);
+      if (entry._ws.readyState === 1) {
+        entry._ws.send(msg);
+        n++;
+      }
     }
+    this._recordSend(data.type, msg.length, n);
   }
 
   // Broadcast to everyone except one player (their own client handles it locally).
   broadcastExcept(data, exceptId) {
     const msg = JSON.stringify(data);
+    let n = 0;
     for (const [id, entry] of this.players) {
-      if (id !== exceptId && entry._ws.readyState === 1) entry._ws.send(msg);
+      if (id !== exceptId && entry._ws.readyState === 1) {
+        entry._ws.send(msg);
+        n++;
+      }
     }
+    this._recordSend(data.type, msg.length, n);
+  }
+
+  // Positional fan-out (NETWORK_REMODEL.md §4): deliver `data` only to players
+  // whose AOI overlaps (x,y) — the 3×3 cell block around the point. While
+  // AOI_ENABLED is off this is identical to broadcastExcept, so callers can be
+  // migrated now and the behavior change is gated to one flag flip (after
+  // spawn/despawn lands). Same instrumentation either way.
+  publishToArea(x, y, data, exceptId) {
+    if (!AOI_ENABLED) return this.broadcastExcept(data, exceptId);
+    const msg = JSON.stringify(data);
+    let n = 0;
+    for (const id of this.aoi.around(x, y)) {
+      if (id === exceptId) continue;
+      const entry = this.players.get(id);
+      if (entry && entry._ws.readyState === 1) {
+        entry._ws.send(msg);
+        n++;
+      }
+    }
+    this._recordSend(data.type, msg.length, n);
+  }
+
+  // Per-client AOI fan-out of the NPC position firehose (NETWORK_REMODEL.md §4.3).
+  // `rows` = [[id, x, y, dir, frame, pose], ...] for every NPC that moved this
+  // tick. Today this whole array ships to EVERY client (the real bottleneck —
+  // the sim is already culled to ACTIVE_RADIUS, but the OUTPUT is global). With
+  // AOI on, each player gets only the rows whose NPC sits in its 3×3 cell block.
+  // Bucket-by-cell once (O(rows)), then each player gathers its block (O(k)).
+  // Falls back to the global broadcast while AOI_ENABLED is off → identical.
+  // Encode + send one client's npc_update — binary delta (BINARY_WIRE) or JSON
+  // (§5). Delta-codes against this client's per-socket baseline (`_npcBase`),
+  // which the client mirrors; both update identically per row so reliable,
+  // ordered WS keeps them in sync. The baseline is bounded — a clear just forces
+  // keyframes next tick (safe, since a missing prev always encodes as KEY).
+  _sendNpcUpdate(entry, npcs, over) {
+    let msg;
+    if (BINARY_WIRE) {
+      let base = entry._npcBase;
+      if (!base) base = entry._npcBase = new Map();
+      if (base.size > 4096) base.clear();
+      msg = wire.encodeNpcDelta(npcs, base, over);
+    } else {
+      msg = JSON.stringify(
+        over > 0 ? { type: 'npc_update', npcs, over } : { type: 'npc_update', npcs }
+      );
+    }
+    entry._ws.send(msg);
+    this._recordSend('npc_update', msg.length, 1);
+  }
+
+  publishNpcUpdate(rows) {
+    if (!AOI_ENABLED || !rows || rows.length === 0) {
+      if (!BINARY_WIRE || !rows || rows.length === 0) {
+        return this.broadcastAll({ type: 'npc_update', npcs: rows });
+      }
+      // AOI off + binary: one encoded buffer fans out to everyone (no per-client
+      // filtering, so the bytes are identical — encode once).
+      const buf = wire.encodeNpcUpdate(rows, 0);
+      let n = 0;
+      for (const [, entry] of this.players) {
+        if (entry._ws && entry._ws.readyState === 1) {
+          entry._ws.send(buf);
+          n++;
+        }
+      }
+      this._recordSend('npc_update', buf.length, n);
+      return;
+    }
+    const cell = this.aoi.cellSize;
+    const byCell = new Map(); // "cx:cy" -> rows[]
+    for (const r of rows) {
+      const key = Math.floor(r[1] / cell) + ':' + Math.floor(r[2] / cell);
+      let arr = byCell.get(key);
+      if (!arr) byCell.set(key, (arr = []));
+      arr.push(r);
+    }
+    for (const [pid, entry] of this.players) {
+      if (!entry._ws || entry._ws.readyState !== 1) continue;
+      // Use the player's hysteretic anchor cell so the inbound NPC set matches
+      // its subscription block and doesn't flicker at boundaries (§4.2).
+      const a = this.aoi.anchorOf(pid);
+      const cx = a ? a[0] : Math.floor(entry.x / cell);
+      const cy = a ? a[1] : Math.floor(entry.y / cell);
+      let mine = null;
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const arr = byCell.get(cx + dx + ':' + (cy + dy));
+          if (arr) (mine || (mine = [])).push(...arr);
+        }
+      }
+      if (mine) {
+        // Crowd cap (§4.6): never ship more than AOI_MAX_NPCS rows to one client.
+        // Beyond the cap, keep the NEAREST and report the remainder as a count so
+        // the client can render an aggregate later. Sort only when over the cap
+        // (the common case is well under it, so this stays free). npc_update is
+        // stateless per-tick, so capping it can't churn — a dropped far NPC just
+        // misses a position tick (it's off-screen / renderer-culled anyway).
+        let over = 0;
+        if (mine.length > AOI_MAX_NPCS) {
+          const px = entry.x;
+          const py = entry.y;
+          mine.sort(
+            (r1, r2) =>
+              (r1[1] - px) ** 2 + (r1[2] - py) ** 2 - ((r2[1] - px) ** 2 + (r2[2] - py) ** 2)
+          );
+          over = mine.length - AOI_MAX_NPCS;
+          mine.length = AOI_MAX_NPCS;
+        }
+        this._sendNpcUpdate(entry, mine, over);
+      }
+    }
+  }
+
+  // Build the AOI-restricted NPC/drop join bundle for a newcomer: the 3×3 block
+  // of cells around its anchor (same window its subscription uses). §4.5.
+  _aoiJoinSnapshot(playerId, entry) {
+    const cell = this.aoi.cellSize;
+    const a = this.aoi.anchorOf(playerId) || [
+      Math.floor(entry.x / cell),
+      Math.floor(entry.y / cell),
+    ];
+    const minX = (a[0] - 1) * cell;
+    const maxX = (a[0] + 2) * cell;
+    const minY = (a[1] - 1) * cell;
+    const maxY = (a[1] + 2) * cell;
+    return this.npcSim.aoiSnapshot((x, y) => x >= minX && x < maxX && y >= minY && y < maxY);
+  }
+
+  // --- AOI player spawn/despawn (enter/leave) — NETWORK_REMODEL.md §4.5 -------
+  // Send `data` to one player's socket. Used for the targeted spawn/despawn that
+  // replace the global player_join/player_leave broadcasts when AOI is on.
+  _sendTo(id, data) {
+    const e = this.players.get(id);
+    if (e && e._ws && e._ws.readyState === 1) {
+      const msg = JSON.stringify(data);
+      e._ws.send(msg);
+      this._recordSend(data.type, msg.length, 1);
+    }
+  }
+
+  // Public (wire) shape of a player for spawn — mirrors welcome.players / the
+  // player_join broadcast (strip server-private fields, expose status as array).
+  _publicPlayer(id) {
+    const p = this.players.get(id);
+    if (!p) return null;
+    const {
+      _ws,
+      _inputs,
+      _seen,
+      _seenBy,
+      _crowdOver,
+      _crowdSent,
+      _npcBase,
+      _pmBase,
+      _ackSeq,
+      ...data
+    } = p;
+    data.statuses = status.activeStatuses(p, Date.now());
+    return data;
+  }
+
+  // Route a PLAYER-CENTRIC event (hp / push / equip / attack / chat, keyed by
+  // `data.id`) to just the viewers who currently have that player spawned (its AOI
+  // reverse index) — §4.4 event-relevance routing. These fire on every hit / swing
+  // / message, so a global broadcast is an O(N) cost per event. `includeSelf` true
+  // also sends to the player (hp/push: they need their own state); false mirrors
+  // the old broadcastExcept (equip/attack/chat: the sender handles it locally).
+  // AOI off: unchanged global broadcast (broadcastAll / broadcastExcept).
+  _publishPlayerEvent(data, includeSelf = true) {
+    if (!AOI_ENABLED)
+      return includeSelf ? this.broadcastAll(data) : this.broadcastExcept(data, data.id);
+    const entry = this.players.get(data.id);
+    if (!entry) return;
+    const msg = JSON.stringify(data);
+    let n = 0;
+    if (includeSelf && entry._ws && entry._ws.readyState === 1) {
+      entry._ws.send(msg); // the player needs their own hp/push
+      n++;
+    }
+    if (entry._seenBy) {
+      for (const viewer of entry._seenBy) {
+        const v = this.players.get(viewer);
+        if (v && v._ws && v._ws.readyState === 1) {
+          v._ws.send(msg);
+          n++;
+        }
+      }
+    }
+    this._recordSend(data.type, msg.length, n);
+  }
+
+  // Player position firehose fan-out. AOI on: only to viewers who currently have
+  // the mover spawned (its reverse index) — so a packed square costs O(movers ×
+  // their viewers), already capped by the per-client nearest-M visible set, not
+  // O(crowd²). AOI off: legacy global broadcastExcept. NETWORK_REMODEL.md §4.6.
+  _publishMove(id, entry, data) {
+    // AOI off + JSON: unchanged global path.
+    if (!AOI_ENABLED && !BINARY_WIRE) return this.broadcastExcept(data, id);
+
+    // Binary, AOI off: plain full player_move (0x02) — encode once, broadcast.
+    if (!AOI_ENABLED) {
+      const msg = wire.encodePlayerMove(data);
+      let n = 0;
+      for (const [pid, e] of this.players) {
+        if (pid === id) continue;
+        if (e._ws && e._ws.readyState === 1) {
+          e._ws.send(msg);
+          n++;
+        }
+      }
+      this._recordSend('player_move', msg.length, n);
+      return;
+    }
+
+    // AOI on: only the mover's viewers (the reverse index).
+    const seenBy = entry._seenBy;
+    if (!seenBy || seenBy.size === 0) return;
+
+    if (!BINARY_WIRE) {
+      // JSON: one encoding to all viewers.
+      const msg = JSON.stringify(data);
+      let n = 0;
+      for (const viewer of seenBy) {
+        const v = this.players.get(viewer);
+        if (v && v._ws && v._ws.readyState === 1) {
+          v._ws.send(msg);
+          n++;
+        }
+      }
+      this._recordSend('player_move', msg.length, n);
+      return;
+    }
+
+    // Binary + AOI: per-viewer delta against each viewer's player baseline (§5).
+    // Encoding is per-viewer because each holds a different baseline for the mover
+    // (they spawned it at different times); first send to a viewer is a keyframe.
+    let n = 0;
+    let bytes = 0;
+    for (const viewer of seenBy) {
+      const v = this.players.get(viewer);
+      if (!v || !v._ws || v._ws.readyState !== 1) continue;
+      let base = v._pmBase;
+      if (!base) base = v._pmBase = new Map();
+      if (base.size > 4096) base.clear();
+      const buf = wire.encodePlayerDelta(data, base);
+      v._ws.send(buf);
+      n++;
+      bytes += buf.length;
+    }
+    if (n) this._recordSend('player_move', Math.round(bytes / n), n);
+  }
+
+  // Reconcile who player `id` should see against who it currently sees, emitting
+  // spawn (player_join) / despawn (player_leave) to `id` only. PER-CLIENT and
+  // asymmetric (§4.6): peers update their own view on their own pass, because
+  // with a nearest-M crowd cap A-sees-B no longer implies B-sees-A. Maintains the
+  // reverse index `_seenBy` (who currently has me spawned) so the move firehose
+  // routes only to viewers that actually rendered the mover. Candidates come from
+  // the hysteretic anchor block (§4.2); when they exceed the cap, nearest-M win
+  // with RANK hysteresis so a peer hovering at the M/M+1 boundary doesn't flap.
+  // No-op unless AOI_ENABLED. Called on join, on cell-cross, and by the 4Hz pass.
+  _refreshAoi(id) {
+    if (!AOI_ENABLED) return;
+    const entry = this.players.get(id);
+    if (!entry) return;
+    const seen = entry._seen || (entry._seen = new Set());
+    const px = entry.x;
+    const py = entry.y;
+    const cands = [];
+    for (const other of this.aoi.aroundId(id)) {
+      if (other !== id && this.players.has(other)) cands.push(other);
+    }
+
+    let desired;
+    if (cands.length <= AOI_MAX_PLAYERS) {
+      desired = new Set(cands); // under the cap: see everyone in the block
+    } else {
+      // Over the cap: rank by distance, keep nearest M. A peer already spawned
+      // survives out to rank M+HYST; a new one must be inside M to enter.
+      cands.sort((a, b) => {
+        const A = this.players.get(a);
+        const B = this.players.get(b);
+        return (A.x - px) ** 2 + (A.y - py) ** 2 - ((B.x - px) ** 2 + (B.y - py) ** 2);
+      });
+      desired = new Set();
+      for (let i = 0; i < cands.length; i++) {
+        const c = cands[i];
+        const limit = seen.has(c) ? AOI_MAX_PLAYERS + AOI_PLAYER_HYST : AOI_MAX_PLAYERS;
+        if (i < limit) desired.add(c);
+      }
+    }
+
+    // Spawn newly-visible peers to me; register me in their reverse index.
+    for (const c of desired) {
+      if (seen.has(c)) continue;
+      seen.add(c);
+      const o = this.players.get(c);
+      (o._seenBy || (o._seenBy = new Set())).add(id);
+      const op = this._publicPlayer(c);
+      if (op) this._sendTo(id, { type: 'player_join', player: op });
+    }
+    // Despawn peers that dropped out of my view; unregister me from their reverse.
+    for (const c of seen) {
+      if (desired.has(c)) continue;
+      seen.delete(c);
+      const o = this.players.get(c);
+      if (o && o._seenBy) o._seenBy.delete(id);
+      this._sendTo(id, { type: 'player_leave', id: c });
+    }
+    // Remainder beyond the cap → aggregate count for the client's "+N nearby"
+    // (§4.6). Send only on change so the reliable channel isn't spammed each pass.
+    const over = cands.length - desired.size;
+    if (over !== entry._crowdSent) {
+      entry._crowdSent = over;
+      this._sendTo(id, { type: 'crowd', players: over });
+    }
+    entry._crowdOver = over;
+  }
+
+  // Drop a departing player from BOTH AOI indices (disconnect). The global
+  // player_leave (close handler) despawns them on every client; this clears the
+  // dangling references so neither _seen nor _seenBy can leak. No-op when off.
+  _clearAoi(id) {
+    const entry = this.players.get(id);
+    if (!entry) return;
+    if (entry._seen) {
+      for (const other of entry._seen) {
+        const o = this.players.get(other);
+        if (o && o._seenBy) o._seenBy.delete(id); // I no longer view them
+      }
+      entry._seen.clear();
+    }
+    if (entry._seenBy) {
+      for (const viewer of entry._seenBy) {
+        const v = this.players.get(viewer);
+        if (v && v._seen) v._seen.delete(id); // they no longer view me
+      }
+      entry._seenBy.clear();
+    }
+  }
+
+  // Tally one logical broadcast that hit `recipients` sockets (Phase-0 metrics).
+  _recordSend(type, bytesPerMsg, recipients) {
+    if (!recipients) return;
+    this._net.sends += recipients;
+    this._net.bytes += bytesPerMsg * recipients;
+    const t = this._net.byType.get(type) || { sends: 0, bytes: 0 };
+    t.sends += recipients;
+    t.bytes += bytesPerMsg * recipients;
+    this._net.byType.set(type, t);
+  }
+
+  // Snapshot + reset the rolling net counters into per-second rates. Logged on a
+  // timer when NET_DEBUG=1; also handy to expose via a debug route later.
+  netStats() {
+    const now = Date.now();
+    const secs = Math.max(0.001, (now - this._net.since) / 1000);
+    const byType = {};
+    for (const [type, t] of this._net.byType) {
+      byType[type] = {
+        sendsPerSec: Math.round(t.sends / secs),
+        kbPerSec: +(t.bytes / 1024 / secs).toFixed(1),
+      };
+    }
+    const out = {
+      players: this.players.size,
+      sendsPerSec: Math.round(this._net.sends / secs),
+      mbPerSec: +(this._net.bytes / 1048576 / secs).toFixed(2),
+      aoi: this.aoi.stats(),
+      byType,
+    };
+    this._net = { sends: 0, bytes: 0, byType: new Map(), since: now };
+    return out;
   }
 
   // Event runtime warp: snap a player's authoritative position to (x,y) and tell
@@ -1285,6 +1730,8 @@ class GameHost {
       }
       entry._ackSeq = lastSeq;
       const moved = entry.x !== x0 || entry.y !== y0;
+      // Keep the AOI cell current; on a cell crossing, reconcile spawn/despawn.
+      if (moved && this.aoi.update(id, entry.x, entry.y)) this._refreshAoi(id);
       // Tell the OWNER the authoritative spot + which input it reflects (reconcile).
       if (entry._ws) {
         entry._ws.send(
@@ -1298,20 +1745,19 @@ class GameHost {
           })
         );
       }
-      // Tell everyone else (remote interpolation).
+      // Tell everyone else (remote interpolation). Positional firehose → routed
+      // to the mover's viewers (AOI) or broadcastExcept (off) — identical until
+      // AOI_ENABLED is flipped on.
       if (moved || held) {
-        this.broadcastExcept(
-          {
-            type: 'player_move',
-            id,
-            x: entry.x,
-            y: entry.y,
-            direction: entry.direction,
-            frame: entry.frame,
-            pose: entry.pose || 'walk',
-          },
-          id
-        );
+        this._publishMove(id, entry, {
+          type: 'player_move',
+          id,
+          x: entry.x,
+          y: entry.y,
+          direction: entry.direction,
+          frame: entry.frame,
+          pose: entry.pose || 'walk',
+        });
       }
     }
   }
@@ -1336,7 +1782,7 @@ class GameHost {
     if (p.warping && Date.now() < p.warpUntil) return;
     p.x = spot.x;
     p.y = spot.y;
-    this.broadcastAll({ type: 'player_push', id: playerId, x: p.x, y: p.y });
+    this._publishPlayerEvent({ type: 'player_push', id: playerId, x: p.x, y: p.y });
   }
 
   damagePlayer(playerId, dmg, knock, inflict) {
@@ -1360,7 +1806,13 @@ class GameHost {
       // Survivable hit — apply instantly (the client bar still rolls it down for
       // feel; gameplay-wise it's settled).
       p.hp = newHp;
-      this.broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: eff });
+      this._publishPlayerEvent({
+        type: 'player_hp',
+        id: playerId,
+        hp: p.hp,
+        maxHp: p.maxHp,
+        dmg: eff,
+      });
       this._applyHitStatuses(p, inflict); // break sleep + roll any inflicts
       if (knock) {
         // Knocked back (and lived): the sim already collision-clamped the landing
@@ -1370,7 +1822,7 @@ class GameHost {
         // the client honors, same trust model as ordinary moves.
         p.x = knock.x;
         p.y = knock.y;
-        this.broadcastAll({ type: 'player_push', id: playerId, x: p.x, y: p.y });
+        this._publishPlayerEvent({ type: 'player_push', id: playerId, x: p.x, y: p.y });
       }
       return;
     }
@@ -1536,7 +1988,7 @@ class GameHost {
     // won't yank you to the exit — you've just respawned at the spawn point above.
     if (this.eventRuntime) this.eventRuntime.onPlayerDeath(playerId);
     this.broadcastAll({ type: 'player_respawn', id: playerId, x: p.x, y: p.y, dir: p.direction });
-    this.broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: 0 });
+    this._publishPlayerEvent({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: 0 });
     this._broadcastPlayerStatus(p);
     this._saveCharacter(playerId);
   }
@@ -1635,7 +2087,13 @@ class GameHost {
       gained: xp,
     });
     if (leveled) {
-      this.broadcastAll({ type: 'player_hp', id: playerId, hp: p.hp, maxHp: p.maxHp, dmg: 0 });
+      this._publishPlayerEvent({
+        type: 'player_hp',
+        id: playerId,
+        hp: p.hp,
+        maxHp: p.maxHp,
+        dmg: 0,
+      });
       // Grant skill points for each level gained and push the new banked total to
       // the owner — they alone decide where to spend it. Banked for everyone
       // (anon sessions too); signed-in players persist it in _saveCharacter.
@@ -1736,7 +2194,10 @@ class GameHost {
       this.saves.delete(playerId);
       this.flags.delete(playerId);
       this.points.delete(playerId);
+      this._clearAoi(playerId); // drop reverse _seen refs (needs entry intact)
       this.players.delete(playerId);
+      this.aoi.remove(playerId);
+      // Global despawn: harmless for clients that never had this entity in view.
       this.broadcastAll({ type: 'player_leave', id: playerId });
     });
   }
@@ -1826,6 +2287,7 @@ class GameHost {
         };
         this.players.set(playerId, { ...playerData, _ws: ws });
         const entry = this.players.get(playerId);
+        this.aoi.update(playerId, entry.x, entry.y); // index for AOI fan-out
         this.recomputeEquipStats(entry); // apply loaded gear + set held sprite
 
         // Quest flags: restore the saved set (empty for anonymous joins). Kept
@@ -1865,15 +2327,21 @@ class GameHost {
             otherPlayers.push(data);
           }
         }
+        // AOI on: restrict the NPC/drop join burst to the joiner's block (no more
+        // O(worldNPCs) per join); off: legacy full-world divergent snapshot.
+        const aoiSnap = AOI_ENABLED ? this._aoiJoinSnapshot(playerId, entry) : null;
         ws.send(
           JSON.stringify({
             type: 'welcome',
             playerId,
-            players: otherPlayers,
-            npcs: this.npcSim.snapshot(),
-            npcHps: this.npcSim.hpSnapshot(),
-            npcEquips: this.npcSim.equipSnapshot(), // townsfolk holding looted weapons
-            drops: this.npcSim.dropsSnapshot(), // ground loot already lying around
+            // AOI on: spawn nobody up front — _refreshAoi below sends a targeted
+            // player_join for each in-range peer (and the newcomer to them).
+            // AOI off: legacy full roster.
+            players: AOI_ENABLED ? [] : otherPlayers,
+            npcs: aoiSnap ? aoiSnap.npcs : this.npcSim.snapshot(),
+            npcHps: aoiSnap ? aoiSnap.npcHps : this.npcSim.hpSnapshot(),
+            npcEquips: aoiSnap ? aoiSnap.npcEquips : this.npcSim.equipSnapshot(), // townsfolk holding looted weapons
+            drops: aoiSnap ? aoiSnap.drops : this.npcSim.dropsSnapshot(), // ground loot already lying around
             inventory: this.inventoryView(entry.inventory), // own Goods
             money: entry.money, // own on-hand cash
             bank: entry.bank | 0, // own ATM balance
@@ -1894,10 +2362,15 @@ class GameHost {
           })
         );
 
-        // Tell everyone else about the new player.
-        const { _ws, ...publicData } = this.players.get(playerId);
-        publicData.statuses = status.activeStatuses(this.players.get(playerId), Date.now());
-        this.broadcastExcept({ type: 'player_join', player: publicData }, playerId);
+        // Tell everyone else about the new player. AOI on: targeted spawn to
+        // (and from) in-range peers only. AOI off: legacy global join broadcast.
+        if (AOI_ENABLED) {
+          this._refreshAoi(playerId);
+        } else {
+          const { _ws, ...publicData } = this.players.get(playerId);
+          publicData.statuses = status.activeStatuses(this.players.get(playerId), Date.now());
+          this.broadcastExcept({ type: 'player_join', player: publicData }, playerId);
+        }
         // Restore any banked skill points (shows the level-up icon on rejoin).
         this._sendPoints(playerId);
         break;
@@ -2165,9 +2638,9 @@ class GameHost {
         // sim broadcasts every pose as 'walk', so the attack pose can't ride the
         // position stream — other clients replay the swing from this signal
         // (RemoteInterp.applyRemoteSwing). Sent for every swing incl. a whiff.
-        this.broadcastExcept(
+        this._publishPlayerEvent(
           { type: 'player_attack', id: playerId, attackSpeed: entry.attackSpeed || 1 },
-          playerId
+          false
         );
         // Status accuracy penalties: Crying lowers your hit rate, Nausea makes
         // you fumble — either can whiff the swing outright (broadcast a MISS).
@@ -2269,7 +2742,7 @@ class GameHost {
           JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) })
         );
         // ...everyone else just needs the held-weapon sprite.
-        this.broadcastExcept({ type: 'equip', id: playerId, itemId: entry.itemId }, playerId);
+        this._publishPlayerEvent({ type: 'equip', id: playerId, itemId: entry.itemId }, false);
         this._saveCharacter(playerId);
         break;
       }
@@ -2830,7 +3303,7 @@ class GameHost {
           .trim();
         if (!text) break;
         // Broadcast to everyone else; the sender shows its own bubble locally.
-        this.broadcastExcept({ type: 'chat', id: playerId, text }, playerId);
+        this._publishPlayerEvent({ type: 'chat', id: playerId, text }, false);
         break;
       }
 

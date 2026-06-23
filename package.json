@@ -14,6 +14,8 @@
     "format:check": "prettier --check .",
     "test:server": "node server/gameHost.test.js && node server/combat.test.js && node server/loot_carry.test.js && node server/store.test.js && node server/authApi.test.js && node server/charStats.test.js && node server/persistence.test.js",
     "test:unit": "vitest run",
+    "smoke:net": "node server/smoke_aoi.js",
+    "measure:net": "node server/measure_net.js",
     "test": "npm run test:unit && npm run test:server",
     "verify": "npm run typecheck && npm run lint && npm run check:server && npm test",
     "extract": "python tools/convert_all.py",

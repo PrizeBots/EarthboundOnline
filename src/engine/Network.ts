@@ -1,6 +1,20 @@
 import { RemotePlayer, Direction, Pose, CharacterAppearance } from '../types';
 import { GoodsItem } from './Inventory';
 import { GroundDrop } from './DropManager';
+import {
+  frameTag,
+  decodeNpcUpdate,
+  decodeNpcDelta,
+  decodePlayerMove,
+  decodePlayerDelta,
+  TAG,
+  type NpcBase,
+} from './wire';
+
+// Client-side delta baselines, mirrors of the server's per-socket _npcBase /
+// _pmBase. Reset on each (re)connect so a fresh session starts from keyframes.
+const npcDeltaBase: NpcBase = new Map();
+const playerDeltaBase: NpcBase = new Map();
 
 /** A pickup notification: an item ("Found Cookie!") or money ("Got $40"). */
 export interface LootPayload {
@@ -46,6 +60,10 @@ type NetworkCallback = {
   onNpcStatus?: (rows: [number, string[]][]) => void;
   /** An actor's held weapon changed: [npcId, itemId|null] rows (welcome + deltas). */
   onNpcEquip?: (rows: [number, string | null][]) => void;
+  /** AOI crowd overflow (§4.6): how many nearby PLAYERS are beyond the per-client
+   *  visible cap and thus NOT individually rendered. 0 = everyone nearby is shown.
+   *  Drives the "+N nearby" aggregate. Only ever sent when server AOI is on. */
+  onCrowd?: (players: number) => void;
   /** A combatant died: play its rotate-and-bounce death throw. (dx,dy) is the
    *  unit heading the body is flung (away from the attacker); force = final dmg. */
   onNpcDeath?: (id: number, dx: number, dy: number, force: number) => void;
@@ -392,9 +410,15 @@ function openSocket() {
   if (!joinArgs) return;
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${protocol}//${location.host}/ws`);
+  // Binary frames (the BINARY_WIRE position firehose) arrive as ArrayBuffer, not
+  // Blob — so we can decode synchronously in onmessage. JSON control messages
+  // still arrive as strings, so the two are trivially distinguishable.
+  ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
     reconnectAttempt = 0; // a clean connection resets the backoff
+    npcDeltaBase.clear(); // fresh session → server re-keyframes; drop stale baseline
+    playerDeltaBase.clear();
     const { spriteGroupId, name, appearance, auth } = joinArgs!;
     // Signed-in: join by token+characterId (server loads the save). Anonymous:
     // the dev/char-select join (fresh ephemeral player; the server is still
@@ -417,6 +441,24 @@ function openSocket() {
   };
 
   ws.onmessage = (ev) => {
+    // Binary frame = the position firehose (BINARY_WIRE). Dispatch by tag and
+    // decode; control/event traffic stays JSON (a string) and falls through.
+    if (typeof ev.data !== 'string') {
+      const buf = ev.data as ArrayBuffer;
+      const tag = frameTag(buf);
+      if (tag === TAG.NPC_UPDATE) {
+        callbacks?.onNpcUpdate(decodeNpcUpdate(buf).npcs);
+      } else if (tag === TAG.NPC_DELTA) {
+        callbacks?.onNpcUpdate(decodeNpcDelta(buf, npcDeltaBase).npcs);
+      } else if (tag === TAG.PLAYER_MOVE) {
+        const m = decodePlayerMove(buf);
+        callbacks?.onPlayerMove(m.id, m.x, m.y, m.direction, m.frame, m.pose);
+      } else if (tag === TAG.PLAYER_DELTA) {
+        const m = decodePlayerDelta(buf, playerDeltaBase);
+        callbacks?.onPlayerMove(m.id, m.x, m.y, m.direction, m.frame, m.pose);
+      }
+      return;
+    }
     const msg = JSON.parse(ev.data);
     switch (msg.type) {
       case 'pong':
@@ -484,6 +526,9 @@ function openSocket() {
         break;
       case 'chat':
         callbacks?.onChat(msg.id, msg.text);
+        break;
+      case 'crowd':
+        callbacks?.onCrowd?.(msg.players ?? 0);
         break;
       case 'equip':
         callbacks?.onEquip(msg.id, msg.itemId ?? null);

@@ -3861,6 +3861,44 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     },
 
     /**
+     * AOI join snapshot (NETWORK_REMODEL.md §4): the same divergent-state bundle
+     * as snapshot()/hpSnapshot()/equipSnapshot()/dropsSnapshot(), but restricted
+     * to actors/drops the joiner can see — `inRange(x, y) => boolean`. One pass
+     * over `actors` keeps the four row-sets consistent (same in-range set). Far
+     * idle-divergent NPCs are omitted; they self-correct via npc_update once the
+     * player nears them (the sim ticks them inside ACTIVE_RADIUS, < one AOI block).
+     */
+    aoiSnapshot(inRange) {
+      const npcs = [];
+      const npcHps = [];
+      const npcEquips = [];
+      for (const n of actors) {
+        if (!inRange(n.x, n.y)) continue;
+        if (!n.dead) {
+          const hurt = n.pose === 'hurt';
+          if (n.x !== n.homeX || n.y !== n.homeY || n.dir !== n.homeDir || n.frame !== 0 || hurt) {
+            npcs.push([
+              n.id,
+              Math.round(n.x * 2) / 2,
+              Math.round(n.y * 2) / 2,
+              n.dir,
+              n.frame,
+              poseCode(n),
+            ]);
+          }
+          if (n.itemId) npcEquips.push([n.id, n.itemId]);
+        }
+        // HP mirrors hpSnapshot: every enemy (incl. dead → hp 0), plus damaged
+        // townsfolk/cars. Dead enemies still report so the client renders death.
+        if (n.isEnemy) npcHps.push([n.id, n.hp, n.maxHp]);
+        else if ((n.kind === 'person' || n.kind === 'car') && n.hp < n.maxHp)
+          npcHps.push([n.id, n.hp, n.maxHp]);
+      }
+      const drops = groundDrops.filter((d) => inRange(d.x, d.y)).map(dropWire);
+      return { npcs, npcHps, npcEquips, drops };
+    },
+
+    /**
      * Live enemy snapshot WITH positions: [{id, x, y, hp, maxHp, dead}, ...].
      * Unlike snapshot() (moved actors only) this returns every enemy's current
      * spot, so tests/debug tools can aim at one. Read-only — a copy per row.
