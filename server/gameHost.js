@@ -881,6 +881,28 @@ class GameHost {
     p._ws.send(JSON.stringify({ type: 'player_buffs', buffs: list }));
   }
 
+  // Tear down a superseded session (same character reconnected — see the join
+  // handler). The NEW session already loaded the character's authoritative state,
+  // so we deliberately do NOT save the stale zombie (it could clobber newer
+  // state) and we DROP its save handle first, so the old socket's late 'close'
+  // event can't re-save it either. Clears AOI indices + despawns it everywhere.
+  _evictSession(oldId) {
+    const old = this.players.get(oldId);
+    if (!old) return;
+    this.saves.delete(oldId); // before close fires → no stale re-save
+    this.flags.delete(oldId);
+    this.points.delete(oldId);
+    this._clearAoi(oldId);
+    this.players.delete(oldId);
+    this.aoi.remove(oldId);
+    this.broadcastAll({ type: 'player_leave', id: oldId });
+    try {
+      if (old._ws && old._ws.close) old._ws.close();
+    } catch {
+      /* socket already gone */
+    }
+  }
+
   // Close any connection silent longer than IDLE_TIMEOUT_MS. Closing triggers the
   // ws 'close' handler (save-back + roster cleanup + player_leave broadcast).
   _reapIdle() {
@@ -2323,6 +2345,22 @@ class GameHost {
           }
         } else {
           init = this._anonInit(playerId, msg);
+        }
+
+        // Evict any LIVE session already bound to this character. A reconnecting
+        // client gets a brand-new playerId (nextId++), so without this the prior
+        // session lingers until the idle sweep (IDLE_TIMEOUT_MS) — and a flaky /
+        // backgrounded tab that drops + rejoins repeatedly piles up frozen zombie
+        // copies of the same character (no input → interp coasts → freezes →
+        // "dead-looking"). The fresh join just loaded the authoritative state, so
+        // the new session supersedes the old. Anonymous players (no characterId)
+        // have no stable identity to dedupe and are left alone.
+        if (init.characterId != null) {
+          for (const [oldId, handle] of [...this.saves]) {
+            if (oldId !== playerId && handle.characterId === init.characterId) {
+              this._evictSession(oldId);
+            }
+          }
         }
 
         const playerData = {

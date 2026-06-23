@@ -1070,5 +1070,54 @@ check('an empty (unresolved) container shows flavor text, grants nothing, stays 
   s.close();
 });
 
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+// ============== 6. Reconnect: same character evicts its prior session ==========
+// A reconnecting client gets a fresh playerId, so without dedup the old session
+// lingers up to IDLE_TIMEOUT_MS — a flaky/AFK tab that drops + rejoins piles up
+// frozen zombie copies of the same character. Join must evict the prior session.
+// The signed-in path is async (awaits the store), so run it via an async check.
+async function asyncCheck(name, fn) {
+  try {
+    await fn();
+    console.log(`  ok   ${name}`);
+    pass++;
+  } catch (e) {
+    console.error(`  FAIL ${name}\n       ${e.message}`);
+    fail++;
+  }
+}
+
+(async () => {
+  await asyncCheck(
+    'a same-character rejoin evicts the prior session (no zombie pile)',
+    async () => {
+      const h = new GameHost(ASSETS);
+      // Minimal store stub so the signed-in join path resolves a fixed characterId.
+      h.store = {
+        getSession: async () => ({ accountId: 1 }),
+        getCharacter: async (id) => ({ id: Number(id), accountId: 1, save: {} }),
+        updateCharacterSave: async () => {},
+      };
+      const liveFor = (cid) => [...h.saves.values()].filter((s) => s.characterId === cid).length;
+      const ids = [];
+      for (let i = 0; i < 4; i++) {
+        const s = new FakeSocket();
+        h.handleConnection(s);
+        // Drive the async join directly (the message handler returns the promise);
+        // never cleanly close → simulate a flaky tab whose old socket lingers.
+        await s.handlers.message(
+          JSON.stringify({ type: 'join', sessionToken: 't', characterId: 7 })
+        );
+        ids.push(s.last('welcome').playerId);
+      }
+      assert.strictEqual(liveFor(7), 1, 'only the newest session of a character stays live');
+      for (const old of ids.slice(0, -1)) {
+        assert(!h.players.has(old), `superseded session ${old} should be evicted`);
+      }
+      assert(h.players.has(ids[ids.length - 1]), 'the latest session is the live one');
+      h.stop();
+    }
+  );
+
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+})();

@@ -568,6 +568,10 @@ export class Game {
       {
         onWelcome: (playerId, players) => {
           this.localPlayerId = playerId;
+          // A reconnect re-welcomes us under a fresh id. Drop any remotes carried
+          // over from the previous session so stale copies don't linger as ghosts;
+          // the fresh AOI spawns (player_join) repopulate the current neighbours.
+          this.remotePlayers.clear();
           for (const p of players) {
             this.remotePlayers.set(p.id, p);
             this.resolveRemoteSprite(p);
