@@ -20,6 +20,12 @@ import { Direction, Pose } from '../types';
 const PLAYER_DELAY_MS = 150;
 const TELEPORT_DIST = 64; // a gap this large is a door/teleport — snap, don't glide
 const BUFFER_MAX_AGE_MS = 1000;
+// On a buffer underrun (a packet stalled — routine on a high-latency TCP link)
+// we COAST along the last known velocity instead of snapping to the newest
+// snapshot. This caps how far past the newest snapshot we'll extrapolate, so a
+// genuine stop/disconnect can't drift the entity forever. ~150ms covers a full
+// 10Hz NPC gap and several 30Hz player gaps.
+const MAX_EXTRAP_MS = 150;
 
 interface Snapshot {
   t: number;
@@ -195,7 +201,22 @@ export function createInterpolator(delayMs: number = PLAYER_DELAY_MS): Interpola
     }
     const last = buf[buf.length - 1];
     if (renderT >= last.t) {
-      apply(target, last); // sender idle (or packets late) — hold the newest
+      // Buffer underran: renderT caught up to the newest snapshot (a packet
+      // stalled). Holding `last` here froze the entity, then SNAPPED it forward
+      // when the next packet landed — the "jumping" we saw in prod. Instead COAST
+      // along the last segment's velocity for up to MAX_EXTRAP_MS, so a brief
+      // stall reads as smooth motion. A standing-still sender has ~0 velocity (we
+      // just hold), and we never coast across a teleport segment.
+      const prev = buf.length >= 2 ? buf[buf.length - 2] : null;
+      const span = prev ? last.t - prev.t : 0;
+      const dx = prev ? last.x - prev.x : 0;
+      const dy = prev ? last.y - prev.y : 0;
+      if (prev && span > 0 && Math.hypot(dx, dy) <= TELEPORT_DIST) {
+        const ahead = Math.min(renderT - last.t, MAX_EXTRAP_MS);
+        apply(target, last, last.x + (dx / span) * ahead, last.y + (dy / span) * ahead);
+      } else {
+        apply(target, last); // no usable velocity (idle / just appeared) — hold
+      }
       return;
     }
 
