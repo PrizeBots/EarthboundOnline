@@ -60,16 +60,14 @@ const MAX_INPUT_QUEUE = 240; // ~4s of 60fps inputs — drop overflow (anti-floo
 const SIM_FRAME_MS = 1000 / 60; // wall-clock duration of one movement step
 const MAX_STEPS_PER_TICK = Math.max(1, Math.round(SIM_TICK_MS / SIM_FRAME_MS)); // = 2 @ 33ms
 
-// Area-of-interest fan-out (NETWORK_REMODEL.md §4). OFF by default: the spatial
-// grid is always maintained (so Phase-0 stats are real and the index stays warm),
-// but positional sends only route through it when AOI_ENABLED — flipping it on
-// before spawn/despawn semantics exist would freeze out-of-range remotes at their
-// last seen spot. Enable once enter/leave lands (iter 2). NET_DEBUG logs fan-out.
-const AOI_ENABLED = process.env.AOI_ENABLED === '1';
+// Area-of-interest fan-out (NETWORK_REMODEL.md §4). ON by default now (built +
+// validated: smoke:net 7/7, ~9.4x bandwidth). Set AOI_ENABLED=0 to fall back to
+// the legacy global broadcast. The spatial grid is always maintained.
+const AOI_ENABLED = process.env.AOI_ENABLED !== '0';
 const NET_DEBUG = process.env.NET_DEBUG === '1';
-// Binary wire format for the npc_update firehose (§5). When off, JSON as before.
-// Independent of AOI: applies on both the per-client (AOI) and broadcast paths.
-const BINARY_WIRE = process.env.BINARY_WIRE === '1';
+// Binary + delta wire format for the position firehose (§5). ON by default now;
+// set BINARY_WIRE=0 to fall back to JSON. Independent of AOI.
+const BINARY_WIRE = process.env.BINARY_WIRE !== '0';
 // Per-client crowd cap (§4.6): max NPC position rows shipped to one client per
 // tick. Beyond it, nearest-first wins and the remainder rides as an `over` count.
 const AOI_MAX_NPCS = parseInt(process.env.AOI_MAX_NPCS, 10) || 120;

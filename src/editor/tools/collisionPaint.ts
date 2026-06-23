@@ -275,14 +275,16 @@ export class CollisionPaint {
 
   // --- overlay --------------------------------------------------------------
 
-  /** Tint the collision/priority bits over the world: solid = red, pri-lo =
-   *  blue, pri-hi = purple, FG-promote = yellow. `hover` draws the brush box.
-   *  `show` filters which layers tint, so each paint mode shows only its own. */
+  /** Tint the collision/priority bits over the world: wall = yellow (black X),
+   *  front/FG-promote = light blue, wall+front = green (black X), pri-lo = blue,
+   *  pri-hi = purple. `hover` draws the brush box (skipped when brushCursor is
+   *  false). `show` filters which layers tint. */
   drawOverlay(
     ctx: CanvasRenderingContext2D,
     camera: Camera,
     hover: WorldPoint,
-    show: { solid: boolean; pri: boolean; fg: boolean }
+    show: { solid: boolean; pri: boolean; fg: boolean },
+    brushCursor = true
   ): void {
     const camX = Math.round(camera.x);
     const camY = Math.round(camera.y);
@@ -304,18 +306,6 @@ export class CollisionPaint {
           if (b === 0) continue;
           const cx = baseX + (i % 4) * MINITILE;
           const cy = baseY + (i >> 2) * MINITILE;
-          if (show.solid && b & 0x80) {
-            ctx.fillStyle = 'rgba(255,60,60,0.5)';
-            ctx.fillRect(cx, cy, MINITILE, MINITILE);
-            ctx.strokeStyle = 'rgba(20,0,0,0.9)';
-            ctx.lineWidth = 1 / camera.zoom;
-            ctx.beginPath();
-            ctx.moveTo(cx, cy);
-            ctx.lineTo(cx + MINITILE, cy + MINITILE);
-            ctx.moveTo(cx + MINITILE, cy);
-            ctx.lineTo(cx, cy + MINITILE);
-            ctx.stroke();
-          }
           if (show.pri && b & 0x01) {
             ctx.fillStyle = 'rgba(70,130,255,0.55)';
             ctx.fillRect(cx, cy, MINITILE, MINITILE);
@@ -324,9 +314,29 @@ export class CollisionPaint {
             ctx.fillStyle = 'rgba(175,80,255,0.6)';
             ctx.fillRect(cx, cy, MINITILE, MINITILE);
           }
-          if (show.fg && b & HIDE_BIT) {
-            ctx.fillStyle = 'rgba(245,215,40,0.55)';
+          // Wall = yellow, Front (hide-behind) = light blue, BOTH = green. A
+          // black X marks any wall (the cell blocks movement). Drawn together so
+          // a cell that's both a wall AND has a front copy reads as one green X.
+          const isWall = show.solid && b & 0x80;
+          const isFront = show.fg && b & HIDE_BIT;
+          if (isWall || isFront) {
+            ctx.fillStyle =
+              isWall && isFront
+                ? 'rgba(80,220,90,0.5)' // green: wall + front copy
+                : isWall
+                  ? 'rgba(245,215,40,0.5)' // yellow: wall
+                  : 'rgba(90,190,255,0.45)'; // light blue: front
             ctx.fillRect(cx, cy, MINITILE, MINITILE);
+            if (isWall) {
+              ctx.strokeStyle = 'rgba(20,0,0,0.9)';
+              ctx.lineWidth = 0.5 / camera.zoom; // thin X
+              ctx.beginPath();
+              ctx.moveTo(cx, cy);
+              ctx.lineTo(cx + MINITILE, cy + MINITILE);
+              ctx.moveTo(cx + MINITILE, cy);
+              ctx.lineTo(cx, cy + MINITILE);
+              ctx.stroke();
+            }
           }
         }
       }
@@ -343,7 +353,9 @@ export class CollisionPaint {
       }
     }
 
-    // Brush cursor (minitile-granular).
+    // Brush cursor (minitile-granular) — only when a collision tool is active;
+    // when these layers are merely shown under a tile tool, no brush box.
+    if (!brushCursor) return;
     ctx.strokeStyle = '#fff';
     ctx.lineWidth = 1 / camera.zoom;
     const off = Math.floor((this.brush - 1) / 2) * MINITILE;

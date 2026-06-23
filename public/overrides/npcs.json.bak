@@ -1478,7 +1478,8 @@
       "y": 1200,
       "sprite": 54,
       "dir": 0,
-      "kind": "person"
+      "kind": "person",
+      "t": 900017
     },
     {
       "x": 2064,

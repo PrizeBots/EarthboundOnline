@@ -218,12 +218,22 @@ export function setHotbar(slots: (string | null)[]): void {
 // greys to a faded "x0" icon (see renderHotbar) and works again the moment you
 // restock, with no reassigning. So there's no stock-reconcile step.
 
-// Auto-hotbar: when you ACQUIRE a new weapon/consumable and have an open slot,
-// drop it on the bar so it's usable right away (no menu trip). We track the item
-// TYPES we've seen so only genuinely-new ones auto-assign — existing items you
+// Auto-hotbar: when you ACQUIRE a new CONSUMABLE and have an open slot, drop it
+// on the bar so it's usable right away (no menu trip). We track the item TYPES
+// we've seen so only genuinely-new ones auto-assign — existing items you
 // deliberately left off the bar, and the saved hotbar restored on join, are
-// never disturbed. Armor/PSI aren't hotbar-eligible, so they're skipped.
+// never disturbed. WEAPONS are deliberately NOT auto-slotted: a quick slot for a
+// weapon is opt-in (drag it on yourself only if you want to quick-switch to it),
+// so equipping a weapon never forces it onto the bar. Armor/PSI aren't
+// hotbar-eligible, so they're skipped too.
 let knownGoodsIds: Set<string> | null = null; // null until the first inventory
+
+/** Auto-fill only applies to CONSUMABLES (non-gear). Weapons stay opt-in for
+ *  quick-switching — see autoHotbarNewItems. `itemEquip` is non-null for any
+ *  gear (weapon OR armor), so excluding it leaves exactly the consumables. */
+function autoHotbarEligible(id: string): boolean {
+  return hotbarEligible(id) && !itemEquip(id);
+}
 
 export function autoHotbarNewItems(): void {
   const ids = getGoods().map((g) => g.id);
@@ -237,7 +247,7 @@ export function autoHotbarNewItems(): void {
   let changed = false;
   for (const id of ids) {
     if (knownGoodsIds.has(id)) continue; // not newly acquired this update
-    if (hotbar.includes(id) || !hotbarEligible(id)) continue; // already slotted / not quick-usable
+    if (hotbar.includes(id) || !autoHotbarEligible(id)) continue; // already slotted / not auto-fillable (weapons are opt-in)
     const empty = hotbar.indexOf(null);
     if (empty === -1) break; // no open slots — leave the rest for manual placement
     hotbar[empty] = id;

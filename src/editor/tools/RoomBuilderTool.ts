@@ -173,6 +173,17 @@ class RoomBuilderTool implements EditorTool {
   private advEl: HTMLDivElement | null = null;
   private advOut: HTMLPreElement | null = null;
 
+  // Layer VISIBILITY toggles — independent of the active tool. When on, that
+  // layer's overlay is drawn under EVERY tool, so you can paint tiles while
+  // seeing the walls + front you've laid down. The active collision tool always
+  // force-shows its own layer regardless of these toggles.
+  private layerVis: { walls: boolean; front: boolean; pri: boolean } = {
+    walls: true,
+    front: true,
+    pri: false,
+  };
+  private layerBtns: Partial<Record<'walls' | 'front' | 'pri', HTMLButtonElement>> = {};
+
   // selection + corner resize
   private selectedRoomId: string | null = null;
   private resizing: {
@@ -902,18 +913,23 @@ class RoomBuilderTool implements EditorTool {
   // ── overlay ──────────────────────────────────────────────────────────────
 
   drawOverlay(ctx: CanvasRenderingContext2D, camera: Camera): void {
-    if (this.paintMode !== 'tiles') {
-      // Each mode tints ONLY its own layer so the overlay isn't a wall of color:
-      // Solid/Walk → walls (red); FG → foreground (yellow); Advanced → priority too.
-      const advanced = this.paintMode === 'prilo' || this.paintMode === 'prihi';
-      const show = {
-        solid: this.paintMode === 'solid' || this.paintMode === 'walk' || advanced,
-        pri: advanced || this.paintMode === 'clear',
-        fg: this.paintMode === 'fg' || this.paintMode === 'clear',
-      };
-      collisionPaint.drawOverlay(ctx, camera, this.colHover, show);
-      return;
+    const inCol = this.paintMode !== 'tiles';
+    // Layer overlays = the visibility toggles, OR'd with whatever the active
+    // collision tool needs force-shown (so switching to Walls always shows walls
+    // even if its toggle is off). Drawn under EVERY tool so a tile paint can see
+    // the walls/front already laid down.
+    const advanced = this.paintMode === 'prilo' || this.paintMode === 'prihi';
+    const show = {
+      solid:
+        this.layerVis.walls || this.paintMode === 'solid' || this.paintMode === 'walk' || advanced,
+      pri: this.layerVis.pri || advanced || this.paintMode === 'clear',
+      fg: this.layerVis.front || this.paintMode === 'fg' || this.paintMode === 'clear',
+    };
+    if (inCol || show.solid || show.pri || show.fg) {
+      collisionPaint.drawOverlay(ctx, camera, this.colHover, show, inCol);
     }
+    // Collision tools draw only their layer overlay — no room boxes/ghost on top.
+    if (inCol) return;
     // Room footprints: blue tint on empty cells (recedes as you paint) + a bright
     // dashed amber boundary (the TRUE editable extent — stamps only stick inside).
     for (const r of this.rooms) {
@@ -1525,6 +1541,22 @@ class RoomBuilderTool implements EditorTool {
     this.toolHelp.style.cssText = 'color:#7fa8c0;font-size:10px;line-height:1.4;min-height:26px;';
     this.panel.appendChild(this.toolHelp);
 
+    // ── LAYERS: persistent show/hide for each painted layer, independent of the
+    // active tool — so you can see walls + front overlaid while painting tiles ──
+    this.panel.appendChild(this.mkSection('LAYERS — show/hide overlays'));
+    const layerRow = document.createElement('div');
+    layerRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;';
+    const mkLayer = (label: string, key: 'walls' | 'front' | 'pri', tip: string) => {
+      const b = this.mkBtn(label, () => this.toggleLayer(key), layerRow);
+      b.dataset.layer = key;
+      b.title = tip;
+      this.layerBtns[key] = b;
+    };
+    mkLayer('🧱 Walls', 'walls', 'Show/hide the wall (collision) overlay — red.');
+    mkLayer('🌳 Front', 'front', 'Show/hide the front (hide-behind) overlay — yellow.');
+    mkLayer('▦ Priority', 'pri', 'Show/hide native ROM priority bits — blue / purple.');
+    this.panel.appendChild(layerRow);
+
     // Collision controls (Walls/Front) — shown only in those tools.
     this.colControls = document.createElement('div');
     this.colControls.style.cssText = 'display:none;flex-direction:column;gap:6px;';
@@ -1730,6 +1762,7 @@ class RoomBuilderTool implements EditorTool {
 
     this.shell!.panelHost.appendChild(this.panel);
     this.syncTabs();
+    this.syncLayerBtns();
     this.setTool('select');
     this.updateBrushUi();
     void this.renderPalette();
@@ -1739,6 +1772,25 @@ class RoomBuilderTool implements EditorTool {
     this.brushTab = tab;
     this.syncTabs();
     if (tab === 'tiles') void this.renderPalette();
+  }
+
+  // ── layer visibility (persistent overlays) ─────────────────────────────────
+
+  private toggleLayer(key: 'walls' | 'front' | 'pri'): void {
+    this.layerVis[key] = !this.layerVis[key];
+    this.syncLayerBtns();
+    this.shell?.toast(`${key} overlay ${this.layerVis[key] ? 'on' : 'off'}`);
+  }
+
+  private syncLayerBtns(): void {
+    for (const key of ['walls', 'front', 'pri'] as const) {
+      const b = this.layerBtns[key];
+      if (!b) continue;
+      const on = this.layerVis[key];
+      b.style.background = on ? '#10303d' : '#1d2530';
+      b.style.color = on ? '#4db6e8' : '#7a8a98';
+      b.style.borderColor = on ? '#4db6e8' : '#3a4a5a';
+    }
   }
 
   // ── tool selector (what clicking does) ─────────────────────────────────────
@@ -1809,9 +1861,9 @@ class RoomBuilderTool implements EditorTool {
       case 'paint':
         return 'Click/drag to paint the brush. Choose Tiles or Stamps, and where it lands.';
       case 'walls':
-        return 'Paint where you can walk — red = wall. Block adds walls, Clear removes them.';
+        return 'Paint where you can walk — yellow = wall (green if it also has a front copy). Block adds walls, Clear removes them.';
       case 'front':
-        return 'Paint front tiles that cover players (trees, roofs, signs). Yellow = foreground. Place adds, Erase removes.';
+        return 'Paint front tiles that cover players (trees, roofs, signs). Light blue = front. Place adds, Erase removes.';
     }
   }
 
@@ -2019,11 +2071,11 @@ class RoomBuilderTool implements EditorTool {
       const m = this.paintMode;
       this.statusEl.textContent =
         m === 'solid'
-          ? 'Walls — click/drag to add walls (red).'
+          ? 'Walls — click/drag to add walls (yellow, green if also front).'
           : m === 'walk'
             ? 'Walls — click/drag to remove walls.'
             : m === 'fg'
-              ? 'Front — click/drag to mark tiles you hide behind (yellow).'
+              ? 'Front — click/drag to mark tiles you hide behind (light blue).'
               : `Advanced (${m}) — click/drag to paint.`;
       return;
     }
