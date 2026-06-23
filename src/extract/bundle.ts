@@ -18,6 +18,15 @@ import { extractAll, type ExtractedAssets } from './extractAll';
 import { decompress } from './decompress';
 import { renderSpriteImage } from './sprites';
 import { renderAtlas, decodeRawArrangements, ATLAS_SIZE } from './atlas';
+import {
+  comboAnimations,
+  tileAnimations,
+  animGraphics,
+  lcm,
+  type PaletteAnim,
+  type TileAnim,
+} from './anim';
+import type { Tile, RGBA } from './tileset';
 import { extractMusicMap } from './music';
 import { extractShops } from './shops';
 import { extractDialogue } from './dialogue';
@@ -26,6 +35,11 @@ import worldFlags from '../world_flags.json';
 
 const SECTOR_TILESETS_PALETTES = 0xd7a800;
 const ARRANGEMENTS_PTR_TABLE = 0xef10ab;
+
+// Drawing tilesets whose TILE-GRAPHIC animation we bake (matches build_atlases.py's
+// ESCALATOR_DRAW_TS): the dept-store escalators (Twoson drawTS 12, Fourside 13).
+// Water/waterfall tilesets animate the same way but are left off pending review.
+const ESCALATOR_DRAW_TS = new Set([12, 13]);
 
 export type ImageData8 = { width: number; height: number; rgba: Uint8ClampedArray };
 export type AssetBundle = {
@@ -57,6 +71,7 @@ export function dataAssets(rom: Rom, a: ExtractedAssets): Record<string, unknown
     json[`tilesets/${ts}/collisions.json`] = a.tilesets[ts].collisions;
     json[`tilesets/${ts}/palettes.json`] = a.tilesets[ts].palettes;
   }
+  json['atlases/anim.json'] = animManifest(rom, a);
   return json;
 }
 
@@ -78,16 +93,14 @@ export function* imageEntries(rom: Rom, a: ExtractedAssets): Generator<[string, 
   }
 
   // atlases — raw arrangement cells per drawing tileset (atlas bit-layout).
-  const arrange = rom.readTable(ARRANGEMENTS_PTR_TABLE, 20, 4);
-  const rawArr = new Map<number, (number[] | null)[]>();
-  const rawFor = (drawTs: number) => {
-    let r = rawArr.get(drawTs);
-    if (!r) {
-      r = decodeRawArrangements(decompress(rom.data, fromSnesAddress(arrange[drawTs])));
-      rawArr.set(drawTs, r);
-    }
-    return r;
-  };
+  const rawFor = rawArrangementsFactory(rom);
+
+  // Animation data (both EB systems). Decoded once; combos without animation
+  // render only their static atlas.
+  const palAnims = comboAnimations(rom);
+  const tileAnims = tileAnimations(rom);
+  const animGfx = new Map<number, Tile[]>();
+  for (const ts of ESCALATOR_DRAW_TS) if (tileAnims.has(ts)) animGfx.set(ts, animGraphics(rom, ts));
 
   for (const [mapTs, pal] of usedCombos(rom, a.sectors)) {
     const drawTs = a.tilesetMapping[mapTs];
@@ -97,13 +110,138 @@ export function* imageEntries(rom: Rom, a: ExtractedAssets): Generator<[string, 
       tileset.palettes[`${mapTs}_0`] ??
       Object.values(tileset.palettes)[0];
     if (!subpalettes) continue;
+    const key = `${mapTs}_${pal}`;
+    const rawArr = rawFor(drawTs);
 
-    const { bg, fg } = renderAtlas(tileset.minitiles, subpalettes, rawFor(drawTs));
-    yield [`atlases/${mapTs}_${pal}.png`, { width: ATLAS_SIZE, height: ATLAS_SIZE, rgba: bg }];
+    // Static atlas (frame 0's fallback). Always emitted.
+    const { bg, fg } = renderAtlas(tileset.minitiles, subpalettes, rawArr);
+    yield [`atlases/${key}.png`, { width: ATLAS_SIZE, height: ATLAS_SIZE, rgba: bg }];
     if (fg) {
-      yield [`atlases/${mapTs}_${pal}_fg.png`, { width: ATLAS_SIZE, height: ATLAS_SIZE, rgba: fg }];
+      yield [`atlases/${key}_fg.png`, { width: ATLAS_SIZE, height: ATLAS_SIZE, rgba: fg }];
+    }
+
+    // Animation frames ({key}_f{k}.png + _f{k}_fg.png), merging palette + tile.
+    const tileAnim = ESCALATOR_DRAW_TS.has(drawTs) ? tileAnims.get(drawTs) : undefined;
+    const { frames } = planFrames(subpalettes, palAnims.get(key), tileAnim);
+    const animTiles = animGfx.get(drawTs);
+    for (let k = 0; k < frames.length; k++) {
+      const { colors, remap } = frames[k];
+      const fr = renderAtlas(tileset.minitiles, colors, rawArr, remap ?? undefined, animTiles);
+      yield [`atlases/${key}_f${k}.png`, { width: ATLAS_SIZE, height: ATLAS_SIZE, rgba: fr.bg }];
+      if (fr.fg) {
+        yield [
+          `atlases/${key}_f${k}_fg.png`,
+          { width: ATLAS_SIZE, height: ATLAS_SIZE, rgba: fr.fg },
+        ];
+      }
     }
   }
+}
+
+/** Memoized decoder of a drawing tileset's raw (atlas-layout) arrangement cells. */
+function rawArrangementsFactory(rom: Rom): (drawTs: number) => (number[] | null)[] {
+  const arrange = rom.readTable(ARRANGEMENTS_PTR_TABLE, 20, 4);
+  const cache = new Map<number, (number[] | null)[]>();
+  return (drawTs: number) => {
+    let r = cache.get(drawTs);
+    if (!r) {
+      r = decodeRawArrangements(decompress(rom.data, fromSnesAddress(arrange[drawTs])));
+      cache.set(drawTs, r);
+    }
+    return r;
+  };
+}
+
+type FramePlan = {
+  frames: { colors: RGBA[][]; remap: Map<number, number> | null }[];
+  durations: number[];
+};
+
+/**
+ * Plan a combo's animation frames from the two ROM systems (ports build_atlases'
+ * frame-merge). A combo can use BOTH (e.g. Fourside 29_4): palette cycling swaps
+ * colours, tile animation swaps minitile graphics; we merge to lcm(frames) and use
+ * the tile delay (the visible motion). Returns no frames for a static combo.
+ */
+function planFrames(baseColors: RGBA[][], palAnim?: PaletteAnim, tileAnim?: TileAnim): FramePlan {
+  if (palAnim && tileAnim) {
+    const pf = palAnim.frames.length;
+    const tf = tileAnim.frames;
+    const count = lcm(pf, tf);
+    const frames: FramePlan['frames'] = [];
+    const durations: number[] = [];
+    for (let k = 0; k < count; k++) {
+      frames.push({ colors: palAnim.frames[k % pf], remap: tileAnim.remaps[k % tf] });
+      durations.push(tileAnim.delay);
+    }
+    return { frames, durations };
+  }
+  if (palAnim) {
+    return {
+      frames: palAnim.frames.map((colors) => ({ colors, remap: null })),
+      durations: [...palAnim.durations],
+    };
+  }
+  if (tileAnim) {
+    const frames: FramePlan['frames'] = [];
+    const durations: number[] = [];
+    for (let k = 0; k < tileAnim.frames; k++) {
+      frames.push({ colors: baseColors, remap: tileAnim.remaps[k] });
+      durations.push(tileAnim.delay);
+    }
+    return { frames, durations };
+  }
+  return { frames: [], durations: [] };
+}
+
+/** True if any present arrangement cell draws a non-empty foreground minitile —
+ *  matches renderAtlas's `has_fg` (which gates whether a `_fg` atlas exists). */
+function hasForegroundLayer(minitiles: Tile[], rawArr: (number[] | null)[]): boolean {
+  for (let i = 0; i < 1024; i++) {
+    const cells = rawArr[i];
+    if (!cells) continue;
+    for (let c = 0; c < 16; c++) {
+      const mtIndex = cells[c] & 0x3ff;
+      if (mtIndex < 384) {
+        const f = minitiles[mtIndex + 512];
+        if (f) for (const row of f) for (const v of row) if (v !== 0) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * The `atlases/anim.json` runtime manifest: which combos animate, frame counts,
+ * per-frame durations (game frames @60Hz), and whether they have a FG layer.
+ * Combos are emitted in sorted (mapTs, pal) order to match build_atlases.py.
+ */
+export function animManifest(rom: Rom, a: ExtractedAssets): unknown {
+  const palAnims = comboAnimations(rom);
+  const tileAnims = tileAnimations(rom);
+  const rawFor = rawArrangementsFactory(rom);
+  const combos: Record<string, { frames: number; durations: number[]; fg: boolean }> = {};
+
+  const sorted = [...usedCombos(rom, a.sectors)].sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  for (const [mapTs, pal] of sorted) {
+    const drawTs = a.tilesetMapping[mapTs];
+    const tileset = a.tilesets[drawTs];
+    const subpalettes =
+      tileset.palettes[`${mapTs}_${pal}`] ??
+      tileset.palettes[`${mapTs}_0`] ??
+      Object.values(tileset.palettes)[0];
+    if (!subpalettes) continue;
+    const key = `${mapTs}_${pal}`;
+    const tileAnim = ESCALATOR_DRAW_TS.has(drawTs) ? tileAnims.get(drawTs) : undefined;
+    const { durations } = planFrames(subpalettes, palAnims.get(key), tileAnim);
+    if (durations.length === 0) continue;
+    combos[key] = {
+      frames: durations.length,
+      durations,
+      fg: hasForegroundLayer(tileset.minitiles, rawFor(drawTs)),
+    };
+  }
+  return { version: 1, frameRateHz: 60, combos };
 }
 
 /** Count of images `imageEntries` will yield (for progress UI), computed cheaply. */

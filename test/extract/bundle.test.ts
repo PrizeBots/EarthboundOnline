@@ -22,7 +22,10 @@ const load = (p: string) => JSON.parse(readFileSync(resolve(assets, p), 'utf8'))
 const md5 = (b: Uint8ClampedArray) => createHash('md5').update(Buffer.from(b.buffer)).digest('hex');
 
 describe('buildAssetBundle (Web Worker core)', () => {
-  it.skipIf(!haveInputs)('reproduces the engine asset set from a ROM', () => {
+  // Renders the FULL atlas set — every static + animation-frame atlas (hundreds of
+  // 1024×1024 buffers). Well over vitest's 5s default under parallel load, so give
+  // it room. (Skipped in CI anyway — needs a local ROM.)
+  it.skipIf(!haveInputs)('reproduces the engine asset set from a ROM', { timeout: 60_000 }, () => {
     const rom = new Rom(new Uint8Array(readFileSync(romPath)));
     const bundle = buildAssetBundle(rom);
 

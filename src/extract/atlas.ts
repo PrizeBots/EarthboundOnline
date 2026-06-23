@@ -44,11 +44,18 @@ export type AtlasResult = { bg: Uint8ClampedArray; fg: Uint8ClampedArray | null 
  * each, index 0 = solid BG colour). Returns the BG buffer always and the FG
  * buffer only if any foreground pixel was drawn (else null, matching the Python
  * which only writes a `_fg.png` when `has_fg`).
+ *
+ * `mtRemap`/`animTiles` drive TILE-GRAPHIC animation frames (escalator steps): a
+ * BG cell whose minitile index is in `mtRemap` draws the substitute minitile from
+ * `animTiles` (the $7EC000 animation buffer) instead of the tileset's own. The FG
+ * layer is never remapped. Both omitted = a normal static / palette-only render.
  */
 export function renderAtlas(
   minitiles: Tile[],
   subpalettes: RGBA[][],
-  rawArrangements: (number[] | null)[]
+  rawArrangements: (number[] | null)[],
+  mtRemap?: Map<number, number>,
+  animTiles?: Tile[]
 ): AtlasResult {
   const bg = new Uint8ClampedArray(ATLAS_SIZE * ATLAS_SIZE * 4);
   const fg = new Uint8ClampedArray(ATLAS_SIZE * ATLAS_SIZE * 4);
@@ -80,9 +87,16 @@ export function renderAtlas(
         const dx = ax + cx * MINI;
         const dy = ay + cy * MINI;
 
-        // Background minitile (drawn whenever the index is in range).
-        if (mtIndex < minitiles.length) {
-          const mt = minitiles[mtIndex];
+        // Background minitile. A tile-animation frame swaps which GRAPHICS a
+        // remapped cell draws (from the animation buffer); every other cell
+        // draws its normal minitile from the tileset.
+        let mt: Tile | undefined;
+        if (mtRemap && animTiles && mtRemap.has(mtIndex)) {
+          const sub = mtRemap.get(mtIndex)!;
+          if (sub < animTiles.length) mt = animTiles[sub];
+        }
+        if (!mt && mtIndex < minitiles.length) mt = minitiles[mtIndex];
+        if (mt) {
           for (let py = 0; py < 8; py++) {
             for (let px = 0; px < 8; px++) {
               const sx = flipH ? 7 - px : px;

@@ -49,11 +49,14 @@ function read2bpp(tile: Tile, src: Uint8Array, offset: number, bitOffset: number
   }
 }
 
-/** Decode 896 minitiles from a decompressed 4bpp graphics block. */
-export function decodeMinitiles(data: Uint8Array): Tile[] {
-  const tiles: Tile[] = Array.from({ length: NUM_MINITILES }, zeroTile);
+/**
+ * Decode minitiles from a decompressed 4bpp graphics block. Defaults to the
+ * tileset's 896; the tile-animation graphics buffer ($7EC000) is 256 (see anim.ts).
+ */
+export function decodeMinitiles(data: Uint8Array, numTiles = NUM_MINITILES): Tile[] {
+  const tiles: Tile[] = Array.from({ length: numTiles }, zeroTile);
   const usable = Math.floor(data.length / 32); // each 4bpp tile = 32 bytes
-  const count = Math.min(NUM_MINITILES, usable);
+  const count = Math.min(numTiles, usable);
   for (let n = 0; n < count; n++) {
     const off = n * 32;
     // 4bpp = two stacked 2bpp planes (bit-planes 0–1 then 2–3)
