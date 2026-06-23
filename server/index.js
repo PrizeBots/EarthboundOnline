@@ -21,6 +21,15 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
+// Disable Nagle's algorithm on every TCP connection (incl. WebSocket upgrades).
+// Without this, Node buffers small outgoing packets — every position update and
+// ping — waiting to coalesce them or for a TCP ACK. Combined with the receiver's
+// delayed-ACK, that's the classic Nagle stall that silently adds ~40-200ms to a
+// real-time game's tiny, frequent packets (turning a ~70ms link into a felt
+// ~200ms). setNoDelay flushes each packet immediately. Non-negotiable for an
+// action game; the single biggest latency win for this codebase.
+server.on('connection', (socket) => socket.setNoDelay(true));
+
 // Auth + character API (accounts/sessions/saves). Mounted before static so the
 // /api/* routes win; the app calls next() on anything it doesn't match.
 const store = createStore();
