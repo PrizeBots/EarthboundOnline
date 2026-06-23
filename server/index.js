@@ -35,6 +35,35 @@ server.on('connection', (socket) => socket.setNoDelay(true));
 const store = createStore();
 app.use(createAuthApi(store));
 
+// --- Event-loop lag probe (diagnostic) ------------------------------------
+// A 50ms timer measures how late it actually fires; the overshoot is how long
+// the loop was BLOCKED by synchronous work (a sim tick) — time during which no
+// socket can be read/written. A real-time server must keep this near 0. If the
+// in-game RTT is high but the network is fast, this number is the smoking gun.
+// Read it from anywhere: GET /_perf.
+const { performance } = require('perf_hooks');
+let _loopLagMs = 0;
+let _loopLagMax = 0;
+let _lagPrev = performance.now();
+const _lagTimer = setInterval(() => {
+  const now = performance.now();
+  _loopLagMs = Math.max(0, now - _lagPrev - 50);
+  if (_loopLagMs > _loopLagMax) _loopLagMax = _loopLagMs;
+  _lagPrev = now;
+}, 50);
+if (_lagTimer.unref) _lagTimer.unref();
+app.get('/_perf', (_req, res) => {
+  const mem = process.memoryUsage();
+  res.json({
+    loopLagMs: Math.round(_loopLagMs),
+    loopLagMaxMs: Math.round(_loopLagMax),
+    uptimeS: Math.round(process.uptime()),
+    rssMB: Math.round(mem.rss / 1048576),
+    heapMB: Math.round(mem.heapUsed / 1048576),
+  });
+  _loopLagMax = 0; // reset the peak each read
+});
+
 // Serve the built client (code only; the bundle never carries ROM data).
 app.use(express.static(path.join(__dirname, '..', 'dist')));
 
