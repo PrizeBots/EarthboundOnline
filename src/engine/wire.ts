@@ -23,6 +23,7 @@ export const TAG = {
 const NPC_ROW_BYTES = 11;
 const NPC_HEADER_BYTES = 5;
 const PLAYER_MOVE_BYTES = 12;
+const TS_BYTES = 4; // trailing uint32 server-send timestamp on every frame (see server/wire.js)
 const F_KEY = 1;
 const F_DIR = 2;
 const F_FRAME = 4;
@@ -41,10 +42,11 @@ export function frameTag(buf: ArrayBuffer | Uint8Array): number {
   return asDataView(buf).getUint8(0);
 }
 
-/** Encode an npc_update batch → ArrayBuffer (mirror of server encodeNpcUpdate). */
-export function encodeNpcUpdate(npcs: NpcUpdate[], over = 0): ArrayBuffer {
+/** Encode an npc_update batch → ArrayBuffer (mirror of server encodeNpcUpdate).
+ *  `ts` is the server send time (ms) appended as a trailing uint32. */
+export function encodeNpcUpdate(npcs: NpcUpdate[], over = 0, ts = 0): ArrayBuffer {
   const n = npcs.length;
-  const ab = new ArrayBuffer(NPC_HEADER_BYTES + n * NPC_ROW_BYTES);
+  const ab = new ArrayBuffer(NPC_HEADER_BYTES + n * NPC_ROW_BYTES + TS_BYTES);
   const dv = new DataView(ab);
   dv.setUint8(0, TAG.NPC_UPDATE);
   dv.setUint16(1, n, true);
@@ -60,13 +62,15 @@ export function encodeNpcUpdate(npcs: NpcUpdate[], over = 0): ArrayBuffer {
     dv.setUint8(o + 10, (r[5] as number) & 0xff);
     o += NPC_ROW_BYTES;
   }
+  dv.setUint32(o, ts >>> 0, true);
   return ab;
 }
 
-/** Decode an npc_update binary frame → { npcs, over }. Tag assumed at byte 0. */
+/** Decode an npc_update binary frame → { npcs, over, ts }. Tag assumed at byte 0. */
 export function decodeNpcUpdate(buf: ArrayBuffer | Uint8Array): {
   npcs: NpcUpdate[];
   over: number;
+  ts: number;
 } {
   const dv = asDataView(buf);
   const n = dv.getUint16(1, true);
@@ -84,7 +88,7 @@ export function decodeNpcUpdate(buf: ArrayBuffer | Uint8Array): {
     ] as unknown as NpcUpdate;
     o += NPC_ROW_BYTES;
   }
-  return { npcs, over };
+  return { npcs, over, ts: dv.getUint32(o, true) };
 }
 
 export interface PlayerMoveMsg {
@@ -94,11 +98,14 @@ export interface PlayerMoveMsg {
   direction: Direction;
   frame: number;
   pose: Pose;
+  /** Server send time (ms, server clock) decoded from the trailing timestamp. */
+  ts?: number;
 }
 
-/** Encode one player_move → ArrayBuffer (mirror of server encodePlayerMove). */
-export function encodePlayerMove(d: PlayerMoveMsg): ArrayBuffer {
-  const ab = new ArrayBuffer(PLAYER_MOVE_BYTES);
+/** Encode one player_move → ArrayBuffer (mirror of server encodePlayerMove).
+ *  `ts` is the server send time (ms) appended as a trailing uint32. */
+export function encodePlayerMove(d: PlayerMoveMsg, ts = 0): ArrayBuffer {
+  const ab = new ArrayBuffer(PLAYER_MOVE_BYTES + TS_BYTES);
   const dv = new DataView(ab);
   dv.setUint8(0, TAG.PLAYER_MOVE);
   dv.setUint32(1, parseInt(d.id, 10) >>> 0, true);
@@ -107,6 +114,7 @@ export function encodePlayerMove(d: PlayerMoveMsg): ArrayBuffer {
   dv.setUint8(9, d.direction & 0xff);
   dv.setUint8(10, d.frame & 0xff);
   dv.setUint8(11, Math.max(0, POSES.indexOf(d.pose)));
+  dv.setUint32(PLAYER_MOVE_BYTES, ts >>> 0, true);
   return ab;
 }
 
@@ -118,7 +126,7 @@ export function encodePlayerMove(d: PlayerMoveMsg): ArrayBuffer {
 export function decodeNpcDelta(
   buf: ArrayBuffer | Uint8Array,
   base: NpcBase
-): { npcs: NpcUpdate[]; over: number } {
+): { npcs: NpcUpdate[]; over: number; ts: number } {
   const dv = asDataView(buf);
   const n = dv.getUint16(1, true);
   const over = dv.getUint16(3, true);
@@ -149,7 +157,7 @@ export function decodeNpcDelta(
     base.set(id, [x2, y2, dir, frame, pose]);
     npcs[i] = [id, x2 / 2, y2 / 2, dir, frame, pose] as unknown as NpcUpdate;
   }
-  return { npcs, over };
+  return { npcs, over, ts: dv.getUint32(o, true) };
 }
 
 /**
@@ -180,6 +188,7 @@ export function decodePlayerDelta(buf: ArrayBuffer | Uint8Array, base: NpcBase):
   if (flags & F_DIR) dir = dv.getUint8(o++);
   if (flags & F_FRAME) frame = dv.getUint8(o++);
   if (flags & F_POSE) pose = dv.getUint8(o++);
+  const ts = dv.getUint32(o, true);
   base.set(id, [x2, y2, dir, frame, pose]);
   return {
     id: String(id),
@@ -188,6 +197,7 @@ export function decodePlayerDelta(buf: ArrayBuffer | Uint8Array, base: NpcBase):
     direction: dir as Direction,
     frame,
     pose: (POSES[pose] ?? 'walk') as Pose,
+    ts,
   };
 }
 
@@ -201,5 +211,6 @@ export function decodePlayerMove(buf: ArrayBuffer | Uint8Array): PlayerMoveMsg {
     direction: dv.getUint8(9) as Direction,
     frame: dv.getUint8(10),
     pose: (POSES[dv.getUint8(11)] ?? 'walk') as Pose,
+    ts: dv.getUint32(PLAYER_MOVE_BYTES, true),
   };
 }

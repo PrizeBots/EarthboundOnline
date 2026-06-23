@@ -16,7 +16,12 @@ import { playEventSfxAt } from './SfxEvents';
 import { spawnDeathBody } from './DeathFx';
 import { Direction, POSES } from '../types';
 import type { NpcUpdate } from './Network';
-import { createInterpolator, applyPredOffset, injectPredOffset } from './RemoteInterp';
+import {
+  createInterpolator,
+  adaptiveDelay,
+  applyPredOffset,
+  injectPredOffset,
+} from './RemoteInterp';
 import { checkPlayerCollision } from './Collision';
 import { loadShops, shopStoreForNpc } from './Shop';
 import { DEFAULT_ENTITY_STATS, DEFAULT_BEHAVIOR_RANGES } from './EntityStats';
@@ -32,11 +37,11 @@ function npcIdFromKey(k: string | undefined): number {
 }
 
 // Smooth NPC/enemy motion the same way remote players glide. NPCs broadcast at
-// 20Hz (BROADCAST_HZ); 120ms keeps ~2.4 packets bracketing the render time under
-// jitter while shaving 40ms of felt enemy lag vs the old 160ms (which, against
-// the old 10Hz/100ms stream, barely bracketed one packet and coasted constantly).
+// ~30Hz (BROADCAST_HZ, ~33ms). The delay is adaptive (tracks jitter): floor ~60ms
+// keeps ~2 packets bracketing the render cursor, ceil 150ms is the safety ceiling.
+// On a clean link it settles low, shaving felt enemy lag vs the old fixed 100ms.
 // Separate instance so numeric NPC ids can't collide with player ids.
-const npcInterp = createInterpolator(100);
+const npcInterp = createInterpolator({ delay: adaptiveDelay(33, 60, 150) });
 
 export interface RawNPC {
   /** Stable placement identity (extract_npcs.py) — the overrides key. */
@@ -622,7 +627,7 @@ export function setDialogueBranchLive(textId: string, branch: DialogueBranch | n
  * HOME position on purpose: wanderers are leashed within 32px of home, so
  * re-bucketing on movement is unnecessary.
  */
-export function applyNpcUpdates(rows: NpcUpdate[]): void {
+export function applyNpcUpdates(rows: NpcUpdate[], t?: number): void {
   for (const [id, x, y, dir, frame, poseCode] of rows) {
     const npc = npcsById[id];
     if (!npc) continue;
@@ -642,7 +647,7 @@ export function applyNpcUpdates(rows: NpcUpdate[]): void {
     // FIRST snapshot after appearing/respawning snaps the position directly so
     // the NPC doesn't glide in from a stale spot; later ones interpolate.
     const fresh = !npcInterp.has(key);
-    npcInterp.push(key, x, y, dir as Direction, frame, pose);
+    npcInterp.push(key, x, y, dir as Direction, frame, pose, t);
     if (fresh) npc.applyServerState(x, y, dir as Direction, frame, pose);
   }
 }

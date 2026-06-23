@@ -29,6 +29,40 @@ const BUFFER_MAX_AGE_MS = 1000;
 // 10Hz NPC gap and several 30Hz player gaps.
 const MAX_EXTRAP_MS = 150;
 
+// Server-time playout clock (jitter-immune interpolation). Each snapshot carries
+// the server's send time (mapped onto our clock by Network.frameClientTime), so
+// snapshot SPACING reflects the even server cadence, not jittery arrival. We don't
+// render at `now - delay` (that anchors to the local clock, forcing `delay` to
+// swallow one-way latency); instead a playout cursor rides `newest.t - delay` and
+// advances by real elapsed time, so `delay` only covers packet-interval + jitter
+// and latency drops out. Flip to false to fall back to the old now-anchored render.
+const SERVER_TIME_PLAYOUT = true;
+const PLAYOUT_SLEW = 0.08; // per-frame fraction the cursor eases toward its target
+const PLAYOUT_RESYNC_MS = 250; // drift past this (long stall / tab resume) → hard re-anchor
+
+// --- Adaptive render delay (Stage C) -----------------------------------------
+// The buffer no longer sits at a fixed 100ms. It tracks measured jitter:
+//   delay = clamp(packetInterval + JITTER_K * jitter, floor, ceil)
+// On a clean link it settles near the floor (other players stop feeling "behind");
+// when jitter spikes it widens instead of underrunning. The floor stays above one
+// packet interval so two snapshots always bracket the cursor. Jitter is injected
+// (setJitterSource) so this module never imports Network (no cycle).
+const JITTER_K = 2;
+let jitterFn: () => number = () => 0;
+/** Wire the live jitter readout (Network.getJitterMs) into the adaptive delay. */
+export function setJitterSource(fn: () => number): void {
+  jitterFn = fn;
+}
+/** Build a delay() that tracks jitter, clamped to [floor, ceil] around a base
+ *  packet interval. Used by both the player and NPC interpolators. */
+export function adaptiveDelay(
+  packetIntervalMs: number,
+  floorMs: number,
+  ceilMs: number
+): () => number {
+  return () => Math.max(floorMs, Math.min(ceilMs, packetIntervalMs + JITTER_K * jitterFn()));
+}
+
 interface Snapshot {
   t: number;
   x: number;
@@ -149,12 +183,31 @@ export function applyRemoteHurt(
 }
 
 export interface Interpolator {
-  push(id: string, x: number, y: number, direction: Direction, frame: number, pose: Pose): void;
+  /** Record a snapshot. `t` is its client-clock time (server send-time mapped via
+   *  the clock offset); omitted → now (pre-clock-sync / JSON frame with no ts). */
+  push(
+    id: string,
+    x: number,
+    y: number,
+    direction: Direction,
+    frame: number,
+    pose: Pose,
+    t?: number
+  ): void;
   drop(id: string): void;
   has(id: string): boolean;
   ids(): IterableIterator<string>;
   /** Advance `target` to its interpolated state for this frame. */
   interpolate(id: string, target: InterpTarget): void;
+  /** The render delay (ms) in effect this frame — fixed, or adaptive (Stage C). */
+  delayMs(): number;
+}
+
+/** Options for createInterpolator. A function `delay` is resolved live each frame
+ *  (so it can track measured jitter); `now` is injectable for tests. */
+export interface InterpOpts {
+  delay?: number | (() => number);
+  now?: () => number;
 }
 
 /**
@@ -162,8 +215,20 @@ export interface Interpolator {
  * to render: larger = smoother under jitter, at the cost of more visible lag.
  * NPCs broadcast at a lower rate than players, so they use a larger delay.
  */
-export function createInterpolator(delayMs: number = PLAYER_DELAY_MS): Interpolator {
+export function createInterpolator(opts: number | InterpOpts = PLAYER_DELAY_MS): Interpolator {
+  const o: InterpOpts = typeof opts === 'number' ? { delay: opts } : opts;
+  const resolveDelay: () => number =
+    typeof o.delay === 'function' ? o.delay : () => (o.delay as number) ?? PLAYER_DELAY_MS;
+  const now: () => number = o.now ?? (() => performance.now());
   const buffers = new Map<string, Snapshot[]>();
+
+  // Shared playout clock — all entities ride the SAME server broadcast timeline, so
+  // one cursor (newest snapshot's t, minus delay, advanced by real elapsed time)
+  // drives every buffer. `latest` is the freshest t across all buffers.
+  let playoutT = NaN;
+  let lastWall = NaN;
+  let latest = -Infinity;
+  let curDelay = resolveDelay();
 
   function push(
     id: string,
@@ -171,15 +236,21 @@ export function createInterpolator(delayMs: number = PLAYER_DELAY_MS): Interpola
     y: number,
     direction: Direction,
     frame: number,
-    pose: Pose
+    pose: Pose,
+    t: number = now()
   ): void {
     let buf = buffers.get(id);
     if (!buf) {
       buf = [];
       buffers.set(id, buf);
     }
-    buf.push({ t: performance.now(), x, y, direction, frame, pose });
-    const cutoff = performance.now() - BUFFER_MAX_AGE_MS;
+    buf.push({ t, x, y, direction, frame, pose });
+    if (t > latest) latest = t;
+    // Keep each buffer time-ordered: ordered WS never reorders, but the Stage-D
+    // unreliable RTC channel can, and a single late packet must not invert a
+    // segment (which would briefly run interpolation backwards).
+    if (buf.length > 1 && t < buf[buf.length - 2].t) buf.sort((p, q) => p.t - q.t);
+    const cutoff = latest - BUFFER_MAX_AGE_MS;
     while (buf.length > 2 && buf[0].t < cutoff) buf.shift();
   }
 
@@ -191,11 +262,35 @@ export function createInterpolator(delayMs: number = PLAYER_DELAY_MS): Interpola
     target.pose = s.pose;
   }
 
+  // Advance the shared playout cursor at most once per render frame (entities all
+  // call interpolate() within <1ms of each other; only the first advances).
+  function advancePlayout(): void {
+    const wall = now();
+    if (!Number.isNaN(lastWall) && wall - lastWall < 1) return; // already advanced this frame
+    const dt = Number.isNaN(lastWall) ? 0 : Math.min(250, Math.max(0, wall - lastWall));
+    lastWall = wall;
+    curDelay = resolveDelay();
+    const targetT = latest - curDelay;
+    if (Number.isNaN(playoutT) || Math.abs(playoutT - targetT) > PLAYOUT_RESYNC_MS) {
+      playoutT = targetT; // first frame, or recovered from a long stall — hard anchor
+      return;
+    }
+    playoutT += dt; // ride real time forward...
+    playoutT += (targetT - playoutT) * PLAYOUT_SLEW; // ...and ease toward the target lag
+  }
+
   function interpolate(id: string, target: InterpTarget): void {
     const buf = buffers.get(id);
     if (!buf || buf.length === 0) return; // no packets yet — hold current position
 
-    const renderT = performance.now() - delayMs;
+    let renderT: number;
+    if (SERVER_TIME_PLAYOUT) {
+      advancePlayout();
+      renderT = playoutT;
+    } else {
+      curDelay = resolveDelay();
+      renderT = now() - curDelay;
+    }
 
     if (renderT <= buf[0].t) {
       apply(target, buf[0]); // appeared moments ago — hold the earliest snapshot
@@ -245,23 +340,34 @@ export function createInterpolator(delayMs: number = PLAYER_DELAY_MS): Interpola
     has: (id) => buffers.has(id),
     ids: () => buffers.keys(),
     interpolate,
+    delayMs: () => curDelay,
   };
 }
 
 // --- Default instance for remote players (the original module API) ---
 
-const players = createInterpolator(PLAYER_DELAY_MS);
+// Players broadcast at ~60Hz (~16ms). Floor ~40ms keeps two snapshots bracketing
+// the cursor with headroom; ceil 150ms is the old safety ceiling. PLAYER_DELAY_MS
+// is the legacy fixed value, kept as a fallback when SERVER_TIME_PLAYOUT is off.
+const players = createInterpolator({ delay: adaptiveDelay(16, 40, PLAYER_DELAY_MS + 50) });
 
-/** Record an incoming position packet for a remote player. */
+/** Record an incoming position packet for a remote player. `t` is its client-clock
+ *  snapshot time (server send-time mapped via the clock offset); omitted → now. */
 export function pushRemoteSnapshot(
   id: string,
   x: number,
   y: number,
   direction: Direction,
   frame: number,
-  pose: Pose
+  pose: Pose,
+  t?: number
 ): void {
-  players.push(id, x, y, direction, frame, pose);
+  players.push(id, x, y, direction, frame, pose, t);
+}
+
+/** The remote-player render delay (ms) in effect this frame — for the net overlay. */
+export function getInterpDelayMs(): number {
+  return players.delayMs();
 }
 
 /** Forget a player who left. */

@@ -10,6 +10,7 @@ import {
   TAG,
   type NpcBase,
 } from './wire';
+import { getInterpDelayMs, setJitterSource } from './RemoteInterp';
 
 // Client-side delta baselines, mirrors of the server's per-socket _npcBase /
 // _pmBase. Reset on each (re)connect so a fresh session starts from keyframes.
@@ -40,7 +41,10 @@ type NetworkCallback = {
     y: number,
     direction: Direction,
     frame: number,
-    pose: Pose
+    pose: Pose,
+    /** Client-clock time of this snapshot (server send-time mapped via the clock
+     *  offset), for server-time-axis interpolation. Omitted pre-sync → use now. */
+    t?: number
   ) => void;
   onPlayerLeave: (id: string) => void;
   onChat: (id: string, text: string) => void;
@@ -52,8 +56,10 @@ type NetworkCallback = {
   /** The LOCAL player's full equipped set (server-authoritative, per slot).
    *  attackSpeed is the equipped weapon's swing-rate multiplier (1 = baseline). */
   onEquipped: (slots: Record<string, string | null>, attackSpeed?: number) => void;
-  /** Authoritative NPC positions (welcome snapshot + periodic deltas). */
-  onNpcUpdate: (npcs: NpcUpdate[]) => void;
+  /** Authoritative NPC positions (welcome snapshot + periodic deltas). `t` is the
+   *  client-clock time of the snapshot (server send-time mapped via the clock
+   *  offset) for server-time-axis interpolation; omitted pre-sync → use now. */
+  onNpcUpdate: (npcs: NpcUpdate[], t?: number) => void;
   /** Authoritative enemy HP (welcome snapshot + on-damage deltas). */
   onNpcHp: (hps: NpcHp[]) => void;
   /** An actor's active status set changed: [npcId, [statusId,…]] rows. */
@@ -314,12 +320,35 @@ let rttMs = 0;
 let jitterMs = 0;
 const rttSamples: number[] = [];
 
+// --- Server clock sync (jitter-immune interpolation) ---
+// Each firehose frame carries the server's send time on the SERVER clock. We
+// estimate the client↔server offset from ping/pong (NTP-style) so a frame's
+// server time maps onto OUR performance.now() axis; RemoteInterp then buffers on
+// that axis and arrival jitter stops warping remote playback. Until the first
+// pong lands we have no offset — callers fall back to performance.now().
+let clockOffset = 0; // ≈ serverClock - clientClock
+let clockReady = false;
+let bestRtt = Infinity; // lowest RTT seen — its offset sample is the most trustworthy
+
+/** Map a server-clock timestamp (ms) onto the local performance.now() axis. */
+export function serverToClient(srv: number): number {
+  return srv - clockOffset;
+}
+
+/** Client-clock timestamp for an incoming frame: its synced server time when we
+ *  have a clock, else now (pre-sync, or a JSON frame with no `ts`). */
+export function frameClientTime(ts?: number): number {
+  return clockReady && typeof ts === 'number' ? serverToClient(ts) : performance.now();
+}
+
 /** Live connection-quality readout for the ?netdebug overlay (and any HUD). */
 export interface NetStats {
   connected: boolean;
   rtt: number; // last round-trip latency, ms
   jitter: number; // mean abs deviation of recent RTTs, ms
   reconnects: number; // reconnect attempts since the last clean open
+  clockOffset: number; // estimated serverClock - clientClock, ms (0 until synced)
+  clockSynced: boolean; // a clock offset has been established from a pong
 }
 
 export function getNetStats(): NetStats {
@@ -328,8 +357,19 @@ export function getNetStats(): NetStats {
     rtt: Math.round(rttMs),
     jitter: Math.round(jitterMs),
     reconnects: reconnectAttempt,
+    clockOffset: Math.round(clockOffset),
+    clockSynced: clockReady,
   };
 }
+
+/** Live measured jitter (ms) — RemoteInterp reads this to size its buffer. */
+export function getJitterMs(): number {
+  return jitterMs;
+}
+
+// Feed the live jitter readout into the interpolators' adaptive delay (one-way:
+// RemoteInterp never imports Network, so no cycle).
+setJitterSource(getJitterMs);
 
 function startHeartbeat() {
   stopHeartbeat();
@@ -359,17 +399,36 @@ function stopHeartbeat() {
   }
 }
 
-// Record one round-trip sample (from a 'pong') into the RTT + jitter readout.
-function recordPong(sentAt: number) {
-  lastPongAt = performance.now();
+// Record one round-trip sample (from a 'pong') into the RTT + jitter readout, and
+// fold the server timestamp `srv` into the client↔server clock-offset estimate.
+function recordPong(sentAt: number, srv?: number) {
+  const recvAt = performance.now();
+  lastPongAt = recvAt;
   if (typeof sentAt !== 'number') return;
-  rttMs = performance.now() - sentAt;
+  rttMs = recvAt - sentAt;
   rttSamples.push(rttMs);
   if (rttSamples.length > 20) rttSamples.shift();
   // Jitter = mean absolute difference between consecutive RTTs (RFC 3550-style).
   let acc = 0;
   for (let i = 1; i < rttSamples.length; i++) acc += Math.abs(rttSamples[i] - rttSamples[i - 1]);
   jitterMs = rttSamples.length > 1 ? acc / (rttSamples.length - 1) : 0;
+
+  // Clock offset (NTP-style): the pong's `srv` ≈ the server clock at the request's
+  // midpoint, whose client time is (sentAt + recvAt)/2. Low-RTT samples carry the
+  // least asymmetry error, so weight them hardest; `bestRtt` slowly re-baselines so
+  // a genuine latency shift can re-tune the offset.
+  if (typeof srv === 'number') {
+    const sample = srv - (sentAt + recvAt) / 2; // ≈ serverClock - clientClock
+    if (!clockReady) {
+      clockOffset = sample;
+      clockReady = true;
+      bestRtt = rttMs;
+    } else {
+      const a = rttMs <= bestRtt ? 0.5 : 0.05;
+      clockOffset += a * (sample - clockOffset);
+    }
+    bestRtt = Math.min(rttMs, bestRtt * 1.02 + 1);
+  }
 }
 
 /**
@@ -421,6 +480,11 @@ function openSocket() {
     reconnectAttempt = 0; // a clean connection resets the backoff
     npcDeltaBase.clear(); // fresh session → server re-keyframes; drop stale baseline
     playerDeltaBase.clear();
+    // Drop the clock-offset estimate: a reconnect may hit a restarted server whose
+    // monotonic clock reset, so re-baseline from the next pong instead of carrying
+    // a now-wrong offset (which would misplace every interpolated frame).
+    clockReady = false;
+    bestRtt = Infinity;
     const { spriteGroupId, name, appearance, auth } = joinArgs!;
     // Signed-in: join by token+characterId (server loads the save). Anonymous:
     // the dev/char-select join (fresh ephemeral player; the server is still
@@ -449,22 +513,40 @@ function openSocket() {
       const buf = ev.data as ArrayBuffer;
       const tag = frameTag(buf);
       if (tag === TAG.NPC_UPDATE) {
-        callbacks?.onNpcUpdate(decodeNpcUpdate(buf).npcs);
+        const u = decodeNpcUpdate(buf);
+        callbacks?.onNpcUpdate(u.npcs, frameClientTime(u.ts));
       } else if (tag === TAG.NPC_DELTA) {
-        callbacks?.onNpcUpdate(decodeNpcDelta(buf, npcDeltaBase).npcs);
+        const u = decodeNpcDelta(buf, npcDeltaBase);
+        callbacks?.onNpcUpdate(u.npcs, frameClientTime(u.ts));
       } else if (tag === TAG.PLAYER_MOVE) {
         const m = decodePlayerMove(buf);
-        callbacks?.onPlayerMove(m.id, m.x, m.y, m.direction, m.frame, m.pose);
+        callbacks?.onPlayerMove(
+          m.id,
+          m.x,
+          m.y,
+          m.direction,
+          m.frame,
+          m.pose,
+          frameClientTime(m.ts)
+        );
       } else if (tag === TAG.PLAYER_DELTA) {
         const m = decodePlayerDelta(buf, playerDeltaBase);
-        callbacks?.onPlayerMove(m.id, m.x, m.y, m.direction, m.frame, m.pose);
+        callbacks?.onPlayerMove(
+          m.id,
+          m.x,
+          m.y,
+          m.direction,
+          m.frame,
+          m.pose,
+          frameClientTime(m.ts)
+        );
       }
       return;
     }
     const msg = JSON.parse(ev.data);
     switch (msg.type) {
       case 'pong':
-        recordPong(msg.t);
+        recordPong(msg.t, msg.srv);
         break;
       case 'welcome':
         callbacks?.onWelcome(msg.playerId, msg.players);
@@ -503,7 +585,7 @@ function openSocket() {
         callbacks?.onMoney(typeof msg.money === 'number' ? msg.money : 0);
         break;
       case 'npc_update':
-        callbacks?.onNpcUpdate(msg.npcs);
+        callbacks?.onNpcUpdate(msg.npcs, frameClientTime(msg.ts));
         break;
       case 'npc_status':
         if (msg.statuses) callbacks?.onNpcStatus?.(msg.statuses);
@@ -521,7 +603,15 @@ function openSocket() {
         callbacks?.onPlayerJoin(msg.player);
         break;
       case 'player_move':
-        callbacks?.onPlayerMove(msg.id, msg.x, msg.y, msg.direction, msg.frame, msg.pose ?? 'walk');
+        callbacks?.onPlayerMove(
+          msg.id,
+          msg.x,
+          msg.y,
+          msg.direction,
+          msg.frame,
+          msg.pose ?? 'walk',
+          frameClientTime(msg.ts)
+        );
         break;
       case 'player_leave':
         callbacks?.onPlayerLeave(msg.id);
@@ -949,6 +1039,8 @@ export function mountNetDebug(): void {
       `state : ${s.connected ? 'connected' : 'DISCONNECTED'}`,
       `rtt   : ${s.rtt} ms`,
       `jitter: ${s.jitter} ms`,
+      `clock : ${s.clockSynced ? `${s.clockOffset >= 0 ? '+' : ''}${s.clockOffset} ms` : 'syncing…'}`,
+      `interp: ${Math.round(getInterpDelayMs())} ms`,
       `recon : ${s.reconnects}`,
     ].join('\n');
     requestAnimationFrame(tick);

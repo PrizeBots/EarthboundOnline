@@ -77,6 +77,13 @@ const MAX_STEPS_BURST = Math.max(2, Math.round(NOMINAL_STEPS_PER_TICK * 3)); // 
 // the legacy global broadcast. The spatial grid is always maintained.
 const AOI_ENABLED = process.env.AOI_ENABLED !== '0';
 const NET_DEBUG = process.env.NET_DEBUG === '1';
+// Single monotonic server clock (ms), shared by the firehose frame timestamp and
+// the pong's `srv` field. The client maps server send-times onto its own clock via
+// the ping/pong offset and buffers snapshots on the SERVER-time axis, so arrival
+// jitter no longer warps remote playback. performance.now() is ms-since-start; the
+// uint32 wire field wraps after ~49 days of uptime — harmless (the offset re-syncs).
+const { performance: perfHooks } = require('perf_hooks');
+const srvNow = () => Math.round(perfHooks.now());
 // Binary + delta wire format for the position firehose (§5). ON by default now;
 // set BINARY_WIRE=0 to fall back to JSON. Independent of AOI.
 const BINARY_WIRE = process.env.BINARY_WIRE !== '0';
@@ -1005,16 +1012,16 @@ class GameHost {
   // which the client mirrors; both update identically per row so reliable,
   // ordered WS keeps them in sync. The baseline is bounded — a clear just forces
   // keyframes next tick (safe, since a missing prev always encodes as KEY).
-  _sendNpcUpdate(entry, npcs, over) {
+  _sendNpcUpdate(entry, npcs, over, ts = srvNow()) {
     let msg;
     if (BINARY_WIRE) {
       let base = entry._npcBase;
       if (!base) base = entry._npcBase = new Map();
       if (base.size > 4096) base.clear();
-      msg = wire.encodeNpcDelta(npcs, base, over);
+      msg = wire.encodeNpcDelta(npcs, base, over, ts);
     } else {
       msg = JSON.stringify(
-        over > 0 ? { type: 'npc_update', npcs, over } : { type: 'npc_update', npcs }
+        over > 0 ? { type: 'npc_update', npcs, over, ts } : { type: 'npc_update', npcs, ts }
       );
     }
     entry._ws.send(msg);
@@ -1022,13 +1029,14 @@ class GameHost {
   }
 
   publishNpcUpdate(rows) {
+    const ts = srvNow(); // one server send-time stamped onto every frame this tick
     if (!AOI_ENABLED || !rows || rows.length === 0) {
       if (!BINARY_WIRE || !rows || rows.length === 0) {
-        return this.broadcastAll({ type: 'npc_update', npcs: rows });
+        return this.broadcastAll({ type: 'npc_update', npcs: rows, ts });
       }
       // AOI off + binary: one encoded buffer fans out to everyone (no per-client
       // filtering, so the bytes are identical — encode once).
-      const buf = wire.encodeNpcUpdate(rows, 0);
+      const buf = wire.encodeNpcUpdate(rows, 0, ts);
       let n = 0;
       for (const [, entry] of this.players) {
         if (entry._ws && entry._ws.readyState === 1) {
@@ -1079,7 +1087,7 @@ class GameHost {
           over = mine.length - AOI_MAX_NPCS;
           mine.length = AOI_MAX_NPCS;
         }
-        this._sendNpcUpdate(entry, mine, over);
+        this._sendNpcUpdate(entry, mine, over, ts);
       }
     }
   }
@@ -1167,12 +1175,15 @@ class GameHost {
   // their viewers), already capped by the per-client nearest-M visible set, not
   // O(crowd²). AOI off: legacy global broadcastExcept. NETWORK_REMODEL.md §4.6.
   _publishMove(id, entry, data) {
+    const ts = srvNow(); // server send-time, stamped on every frame (binary + JSON)
+    data.ts = ts; // JSON paths (broadcastExcept / per-viewer JSON) carry it inline
+
     // AOI off + JSON: unchanged global path.
     if (!AOI_ENABLED && !BINARY_WIRE) return this.broadcastExcept(data, id);
 
     // Binary, AOI off: plain full player_move (0x02) — encode once, broadcast.
     if (!AOI_ENABLED) {
-      const msg = wire.encodePlayerMove(data);
+      const msg = wire.encodePlayerMove(data, ts);
       let n = 0;
       for (const [pid, e] of this.players) {
         if (pid === id) continue;
@@ -1215,7 +1226,7 @@ class GameHost {
       let base = v._pmBase;
       if (!base) base = v._pmBase = new Map();
       if (base.size > 4096) base.clear();
-      const buf = wire.encodePlayerDelta(data, base);
+      const buf = wire.encodePlayerDelta(data, base, ts);
       v._ws.send(buf);
       n++;
       bytes += buf.length;
@@ -2328,7 +2339,10 @@ class GameHost {
         const pe = this.players.get(playerId);
         if (pe && Number.isFinite(msg.rtt)) pe._rtt = Math.max(0, Math.min(400, msg.rtt | 0));
         try {
-          ws.send(JSON.stringify({ type: 'pong', t: msg.t }));
+          // Echo the client's timestamp (RTT) plus our own clock (`srv`) so the
+          // client can estimate the client↔server clock offset and map firehose
+          // frame timestamps onto its own clock for jitter-immune interpolation.
+          ws.send(JSON.stringify({ type: 'pong', t: msg.t, srv: srvNow() }));
         } catch {
           /* socket already gone */
         }

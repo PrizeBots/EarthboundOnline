@@ -614,12 +614,13 @@ export class Game {
           this.resolveRemoteSprite(player);
           console.log(`${player.name} joined`);
         },
-        onPlayerMove: (id, x, y, direction, frame, pose) => {
+        onPlayerMove: (id, x, y, direction, frame, pose, t) => {
           // Buffered, not applied directly: update() interpolates each frame
           // (RemoteInterp) so remote players glide instead of stepping once
-          // per packet.
+          // per packet. `t` is the snapshot's server send-time on our clock, so
+          // playback rides the even server cadence, not jittery arrival.
           if (this.remotePlayers.has(id)) {
-            pushRemoteSnapshot(id, x, y, direction, frame, pose);
+            pushRemoteSnapshot(id, x, y, direction, frame, pose, t);
           }
         },
         onPlayerLeave: (id) => {
@@ -664,8 +665,8 @@ export class Game {
           // a slot only if the player parked it there.
           setHotbar(slots);
         },
-        onNpcUpdate: (rows) => {
-          applyNpcUpdates(rows);
+        onNpcUpdate: (rows, t) => {
+          applyNpcUpdates(rows, t);
         },
         onNpcHp: (rows) => {
           applyNpcHp(rows);
