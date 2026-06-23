@@ -346,10 +346,23 @@ export function createInterpolator(opts: number | InterpOpts = PLAYER_DELAY_MS):
 
 // --- Default instance for remote players (the original module API) ---
 
-// Players broadcast at ~60Hz (~16ms). Floor ~40ms keeps two snapshots bracketing
-// the cursor with headroom; ceil 150ms is the old safety ceiling. PLAYER_DELAY_MS
-// is the legacy fixed value, kept as a fallback when SERVER_TIME_PLAYOUT is off.
-const players = createInterpolator({ delay: adaptiveDelay(16, 40, PLAYER_DELAY_MS + 50) });
+// Players broadcast at ~60Hz (~16ms). Floor ~50ms keeps ~3 snapshots bracketing the
+// cursor with headroom on a real WAN link (40ms underran for some); ceil 150ms is
+// the safety ceiling. PLAYER_DELAY_MS is the legacy fixed fallback (playout off).
+const players = createInterpolator({ delay: adaptiveDelay(16, 50, PLAYER_DELAY_MS + 50) });
+
+// The NPC interpolator (NPCManager) registers itself here so the rest of the app —
+// crucially Network's ping, which reports the enemy render-delay for melee lag-comp
+// — can read the live NPC interp delay without importing NPCManager (no cycle).
+let npcDelayGetter: () => number = () => PLAYER_DELAY_MS;
+export function registerNpcInterp(i: Interpolator): void {
+  npcDelayGetter = () => i.delayMs();
+}
+/** How far in the past the client renders ENEMIES this frame (ms). The server
+ *  rewinds its melee hitbox by exactly this so swings land where you aimed. */
+export function getNpcInterpDelayMs(): number {
+  return npcDelayGetter();
+}
 
 /** Record an incoming position packet for a remote player. `t` is its client-clock
  *  snapshot time (server send-time mapped via the clock offset); omitted → now. */

@@ -10,7 +10,7 @@ import {
   TAG,
   type NpcBase,
 } from './wire';
-import { getInterpDelayMs, setJitterSource } from './RemoteInterp';
+import { getInterpDelayMs, getNpcInterpDelayMs, setJitterSource } from './RemoteInterp';
 
 // Client-side delta baselines, mirrors of the server's per-socket _npcBase /
 // _pmBase. Reset on each (re)connect so a fresh session starts from keyframes.
@@ -386,9 +386,17 @@ function startHeartbeat() {
       }
       return;
     }
-    // Report our last measured RTT so the server can lag-compensate this
-    // player's melee hits (rewind enemies to what we saw). Server clamps it.
-    ws.send(JSON.stringify({ type: 'ping', t: performance.now(), rtt: Math.round(rttMs) }));
+    // Report our measured RTT AND how far back we render enemies (the adaptive NPC
+    // interp delay) so the server rewinds its melee hitbox to exactly what we saw —
+    // otherwise swings test the wrong moment and miss moving targets. Server clamps.
+    ws.send(
+      JSON.stringify({
+        type: 'ping',
+        t: performance.now(),
+        rtt: Math.round(rttMs),
+        interp: Math.round(getNpcInterpDelayMs()),
+      })
+    );
   }, PING_INTERVAL_MS);
 }
 

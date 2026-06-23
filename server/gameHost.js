@@ -2368,6 +2368,11 @@ class GameHost {
         // compensate this player's hits (rewind enemies to what they saw).
         const pe = this.players.get(playerId);
         if (pe && Number.isFinite(msg.rtt)) pe._rtt = Math.max(0, Math.min(400, msg.rtt | 0));
+        // The client also reports how far in the past it renders ENEMIES (its
+        // adaptive NPC interp delay). Lag-comp rewinds by exactly this so the
+        // server tests the hitbox where the player actually SAW the enemy.
+        if (pe && Number.isFinite(msg.interp))
+          pe._interp = Math.max(0, Math.min(300, msg.interp | 0));
         try {
           // Echo the client's timestamp (RTT) plus our own clock (`srv`) so the
           // client can estimate the client↔server clock offset and map firehose
@@ -2910,8 +2915,11 @@ class GameHost {
           entry.weaponProjSpeed || 0,
           entry.weaponPierce || false,
           entry.weaponProjSprite || null,
-          // Lag-comp rewind: interp delay + this player's RTT (clamped in 'ping').
-          LAG_COMP ? NPC_INTERP_MS + (entry._rtt || 0) : 0
+          // Lag-comp rewind: the client's REPORTED enemy interp delay (adaptive,
+          // ~60-80ms) + this player's RTT. Falls back to NPC_INTERP_MS until the
+          // first ping reports it. Must match what the client renders or melee
+          // tests the hitbox at the wrong moment (the "hits don't land" bug).
+          LAG_COMP ? (entry._interp ?? NPC_INTERP_MS) + (entry._rtt || 0) : 0
         );
         break;
       }

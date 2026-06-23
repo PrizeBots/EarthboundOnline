@@ -19,6 +19,7 @@ import type { NpcUpdate } from './Network';
 import {
   createInterpolator,
   adaptiveDelay,
+  registerNpcInterp,
   applyPredOffset,
   injectPredOffset,
 } from './RemoteInterp';
@@ -36,12 +37,14 @@ function npcIdFromKey(k: string | undefined): number {
   return parts.length >= 2 ? parseInt(parts[1], 10) : -1;
 }
 
-// Smooth NPC/enemy motion the same way remote players glide. NPCs broadcast at
-// ~30Hz (BROADCAST_HZ, ~33ms). The delay is adaptive (tracks jitter): floor ~60ms
-// keeps ~2 packets bracketing the render cursor, ceil 150ms is the safety ceiling.
-// On a clean link it settles low, shaving felt enemy lag vs the old fixed 100ms.
-// Separate instance so numeric NPC ids can't collide with player ids.
-const npcInterp = createInterpolator({ delay: adaptiveDelay(33, 60, 150) });
+// Smooth NPC/enemy motion the same way remote players glide. NPCs now broadcast at
+// ~60Hz (BROADCAST_HZ, ~16ms). The delay is adaptive (tracks jitter): floor ~80ms
+// gives ~5 packets bracketing the render cursor so enemies stay smooth on a real
+// WAN link (60ms underran → the "jumpy NPCs" report); ceil 150ms is the safety
+// ceiling. registerNpcInterp exposes this delay so Network's ping can report it for
+// melee lag-comp. Separate instance so numeric NPC ids can't collide with player ids.
+const npcInterp = createInterpolator({ delay: adaptiveDelay(16, 80, 150) });
+registerNpcInterp(npcInterp);
 
 export interface RawNPC {
   /** Stable placement identity (extract_npcs.py) — the overrides key. */

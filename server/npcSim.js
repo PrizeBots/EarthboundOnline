@@ -41,12 +41,13 @@ const COL_H = 8;
 const COL_OY = -8;
 
 const TICK_HZ = 60;
-// NPC/enemy position broadcast rate. Raised 10→20→30Hz so enemies/townsfolk feel
-// crisp in combat: a ~33ms packet interval lets the adaptive interp buffer floor
-// near one packet + jitter margin instead of a fixed 100ms. ~1.5x the 20Hz NPC
-// firehose bytes — trivial at current scale, and the AOI/binary overhaul
-// (NETWORK_REMODEL.md) absorbs it as the world grows.
-const BROADCAST_HZ = 30;
+// NPC/enemy position broadcast rate. Raised 10→20→30→60Hz to MATCH the player
+// firehose: a 16ms packet interval gives the adaptive interp buffer ~4-5 packets of
+// headroom at an 80ms floor, so enemies stay smooth on a real WAN link instead of
+// underrunning (the "jumpy NPCs" report) — a 30Hz/60ms buffer was only ~1.8 packets.
+// ~2x the 30Hz NPC firehose bytes — still small at current scale, and the AOI/binary
+// overhaul (NETWORK_REMODEL.md) absorbs it as the world grows.
+const BROADCAST_HZ = 60;
 const ACTIVE_RADIUS = 512; // px from any player
 
 const CARDINALS = [
