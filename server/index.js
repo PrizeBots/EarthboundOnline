@@ -11,6 +11,17 @@ const express = require('express');
 const { WebSocketServer } = require('ws');
 const http = require('http');
 const path = require('path');
+
+// PROD: neuter fs.watchFile BEFORE the sim modules load. The codebase registers
+// ~15 dev-only hot-reload watchers (collision/doors/npcs/rooms/enemies/traffic/
+// gifts/shops/spawn) that poll files and, on a (possibly phantom) change, re-parse
+// the ENTIRE map + 1364-actor NPC set synchronously — stalling the event loop.
+// Nobody edits override files on a deployed server, so they're pure overhead +
+// a latency hazard in prod. Dev (NODE_ENV unset) keeps live hot-reload.
+if (process.env.NODE_ENV === 'production') {
+  require('fs').watchFile = () => {};
+}
+
 const { GameHost } = require('./gameHost');
 const { createStore } = require('./store');
 const { createAuthApi } = require('./authApi');
