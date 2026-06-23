@@ -36,7 +36,7 @@ function npcIdFromKey(k: string | undefined): number {
 // jitter while shaving 40ms of felt enemy lag vs the old 160ms (which, against
 // the old 10Hz/100ms stream, barely bracketed one packet and coasted constantly).
 // Separate instance so numeric NPC ids can't collide with player ids.
-const npcInterp = createInterpolator(120);
+const npcInterp = createInterpolator(100);
 
 export interface RawNPC {
   /** Stable placement identity (extract_npcs.py) — the overrides key. */

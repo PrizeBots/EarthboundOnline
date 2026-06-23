@@ -68,8 +68,10 @@ const DIR_VEC = [
   [DIAG, DIAG],
   [DIAG, -DIAG],
 ];
-const ATTACK_REACH = 14; // px the hitbox sits in front of the attacker's feet
-const ATTACK_HALF = 8; // half-size of the (square) attack hitbox
+const ATTACK_REACH = 18; // px the hitbox sits in front of the attacker's feet
+const ATTACK_HALF = 12; // half-size of the (square) attack hitbox — widened for
+// lag tolerance: you aim at the enemy's ~150ms-old displayed spot, so a bigger
+// box catches a fleeing enemy that has moved on by the time the server resolves.
 const HURT_W = 14; // enemy hurtbox, anchored on the feet (center-bottom)
 const HURT_H = 18;
 const HURT_OY = -18;
