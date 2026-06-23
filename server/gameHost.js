@@ -50,7 +50,10 @@ function moveSpeedFor(speedStat) {
 }
 const SQRT1_2 = Math.SQRT1_2;
 const ANIM_INTERVAL = 8; // frames between walk-cycle toggles (mirror Entity.ts)
-const SIM_TICK_MS = 33; // ~30Hz player-movement sim
+const SIM_TICK_MS = 16; // ~60Hz player-movement sim (raised from 33/30Hz so the
+// firehose matches the client's 60Hz input cadence — ~1 input drains per tick,
+// halving the per-packet interval so the adaptive interp buffer can sit tighter.
+// Safe: the step budget below is wall-clock based, so faster ticks ≠ faster travel.
 const MAX_INPUT_QUEUE = 240; // ~4s of 60fps inputs — drop overflow (anti-flood)
 // Speed authority (anti-speedhack / frame-rate fairness): one movement STEP is
 // one 60Hz frame of motion, so the sim applies at most this many steps per tick
@@ -58,16 +61,16 @@ const MAX_INPUT_QUEUE = 240; // ~4s of 60fps inputs — drop overflow (anti-floo
 // flooding inputs, can't move faster than real time — the server, paced by the
 // fixed SIM_TICK_MS interval, is the sole authority on travel-per-second.
 const SIM_FRAME_MS = 1000 / 60; // wall-clock duration of one movement step
-// Nominal steps an on-time tick earns: SIM_TICK_MS / SIM_FRAME_MS ≈ 2 @ 33ms.
+// Nominal steps an on-time tick earns: SIM_TICK_MS / SIM_FRAME_MS ≈ 1 @ 16ms.
 // The actual per-tick budget is time-based (see _simPlayers); this is the baseline.
-const NOMINAL_STEPS_PER_TICK = SIM_TICK_MS / SIM_FRAME_MS; // ≈ 2.0
+const NOMINAL_STEPS_PER_TICK = SIM_TICK_MS / SIM_FRAME_MS; // ≈ 0.96
 // Catch-up ceiling for the time-based step budget (see _simPlayers). A late tick
 // (timer slip / GC / busy prod CPU) earns extra steps so an honest 60Hz input
 // stream still drains in real time — but never more than this per tick, so a
 // resumed stall can't fling a player across the map and a flooding client still
 // can't out-run the wall clock. 3x a nominal tick (~100ms of motion) is enough to
 // absorb timer jitter while bounding a single catch-up burst.
-const MAX_STEPS_BURST = Math.max(2, Math.round(NOMINAL_STEPS_PER_TICK * 3)); // = 6 @ 33ms
+const MAX_STEPS_BURST = Math.max(2, Math.round(NOMINAL_STEPS_PER_TICK * 3)); // = 3 @ 16ms
 
 // Area-of-interest fan-out (NETWORK_REMODEL.md §4). ON by default now (built +
 // validated: smoke:net 7/7, ~9.4x bandwidth). Set AOI_ENABLED=0 to fall back to
