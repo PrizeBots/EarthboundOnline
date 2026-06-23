@@ -431,6 +431,107 @@ function recordPong(sentAt: number, srv?: number) {
   }
 }
 
+// Decode one binary firehose frame and fan it to the callbacks. Transport-agnostic
+// — fed by both ws.onmessage and the WebRTC DataChannel (Stage D). The delta
+// decoders mutate the shared baselines, so frames MUST stay ordered per transport;
+// we run a single channel at a time (WS until the DataChannel opens), never both.
+function handleBinaryFrame(buf: ArrayBuffer): void {
+  const tag = frameTag(buf);
+  if (tag === TAG.NPC_UPDATE) {
+    const u = decodeNpcUpdate(buf);
+    callbacks?.onNpcUpdate(u.npcs, frameClientTime(u.ts));
+  } else if (tag === TAG.NPC_DELTA) {
+    const u = decodeNpcDelta(buf, npcDeltaBase);
+    callbacks?.onNpcUpdate(u.npcs, frameClientTime(u.ts));
+  } else if (tag === TAG.PLAYER_MOVE) {
+    const m = decodePlayerMove(buf);
+    callbacks?.onPlayerMove(m.id, m.x, m.y, m.direction, m.frame, m.pose, frameClientTime(m.ts));
+  } else if (tag === TAG.PLAYER_DELTA) {
+    const m = decodePlayerDelta(buf, playerDeltaBase);
+    callbacks?.onPlayerMove(m.id, m.x, m.y, m.direction, m.frame, m.pose, frameClientTime(m.ts));
+  }
+}
+
+// --- WebRTC DataChannel transport (Stage D) ----------------------------------
+// Opt-in with `?rtc` (the server must also run with RTC_ENABLED=1). We offer an
+// unreliable/unordered channel for the firehose; a lost packet becomes one skipped
+// snapshot instead of a TCP head-of-line stall. Signaling rides the existing WS.
+// If anything fails (no answer, blocked UDP), the firehose just stays on the WS.
+const RTC_ENABLED = typeof location !== 'undefined' && /[?&]rtc\b/i.test(location.search);
+const RTC_ICE = 'stun:stun.l.google.com:19302';
+let rtcPc: RTCPeerConnection | null = null;
+let rtcDc: RTCDataChannel | null = null;
+let rtcRemoteSet = false;
+const rtcPendingIce: RTCIceCandidateInit[] = []; // candidates that arrived before the answer
+
+function wsSendJson(obj: unknown): void {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+/** Tear down any live peer (called before a (re)connect and on close). */
+function closeRtc(): void {
+  rtcRemoteSet = false;
+  rtcPendingIce.length = 0;
+  try {
+    rtcDc?.close();
+    rtcPc?.close();
+  } catch {
+    /* already gone */
+  }
+  rtcDc = null;
+  rtcPc = null;
+}
+
+/** Kick off the offer/answer handshake over the open WS. */
+async function setupRtc(): Promise<void> {
+  if (!RTC_ENABLED || typeof RTCPeerConnection === 'undefined') return;
+  closeRtc();
+  try {
+    const pc = new RTCPeerConnection({ iceServers: [{ urls: RTC_ICE }] });
+    rtcPc = pc;
+    const dc = pc.createDataChannel('firehose', { ordered: false, maxRetransmits: 0 });
+    dc.binaryType = 'arraybuffer';
+    dc.onmessage = (e) => handleBinaryFrame(e.data as ArrayBuffer);
+    dc.onopen = () => console.log('[rtc] DataChannel open — firehose on WebRTC');
+    dc.onclose = () => console.log('[rtc] DataChannel closed — firehose back on WS');
+    rtcDc = dc;
+    pc.onicecandidate = (e) => {
+      if (e.candidate)
+        wsSendJson({ type: 'rtc_ice', cand: e.candidate.candidate, mid: e.candidate.sdpMid });
+    };
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    wsSendJson({ type: 'rtc_offer', sdp: offer.sdp });
+  } catch (e) {
+    console.warn('[rtc] setup failed — staying on WS:', e);
+    closeRtc();
+  }
+}
+
+/** Handle the server's signaling replies relayed over the WS. */
+async function onRtcSignal(msg: {
+  type: string;
+  sdp?: string;
+  cand?: string;
+  mid?: string;
+}): Promise<void> {
+  if (!rtcPc) return;
+  try {
+    if (msg.type === 'rtc_answer' && msg.sdp) {
+      await rtcPc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+      rtcRemoteSet = true;
+      for (const c of rtcPendingIce.splice(0)) await rtcPc.addIceCandidate(c);
+    } else if (msg.type === 'rtc_ice' && msg.cand) {
+      const cand: RTCIceCandidateInit = { candidate: msg.cand, sdpMid: msg.mid };
+      // addIceCandidate before the remote description is set throws — buffer it.
+      if (rtcRemoteSet) await rtcPc.addIceCandidate(cand);
+      else rtcPendingIce.push(cand);
+    }
+  } catch (e) {
+    console.warn('[rtc] signaling error — staying on WS:', e);
+  }
+}
+
 /**
  * Optional signed-in join: load a persistent character by id, authenticated by
  * the session token. When present, the server ignores the anonymous sprite/name/
@@ -504,49 +605,24 @@ function openSocket() {
       ws!.send(JSON.stringify({ type: 'editor', on: true }));
     }
     startHeartbeat(); // begin app-level ping↔pong (RTT + dead-socket watchdog)
+    if (RTC_ENABLED) void setupRtc(); // opt-in WebRTC firehose; no-op if the server declines
   };
 
   ws.onmessage = (ev) => {
-    // Binary frame = the position firehose (BINARY_WIRE). Dispatch by tag and
-    // decode; control/event traffic stays JSON (a string) and falls through.
+    // Binary frame = the position firehose (BINARY_WIRE). The same frames arrive on
+    // either transport (WS or the Stage-D WebRTC DataChannel) and decode identically.
     if (typeof ev.data !== 'string') {
-      const buf = ev.data as ArrayBuffer;
-      const tag = frameTag(buf);
-      if (tag === TAG.NPC_UPDATE) {
-        const u = decodeNpcUpdate(buf);
-        callbacks?.onNpcUpdate(u.npcs, frameClientTime(u.ts));
-      } else if (tag === TAG.NPC_DELTA) {
-        const u = decodeNpcDelta(buf, npcDeltaBase);
-        callbacks?.onNpcUpdate(u.npcs, frameClientTime(u.ts));
-      } else if (tag === TAG.PLAYER_MOVE) {
-        const m = decodePlayerMove(buf);
-        callbacks?.onPlayerMove(
-          m.id,
-          m.x,
-          m.y,
-          m.direction,
-          m.frame,
-          m.pose,
-          frameClientTime(m.ts)
-        );
-      } else if (tag === TAG.PLAYER_DELTA) {
-        const m = decodePlayerDelta(buf, playerDeltaBase);
-        callbacks?.onPlayerMove(
-          m.id,
-          m.x,
-          m.y,
-          m.direction,
-          m.frame,
-          m.pose,
-          frameClientTime(m.ts)
-        );
-      }
+      handleBinaryFrame(ev.data as ArrayBuffer);
       return;
     }
     const msg = JSON.parse(ev.data);
     switch (msg.type) {
       case 'pong':
         recordPong(msg.t, msg.srv);
+        break;
+      case 'rtc_answer':
+      case 'rtc_ice':
+        void onRtcSignal(msg);
         break;
       case 'welcome':
         callbacks?.onWelcome(msg.playerId, msg.players);
@@ -772,6 +848,7 @@ function openSocket() {
 
   ws.onclose = () => {
     stopHeartbeat(); // no live socket to ping; onopen restarts it after reconnect
+    closeRtc(); // drop the WebRTC peer; setupRtc re-runs on the next open
     if (closedByUs || !joinArgs) return; // deliberate disconnect — stay down
     // Unexpected drop: retry with exponential backoff (1s, 2s, 4s … capped 8s)
     // so a server restart or network blip transparently re-joins. The server

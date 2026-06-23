@@ -84,6 +84,11 @@ const NET_DEBUG = process.env.NET_DEBUG === '1';
 // uint32 wire field wraps after ~49 days of uptime — harmless (the offset re-syncs).
 const { performance: perfHooks } = require('perf_hooks');
 const srvNow = () => Math.round(perfHooks.now());
+// WebRTC unreliable DataChannel for the firehose (Stage D). OFF by default — the
+// WS path is unchanged until a client opts in with `?rtc` AND the server runs with
+// RTC_ENABLED=1. Falls back to WS per-frame whenever a peer's channel isn't open.
+const RTC_ENABLED = process.env.RTC_ENABLED === '1';
+const rtc = require('./rtc');
 // Binary + delta wire format for the position firehose (§5). ON by default now;
 // set BINARY_WIRE=0 to fall back to JSON. Independent of AOI.
 const BINARY_WIRE = process.env.BINARY_WIRE !== '0';
@@ -1014,17 +1019,23 @@ class GameHost {
   // keyframes next tick (safe, since a missing prev always encodes as KEY).
   _sendNpcUpdate(entry, npcs, over, ts = srvNow()) {
     let msg;
-    if (BINARY_WIRE) {
+    if (BINARY_WIRE && entry._rtc && entry._rtc.isOpen()) {
+      // Unreliable RTC channel: send ABSOLUTE frames (no baseline). A dropped
+      // packet just misses one position tick; delta-coding would desync forever.
+      msg = wire.encodeNpcUpdate(npcs, over, ts);
+      entry._rtc.send(msg);
+    } else if (BINARY_WIRE) {
       let base = entry._npcBase;
       if (!base) base = entry._npcBase = new Map();
       if (base.size > 4096) base.clear();
       msg = wire.encodeNpcDelta(npcs, base, over, ts);
+      if (entry._ws && entry._ws.readyState === 1) entry._ws.send(msg);
     } else {
       msg = JSON.stringify(
         over > 0 ? { type: 'npc_update', npcs, over, ts } : { type: 'npc_update', npcs, ts }
       );
+      entry._ws.send(msg); // JSON control path stays reliable on the WS
     }
-    entry._ws.send(msg);
     this._recordSend('npc_update', msg.length, 1);
   }
 
@@ -1040,7 +1051,7 @@ class GameHost {
       let n = 0;
       for (const [, entry] of this.players) {
         if (entry._ws && entry._ws.readyState === 1) {
-          entry._ws.send(buf);
+          this.sendBin(entry, buf);
           n++;
         }
       }
@@ -1107,6 +1118,15 @@ class GameHost {
     return this.npcSim.aoiSnapshot((x, y) => x >= minX && x < maxX && y >= minY && y < maxY);
   }
 
+  // Send a binary firehose frame to one client: over its unreliable WebRTC
+  // DataChannel when open (no TCP head-of-line blocking), else the WebSocket. The
+  // delta/seq codec tolerates the occasional dropped DataChannel frame; control
+  // traffic never comes through here, so it stays reliable on the WS.
+  sendBin(entry, buf) {
+    if (entry._rtc && entry._rtc.isOpen()) entry._rtc.send(buf);
+    else if (entry._ws && entry._ws.readyState === 1) entry._ws.send(buf);
+  }
+
   // --- AOI player spawn/despawn (enter/leave) — NETWORK_REMODEL.md §4.5 -------
   // Send `data` to one player's socket. Used for the targeted spawn/despawn that
   // replace the global player_join/player_leave broadcasts when AOI is on.
@@ -1126,6 +1146,7 @@ class GameHost {
     if (!p) return null;
     const {
       _ws,
+      _rtc,
       _inputs,
       _seen,
       _seenBy,
@@ -1188,7 +1209,7 @@ class GameHost {
       for (const [pid, e] of this.players) {
         if (pid === id) continue;
         if (e._ws && e._ws.readyState === 1) {
-          e._ws.send(msg);
+          this.sendBin(e, msg);
           n++;
         }
       }
@@ -1223,11 +1244,18 @@ class GameHost {
     for (const viewer of seenBy) {
       const v = this.players.get(viewer);
       if (!v || !v._ws || v._ws.readyState !== 1) continue;
-      let base = v._pmBase;
-      if (!base) base = v._pmBase = new Map();
-      if (base.size > 4096) base.clear();
-      const buf = wire.encodePlayerDelta(data, base, ts);
-      v._ws.send(buf);
+      let buf;
+      if (v._rtc && v._rtc.isOpen()) {
+        // Absolute player_move over the unreliable channel (drop-tolerant).
+        buf = wire.encodePlayerMove(data, ts);
+        v._rtc.send(buf);
+      } else {
+        let base = v._pmBase;
+        if (!base) base = v._pmBase = new Map();
+        if (base.size > 4096) base.clear();
+        buf = wire.encodePlayerDelta(data, base, ts);
+        v._ws.send(buf);
+      }
       n++;
       bytes += buf.length;
     }
@@ -2315,6 +2343,8 @@ class GameHost {
 
     ws.on('close', () => {
       console.log(`Player ${playerId} disconnected`);
+      const closing = this.players.get(playerId);
+      if (closing && closing._rtc) closing._rtc.close(); // tear down the WebRTC peer
       this._saveCharacter(playerId); // persist final state (signed-in only)
       this.saves.delete(playerId);
       this.flags.delete(playerId);
@@ -2346,6 +2376,50 @@ class GameHost {
         } catch {
           /* socket already gone */
         }
+        break;
+      }
+      // --- WebRTC signaling (Stage D) — relayed over the reliable WS ----------
+      // The client is the offerer; we lazily create the server peer on its first
+      // offer, answer + trickle ICE back, and route the firehose to the channel
+      // once open (sendBin). Ignored unless RTC_ENABLED — clients that send these
+      // with RTC off simply get no answer and stay on the WS.
+      case 'rtc_offer': {
+        if (!RTC_ENABLED || !rtc.rtcAvailable()) break;
+        const e = this.players.get(playerId);
+        if (!e) break;
+        if (!e._rtc) {
+          e._rtc = rtc.createServerPeer(
+            playerId,
+            (sig) => {
+              try {
+                if (e._ws && e._ws.readyState === 1) e._ws.send(JSON.stringify(sig));
+              } catch {
+                /* ws gone mid-handshake */
+              }
+            },
+            {
+              onOpen: () => console.log(`[rtc] ${playerId} DataChannel open`),
+              onClose: () => {
+                console.log(`[rtc] ${playerId} DataChannel closed → WS fallback`);
+                // Drop the per-client delta baselines so the first WS frames after
+                // fallback are KEYFRAMES — absolute, so they self-correct whatever
+                // the client's baseline drifted to while we were sending RTC.
+                const ee = this.players.get(playerId);
+                if (ee) {
+                  ee._npcBase = null;
+                  ee._pmBase = null;
+                }
+              },
+            }
+          );
+        }
+        e._rtc.onOffer(msg.sdp);
+        break;
+      }
+      case 'rtc_ice': {
+        if (!RTC_ENABLED) break;
+        const e = this.players.get(playerId);
+        if (e && e._rtc && typeof msg.cand === 'string') e._rtc.onCandidate(msg.cand, msg.mid);
         break;
       }
       case 'join': {

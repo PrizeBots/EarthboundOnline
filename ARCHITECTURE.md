@@ -719,7 +719,8 @@ loads from `overrides/combat_juice.json` and is dialed in real time by the dev
 "dumb": it sends INPUTS, never positions**, and the **server owns every position**.
 Each moving frame the client emits `{type:'input', seq, dx, dy}` (`Network.sendInput`)
 and PREDICTS locally (`Player.applyInput` — the movement step, an exact mirror of the
-server's `gameHost._stepPlayer`). The server's 30Hz sim (`_simPlayers`) drains the
+server's `gameHost._stepPlayer`). The server's ~60Hz sim (`_simPlayers`, `SIM_TICK_MS=16`,
+matching the client's 60Hz input cadence) drains the
 queue, steps each player against authoritative collision (`npcSim.playerBlocked` =
 walls + weight-class solid actors, mirroring `Player.blocked`), and replies
 `{type:'pos', x, y, seq}`; the client **reconciles** (`Player.reconcile`: snap to the
@@ -731,7 +732,20 @@ client-side (`Player.rideStep`, bypasses collision); `Player.riding` suppresses
 reconciliation for the glide, and at ride end `sendRideWarp(x,y)` resyncs the server
 (`case 'ride_warp'`, gated by `npcSim.stairAt` = "actually on a stair", same trust as
 `move`/knockback). Event warps are server-initiated (`warpEventPlayer`). **Remote players + NPCs/enemies/cars** are snapshot-interpolated
-~100-160ms back (`RemoteInterp.ts`). Server-authoritative REACTIONS to your actions (a
+(`RemoteInterp.ts`) on a **server-time playout clock**: every firehose frame carries the
+server's send-time (trailing `u32` in `wire.js`/`wire.ts`), the client estimates the
+client↔server clock offset from ping/pong (`Network.recordPong`, `srv` field), and the
+interpolator renders a cursor anchored at `newest.t − delay` advanced by real elapsed
+time — so arrival JITTER no longer warps playback (it rode local arrival time before).
+The `delay` is **adaptive** (`adaptiveDelay` = `clamp(packetInterval + 2·jitter, floor,
+ceil)`), settling near the floor (~40ms players / ~60ms NPC) on a clean link instead of a
+fixed 100ms (toggle off via `SERVER_TIME_PLAYOUT`). **Transport (Stage D, opt-in):** the
+firehose can ride a WebRTC **unreliable/unordered DataChannel** (`server/rtc.js` +
+`Network.setupRtc`, `node-datachannel`) instead of the WS, so a lost packet is one skipped
+snapshot, not a TCP head-of-line stall. Over RTC the server sends **absolute** frames
+(`encodeNpcUpdate`/`encodePlayerMove`, drop-tolerant); deltas stay on the reliable WS, and
+an RTC→WS fallback clears the per-client baseline so the next WS frame re-keyframes. Gated
+by `RTC_ENABLED=1` (server) + `?rtc` (client); off → unchanged WS path. Server-authoritative REACTIONS to your actions (a
 walk-push, a melee knockback) are **predicted then reconciled** via a `predOff`
 displacement (`applyPredOffset`/`injectPredOffset`, decayed by `PRED_DECAY`) — injectors
 (`predictPlayerPush`/`predictMeleeKnockback`/`Game.predictPushRemotePlayers`/

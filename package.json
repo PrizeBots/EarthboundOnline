@@ -15,6 +15,7 @@
     "test:server": "node server/gameHost.test.js && node server/combat.test.js && node server/loot_carry.test.js && node server/store.test.js && node server/authApi.test.js && node server/charStats.test.js && node server/persistence.test.js",
     "test:unit": "vitest run",
     "smoke:net": "node server/smoke_aoi.js",
+    "smoke:rtc": "node server/smoke_rtc.js",
     "measure:net": "node server/measure_net.js",
     "test": "npm run test:unit && npm run test:server",
     "verify": "npm run typecheck && npm run lint && npm run check:server && npm test",
@@ -62,6 +63,7 @@
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.11.1",
     "express": "^5.2.1",
+    "node-datachannel": "^0.32.3",
     "pg": "^8.13.1",
     "ws": "^8.19.0",
     "zod": "^4.4.3"
