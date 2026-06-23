@@ -63,9 +63,24 @@ it matters), built so it still maps cleanly onto the long-term SNES/ESP32 port.
   - [x] Crowd aggregate render: server emits `crowd` (player overflow) on change
         from `_refreshAoi` (AOI-only); client `onCrowd` → "+N nearby" HUD badge
         during gameplay (`Game.ts`). Throttled, clears at 0. tsc clean; tested.
-  - [ ] **Next:** flip `AOI_ENABLED` on; verify gameplay parity + measure win with
-        `NET_DEBUG` (recipe in loadtest.js header: N bots AOI off vs on, compare downlink).
-        ⚠ NEEDS USER GO-AHEAD — changes live behavior.
+  - [x] `AOI_ENABLED` flipped ON by default (prod). Gameplay-parity defects this
+        exposed (all latency/AOI-only, hence "fine locally, broken in prod") FIXED:
+    - [x] **Teleports left AOI stale → empty buildings.** `use_door` / `ride_warp` /
+          `warpEventPlayer` set x/y directly, never through `_simPlayers`' `aoi.update`,
+          so the anchor stayed in the OLD cell: the NPC firehose kept filtering for
+          where the player WAS, and since `npc_update` is moved-only, the destination's
+          STATIONARY actors (and every enemy's one-shot activation `npc_hp`) never
+          arrived — you warped into a building and it was empty. New `_warpResnapshot`
+          re-anchors + resends the destination block's NPC positions + HP + equips
+          (same payload `welcome` uses) + drops the per-socket delta baseline. Proven:
+          warping onto an enemy now resends its activation HP; without it the player
+          got 0 npc rows for the area.
+    - [x] **`_refreshAoi` was one-directional → newcomers invisible to peers.** It
+          spawned peers TO the (re)appearing player but never the player to them (that
+          waited on the 4Hz pass). New `_refreshAoiReciprocal` re-evaluates every peer
+          in the block so join/warp spawns both ways at once. Used on join + teleport.
+  - [ ] **Still TODO:** the broader gameplay-parity sweep + `NET_DEBUG` bandwidth
+        measure (recipe in loadtest.js header: N bots AOI off vs on, compare downlink).
 - [~] **Phase 2 — binary + delta wire format** (§5 matrix).
   - [x] Binary codec for the `npc_update` firehose: `server/wire.js` + mirrored
         `src/engine/wire.ts` (hand-packed LE, half-pixel uint16 coords, uint32 id).

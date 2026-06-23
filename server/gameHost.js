@@ -1287,6 +1287,51 @@ class GameHost {
     }
   }
 
+  // `_refreshAoi(id)` is one-directional: it updates id's OWN view (spawns peers
+  // to id, registers id in their reverse index for move routing) but does NOT
+  // spawn id TO those peers — that waited for each peer's own 4Hz relevance pass,
+  // so a freshly joined/warped player stayed invisible to everyone for up to a
+  // tick (the "player only appears after they move" bug, and the asymmetric
+  // join in the host tests). This reciprocal form also re-evaluates every peer in
+  // id's block so the (re)appearing player spawns to them immediately, both ways.
+  // No-op unless AOI_ENABLED. Use on join + every teleport; the 4Hz pass remains
+  // the backstop for peers outside id's block (e.g. the area id just LEFT).
+  _refreshAoiReciprocal(id) {
+    this._refreshAoi(id);
+    if (!AOI_ENABLED) return;
+    for (const other of this.aoi.aroundId(id)) {
+      if (other !== id && this.players.has(other)) this._refreshAoi(other);
+    }
+  }
+
+  // After a TELEPORT (door / escalator exit / event warp) re-establish the
+  // player's AOI state at the new spot. A teleport sets x/y directly — it never
+  // flows through _simPlayers' aoi.update — so without this the anchor stays in
+  // the OLD cell: the NPC firehose keeps filtering for where the player WAS, and
+  // since npc_update is moved-only, the new area's STATIONARY actors (and every
+  // enemy's one-shot activation HP) never arrive — you warp into a building and
+  // it's empty (the prod "NPCs vanish indoors" bug; masked locally where AOI is
+  // off). We re-anchor, resend the new block's NPC positions + HP + held items as
+  // a one-shot snapshot (same payload `welcome` uses), drop the stale per-socket
+  // delta baseline so the next deltas key cleanly, and refresh player visibility
+  // both ways. No-op unless AOI_ENABLED.
+  _warpResnapshot(playerId, entry) {
+    if (!AOI_ENABLED) {
+      this.aoi.update(playerId, entry.x, entry.y); // keep the grid honest even off
+      return;
+    }
+    this.aoi.update(playerId, entry.x, entry.y);
+    const snap = this._aoiJoinSnapshot(playerId, entry);
+    if (snap.npcs && snap.npcs.length)
+      this._sendTo(playerId, { type: 'npc_update', npcs: snap.npcs });
+    if (snap.npcHps && snap.npcHps.length)
+      this._sendTo(playerId, { type: 'npc_hp', hps: snap.npcHps });
+    if (snap.npcEquips && snap.npcEquips.length)
+      this._sendTo(playerId, { type: 'npc_equip', equips: snap.npcEquips });
+    if (entry._npcBase) entry._npcBase.clear(); // re-keyframe deltas for the new area
+    this._refreshAoiReciprocal(playerId);
+  }
+
   // Tally one logical broadcast that hit `recipients` sockets (Phase-0 metrics).
   _recordSend(type, bytesPerMsg, recipients) {
     if (!recipients) return;
@@ -1347,6 +1392,8 @@ class GameHost {
       dir: entry.direction,
       eventId: eventId || null,
     });
+    // Re-anchor AOI + resnapshot the event room (it's a teleport like a door).
+    this._warpResnapshot(id, entry);
   }
 
   // Recompute the combat bonuses from a player's equipped gear: weapon offense
@@ -1720,7 +1767,14 @@ class GameHost {
     // clamp a single tick's catch-up to MAX_STEPS_BURST, and drop surplus past the
     // clamp — mirroring the client's own accumulator (Game.ts). Steps stay bounded
     // by the wall clock, so a high-refresh or flooding client can't speedhack.
-    const dt = Math.min(250, this._lastSimAt ? now - this._lastSimAt : SIM_TICK_MS);
+    // Floor at one frame so a tick always credits at least ~1 step's worth of
+    // time (prod ticks are ≥SIM_TICK_MS apart, so the floor is inert there; it
+    // only matters when _simPlayers is driven back-to-back, e.g. the host tests).
+    // Cap at 250ms so a long stall resumes at real time, not a teleport.
+    const dt = Math.min(
+      250,
+      Math.max(SIM_FRAME_MS, this._lastSimAt ? now - this._lastSimAt : SIM_TICK_MS)
+    );
     this._lastSimAt = now;
     this._stepAccum = (this._stepAccum || 0) + dt / SIM_FRAME_MS;
     let stepBudget = Math.floor(this._stepAccum);
@@ -2403,9 +2457,10 @@ class GameHost {
         );
 
         // Tell everyone else about the new player. AOI on: targeted spawn to
-        // (and from) in-range peers only. AOI off: legacy global join broadcast.
+        // (and from) in-range peers only — reciprocal so existing peers see the
+        // newcomer at once, not a tick later. AOI off: legacy global join broadcast.
         if (AOI_ENABLED) {
-          this._refreshAoi(playerId);
+          this._refreshAoiReciprocal(playerId);
         } else {
           const { _ws, ...publicData } = this.players.get(playerId);
           publicData.statuses = status.activeStatuses(this.players.get(playerId), Date.now());
@@ -2614,6 +2669,10 @@ class GameHost {
           },
           playerId
         );
+        // Re-anchor AOI + resend the destination's NPC/HP snapshot so the building
+        // we just entered isn't empty (stationary indoor actors never ride the
+        // moved-only npc_update). Also spawns us to / from peers at the new spot.
+        this._warpResnapshot(playerId, entry);
         break;
       }
 
@@ -2668,6 +2727,9 @@ class GameHost {
           },
           playerId
         );
+        // Escalator ride can cross floors/cells — re-anchor AOI + resnapshot the
+        // landing area, same as a door warp.
+        this._warpResnapshot(playerId, entry);
         break;
       }
 

@@ -29,6 +29,10 @@ class FakeSocket {
     this.readyState = 1; // OPEN — GameHost only broadcasts to readyState === 1
   }
   send(str) {
+    // BINARY_WIRE (on by default) ships position frames as binary Buffers; these
+    // tests assert on the JSON control messages only (the wire codec has its own
+    // round-trip + smoke tests), so skip anything that isn't a JSON string.
+    if (typeof str !== 'string') return;
     this.sent.push(JSON.parse(str));
   }
   on(ev, cb) {
@@ -90,20 +94,35 @@ host.handleConnection(bob);
 bob.recv({ type: 'join', name: 'Bob', spriteGroupId: 2 });
 const bobId = bob.last('welcome').playerId;
 
-check('second join → first player gets player_join', () => {
+// AOI model: the welcome roster is always empty; peers arrive as targeted
+// player_join messages, sent reciprocally on join (both ways, same tick) so
+// nobody is invisible until the next relevance pass. (Alice and Bob spawn in the
+// same cell here, so each is in the other's AOI block.)
+check('second join → first player gets a player_join for the newcomer', () => {
   const pj = alice.last('player_join');
   assert(pj, 'Alice got no player_join');
   assert.strictEqual(pj.player.name, 'Bob');
 });
 
-check('joining player does NOT get its own player_join', () => {
-  assert.strictEqual(bob.ofType('player_join').length, 0);
+check('joining player is spawned in-range peers, but never itself', () => {
+  const joins = bob.ofType('player_join');
+  assert(
+    joins.some((m) => m.player.name === 'Alice'),
+    'Bob should get a player_join for the in-range Alice'
+  );
+  assert(
+    joins.every((m) => m.player.id !== bobId),
+    'a player must never get a player_join for itself'
+  );
 });
 
-check("Bob's welcome roster includes Alice", () => {
+check('welcome roster is empty under AOI (peers arrive via player_join)', () => {
   const w = bob.last('welcome');
-  assert.strictEqual(w.players.length, 1);
-  assert.strictEqual(w.players[0].name, 'Alice');
+  assert.strictEqual(w.players.length, 0, 'AOI welcome roster should be empty');
+  assert(
+    bob.ofType('player_join').some((m) => m.player.name === 'Alice'),
+    'Alice should reach Bob as a targeted player_join, not in the roster'
+  );
 });
 
 alice.clear();
@@ -179,8 +198,22 @@ check('unknown message type does not throw', () => {
 // ============================ 2. Economy ============================
 // Starter gear (DEV grants): Cracked bat (weapon), Cheap bracelet (arms), Cookie.
 
-const BAT = '17'; // weapon, dev-granted on join
-const COOKIE = '88'; // consumable, dev-granted on join
+const BAT = '17'; // a weapon (equip.slot === 'weapon') in the real catalog
+const COOKIE = '88'; // a heal consumable (heal > 0, no equip) in the real catalog
+
+// Players now START EMPTY (shops.js: startingInventory = [], STARTING_MONEY = 0 —
+// the old dev grant of a bat/bracelet/cookie was removed). These tests exercise
+// the equip/use/buy/sell LOGIC, so grant what they need directly on the
+// authoritative record (the same record the tests poke below). Guard the ids in
+// case the catalog ever drops them.
+(() => {
+  const p = host.players.get(aliceId);
+  assert(host.GOODS[BAT] && host.GOODS[BAT].equip && host.GOODS[BAT].equip.slot === 'weapon');
+  assert(host.GOODS[COOKIE] && !host.GOODS[COOKIE].equip && host.GOODS[COOKIE].heal > 0);
+  if (!p.inventory.includes(BAT)) p.inventory.push(BAT);
+  if (!p.inventory.includes(COOKIE)) p.inventory.push(COOKIE);
+  p.money = 100000; // ample on-hand cash for the buy/sell tests
+})();
 
 check('equip owned weapon → equipped set + weapon LEAVES Goods', () => {
   alice.clear();
@@ -765,23 +798,30 @@ check('poison ticks HP down over time (DoT)', () => {
   assert(alice.ofType('player_hp').length > 0, 'a DoT tick broadcasts player_hp');
 });
 
-check('a lethal hit DOWNS the player (KO), clearing statuses + broadcasting downed', () => {
+check('a lethal hit starts the mortal roll; the roll-out DOWNS the player (KO)', () => {
+  // A lethal blow no longer KOs instantly — it begins the EB rolling-HP "Mortal
+  // Damage" window (player stays UP and can heal to survive). Only when the roll
+  // runs out (_mortalExpired) are they laid out into the downed/KO state.
   const p = host.players.get(aliceId);
   p.hp = 5;
   p.statuses = {};
   statusMod.applyStatus(p, statusMod.STATUS.PARALYSIS, Date.now());
   alice.clear();
-  host.damagePlayer(aliceId, 9999); // lethal → downed (not instant respawn)
-  const after = host.players.get(aliceId);
-  assert.strictEqual(after.downed, true, 'lethal hit enters the downed/KO state');
-  assert.strictEqual(Object.keys(after.statuses).length, 0, 'KO wipes statuses');
+  host.damagePlayer(aliceId, 9999); // lethal → mortal roll (not instant KO)
+  assert.strictEqual(p.dying, true, 'a lethal hit starts the rolling-HP mortal window');
+  assert(alice.last('player_mortal'), 'broadcasts player_mortal (the roll)');
+  host._mortalExpired(aliceId, p); // roll ran out with no heal → lay them out
+  assert.strictEqual(p.downed, true, 'roll expiry enters the downed/KO state');
+  assert.strictEqual(Object.keys(p.statuses).length, 0, 'KO wipes statuses');
   const ps = alice.last('player_status');
   assert(ps && ps.statuses.length === 0, 'empty status set broadcast on KO');
   assert(alice.last('player_downed'), 'broadcasts player_downed');
   // Restore Alice to a clean ALIVE state for the PSI tests below.
-  after.downed = false;
-  after.downedUntil = 0;
-  after.hp = after.maxHp;
+  p.downed = false;
+  p.downedUntil = 0;
+  p.dying = false;
+  p.dyingUntil = 0;
+  p.hp = p.maxHp;
 });
 
 // ===================== 4d. PSI casting =====================
@@ -859,7 +899,8 @@ check('a revive ITEM stands a downed ally back up (in range) + is consumed', () 
   a.hp = a.maxHp;
   a.x = b.x = 100;
   a.y = b.y = 100; // co-located → within REVIVE_RANGE
-  host.damagePlayer(bobId, 9999); // Bob → downed
+  host.damagePlayer(bobId, 9999); // lethal → mortal roll
+  host._mortalExpired(bobId, b); // roll out → downed (the revive target state)
   assert.strictEqual(b.downed, true, 'Bob is downed');
   // Find a revive item id from the catalog (Horn of life = 130) and give it to Alice.
   const reviveId = Object.keys(host.GOODS).find((id) => (host.GOODS[id].revive | 0) > 0);
@@ -877,7 +918,9 @@ check('a revive item is REFUSED (not consumed) when no downed ally is in range',
   const b = host.players.get(bobId);
   a.hp = a.maxHp;
   b.downed = false;
-  b.hp = b.maxHp; // nobody downed
+  b.dying = false;
+  b.dyingUntil = 0;
+  b.hp = b.maxHp; // nobody downed (and not mid-roll)
   const reviveId = Object.keys(host.GOODS).find((id) => (host.GOODS[id].revive | 0) > 0);
   a.inventory.push(reviveId);
   alice.clear();
