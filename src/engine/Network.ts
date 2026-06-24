@@ -100,6 +100,9 @@ type NetworkCallback = {
   /** Restore the saved quick-select hotbar (welcome only): per slot a weapon /
    *  usable item id, a 'psi:<id>' tag, or null. */
   onHotbar?: (hotbar: (string | null)[]) => void;
+  /** The local player's "favorite thing" (welcome only) — names the PSI ????
+   *  special "PSI <favorite thing>" (blank → "Rockin'"). Display-only flavor. */
+  onFavoriteThing?: (thing: string) => void;
   /** The local player's bank/ATM balance (welcome snapshot + deltas). */
   onBank?: (amount: number) => void;
   /**
@@ -648,6 +651,8 @@ function openSocket() {
         // unlike the weapon — can't be re-derived from the equip set). After
         // onEquipped so the saved layout wins over the weapon auto-placement.
         if (Array.isArray(msg.hotbar)) callbacks?.onHotbar?.(msg.hotbar);
+        // EB naming flavor — names the "PSI ????" special (anonymous joins omit it).
+        if (typeof msg.favoriteThing === 'string') callbacks?.onFavoriteThing?.(msg.favoriteThing);
         // Restore saved player flags (empty for anonymous joins).
         callbacks?.onFlags?.(Array.isArray(msg.flags) ? msg.flags : []);
         // Restore PK state + remaining lock (a player who logged out PK stays PK).
@@ -1115,7 +1120,11 @@ export function mountNetDebug(): void {
   el.style.cssText =
     'position:fixed;right:4px;top:4px;z-index:99999;margin:0;padding:6px 8px;' +
     'background:rgba(0,0,0,.78);color:#3cd0ff;font:11px/1.35 monospace;' +
-    'white-space:pre;pointer-events:none;border-radius:4px;text-align:right;';
+    // pointer-events:auto + user-select:text make the readout selectable/copyable
+    // (left-aligned so copied lines aren't ragged). Tiny corner box, so capturing
+    // clicks there is fine for a debug overlay.
+    'white-space:pre;pointer-events:auto;user-select:text;-webkit-user-select:text;' +
+    'cursor:text;border-radius:4px;text-align:left;';
   document.body.appendChild(el);
   const tick = () => {
     const s = getNetStats();
