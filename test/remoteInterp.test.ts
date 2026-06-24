@@ -3,8 +3,13 @@
 // snapshot timeline and the (injected) wall clock — never on when packets actually
 // arrived. So network arrival jitter (and even reordering) cannot warp playback.
 // We can't eyeball two browser tabs in CI, but we CAN prove that invariant here.
-import { describe, it, expect } from 'vitest';
-import { createInterpolator, type InterpTarget } from '../src/engine/RemoteInterp';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  createInterpolator,
+  applyPredOffset,
+  injectPredOffset,
+  type InterpTarget,
+} from '../src/engine/RemoteInterp';
 import { Direction } from '../src/types';
 
 type Snap = { t: number; x: number };
@@ -70,5 +75,57 @@ describe('RemoteInterp server-time playout', () => {
     // snapping to an endpoint.
     expect(out[0]).toBeGreaterThan(0);
     expect(out[0]).toBeLessThan(11);
+  });
+});
+
+// The prod knockback fix: the predicted lead must HOLD at the target until the
+// authoritative slide arrives (any latency), instead of decaying on a blind timer
+// that snaps back early in prod (the "snap flash"). Proven headless by mocking the
+// clock and feeding the authoritative position in by hand.
+describe('predicted-offset reconciliation (knockback)', () => {
+  it('holds the predicted lead until authoritative catches up — no snap-back', () => {
+    let now = 1000;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const t: { x: number; y: number; predOffX?: number } = { x: 0, y: 0 };
+
+    injectPredOffset(t, 1, 0, 10, 100); // predict a 10px knockback in +x
+    expect(t.x).toBe(10); // lurches to the target immediately
+
+    // Frame with authoritative still STALE (interpolate would reset x to 0).
+    t.x = 0;
+    t.y = 0;
+    applyPredOffset(t);
+    expect(t.x).toBeCloseTo(10, 5); // held at the predicted spot, not snapped back
+
+    // Authoritative slide arrives halfway (auth = 5): rendered must STILL hold at 10.
+    t.x = 5;
+    applyPredOffset(t);
+    expect(t.x).toBeCloseTo(10, 5);
+
+    // Authoritative fully arrives (auth = 10): lead is spent, they coincide.
+    t.x = 10;
+    applyPredOffset(t);
+    expect(t.x).toBeCloseTo(10, 5);
+    expect(Math.abs(t.predOffX ?? 0)).toBeLessThan(0.1);
+    vi.restoreAllMocks();
+  });
+
+  it('bleeds off a mispredict (no knockback ever lands) after the hold window', () => {
+    let now = 1000;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const t: { x: number; y: number } = { x: 0, y: 0 };
+
+    injectPredOffset(t, 1, 0, 10, 100);
+    t.x = 0;
+    applyPredOffset(t);
+    expect(t.x).toBeCloseTo(10, 5); // within the hold window the lead persists
+
+    now = 1000 + 300; // past PRED_HOLD_MS, authoritative never moved → mispredict
+    for (let i = 0; i < 80; i++) {
+      t.x = 0;
+      applyPredOffset(t);
+    }
+    expect(t.x).toBeLessThan(1); // bled off, entity no longer floats shoved
+    vi.restoreAllMocks();
   });
 });

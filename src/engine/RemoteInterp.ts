@@ -86,29 +86,72 @@ export interface InterpTarget {
 // melee knockback) only reaches us a broadcast + interp-delay later (~150-250ms)
 // — long enough to feel "loose." So we predict it locally: nudge the target NOW
 // via a `predOff` displacement layered on top of its interpolated authoritative
-// position, then DECAY that offset every frame so the authoritative stream
-// reconciles it away. Equal-handed: with no prediction predOff is 0 and these
-// are no-ops. Used for NPCs (NPCManager) and remote players (Game).
-const PRED_DECAY = 0.8; // per-frame bleed-off of the predicted lead (~5 frames)
+// position. Used for NPCs (NPCManager) and remote players (Game).
+//
+// HOW THE LEAD IS RECONCILED AWAY: we do NOT bleed the offset off on a blind frame
+// timer. That worked at ~0 latency (the authoritative slide arrived within a frame)
+// but in PROD the slide is ~150ms+ behind, so the lead decayed back to the STALE
+// position before the real knockback landed — lurch, snap back, re-slide: the
+// "snap flash." Instead we CANCEL the lead by exactly how far the authoritative
+// stream has caught up toward it (its position moving along the lead direction as
+// the knockback propagates into the snapshots), so the entity HOLDS at the
+// predicted spot until the server arrives, then they coincide. Self-tuning to any
+// latency. A slow hold-then-decay backstop clears a MISPREDICT (a missed swing
+// whose knockback never comes) so nothing floats displaced forever.
+const PRED_HOLD_MS = 250; // hold the lead this long (covers reconcile latency) before…
+const PRED_SAFETY_DECAY = 0.85; // …bleeding off a mispredict that never got caught up to
 
-/** Anything we can predict a displacement on: a render target with an offset. */
+/** Anything we can predict a displacement on: a render target with an offset.
+ *  The `_pred*` fields are internal reconciliation bookkeeping. */
 export interface Predicted {
   x: number;
   y: number;
   predOffX?: number;
   predOffY?: number;
+  _predAuthX?: number; // last frame's pure authoritative pos (for catch-up reconcile)
+  _predAuthY?: number;
+  _predHoldUntil?: number; // performance.now() deadline before the safety decay starts
 }
 
-/** Add the live predicted offset on top of `t`'s (already-interpolated) position,
- *  then decay it toward zero. Call once per frame AFTER interpolation. */
+/** Layer the predicted lead on `t`'s (already-interpolated) authoritative position,
+ *  cancelling the part the authoritative stream has caught up to. Call once per
+ *  frame AFTER interpolation (which sets t.x/t.y to the pure authoritative pos). */
 export function applyPredOffset(t: Predicted): void {
-  if (!t.predOffX && !t.predOffY) return;
-  t.x += t.predOffX ?? 0;
-  t.y += t.predOffY ?? 0;
-  t.predOffX = (t.predOffX ?? 0) * PRED_DECAY;
-  t.predOffY = (t.predOffY ?? 0) * PRED_DECAY;
-  if (Math.abs(t.predOffX) < 0.05) t.predOffX = 0;
-  if (Math.abs(t.predOffY) < 0.05) t.predOffY = 0;
+  const authX = t.x;
+  const authY = t.y;
+  let ox = t.predOffX ?? 0;
+  let oy = t.predOffY ?? 0;
+  if (ox || oy) {
+    // Cancel the lead by how far the authoritative position moved ALONG it since
+    // last frame — i.e. how much the real knockback has arrived in the stream.
+    const pax = t._predAuthX;
+    const pay = t._predAuthY;
+    if (pax !== undefined && pay !== undefined) {
+      const mag = Math.hypot(ox, oy) || 1;
+      const ux = ox / mag;
+      const uy = oy / mag;
+      const adv = (authX - pax) * ux + (authY - pay) * uy;
+      if (adv > 0) {
+        const m = Math.max(0, mag - adv);
+        ox = ux * m;
+        oy = uy * m;
+      }
+    }
+    // Backstop: once the hold window passes with no catch-up, it was a mispredict —
+    // bleed it off so the entity doesn't sit shoved forever.
+    if (performance.now() > (t._predHoldUntil ?? 0)) {
+      ox *= PRED_SAFETY_DECAY;
+      oy *= PRED_SAFETY_DECAY;
+    }
+    if (Math.abs(ox) < 0.05) ox = 0;
+    if (Math.abs(oy) < 0.05) oy = 0;
+    t.predOffX = ox;
+    t.predOffY = oy;
+    t.x = authX + ox;
+    t.y = authY + oy;
+  }
+  t._predAuthX = authX;
+  t._predAuthY = authY;
 }
 
 /** Grow `t`'s predicted offset by `dist` px along unit dir (dx,dy) — a push nudge
@@ -129,6 +172,7 @@ export function injectPredOffset(
   t.predOffY = oy;
   t.x += dx * dist;
   t.y += dy * dist;
+  t._predHoldUntil = performance.now() + PRED_HOLD_MS;
   return true;
 }
 
