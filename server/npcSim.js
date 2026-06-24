@@ -99,6 +99,14 @@ const KB_MIN = 0; // px — no minimum; a 0-damage (fully-blocked) hit doesn't s
 const KB_MAX = 44; // px — cap so a big/crit hit can't fling across the room
 const KB_PER_DMG = 2; // px of knockback per point of damage dealt
 const KB_STEP = 4; // px — collision sampling step while sliding the knockback (< MINITILE)
+// Spread a knockback's travel over this many sim ticks (~100ms @60Hz) instead of
+// teleporting the whole distance in ONE tick. A one-tick jump lands in a single
+// broadcast frame, so the client interpolates it over ~16ms = a visible SNAP. Easing
+// it over several ticks broadcasts a smooth glide every observer interpolates (the
+// local victim's own knockTo already eases client-side; this gives enemies + remote
+// players the same). The slide path is the SAME collision-clamped one pushActor walks,
+// so easing along it stays wall-safe.
+const KB_SLIDE_TICKS = 6;
 // Status conditions (Paralysis/Numb, Diamond, Sleep, Poison, …) are the EB-derived
 // hit-reaction layer. The catalog + all the timer/immunity/DoT math live in
 // server/status.js (shared with the host for players); npcSim just rolls procs and
@@ -3058,10 +3066,38 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       rem -= step;
     }
     if (cx !== o.x || cy !== o.y) {
-      o.x = cx;
-      o.y = cy;
+      // Don't teleport — set a slide the sim eases over KB_SLIDE_TICKS (advanceKnock),
+      // so the knockback broadcasts as a smooth glide instead of a one-tick snap. The
+      // (cx,cy) dest is already collision-clamped above, so the straight ease is safe.
+      o._kbStartX = o.x;
+      o._kbStartY = o.y;
+      o._kbDestX = cx;
+      o._kbDestY = cy;
+      o._kbTicks = KB_SLIDE_TICKS;
+      o._kbTick = 0;
       o.dirty = true;
     }
+  }
+
+  // Advance an in-progress knockback slide one tick (ease-out toward the landing
+  // spot). Returns true while the actor is still sliding — the caller skips that
+  // actor's AI for the tick so movement logic doesn't fight the shove. Cleared (and
+  // snapped exactly onto the dest) on the final tick.
+  function advanceKnock(o) {
+    if (!o._kbTicks) return false;
+    o._kbTick++;
+    if (o._kbTick >= o._kbTicks) {
+      o.x = o._kbDestX;
+      o.y = o._kbDestY;
+      o._kbTicks = 0;
+    } else {
+      const k = o._kbTick / o._kbTicks;
+      const e = 1 - (1 - k) * (1 - k); // ease-out: fast off the hit, decelerating in
+      o.x = o._kbStartX + (o._kbDestX - o._kbStartX) * e;
+      o.y = o._kbStartY + (o._kbDestY - o._kbStartY) * e;
+    }
+    o.dirty = true;
+    return true;
   }
 
   // Knockback landing spot for a HOST-owned player (foot box) shoved away from
@@ -3799,6 +3835,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           }
           if (st.changed) n.statusDirty = true; // a status expired — refresh client pips
           if (n.dead) continue;
+          // Mid-knockback: ease the shove this tick and skip all AI/status movement
+          // (placed BEFORE the action-blocked/scrambled gates so a paralyzed or
+          // possessed actor still gets slid rather than freezing mid-flight).
+          if (advanceKnock(n)) continue;
           // Action-blocked (paralysis/diamond/sleep): frozen — skip all AI (no
           // move, no swing). The flinch pose (held to the status' end by
           // tryParalyze) keeps showing above.
