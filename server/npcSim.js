@@ -1507,6 +1507,13 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // Everything that ticks/broadcasts (townsfolk + enemies + cars); enemies subset.
   let actors = npcs.filter((n) => n.kind === 'person' || n.isEnemy || n.kind === 'car');
   let enemies = npcs.filter((n) => n.isEnemy);
+  // Real-time speed compensation. The sim is a fixed-step-per-tick loop, but on a
+  // loaded/weak box the 60Hz tickInterval SLIPS, which would make per-tick movers
+  // (NPCs/enemies/cars) crawl in real time ("slower in prod than dev"). Each tick
+  // sets tickScale = realElapsed / nominalTick (clamped), and the movers multiply
+  // their step by it, so travel-per-SECOND stays constant regardless of tick rate.
+  // 1.0 when ticks are on time → a no-op; only engages under actual slip.
+  let tickScale = 1;
   // Vehicles (traffic cars — parked or routed) — the attackable, plowing actors.
   // handleAttack damages these in addition to enemies, gated by canHurt (PK
   // rules). KEEP IN SYNC with the actors/enemies rebuilds below.
@@ -1818,7 +1825,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       c.dir = newDir;
       c.dirty = true;
     }
-    const step = Math.min(c.speed, dist);
+    const step = Math.min(c.speed * tickScale, dist); // time-compensated (tick-slip safe)
     const travelX = ux * step;
     const travelY = uy * step;
     c.x += travelX;
@@ -2334,16 +2341,30 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // of home (pass Infinity to disable — e.g. inside a building after a warp,
   // where home is across the map). Moves + returns true if clear.
   function tryStep(n, ux, uy, players, leash, speed) {
-    const sp = speed != null ? speed : n.chaseSpeed;
-    const nx = n.x + ux * sp;
-    const ny = n.y + uy * sp;
-    if (!footFree(n, nx, ny, players)) return false;
-    if (Math.hypot(nx - n.homeX, ny - n.homeY) > leash) return false;
-    n.x = nx;
-    n.y = ny;
-    n.dirty = true;
-    stepAnimation(n);
-    return true;
+    // Time-compensated distance: base step × tickScale (so slip can't slow travel).
+    const sp = (speed != null ? speed : n.chaseSpeed) * tickScale;
+    // Sub-step the move in ≤SUB-px increments, collision-checking each, so a scaled
+    // step can't tunnel a thin wall and a blocked path still advances as far as it
+    // can. At tickScale=1 with a normal chase speed this is a single increment (the
+    // old behaviour). A partial advance still counts as a move.
+    const SUB = 4; // px per collision check (< MINITILE = 8px)
+    const incs = Math.max(1, Math.ceil(sp / SUB));
+    const step = sp / incs;
+    let moved = false;
+    for (let i = 0; i < incs; i++) {
+      const nx = n.x + ux * step;
+      const ny = n.y + uy * step;
+      if (!footFree(n, nx, ny, players)) break;
+      if (Math.hypot(nx - n.homeX, ny - n.homeY) > leash) break;
+      n.x = nx;
+      n.y = ny;
+      moved = true;
+    }
+    if (moved) {
+      n.dirty = true;
+      stepAnimation(n);
+    }
+    return moved;
   }
 
   // Anti-stack nudge (runs every tick, separate from the AI). Normal movement
@@ -3747,17 +3768,21 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         // when the effective rate drops well under target — the signal that the box
         // is CPU-bound and broadcast/sim rates need backing off further.
         const NOMINAL_TICK_MS = 1000 / TICK_HZ;
-        if (_lastTick) {
-          _tickEma = _tickEma ? _tickEma * 0.95 + (now - _lastTick) * 0.05 : now - _lastTick;
-          if (_tickEma > NOMINAL_TICK_MS * 1.6 && now - _tickWarnAt > 5000) {
-            _tickWarnAt = now;
-            console.warn(
-              `[npcSim] tick slipping: ~${Math.round(1000 / _tickEma)}Hz (target ${TICK_HZ}Hz) — ` +
-                `enemies will move slow; the box is CPU-bound, reduce broadcast/sim load`
-            );
-          }
-        }
+        const realDt = _lastTick ? now - _lastTick : NOMINAL_TICK_MS;
         _lastTick = now;
+        // Compensate per-tick movers for a slipping tick (see tickScale). Clamp to
+        // [1,3]: never speed PAST 3x (a long GC/stall pause shouldn't fling actors),
+        // and never below 1 (setInterval can't run early). Movers sub-step collision
+        // so the scaled-up move can't tunnel a wall.
+        tickScale = Math.min(3, Math.max(1, realDt / NOMINAL_TICK_MS));
+        _tickEma = _tickEma ? _tickEma * 0.95 + realDt * 0.05 : realDt;
+        if (_tickEma > NOMINAL_TICK_MS * 1.6 && now - _tickWarnAt > 5000) {
+          _tickWarnAt = now;
+          console.warn(
+            `[npcSim] tick slipping: ~${Math.round(1000 / _tickEma)}Hz (target ${TICK_HZ}Hz) — ` +
+              `CPU-bound; movement is time-compensated (tickScale) but consider a bigger box`
+          );
+        }
         reviveStatics(now);
         reviveNpcs(now);
         reviveCars(now);
