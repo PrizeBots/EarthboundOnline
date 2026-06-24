@@ -719,8 +719,9 @@ loads from `overrides/combat_juice.json` and is dialed in real time by the dev
 "dumb": it sends INPUTS, never positions**, and the **server owns every position**.
 Each moving frame the client emits `{type:'input', seq, dx, dy}` (`Network.sendInput`)
 and PREDICTS locally (`Player.applyInput` — the movement step, an exact mirror of the
-server's `gameHost._stepPlayer`). The server's ~60Hz sim (`_simPlayers`, `SIM_TICK_MS=16`,
-matching the client's 60Hz input cadence) drains the
+server's `gameHost._stepPlayer`). The server's 30Hz sim (`_simPlayers`, `SIM_TICK_MS=33`;
+NPCs broadcast at 30Hz too — 60Hz overloaded the prod box and slipped the sim tick,
+slowing the per-tick enemy motion) drains the
 queue, steps each player against authoritative collision (`npcSim.playerBlocked` =
 walls + weight-class solid actors, mirroring `Player.blocked`), and replies
 `{type:'pos', x, y, seq}`; the client **reconciles** (`Player.reconcile`: snap to the

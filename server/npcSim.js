@@ -41,13 +41,13 @@ const COL_H = 8;
 const COL_OY = -8;
 
 const TICK_HZ = 60;
-// NPC/enemy position broadcast rate. Raised 10→20→30→60Hz to MATCH the player
-// firehose: a 16ms packet interval gives the adaptive interp buffer ~4-5 packets of
-// headroom at an 80ms floor, so enemies stay smooth on a real WAN link instead of
-// underrunning (the "jumpy NPCs" report) — a 30Hz/60ms buffer was only ~1.8 packets.
-// ~2x the 30Hz NPC firehose bytes — still small at current scale, and the AOI/binary
-// overhaul (NETWORK_REMODEL.md) absorbs it as the world grows.
-const BROADCAST_HZ = 60;
+// NPC/enemy position broadcast rate. 60Hz proved too heavy in prod: the per-client
+// AOI encode is O(clients × up-to-120 NPCs), and doubling its frequency starved the
+// single-thread event loop on the (weak) prod instance, slipping the 60Hz sim tick.
+// Enemies move a fixed step PER TICK (no dt compensation), so a slipped tick = slow
+// enemies — the "enemies slower in prod" report. Back to 30Hz: smoothness now comes
+// from the playout clock + 80ms adaptive buffer + the knockback slide, not raw rate.
+const BROADCAST_HZ = 30;
 const ACTIVE_RADIUS = 512; // px from any player
 
 const CARDINALS = [
@@ -3735,9 +3735,29 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       onPickupCb = onPickup || null; // ground-drop claim: (playerId, drop) => bool
       onPlayerShoveCb = onPlayerShove || null; // vehicle nudge: push a player, NO damage
       broadcastCb = broadcast; // handleAttack uses this for crit/miss events
+      let _lastTick = 0;
+      let _tickEma = 0;
+      let _tickWarnAt = 0;
       tickInterval = setInterval(() => {
         const players = getPlayers();
         const now = Date.now();
+        // Tick-slip watchdog: enemies move a fixed step PER TICK (no dt scaling), so
+        // if the event loop is starved and this 60Hz interval slips, enemies move
+        // slow in real time. Track the smoothed inter-tick gap and warn (throttled)
+        // when the effective rate drops well under target — the signal that the box
+        // is CPU-bound and broadcast/sim rates need backing off further.
+        const NOMINAL_TICK_MS = 1000 / TICK_HZ;
+        if (_lastTick) {
+          _tickEma = _tickEma ? _tickEma * 0.95 + (now - _lastTick) * 0.05 : now - _lastTick;
+          if (_tickEma > NOMINAL_TICK_MS * 1.6 && now - _tickWarnAt > 5000) {
+            _tickWarnAt = now;
+            console.warn(
+              `[npcSim] tick slipping: ~${Math.round(1000 / _tickEma)}Hz (target ${TICK_HZ}Hz) — ` +
+                `enemies will move slow; the box is CPU-bound, reduce broadcast/sim load`
+            );
+          }
+        }
+        _lastTick = now;
         reviveStatics(now);
         reviveNpcs(now);
         reviveCars(now);

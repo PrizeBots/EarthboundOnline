@@ -390,10 +390,10 @@ export function createInterpolator(opts: number | InterpOpts = PLAYER_DELAY_MS):
 
 // --- Default instance for remote players (the original module API) ---
 
-// Players broadcast at ~60Hz (~16ms). Floor ~50ms keeps ~3 snapshots bracketing the
-// cursor with headroom on a real WAN link (40ms underran for some); ceil 150ms is
-// the safety ceiling. PLAYER_DELAY_MS is the legacy fixed fallback (playout off).
-const players = createInterpolator({ delay: adaptiveDelay(16, 50, PLAYER_DELAY_MS + 50) });
+// Players broadcast at ~30Hz (~33ms — the player sim went back to 30Hz to unload the
+// prod box). Floor ~66ms keeps ~2 snapshots bracketing the cursor with WAN headroom;
+// ceil 150ms is the safety ceiling. PLAYER_DELAY_MS is the legacy fixed fallback.
+const players = createInterpolator({ delay: adaptiveDelay(33, 66, PLAYER_DELAY_MS + 50) });
 
 // The NPC interpolator (NPCManager) registers itself here so the rest of the app —
 // crucially Network's ping, which reports the enemy render-delay for melee lag-comp
