@@ -48,6 +48,14 @@ const TICK_HZ = 60;
 // enemies — the "enemies slower in prod" report. Back to 30Hz: smoothness now comes
 // from the playout clock + 80ms adaptive buffer + the knockback slide, not raw rate.
 const BROADCAST_HZ = 30;
+// Resync heartbeat. Position updates are delta-coded and only sent when an NPC is
+// `dirty` (moved), but the dirty flag is consumed by ONE broadcast while delivery is
+// per-client (AOI). So an NPC that drifts out of a client's view and then goes idle
+// never gets its final position to that client — it stays FROZEN at a stale spot
+// there (and a swing aimed at the stale spot misses server-side). Every this-many ms
+// we re-mark NPCs dirty so their current position re-reaches every in-AOI client and
+// any stale copy converges. Cheap: a synced client just gets a ~6-byte no-op delta.
+const NPC_RESYNC_MS = 500;
 const ACTIVE_RADIUS = 512; // px from any player
 
 const CARDINALS = [
@@ -3946,12 +3954,20 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         pickupByActors(now);
       }, 1000 / TICK_HZ);
 
+      let _lastResync = 0;
       sendInterval = setInterval(() => {
         const moved = [];
         const hps = [];
         const stat = []; // [id, [statusId,...]] rows for actors whose set changed
         const equips = []; // [id, itemId|null] rows for actors whose held item changed
         const nowSend = Date.now();
+        // Resync heartbeat (see NPC_RESYNC_MS): periodically re-flag every live NPC so
+        // its current position re-reaches every in-AOI client, unfreezing any copy
+        // left stale when the NPC went idle out of that client's view.
+        if (nowSend - _lastResync >= NPC_RESYNC_MS) {
+          _lastResync = nowSend;
+          for (const n of actors) if (!n.dead) n.dirty = true;
+        }
         for (const n of actors) {
           if (n.dirty && !n.dead) {
             n.dirty = false;
