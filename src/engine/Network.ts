@@ -1116,28 +1116,77 @@ export function sendSpendPoints(add: Record<string, number>) {
  */
 export function mountNetDebug(): void {
   if (!/[?&]netdebug/i.test(location.search)) return;
-  const el = document.createElement('pre');
-  el.style.cssText =
-    'position:fixed;right:4px;top:4px;z-index:99999;margin:0;padding:6px 8px;' +
-    'background:rgba(0,0,0,.78);color:#3cd0ff;font:11px/1.35 monospace;' +
-    // pointer-events:auto + user-select:text make the readout selectable/copyable
-    // (left-aligned so copied lines aren't ragged). Tiny corner box, so capturing
-    // clicks there is fine for a debug overlay.
-    'white-space:pre;pointer-events:auto;user-select:text;-webkit-user-select:text;' +
-    'cursor:text;border-radius:4px;text-align:left;';
-  document.body.appendChild(el);
-  const tick = () => {
+
+  // Container marked [data-ui] so the game's mousedown handler (Input.ts) treats it
+  // as UI — clicking it selects/copies instead of swinging the sword. (The old bare
+  // <pre> both triggered attacks AND, rewriting textContent every frame, wiped any
+  // selection 60x/sec — which is why dragging to copy never worked. The Copy button
+  // sidesteps selection entirely via the clipboard API.)
+  const box = document.createElement('div');
+  box.setAttribute('data-ui', '');
+  box.style.cssText =
+    'position:fixed;right:4px;top:4px;z-index:99999;padding:6px 8px;' +
+    'background:rgba(0,0,0,.82);border-radius:4px;font:11px/1.35 monospace;color:#3cd0ff;' +
+    'pointer-events:auto;user-select:text;-webkit-user-select:text;';
+
+  const pre = document.createElement('pre');
+  pre.style.cssText = 'margin:0;white-space:pre;cursor:text;';
+
+  const btn = document.createElement('button');
+  btn.textContent = 'Copy';
+  btn.style.cssText =
+    'margin-top:5px;font:10px monospace;color:#3cd0ff;background:#02202b;' +
+    'border:1px solid #3cd0ff;border-radius:3px;padding:2px 8px;cursor:pointer;';
+  btn.onclick = () => {
+    const text = pre.textContent || '';
+    const ok = () => {
+      btn.textContent = 'Copied!';
+      setTimeout(() => (btn.textContent = 'Copy'), 1200);
+    };
+    // clipboard API (needs a secure context — prod is https); fall back to a hidden
+    // textarea + execCommand for plain-http dev.
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(ok, () => fallbackCopy(text, ok));
+    } else {
+      fallbackCopy(text, ok);
+    }
+  };
+
+  box.appendChild(pre);
+  box.appendChild(btn);
+  document.body.appendChild(box);
+
+  // 4Hz is plenty for eyeballing — and not rewriting every frame lets a manual
+  // drag-select survive between updates too.
+  const update = () => {
     const s = getNetStats();
-    el.textContent = [
+    pre.textContent = [
       'NET DEBUG (?netdebug)',
       `state : ${s.connected ? 'connected' : 'DISCONNECTED'}`,
       `rtt   : ${s.rtt} ms`,
       `jitter: ${s.jitter} ms`,
       `clock : ${s.clockSynced ? `${s.clockOffset >= 0 ? '+' : ''}${s.clockOffset} ms` : 'syncing…'}`,
-      `interp: ${Math.round(getInterpDelayMs())} ms`,
+      `interp: ${Math.round(getInterpDelayMs())} ms (npc ${Math.round(getNpcInterpDelayMs())})`,
       `recon : ${s.reconnects}`,
     ].join('\n');
-    requestAnimationFrame(tick);
   };
-  requestAnimationFrame(tick);
+  update();
+  setInterval(update, 250);
+}
+
+/** Copy `text` via a hidden textarea + execCommand — the fallback when the async
+ *  clipboard API is unavailable (e.g. plain-http localhost). */
+function fallbackCopy(text: string, done: () => void): void {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none;';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+    done();
+  } catch {
+    /* clipboard blocked — nothing more we can do */
+  }
+  ta.remove();
 }
