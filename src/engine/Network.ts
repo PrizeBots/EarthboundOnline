@@ -10,7 +10,12 @@ import {
   TAG,
   type NpcBase,
 } from './wire';
-import { getInterpDelayMs, getNpcInterpDelayMs, setJitterSource } from './RemoteInterp';
+import {
+  getInterpDelayMs,
+  getNpcInterpDelayMs,
+  getCoastEvents,
+  setJitterSource,
+} from './RemoteInterp';
 
 // Client-side delta baselines, mirrors of the server's per-socket _npcBase /
 // _pmBase. Reset on each (re)connect so a fresh session starts from keyframes.
@@ -321,6 +326,7 @@ let pingTimer: ReturnType<typeof setInterval> | null = null;
 let lastPongAt = 0;
 let rttMs = 0;
 let jitterMs = 0;
+let serverHz = 0; // effective server sim rate from the pong (nominal ~30; low = CPU-bound)
 const rttSamples: number[] = [];
 
 // --- Server clock sync (jitter-immune interpolation) ---
@@ -352,6 +358,7 @@ export interface NetStats {
   reconnects: number; // reconnect attempts since the last clean open
   clockOffset: number; // estimated serverClock - clientClock, ms (0 until synced)
   clockSynced: boolean; // a clock offset has been established from a pong
+  serverHz: number; // effective server sim rate (nominal ~30; low = CPU-bound box)
 }
 
 export function getNetStats(): NetStats {
@@ -362,6 +369,7 @@ export function getNetStats(): NetStats {
     reconnects: reconnectAttempt,
     clockOffset: Math.round(clockOffset),
     clockSynced: clockReady,
+    serverHz,
   };
 }
 
@@ -412,9 +420,10 @@ function stopHeartbeat() {
 
 // Record one round-trip sample (from a 'pong') into the RTT + jitter readout, and
 // fold the server timestamp `srv` into the client↔server clock-offset estimate.
-function recordPong(sentAt: number, srv?: number) {
+function recordPong(sentAt: number, srv?: number, srvHz?: number) {
   const recvAt = performance.now();
   lastPongAt = recvAt;
+  if (typeof srvHz === 'number') serverHz = srvHz;
   if (typeof sentAt !== 'number') return;
   rttMs = recvAt - sentAt;
   rttSamples.push(rttMs);
@@ -629,7 +638,7 @@ function openSocket() {
     const msg = JSON.parse(ev.data);
     switch (msg.type) {
       case 'pong':
-        recordPong(msg.t, msg.srv);
+        recordPong(msg.t, msg.srv, msg.srvHz);
         break;
       case 'rtc_answer':
       case 'rtc_ice':
@@ -1157,9 +1166,17 @@ export function mountNetDebug(): void {
   document.body.appendChild(box);
 
   // 4Hz is plenty for eyeballing — and not rewriting every frame lets a manual
-  // drag-select survive between updates too.
+  // drag-select survive between updates too. We diff the coast counter + a wall
+  // clock into a per-second underrun rate (the buffer-sizing signal).
+  let lastCoast = getCoastEvents();
+  let lastAt = performance.now();
   const update = () => {
     const s = getNetStats();
+    const nowAt = performance.now();
+    const coast = getCoastEvents();
+    const coastRate = Math.round(((coast - lastCoast) * 1000) / Math.max(1, nowAt - lastAt));
+    lastCoast = coast;
+    lastAt = nowAt;
     pre.textContent = [
       'NET DEBUG (?netdebug)',
       `state : ${s.connected ? 'connected' : 'DISCONNECTED'}`,
@@ -1167,6 +1184,10 @@ export function mountNetDebug(): void {
       `jitter: ${s.jitter} ms`,
       `clock : ${s.clockSynced ? `${s.clockOffset >= 0 ? '+' : ''}${s.clockOffset} ms` : 'syncing…'}`,
       `interp: ${Math.round(getInterpDelayMs())} ms (npc ${Math.round(getNpcInterpDelayMs())})`,
+      // coast/sec = interp buffer underruns; >0 sustained ⇒ buffer too small for this
+      // link. server = effective sim Hz (nominal ~30); low ⇒ CPU-bound box, not network.
+      `coast : ${coastRate}/s`,
+      `server: ${s.serverHz || '?'} Hz`,
       `recon : ${s.reconnects}`,
     ].join('\n');
   };

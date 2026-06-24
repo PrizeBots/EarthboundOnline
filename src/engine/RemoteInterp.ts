@@ -353,6 +353,7 @@ export function createInterpolator(opts: number | InterpOpts = PLAYER_DELAY_MS):
       const dx = prev ? last.x - prev.x : 0;
       const dy = prev ? last.y - prev.y : 0;
       if (prev && span > 0 && Math.hypot(dx, dy) <= TELEPORT_DIST) {
+        coastEvents++; // buffer underran on a MOVING entity — the key buffer-too-small signal
         const ahead = Math.min(renderT - last.t, MAX_EXTRAP_MS);
         apply(target, last, last.x + (dx / span) * ahead, last.y + (dy / span) * ahead);
       } else {
@@ -406,6 +407,17 @@ export function registerNpcInterp(i: Interpolator): void {
  *  rewinds its melee hitbox by exactly this so swings land where you aimed. */
 export function getNpcInterpDelayMs(): number {
   return npcDelayGetter();
+}
+
+// Buffer-underrun telemetry: counts every frame a MOVING entity had to coast/
+// extrapolate because the interp buffer ran dry. The netdebug overlay diffs this
+// into a per-second rate — the primary signal for sizing the adaptive delay: a
+// nonzero, sustained rate means the buffer is too small for that player's jitter/
+// loss (raise the floor/K); a flat 0 means there's headroom to trim for less lag.
+let coastEvents = 0;
+/** Total interp coast/underrun events since load (overlay diffs it into a rate). */
+export function getCoastEvents(): number {
+  return coastEvents;
 }
 
 /** Record an incoming position packet for a remote player. `t` is its client-clock

@@ -1822,6 +1822,12 @@ class GameHost {
   // until the client cuts over to inputs) is unaffected.
   _simPlayers() {
     const now = Date.now();
+    // Smoothed actual tick interval → effective server Hz (reported in the pong).
+    // The player + NPC sims share one event loop, so when the box is CPU-bound this
+    // interval stretches past SIM_TICK_MS — the client-visible signal that a laggy
+    // experience is the SERVER slipping, not the network (so no client tuning helps).
+    const rawDt = this._lastSimAt ? now - this._lastSimAt : SIM_TICK_MS;
+    this._simIntervalEma = this._simIntervalEma ? this._simIntervalEma * 0.9 + rawDt * 0.1 : rawDt;
     // Time-based step budget. Real time — not a fixed per-tick count — decides how
     // many 60Hz movement steps this tick may apply. setInterval(SIM_TICK_MS) drifts
     // late under GC / a busy prod CPU; with a hard 2-steps cap the server then
@@ -2378,7 +2384,10 @@ class GameHost {
           // Echo the client's timestamp (RTT) plus our own clock (`srv`) so the
           // client can estimate the client↔server clock offset and map firehose
           // frame timestamps onto its own clock for jitter-immune interpolation.
-          ws.send(JSON.stringify({ type: 'pong', t: msg.t, srv: srvNow() }));
+          // `srvHz` is the effective sim rate (nominal ~30) — a low value means the
+          // box is CPU-bound, distinguishing a server stall from a network problem.
+          const srvHz = Math.round(1000 / (this._simIntervalEma || SIM_TICK_MS));
+          ws.send(JSON.stringify({ type: 'pong', t: msg.t, srv: srvNow(), srvHz }));
         } catch {
           /* socket already gone */
         }
@@ -2580,6 +2589,9 @@ class GameHost {
             stats: statsPayload(entry),
             equipped: entry.equipped,
             hotbar: entry.hotbar, // restore quick-select slots (incl. assigned PSI)
+            // EB naming flavor — the client renders the "PSI ????" special as
+            // "PSI <favorite thing>" (blank → "Rockin'"). Display-only.
+            favoriteThing: entry.favoriteThing || '',
             attackSpeed: entry.attackSpeed, // weapon swing-rate mult (scales client swing pose)
             // Saved quest/progress flags (PlayerFlags) — private to this player.
             flags: [...this.flags.get(playerId)],
