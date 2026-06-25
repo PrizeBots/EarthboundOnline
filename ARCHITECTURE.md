@@ -1,6 +1,6 @@
 # Architecture
 
-Living document describing how Zexonyte Online actually works. **If you change
+Living document describing how 199X actually works. **If you change
 the engine, the servers, or the extraction pipeline, update this file in the same
 change.** High-level project rules (ROM distribution policy, dev ports, what not
 to commit) live in CLAUDE.md; this file is the technical map.
@@ -727,9 +727,10 @@ loads from `overrides/combat_juice.json` and is dialed in real time by the dev
 
 **Netcode — server-authoritative movement + client prediction.** The **client is
 "dumb": it sends INPUTS, never positions**, and the **server owns every position**.
-Each moving frame the client emits `{type:'input', seq, dx, dy}` (`Network.sendInput`)
-and PREDICTS locally (`Player.applyInput` — the movement step, an exact mirror of the
-server's `gameHost._stepPlayer`). The server's 30Hz sim (`_simPlayers`, `SIM_TICK_MS=33`;
+Each moving frame the client emits `{type:'input', seq, dx, dy, run}` (`Network.sendInput`;
+`run` = hold-Shift sprint, `RUN_MULT=1.5×` walk, fueled by stamina) and PREDICTS locally
+(`Player.applyInput` — the movement step, an exact mirror of the server's
+`gameHost._stepPlayer`). The server's 30Hz sim (`_simPlayers`, `SIM_TICK_MS=33`;
 NPCs broadcast at 30Hz too — 60Hz overloaded the prod box and slipped the sim tick,
 slowing the per-tick enemy motion) drains the
 queue, steps each player against authoritative collision (`npcSim.playerBlocked` =
@@ -797,6 +798,19 @@ So a used capsule and a level-up are one currency; the player always picks where
 goes. (The `skill` field — a fixed +1 to one named pentagon stat on use — is still a
 supported authoring option, just not used by the stock capsules.) Server-authoritative:
 only the server-owned `alloc`/derive ever change.
+
+**Stamina (yellow bar under PP).** A regenerating resource (`deriveCombatStats`:
+`staminaMax = 40 + 5×Spirit`, `staminaRegen = 6 + 1.5×Muscle`/s, mirrored client/server;
+grows via skill-point spend like PP). Two sinks: a basic **attack** (server gates `case
+'attack'` on `stamina ≥ STAMINA_ATTACK_COST=8`, drains only when the swing actually fires
+— `npcSim.handleAttack` returns fired/not so a cooldown-dropped click doesn't bleed it; the
+client mirrors the gate and floats "Too tired", like the PP gate) and **running** (drains
+`18/s`; a "winded" latch at 0 locks running out until it recharges to 20%). Server is
+authoritative; the local client PREDICTS its bar (`StatusModal` tick/drain/spend, run-drain
+in `Player.update`) for smoothness and the server CORRECTS via a throttled owner-only
+`player_stamina` message (`_maybeSendStamina` → `reconcileStamina`, carrying the winded
+bit). Volatile/derived → no DB column; full on join/level-up. Design + the deliberate
+"basic swings cost stamina" divergence from free-melee are in `ABILITIES.md` §3/§6.
 
 **Condiment seasoning.** Eating a food auto-applies the best condiment in the
 player's bag (`gameHost._pickCondiment`): the food's _preferred_ condiment or the

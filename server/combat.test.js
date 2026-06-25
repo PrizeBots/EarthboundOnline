@@ -339,6 +339,37 @@ check('inflict model: a carried status lands on a struck enemy', () => {
   assert(applied, 'expected the carried paralysis to land on at least one enemy');
 });
 
+// --- Directional PSI cone: traveling projectile fan (psiStrikeCone) -----------
+check('psiStrikeCone: a traveling pellet deals its flat damage to an enemy in its path', () => {
+  const e = sim
+    .enemyState()
+    .find((x) => !x.dead && x.hp >= 12 && !sim.wallBetween(x.x - 60, x.y, x.x, x.y));
+  assert(e, 'need a clear-line live enemy for the cone');
+  const before = e.hp;
+  const DMG = 7;
+  // Straight cone (spread 0 → ONE pellet) fired from 50px west, east at the enemy.
+  // Flat damage (no dodge/crit), so it lands exactly DMG once the shot reaches it.
+  sim.psiStrikeCone(
+    e.x - 50,
+    e.y,
+    1,
+    0,
+    200,
+    0,
+    DMG,
+    'cone',
+    [],
+    false,
+    1,
+    4,
+    'psi:psi_fire_alpha'
+  );
+  const now = Date.now();
+  for (let i = 0; i < 40; i++) sim.stepProjectiles(now); // fly the pellet through the enemy
+  const after = sim.enemyState().find((x) => x.id === e.id).hp;
+  assert.strictEqual(before - after, DMG, 'cone pellet deals exactly its flat damage, once');
+});
+
 // --- Lag compensation: rewind an enemy to what the attacker saw ---------------
 // The hit TEST uses a rewound position so a fleeing target you aimed at still
 // connects; damage/knockback still apply to the live enemy. These unit-test the

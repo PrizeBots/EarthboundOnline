@@ -16,7 +16,10 @@
  * needed yet). Unknown/absent → 'bullet'. Per-weapon PNG art can layer on later
  * by resolving a real image here without touching the call sites.
  */
-type Look = 'pellet' | 'bullet' | 'beam';
+import { drawPsiFrame } from './PsiFx';
+
+type Look = 'pellet' | 'bullet' | 'beam' | 'psi';
+const PSI_FRAME_HOLD = 4; // ticks per flipbook frame (mirror PsiFx FRAME_HOLD)
 
 /** A world-space visual the Renderer can interleave into its Y-sorted sprite
  *  pass. `y` is the depth sort key; `draw` paints camera-relative (rounds the
@@ -37,6 +40,9 @@ interface Shot {
   traveled: number;
   maxDist: number;
   look: Look;
+  psiId?: string; // anim id when look==='psi' (the 'psi:<anim>' sprite)
+  frame: number; // flipbook frame (psi look)
+  hold: number; // ticks the current frame has shown (psi look)
   done: boolean;
 }
 
@@ -68,6 +74,9 @@ export function spawnProjectile(opts: {
   sprite?: string | null;
 }): void {
   const len = Math.hypot(opts.vx, opts.vy) || 1;
+  // 'psi:<animId>' → draw the PSI flipbook on the shot (a Fire-cone pellet); any
+  // other sprite keyword falls back to the built-in streak looks.
+  const isPsi = typeof opts.sprite === 'string' && opts.sprite.startsWith('psi:');
   shots.push({
     id: opts.id,
     x: opts.x,
@@ -77,7 +86,10 @@ export function spawnProjectile(opts: {
     speed: opts.speed > 0 ? opts.speed : 6,
     traveled: 0,
     maxDist: opts.dist,
-    look: asLook(opts.sprite),
+    look: isPsi ? 'psi' : asLook(opts.sprite),
+    psiId: isPsi ? opts.sprite!.slice(4) : undefined,
+    frame: 0,
+    hold: 0,
     done: false,
   });
 }
@@ -100,6 +112,10 @@ export function updateProjectiles(): void {
       s.x += s.vx * s.speed;
       s.y += s.vy * s.speed;
       s.traveled += s.speed;
+      if (s.look === 'psi' && ++s.hold >= PSI_FRAME_HOLD) {
+        s.hold = 0;
+        s.frame++;
+      }
       // Self-retire if the end broadcast never arrived (dropped/late).
       if (s.traveled >= s.maxDist) s.done = true;
     }
@@ -131,7 +147,10 @@ function drawShot(ctx: CanvasRenderingContext2D, s: Shot, camX: number, camY: nu
   ctx.save();
   ctx.imageSmoothingEnabled = false;
   ctx.lineCap = 'round';
-  if (s.look === 'pellet') {
+  if (s.look === 'psi' && s.psiId) {
+    // Traveling PSI cone pellet: draw the authored flipbook frame at the shot.
+    drawPsiFrame(ctx, s.psiId, s.frame, px, py);
+  } else if (s.look === 'pellet') {
     // Slingshot pellet: a small gray stone with a dark rim.
     ctx.fillStyle = '#3a2f25';
     ctx.beginPath();

@@ -17,6 +17,7 @@ import { deriveCombatStats, DerivedStats } from './deriveCombatStats';
 const ATTRS: { label: string; dkey: keyof DerivedStats }[] = [
   { label: 'HP', dkey: 'maxHp' },
   { label: 'PP', dkey: 'ppMax' },
+  { label: 'Stamina', dkey: 'staminaMax' },
   { label: 'Offense', dkey: 'offense' },
   { label: 'Defense', dkey: 'defense' },
   { label: 'Speed', dkey: 'speed' },

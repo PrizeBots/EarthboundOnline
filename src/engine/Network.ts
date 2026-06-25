@@ -198,6 +198,15 @@ type NetworkCallback = {
   /** Server-authoritative progression: EXP gained / level-up / stat growth. */
   onPlayerStats: (id: string, stats: PlayerStatsPayload, leveled: boolean, gained: number) => void;
   /**
+   * Throttled owner-only stamina sync (server _maybeSendStamina). The client
+   * predicts its own stamina between these; this corrects any drift. `s` = current
+   * value, `m` = max, `winded` = run is locked out until stamina recovers.
+   */
+  onPlayerStamina: (stamina: number, max: number, winded: boolean) => void;
+  /** Throttled authoritative PP sync (mirror of stamina) — drives the smooth,
+   *  client-predicted PP bar's reconcile. */
+  onPlayerPp?: (pp: number, max: number) => void;
+  /**
    * The LOCAL player's banked skill points + current stat allocation (private —
    * server pushes this on level-up, after a spend, and on join). Drives the
    * level-up icon + the spend pentagon.
@@ -293,6 +302,9 @@ export interface PlayerStatsPayload {
   hpMax: number;
   pp: number;
   ppMax: number;
+  stamina: number;
+  staminaMax: number;
+  staminaRegen: number; // points/sec — lets the client predict regen between syncs
   exp: number;
   expToNext: number;
   offense: number;
@@ -659,6 +671,16 @@ function openSocket() {
       case 'pong':
         recordPong(msg.t, msg.srv, msg.srvHz);
         break;
+      case 'bot_stats':
+        // Dev-only bot-fleet readout for the ?netdebug BOTS tab (getBotStats()).
+        latestBotStats = {
+          count: msg.count | 0,
+          behavior: String(msg.behavior || 'wander'),
+          players: msg.players | 0,
+          egressMbPerSec: +msg.egressMbPerSec || 0,
+          maxBots: msg.maxBots | 0,
+        };
+        break;
       case 'rtc_answer':
       case 'rtc_ice':
         void onRtcSignal(msg);
@@ -845,6 +867,12 @@ function openSocket() {
       case 'player_stats':
         callbacks?.onPlayerStats(msg.id, msg.stats, !!msg.leveled, msg.gained ?? 0);
         break;
+      case 'player_stamina':
+        callbacks?.onPlayerStamina(msg.s ?? 0, msg.m ?? 0, !!msg.w);
+        break;
+      case 'player_pp':
+        callbacks?.onPlayerPp?.(msg.pp ?? 0, msg.max ?? 0);
+        break;
       case 'player_pk':
         callbacks?.onPlayerPk?.(msg.id, !!msg.pk, msg.lockMs ?? 0);
         break;
@@ -939,10 +967,35 @@ export function sendPosition(
 
 /** Server-authoritative movement: send the held-direction INPUT for one frame
  *  (never a position). The server simulates it and ACKs `seq` via a `pos`. */
-export function sendInput(seq: number, dx: number, dy: number) {
+export function sendInput(seq: number, dx: number, dy: number, run = false) {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'input', seq, dx, dy }));
+    ws.send(JSON.stringify({ type: 'input', seq, dx, dy, run }));
   }
+}
+
+/** Dev-only bot-fleet control (?netdebug BOTS tab). The server gates this on
+ *  dev/admin role (or BOTS_ENABLED for local dev) and replies with `bot_stats`. */
+export function sendBotControl(
+  op: 'spawn' | 'despawn' | 'stop' | 'stats',
+  count?: number,
+  behavior?: 'wander' | 'play'
+) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'bot', op, count, behavior }));
+  }
+}
+
+/** Latest BOTS-tab readout from the server (null until a `bot` op is acked). */
+export interface BotStats {
+  count: number;
+  behavior: string;
+  players: number; // total players on the server (real + bots)
+  egressMbPerSec: number; // server→bots downlink
+  maxBots: number;
+}
+let latestBotStats: BotStats | null = null;
+export function getBotStats(): BotStats | null {
+  return latestBotStats;
 }
 
 /** Ask the server to use the door we're standing on. The server validates we're
@@ -1087,10 +1140,24 @@ export function sendSell(item: string) {
 
 /** Ask the server to cast a PSI ability; it validates PP and resolves the effect.
  *  `targetId` aims a party-target PSI (Lifeup/Healing/revive) at an ally; omit it
- *  to target self (or, for revive, the server uses the nearest downed ally). */
-export function sendUsePsi(psiId: string, targetId?: string) {
+ *  to target self. `aimx,aimy` (+ snapped `dir`) is the mouse-aim line for a
+ *  directional offense move (PSI Fire) — the server fires the cone along it. */
+export function sendUsePsi(
+  psiId: string,
+  targetId?: string,
+  aimx?: number,
+  aimy?: number,
+  dir?: number
+) {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'use_psi', psiId, ...(targetId ? { targetId } : {}) }));
+    ws.send(
+      JSON.stringify({
+        type: 'use_psi',
+        psiId,
+        ...(targetId ? { targetId } : {}),
+        ...(typeof aimx === 'number' && typeof aimy === 'number' ? { aimx, aimy, dir } : {}),
+      })
+    );
   }
 }
 
@@ -1168,16 +1235,33 @@ export function mountNetDebug(): void {
   box.style.cssText =
     'position:fixed;right:4px;top:4px;z-index:99999;padding:6px 8px;' +
     'background:rgba(0,0,0,.82);border-radius:4px;font:11px/1.35 monospace;color:#3cd0ff;' +
-    'pointer-events:auto;user-select:text;-webkit-user-select:text;';
+    'pointer-events:auto;user-select:text;-webkit-user-select:text;min-width:180px;';
 
+  // Small helper for the chunky monospace buttons the overlay uses throughout.
+  const mkBtn = (label: string): HTMLButtonElement => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.style.cssText =
+      'font:10px monospace;color:#3cd0ff;background:#02202b;border:1px solid #3cd0ff;' +
+      'border-radius:3px;padding:2px 8px;cursor:pointer;margin:2px 4px 0 0;';
+    return b;
+  };
+
+  // --- Tab bar: STATS (existing readout) | BOTS (dev fleet control) -------------
+  const tabBar = document.createElement('div');
+  tabBar.style.cssText = 'display:flex;gap:4px;margin-bottom:5px;';
+  const statsTab = mkBtn('STATS');
+  const botsTab = mkBtn('BOTS');
+  statsTab.style.margin = botsTab.style.margin = '0';
+  tabBar.appendChild(statsTab);
+  tabBar.appendChild(botsTab);
+
+  // --- STATS panel (the original overlay) --------------------------------------
+  const statsPanel = document.createElement('div');
   const pre = document.createElement('pre');
   pre.style.cssText = 'margin:0;white-space:pre;cursor:text;';
-
-  const btn = document.createElement('button');
-  btn.textContent = 'Copy';
-  btn.style.cssText =
-    'margin-top:5px;font:10px monospace;color:#3cd0ff;background:#02202b;' +
-    'border:1px solid #3cd0ff;border-radius:3px;padding:2px 8px;cursor:pointer;';
+  const btn = mkBtn('Copy');
+  btn.style.marginTop = '5px';
   btn.onclick = () => {
     const text = pre.textContent || '';
     const ok = () => {
@@ -1192,10 +1276,57 @@ export function mountNetDebug(): void {
       fallbackCopy(text, ok);
     }
   };
+  statsPanel.appendChild(pre);
+  statsPanel.appendChild(btn);
 
-  box.appendChild(pre);
-  box.appendChild(btn);
+  // --- BOTS panel: spawn/despawn the in-process fleet (server gates dev-only) ---
+  const botsPanel = document.createElement('div');
+  botsPanel.style.display = 'none';
+  let botMode: 'wander' | 'play' = 'wander';
+  const modeBtn = mkBtn('mode: wander');
+  modeBtn.onclick = () => {
+    botMode = botMode === 'wander' ? 'play' : 'wander';
+    modeBtn.textContent = `mode: ${botMode}`;
+    sendBotControl('stats'); // refresh readout (also re-sends nothing destructive)
+  };
+  const row = document.createElement('div');
+  for (const [label, delta] of [
+    ['+1', 1],
+    ['+10', 10],
+    ['+100', 100],
+  ] as const) {
+    const b = mkBtn(label);
+    b.onclick = () => sendBotControl('spawn', delta, botMode);
+    row.appendChild(b);
+  }
+  const minus = mkBtn('−10');
+  minus.onclick = () => sendBotControl('despawn', 10);
+  const stop = mkBtn('Stop');
+  stop.onclick = () => sendBotControl('stop');
+  row.appendChild(minus);
+  row.appendChild(stop);
+  const botPre = document.createElement('pre');
+  botPre.style.cssText = 'margin:4px 0 0;white-space:pre;cursor:text;';
+  botsPanel.appendChild(modeBtn);
+  botsPanel.appendChild(row);
+  botsPanel.appendChild(botPre);
+
+  box.appendChild(tabBar);
+  box.appendChild(statsPanel);
+  box.appendChild(botsPanel);
   document.body.appendChild(box);
+
+  let active: 'stats' | 'bots' = 'stats';
+  const showTab = (t: 'stats' | 'bots') => {
+    active = t;
+    statsPanel.style.display = t === 'stats' ? '' : 'none';
+    botsPanel.style.display = t === 'bots' ? '' : 'none';
+    statsTab.style.background = t === 'stats' ? '#0a3a48' : '#02202b';
+    botsTab.style.background = t === 'bots' ? '#0a3a48' : '#02202b';
+    if (t === 'bots') sendBotControl('stats'); // prime the readout on open
+  };
+  statsTab.onclick = () => showTab('stats');
+  botsTab.onclick = () => showTab('bots');
 
   // 4Hz is plenty for eyeballing — and not rewriting every frame lets a manual
   // drag-select survive between updates too. We diff the coast counter + a wall
@@ -1203,28 +1334,46 @@ export function mountNetDebug(): void {
   let lastCoast = getCoastEvents();
   let lastAt = performance.now();
   const update = () => {
-    const s = getNetStats();
-    const nowAt = performance.now();
-    const coast = getCoastEvents();
-    const coastRate = Math.round(((coast - lastCoast) * 1000) / Math.max(1, nowAt - lastAt));
-    lastCoast = coast;
-    lastAt = nowAt;
-    pre.textContent = [
-      'NET DEBUG (?netdebug)',
-      `state : ${s.connected ? 'connected' : 'DISCONNECTED'}`,
-      `rtt   : ${s.rtt} ms`,
-      `jitter: ${s.jitter} ms`,
-      `clock : ${s.clockSynced ? `${s.clockOffset >= 0 ? '+' : ''}${s.clockOffset} ms` : 'syncing…'}`,
-      `interp: ${Math.round(getInterpDelayMs())} ms (npc ${Math.round(getNpcInterpDelayMs())})`,
-      // coast/sec = interp buffer underruns; >0 sustained ⇒ buffer too small for this
-      // link. server = effective sim Hz (nominal ~30); low ⇒ CPU-bound box, not network.
-      `coast : ${coastRate}/s`,
-      `server: ${s.serverHz || '?'} Hz`,
-      `recon : ${s.reconnects}`,
-    ].join('\n');
+    if (active === 'stats') {
+      const s = getNetStats();
+      const nowAt = performance.now();
+      const coast = getCoastEvents();
+      const coastRate = Math.round(((coast - lastCoast) * 1000) / Math.max(1, nowAt - lastAt));
+      lastCoast = coast;
+      lastAt = nowAt;
+      pre.textContent = [
+        'NET DEBUG (?netdebug)',
+        `state : ${s.connected ? 'connected' : 'DISCONNECTED'}`,
+        `rtt   : ${s.rtt} ms`,
+        `jitter: ${s.jitter} ms`,
+        `clock : ${s.clockSynced ? `${s.clockOffset >= 0 ? '+' : ''}${s.clockOffset} ms` : 'syncing…'}`,
+        `interp: ${Math.round(getInterpDelayMs())} ms (npc ${Math.round(getNpcInterpDelayMs())})`,
+        // coast/sec = interp buffer underruns; >0 sustained ⇒ buffer too small for this
+        // link. server = effective sim Hz (nominal ~30); low ⇒ CPU-bound box, not network.
+        `coast : ${coastRate}/s`,
+        `server: ${s.serverHz || '?'} Hz`,
+        `recon : ${s.reconnects}`,
+      ].join('\n');
+    } else {
+      const b = getBotStats();
+      botPre.textContent = b
+        ? [
+            `bots   : ${b.count} / ${b.maxBots}`,
+            `mode   : ${b.behavior}`,
+            `players: ${b.players} (total)`,
+            `egress : ${b.egressMbPerSec} MB/s`,
+          ].join('\n')
+        : 'no readout yet — click a button\n(dev/admin or BOTS_ENABLED only)';
+    }
   };
+  showTab('stats');
   update();
   setInterval(update, 250);
+  // Poll the fleet readout once a second while the BOTS tab is open (the server
+  // only replies to a `bot` message; this keeps egress/count live).
+  setInterval(() => {
+    if (active === 'bots') sendBotControl('stats');
+  }, 1000);
 }
 
 /** Copy `text` via a hidden textarea + execCommand — the fallback when the async

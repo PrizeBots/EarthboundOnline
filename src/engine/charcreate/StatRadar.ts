@@ -83,10 +83,17 @@ export function createStatRadar(
     return { dx: Math.cos(a), dy: Math.sin(a) };
   });
 
-  const point = (i: number, v: number) => ({
-    x: C + axis[i].dx * (v / displayMax) * R,
-    y: C + axis[i].dy * (v / displayMax) * R,
-  });
+  // Each dot sits at `v/displayMax` of its axis — but a heavily specialized build
+  // (e.g. Mental 50, everything else 1) would render the four low dots ~2px from
+  // center, stacked on top of each other so only the top one is grabbable. Floor
+  // the RENDERED radius at MIN_DOT_FRAC so all five stay on their own spokes and
+  // separated enough to grab. The value label still shows the true value, and the
+  // drag is relative (see bindDrag), so this visual floor never distorts the value.
+  const MIN_DOT_FRAC = 0.19;
+  const point = (i: number, v: number) => {
+    const frac = Math.max(MIN_DOT_FRAC, v / displayMax);
+    return { x: C + axis[i].dx * frac * R, y: C + axis[i].dy * frac * R };
+  };
 
   // --- static scaffolding: rings + spokes + labels ---
   for (const frac of [0.25, 0.5, 0.75, 1]) {
@@ -191,17 +198,30 @@ export function createStatRadar(
   }
 
   // Project the pointer onto axis i and convert distance from center to a value.
+  // MUST use displayMax (the value at the axis tip), NOT STAT_MAX — the dots are
+  // rendered on the displayMax scale (see point()), so reading the pointer on a
+  // different scale miscalibrates the drag. At creation displayMax === STAT_MAX so
+  // it was hidden; at level-up displayMax grows to fit higher stats, and using the
+  // old STAT_MAX pinned every dot to a phantom ~10 cap (statMax/budget are the real
+  // limits, applied in setValue).
   function valueFromPointer(i: number, clientX: number, clientY: number): number {
     const rect = svg.getBoundingClientRect();
     const scale = SIZE / rect.width;
     const px = (clientX - rect.left) * scale - C;
     const py = (clientY - rect.top) * scale - C;
     const proj = px * axis[i].dx + py * axis[i].dy; // distance along the axis
-    return (proj / R) * STAT_MAX;
+    return (proj / R) * displayMax;
   }
 
   function bindDrag(dot: SVGCircleElement, i: number): void {
-    const onMove = (e: PointerEvent) => setValue(i, valueFromPointer(i, e.clientX, e.clientY));
+    // RELATIVE drag: track the value + pointer-projection at grab time and apply the
+    // delta, so grabbing a dot whose RENDERED spot is floored (MIN_DOT_FRAC) above
+    // its true value doesn't snap it — a low dot you grab stays put until you move,
+    // then moves by exactly how far you drag.
+    let grabVal = 0;
+    let grabProj = 0;
+    const onMove = (e: PointerEvent) =>
+      setValue(i, grabVal + (valueFromPointer(i, e.clientX, e.clientY) - grabProj));
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
@@ -209,6 +229,8 @@ export function createStatRadar(
     };
     dot.addEventListener('pointerdown', (e) => {
       e.preventDefault();
+      grabVal = values[STAT_KEYS[i]];
+      grabProj = valueFromPointer(i, e.clientX, e.clientY);
       dot.style.cursor = 'grabbing';
       window.addEventListener('pointermove', onMove);
       window.addEventListener('pointerup', onUp);

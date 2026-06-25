@@ -52,9 +52,15 @@ evasion equivalent.
 
 ## 3. Per-stat ladders
 
-Resource notes: Muscle/Speed arts cost **stamina** (a regenerating bar, net-new); Mental
-costs **PP**; Knowledge gadget-bombs are **consumable items** (crafted); Spirit stances
+Resource notes: Muscle/Speed arts cost **stamina** (a regenerating bar, **built** — see §6);
+Mental costs **PP**; Knowledge gadget-bombs are **consumable items** (crafted); Spirit stances
 cost nothing but slow/root you.
+
+> **Decision (2026-06-25): basic weapon swings also cost stamina** (`STAMINA_ATTACK_COST=8`,
+> binary gate like PP — not damage-scaled), so melee is _not_ strictly free. This diverges
+> from the "sustained free melee" framing below. **Accepted caveat:** it taxes the Muscle lane
+> on its own core attack and is ~free for a high-Spirit pool — revisit for parity once the
+> active arts (which add their _own_ stamina cost on top) land, to avoid the bruiser double-dipping.
 
 ### 3.1 Muscle — Bruiser (sustained free melee)
 
@@ -136,7 +142,7 @@ Canon: Jeff **fixes broken items overnight** into gear, gated by level/IQ —
 
 > **X** (Knowledge) **+ Y** (a broken item) **+ Z** (rest at an inn / save-point) **→ fixed item.**
 
-- **I · Fix I** — repair basic _Broken \_\_\__ drops into low-tier weapons (offense ≈ early Muscle).
+- **I · Fix I** — repair basic \_Broken \_\_\_\_ drops into low-tier weapons (offense ≈ early Muscle).
 - **II · Fix II** — better recipes, higher success; **first gadget-bomb** (Bottle Rocket —
   consumable ranged burst, Knowledge's PSI-equivalent).
 - **III · Fix III** — mid-tier weapons + armor fixes (offense ≈ mid Muscle).
@@ -213,8 +219,14 @@ move.unlockMental`. Set a dev with `node server/setRole.js <username> dev`. Ever
 - **PSI:** add `unlockMental` per move in `psi.json`; gate menu (`menu/layout.ts`) + server
   `use_psi` (`gameHost.js:3362`) on `mental >= move.unlockMental`; keep the PP affordability
   check; sticky high-water-mark learning. PSI power scaling = one multiply in `use_psi` (§4.4).
-- **Net-new systems:** stamina bar (Muscle/Speed arts), the active-art framework, crafting +
-  rest/inn (§3.5), gadget-bomb items. Each wants its own spec when prioritized.
+- **Stamina bar (DONE, 2026-06-25).** Yellow bar under PP. `staminaMax = 40 + 5×Spirit`,
+  `staminaRegen = 6 + 1.5×Muscle`/s (`deriveCombatStats`, mirrored client/server); grows only
+  via skill-point spend like PP (GROWTH 0, cap 99/stat). Server-authoritative, client-predicted
+  - throttled `player_stamina` reconcile. **Sinks:** basic swing (cost 8, gated like PP) and
+    **run** (hold-Shift = 1.5× walk, drain 18/s, "winded" latch locks running out at 0 until it
+    recharges to 20%). Future Muscle/Speed **arts** plug in as additional stamina sinks.
+- **Net-new systems:** the active-art framework, crafting + rest/inn (§3.5), gadget-bomb items.
+  Each wants its own spec when prioritized.
 - **Done:** PSI ???? → "PSI <favorite thing>" (`psiName`).
 
 ---
@@ -233,10 +245,21 @@ move.unlockMental`. Set a dev with `node server/setRole.js <username> dev`. Ever
   Saturn does it for you** (quirky NPC service). Trigger via the rest/sleep mechanic (§3.5);
   scaling cost (homesickness / PP / a Mr. Saturn coffee / in-game time) so it's a deliberate
   reflection, not mid-fight spam. Decide: travel-to-a-place vs enter-from-anywhere-via-sleep.
-- **Stamina resource** — Muscle/Speed arts need a bar (regen rate, cap). Net-new.
+- **Stamina resource** — DONE (§6): cap = Spirit, regen = Muscle, sinks = basic swing + run.
+  Open: whether basic swings should stay a sink (parity caveat, §3) and how arts layer on top.
 - **Crafting design (§3.5)** — recipe table, rest/inn mechanic + location, inn economy,
   gadget-bombs, equip-Knowledge gate. Its own doc when prioritized.
-- **PP regen economy** — refills only on level-up + consumables + Magnet; scarce vs passive.
+- **PP regen economy — DONE.** PP now passively regenerates, fueled by **Mental +
+  Spirit** (`charStats.deriveCombatStats.ppRegen = 0.4 + 0.05×Mental + 0.05×Spirit`
+  PP/sec). **Combat-throttled** (`PP_COMBAT_FRAC` for `PP_COMBAT_WINDOW_MS` after a
+  cast or a hit, `gameHost.js`) so PSI still "runs dry" mid-fight (preserves the
+  Mental-lane burst identity, §1/§4.1) and refills you **between** fights — a pure
+  caster recovers slowly relative to their big pool, while the **Mental+Spirit
+  battle-mage hybrid (§5)** gets real cast uptime. Regenerates whole points only
+  (keeps the integer `pp` clean); owner gets a `player_stats` push per tick.
+  Level-up/respawn + consumables remain the fast/clutch restores. _Open: PSI Magnet
+  is catalogued but its PP-steal effect is still a no-op — wire it as the active
+  early-game restore._
 - **XP curve** — geometric `30×1.5^(level-1)` walls out past ~L50, starving the post-cap
   point grind that _is_ the endgame. Flatten (e.g. `~25×level^1.5`); calibrate to mob XP.
 - **All §2/§4 numbers are starting targets** — they need playtest tuning to truly balance.

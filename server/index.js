@@ -126,7 +126,7 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Zexonyte Online server running on http://localhost:${PORT}`);
+  console.log(`199X server running on http://localhost:${PORT}`);
   console.log(`WebSocket server ready on ws://localhost:${PORT}`);
 });
 

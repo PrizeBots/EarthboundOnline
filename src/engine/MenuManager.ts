@@ -14,7 +14,7 @@
 
 import { drawWindow } from './WindowRenderer';
 import { drawText, measureText, FONT_LINE_HEIGHT } from './TextRenderer';
-import { renderStatus, getStatus } from './StatusModal';
+import { renderStatus, getStatus, spendPp, notePpCombat } from './StatusModal';
 import {
   getPointer,
   consumePointerClick,
@@ -95,7 +95,7 @@ import {
   renderDragGhost,
 } from './menu/render';
 import { PSI_TABS, familiesInTab, PsiMove } from './PsiTuning';
-import { SETTINGS_ROWS, adjustSlider, flipToggle, showMoneyAlways } from './Settings';
+import { SETTINGS_ROWS, adjustSlider, flipToggle, cycleOption, showMoneyAlways } from './Settings';
 export type { MenuHooks }; // public API: Game wires the equipment hooks
 
 // Hooks into the local player's equipment, wired by Game (MenuManager has no
@@ -507,11 +507,29 @@ function usePsi(abilityId: string): void {
   // picker (self or an ally). If it takes over, don't cast here — the picker
   // sends the cast (with a targetId) once a target is chosen.
   if (psiTarget(abilityId) === 'ally' && hooks?.beginPsiTarget?.(abilityId)) {
+    // Close the menu (if cast from it) so the target picker is reachable — update()
+    // skips targeting while a menu is open. Same handoff as beginPsiAim below.
+    if (menuState !== 'closed') menuState = 'closed';
     return;
   }
-  // Server checks PP, applies the effect, and pushes back player_hp (heal) +
-  // player_stats (PP decrease) so the bars redraw.
-  sendUsePsi(abilityId);
+  // Offense PSI. On touch there's no cursor to aim with, so hand off to the game's
+  // aim picker: the next world tap casts toward it (mobile "aim + number key"). On
+  // desktop beginPsiAim returns false and we cast immediately toward the cursor.
+  if (hooks?.beginPsiAim?.(abilityId)) {
+    // If cast from the PSI menu (vs the field hotbar), close it so the world-tap
+    // aim mode is reachable — update() skips targeting while a menu is open.
+    if (menuState !== 'closed') menuState = 'closed';
+    return;
+  }
+  // Offense PSI aims like an attack: face the cursor and pass the same player→cursor
+  // vector so a directional move (PSI Fire's line) fires toward the cursor. The
+  // server uses it only for directional shapes; radius/bolts ignore it.
+  const aim = hooks?.getAim?.();
+  sendUsePsi(abilityId, undefined, aim?.aimx, aim?.aimy, aim?.dir);
+  // Predict the PP spend so the bar drops immediately, and note combat so the
+  // predicted regen throttles (mirrors the server); player_stats reconciles.
+  spendPp(psiCost(abilityId));
+  notePpCombat();
   playEventSfx('player-try-psi');
   // Lifeup layers its heal chime on top of the generic PSI cast sound (any tier).
   if (abilityId.startsWith('lifeup')) playEventSfx('heal');
@@ -850,18 +868,32 @@ export function updateMenu(): void {
           adjustSlider(row.key, 1);
           playEventSfx('cursor-horizontal');
         }
+      } else if (row.kind === 'option') {
+        // ←/→ cycle the choice; confirm (Z/Space/Enter) advances it.
+        if (left) {
+          cycleOption(row.key, -1);
+          playEventSfx('cursor-horizontal');
+        }
+        if (right || confirm) {
+          cycleOption(row.key, 1);
+          playEventSfx('cursor-horizontal');
+        }
       } else if (left || right || confirm) {
         flipToggle(row.key);
         playEventSfx('cursor-confirm');
       }
-      // Click a row to select it; clicking a toggle row also flips it.
+      // Click a row to select it; clicking a toggle flips it, an option advances it.
       if (click) {
         const ci = settingsRowAt(click.x, click.y, settingsCursor);
         if (ci >= 0) {
           settingsCursor = ci;
-          if (SETTINGS_ROWS[ci].kind === 'toggle') {
+          const kind = SETTINGS_ROWS[ci].kind;
+          if (kind === 'toggle') {
             flipToggle(SETTINGS_ROWS[ci].key);
             playEventSfx('cursor-confirm');
+          } else if (kind === 'option') {
+            cycleOption(SETTINGS_ROWS[ci].key, 1);
+            playEventSfx('cursor-horizontal');
           }
         }
       }

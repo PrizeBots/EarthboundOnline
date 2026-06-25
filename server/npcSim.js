@@ -1863,7 +1863,18 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     const dx = n.x - fx;
     const dy = n.y - fy;
     const len = Math.hypot(dx, dy) || 1;
-    return moveToward(n, n.x + (dx / len) * 40, n.y + (dy / len) * 40, speed, players, leash);
+    const moved = moveToward(
+      n,
+      n.x + (dx / len) * 40,
+      n.y + (dy / len) * 40,
+      speed,
+      players,
+      leash
+    );
+    // Bolt through a doorway if the flee step reached one — a fleer escapes
+    // through doors the same way a player does.
+    fleeThroughDoor(n, players);
+    return moved;
   }
 
   // Sidestep perpendicular to the threat (side seeded by id so a crowd splits
@@ -2694,6 +2705,33 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     }
   }
 
+  // A PANICKING NPC bolts through any doorway it touches — like a player, an
+  // entity in flight uses the nearest exit to escape (and break line-of-sight
+  // into the next room). Unlike a chaser this needs no walk-to-doorway commit:
+  // the flee step already carried it onto the trigger, so we warp on contact the
+  // instant it arrives. Returns true if it warped. Call right after a flee move.
+  function fleeThroughDoor(n, players) {
+    if (!doorTriggers.length) return false;
+    let best = null;
+    let bestD = DOOR_TRIGGER_REACH;
+    for (const t of doorTriggers) {
+      const d = Math.hypot(n.x - t.x, n.y - t.y);
+      if (d <= bestD) {
+        bestD = d;
+        best = t;
+      }
+    }
+    if (!best) return false;
+    const spot = findFreeNear(best.destX, best.destY, n, players) || {
+      x: best.destX,
+      y: best.destY,
+    };
+    n.x = spot.x;
+    n.y = spot.y;
+    n.dirty = true;
+    return true;
+  }
+
   // Roamers wander town-wide (bounded by spawner.wanderRadius from the spawn
   // point), unlike townsfolk leashed to a 32px home. With a player in sight
   // they break off and pursue, swinging when they get in range.
@@ -2735,6 +2773,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           const ay = n.y + ((n.y - scary.y) / len) * 200;
           n.dir = faceDir(ax - n.x, ay - n.y);
           moveToward(n, ax, ay, n.chaseSpeed, players, Infinity);
+          // A weak enemy fleeing a stronger player ducks through any doorway it
+          // reaches to break the chase — same escape a panicking townsperson gets.
+          fleeThroughDoor(n, players);
           return;
         }
       }
@@ -3340,7 +3381,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       ATTACK_COOLDOWN_FLOOR_MS,
       ATTACK_COOLDOWN_MS / (attackSpeed > 0 ? attackSpeed : 1)
     );
-    if (now - (lastAttackAt[playerId] || 0) < cooldown) return;
+    // Returns true when the swing actually FIRED (passed cooldown), false when it
+    // was dropped — the caller (gameHost) only charges stamina on a real swing.
+    if (now - (lastAttackAt[playerId] || 0) < cooldown) return false;
     lastAttackAt[playerId] = now;
     // PK gating: build the attacker's shape once. A player is never an enemy;
     // its `pk` decides whether it may hit non-PK targets. Today npcSim only
@@ -3380,7 +3423,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         pierce,
         sprite: projSprite,
       });
-      return;
+      return true;
     }
     // Melee: a small box in front of the attacker damages every enemy it overlaps.
     let hx, hy, hw, hh;
@@ -3529,6 +3572,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           });
       }
     }
+    return true; // swing fired (passed cooldown) — caller charges stamina
   }
 
   // --- Ranged-weapon projectiles -----------------------------------------
@@ -3543,6 +3587,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   const PROJ_DEFAULT_SPEED = 6; // px/tick when a weapon authors no projSpeed
   const PROJ_KNOCK_BEHIND = 20; // knockback source sits this far behind the shot
   const PROJ_MUZZLE_RISE = 10; // shot flies at chest height (feet - this); see the muzzle in handleAttack
+  const PSI_CONE_SPEED = 4; // px/tick for a directional-PSI cone pellet (slow, readable fire)
   let projectiles = [];
   let projSeq = 0;
 
@@ -3580,8 +3625,13 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       attackerMass: o.attackerMass,
       inflict: o.inflict,
       pierce: !!o.pierce,
-      hit: new Set(), // actors already damaged (piercing shots never double-hit)
-      hitPlayers: new Set(),
+      // Flat damage (no dodge/crit roll), e.g. a PSI cone — matches the old instant
+      // psiStrikeLine which applied `dmg` directly.
+      flat: !!o.flat,
+      // Hit-tracking sets. A fan of pellets (a PSI cone) shares ONE set so the whole
+      // cast damages each target once, no matter how many pellets overlap it.
+      hit: o.sharedHit || new Set(), // actors already damaged (piercing never double-hits)
+      hitPlayers: o.sharedHitPlayers || new Set(),
     };
     projectiles.push(p);
     if (broadcastCb)
@@ -3630,7 +3680,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       if (!canHurt(p.attacker, n)) continue;
       if (!aabb(bx, by, bw, bh, n.x - HURT_W / 2, n.y + HURT_OY, HURT_W, HURT_H)) continue;
       p.hit.add(n);
-      const res = resolveMelee(p.critChance, n.dodge || 0, p.base, rng);
+      const res = resolveMelee(p.critChance, p.flat ? 0 : n.dodge || 0, p.base, rng);
       if (res.miss) {
         emitCombat('miss', n.x, n.y, p.attackerId, null);
         if (!p.pierce) return true;
@@ -3673,7 +3723,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         if (!canHurt(p.attacker, { isEnemy: false, pk: t.pk })) continue;
         if (!aabb(bx, by, bw, bh, t.x - HURT_W / 2, t.y + HURT_OY, HURT_W, HURT_H)) continue;
         p.hitPlayers.add(t.id);
-        const res = resolveMelee(p.critChance, t.dodge || 0, p.base, rng);
+        const res = resolveMelee(p.critChance, p.flat ? 0 : t.dodge || 0, p.base, rng);
         if (res.miss) {
           emitCombat('miss', t.x, t.y, p.attackerId, t.id);
           if (!p.pierce) return true;
@@ -4374,6 +4424,68 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         struck.push({ x: Math.round(n.x), y: Math.round(n.y) });
       }
       return struck;
+    },
+
+    /**
+     * Directional offense PSI (PSI Fire) as a TRAVELING cone. Instead of resolving a
+     * whole wedge of damage instantly (psiStrikeLine), fire a FAN of piercing
+     * projectiles across the spread arc — all sharing ONE hit-set so the cast still
+     * damages each target exactly once (no double-hit where pellet paths overlap).
+     * The shots fly at `speed` and damage on contact, so damage lands AS the fire
+     * reaches each enemy (synced to the visual), and a pellet that meets a wall
+     * dissolves there while the rest of the fan flies on. `sprite` ('psi:<animId>')
+     * tells the client to draw the PSI flipbook on each shot. Flat damage (no dodge/
+     * crit), matching the old instant cone.
+     */
+    psiStrikeCone(
+      x,
+      y,
+      ux,
+      uy,
+      length,
+      spread,
+      dmg,
+      playerId,
+      inflict,
+      attackerPk,
+      attackerLevel,
+      speed,
+      sprite
+    ) {
+      const mag = Math.hypot(ux, uy) || 1;
+      const fx = ux / mag;
+      const fy = uy / mag;
+      const half = Math.atan(spread || 0); // cone half-angle (0 → a straight line)
+      const pellets = Math.max(1, Math.min(9, 1 + Math.round((spread || 0) * 10)));
+      const attacker = { isEnemy: false, pk: !!attackerPk };
+      const attackerMass = massOf({ level: attackerLevel || 1 });
+      const sharedHit = new Set(); // one set for the whole fan → hit each target once
+      const sharedHitPlayers = new Set();
+      const spd = speed > 0 ? speed : PSI_CONE_SPEED;
+      for (let p = 0; p < pellets; p++) {
+        const a = pellets === 1 ? 0 : -half + (2 * half * p) / (pellets - 1);
+        const rx = fx * Math.cos(a) - fy * Math.sin(a);
+        const ry = fx * Math.sin(a) + fy * Math.cos(a);
+        spawnProjectile({
+          x: x + rx * 6,
+          y: y - PROJ_MUZZLE_RISE + ry * 6, // chest-height muzzle, like a ranged shot
+          vx: rx,
+          vy: ry,
+          speed: spd,
+          maxDist: length,
+          base: dmg || 0,
+          critChance: 0,
+          attacker,
+          attackerId: playerId,
+          attackerMass,
+          inflict: inflict || [],
+          pierce: true,
+          flat: true, // flat damage (no dodge), like the old instant cone
+          sprite,
+          sharedHit,
+          sharedHitPlayers,
+        });
+      }
     },
 
     /** World pixel bounds {w, h} — the host clamps player positions to these. */

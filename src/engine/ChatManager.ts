@@ -14,6 +14,7 @@
 import { drawWindow } from './WindowRenderer';
 import { drawText, measureText, getLineHeight, FONT_LINE_HEIGHT } from './TextRenderer';
 import { getSpriteGroupMeta } from './SpriteManager';
+import { hotbarLayout } from './menu/layout';
 import { sendChat } from './Network';
 import { Camera } from './Camera';
 import { Player } from './Player';
@@ -25,23 +26,22 @@ import { RemotePlayer, SCREEN_WIDTH, SCREEN_HEIGHT } from '../types';
 // compact on the 256x224 screen.
 let chatFontId = 0;
 const BUBBLE_FONT = 4;
-const LINE_H = FONT_LINE_HEIGHT;     // input box line height (16px font cell)
-const INSET = 5;                     // padding from window border to text
-const BUBBLE_INSET = 4;              // tighter padding inside speech bubbles
-const WINDOW_STYLE = 0;              // EB "Plain" dark-blue flavor
+const LINE_H = FONT_LINE_HEIGHT; // input box line height (16px font cell)
+const INSET = 5; // padding from window border to text
+const BUBBLE_INSET = 4; // tighter padding inside speech bubbles
+const WINDOW_STYLE = 0; // EB "Plain" dark-blue flavor
 
 const MAX_INPUT_LEN = 80;
-const INPUT_INNER_W = 150;           // wrap width inside the input box
-const BUBBLE_INNER_W = 88;           // wrap width inside a speech bubble
-const INPUT_MARGIN = 8;              // gap from screen edges for the input box
+const BUBBLE_INNER_W = 88; // wrap width inside a speech bubble
+const INPUT_MARGIN = 8; // gap from screen edges for the input box
 
-const BUBBLE_LIFETIME = 5000;        // ms a bubble stays before vanishing
-const BUBBLE_FADE = 1200;            // ms of fade-out at the end of life
-const BUBBLE_RISE = 14;              // px the bubble floats up over its life
-const BUBBLE_GAP = 4;                // px between sprite head and bubble bottom
-const CURSOR_BLINK = 500;            // ms per caret on/off phase
+const BUBBLE_LIFETIME = 5000; // ms a bubble stays before vanishing
+const BUBBLE_FADE = 1200; // ms of fade-out at the end of life
+const BUBBLE_RISE = 14; // px the bubble floats up over its life
+const BUBBLE_GAP = 4; // px between sprite head and bubble bottom
+const CURSOR_BLINK = 500; // ms per caret on/off phase
 
-const DEFAULT_SPRITE_H = 24;         // fallback sprite height for bubble anchor
+const DEFAULT_SPRITE_H = 24; // fallback sprite height for bubble anchor
 
 interface Bubble {
   lines: string[];
@@ -142,7 +142,9 @@ function consumeActionKeys(): void {
 
 /** Raise a bubble over a remote player's sprite (called from the network layer). */
 export function addRemoteBubble(id: string, text: string): void {
-  const clean = String(text || '').slice(0, 100).trim();
+  const clean = String(text || '')
+    .slice(0, 100)
+    .trim();
   if (!clean) return;
   remoteBubbles.set(id, makeBubble(clean, BUBBLE_INNER_W));
 }
@@ -165,7 +167,7 @@ export function renderChat(
   ctx: CanvasRenderingContext2D,
   camera: Camera,
   player: Player,
-  remotePlayers: Map<string, RemotePlayer>,
+  remotePlayers: Map<string, RemotePlayer>
 ): void {
   // World-space speech bubbles, pinned to where the speaker stood when sending.
   if (localBubble) {
@@ -201,11 +203,7 @@ function anchorBubble(bubble: Bubble, worldX: number, worldY: number, spriteGrou
   bubble.spriteH = getSpriteGroupMeta(spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
 }
 
-function drawBubble(
-  ctx: CanvasRenderingContext2D,
-  bubble: Bubble,
-  camera: Camera,
-): void {
+function drawBubble(ctx: CanvasRenderingContext2D, bubble: Bubble, camera: Camera): void {
   if (bubble.x === undefined || bubble.y === undefined) return; // not anchored yet
   const age = now() - bubble.born;
   const rise = (age / BUBBLE_LIFETIME) * BUBBLE_RISE;
@@ -228,23 +226,38 @@ function drawBubble(
   // that would glue it to the view. Cull only when it's fully off-screen.
   const boxLeft = centerScreenX - Math.floor(boxW / 2);
   const boxTop = Math.floor(headTopScreenY - BUBBLE_GAP - rise - boxH);
-  if (boxLeft + boxW < 0 || boxLeft > SCREEN_WIDTH || boxTop + boxH < 0 || boxTop > SCREEN_HEIGHT) return;
+  if (boxLeft + boxW < 0 || boxLeft > SCREEN_WIDTH || boxTop + boxH < 0 || boxTop > SCREEN_HEIGHT)
+    return;
 
   ctx.save();
   ctx.globalAlpha = alpha;
   drawWindow(ctx, boxLeft, boxTop, boxW, boxH, WINDOW_STYLE);
   for (let i = 0; i < bubble.lines.length; i++) {
-    drawText(ctx, bubble.lines[i], boxLeft + BUBBLE_INSET, boxTop + BUBBLE_INSET + i * lineH, BUBBLE_FONT);
+    drawText(
+      ctx,
+      bubble.lines[i],
+      boxLeft + BUBBLE_INSET,
+      boxTop + BUBBLE_INSET + i * lineH,
+      BUBBLE_FONT
+    );
   }
   ctx.restore();
 }
 
 function drawInputBox(ctx: CanvasRenderingContext2D): void {
-  const lines = wrapText(input, INPUT_INNER_W, chatFontId);
-  const boxW = INPUT_INNER_W + INSET * 2;
-  const boxH = lines.length * LINE_H + INSET * 2;
+  // The box lives in the bottom-left gap and fills the width between the screen's
+  // left edge and hotbar slot 1, so the hotbar stays visible while you type. The
+  // box bottom is flush to the screen bottom (level with the hotbar) and it grows
+  // UPWARD as the message wraps to more lines.
+  const slot1X = hotbarLayout()[0].x; // left edge of the leftmost hotbar slot
+  const HOTBAR_GAP = 3; // breathing room so the box never touches slot 1
   const boxLeft = INPUT_MARGIN;
-  const boxTop = SCREEN_HEIGHT - INPUT_MARGIN - boxH;
+  const boxW = Math.max(40, slot1X - HOTBAR_GAP - boxLeft);
+  const innerW = boxW - INSET * 2;
+
+  const lines = wrapText(input, innerW, chatFontId);
+  const boxH = lines.length * LINE_H + INSET * 2;
+  const boxTop = SCREEN_HEIGHT - boxH;
 
   drawWindow(ctx, boxLeft, boxTop, boxW, boxH, WINDOW_STYLE);
 

@@ -69,6 +69,8 @@ export async function openLevelUp(
   const SFIELD: Record<keyof DerivedStats, keyof PlayerStats> = {
     maxHp: 'hpMax',
     ppMax: 'ppMax',
+    staminaMax: 'staminaMax',
+    staminaRegen: 'staminaRegen',
     offense: 'offense',
     defense: 'defense',
     speed: 'speed',

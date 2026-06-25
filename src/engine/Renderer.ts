@@ -133,6 +133,13 @@ function ppColor(ratio: number): string {
   return `rgb(${lerp(36, 150, t)},${lerp(72, 210, t)},${lerp(210, 255, t)})`;
 }
 
+// Bright gold at full stamina -> dim amber when low.
+function staminaColor(ratio: number): string {
+  const lerp = (a: number, b: number, t: number) => Math.round(a + (b - a) * t);
+  const t = 1 - Math.max(0, Math.min(1, ratio)); // 0 at full -> 1 at empty
+  return `rgb(${lerp(248, 150, t)},${lerp(216, 120, t)},${lerp(40, 24, t)})`;
+}
+
 // One capsule bar: a rounded-rect black frame with the colored fill clipped to
 // it. `topR`/`bottomR` are the corner radii for each end (logical px) — the
 // outer end is fully rounded; the inner (shared-divider) end gets a small radius
@@ -193,7 +200,8 @@ function drawHealthBar(
   spriteGroupId: number,
   ratio: number,
   ppRatio?: number,
-  hpHolder?: HpHolder
+  hpHolder?: HpHolder,
+  staminaRatio?: number
 ): void {
   const spriteH = getSpriteGroupMeta(spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
   const B = 0.5;
@@ -201,7 +209,8 @@ function drawHealthBar(
   const R = h / 2; // outer end: fully rounded
   const INNER_R = 1; // inner end: small radius — trims a px off each divider side
   const hasPP = ppRatio !== undefined;
-  const total = h + (hasPP ? h : 0); // flush — no gap between the two
+  const hasStam = staminaRatio !== undefined;
+  const total = h + (hasPP ? h : 0) + (hasStam ? h : 0); // flush stack, no gaps
   const x = centerX - BAR_W / 2 - B;
   const y = feetY - spriteH - BAR_GAP - total;
   // Rolling pending chunk: advance displayHp toward real HP this frame, then draw
@@ -216,17 +225,25 @@ function drawHealthBar(
     );
     if (dispRatio > ratio + 0.001) pend = { ratio: dispRatio, color: pendColor(pendFlash(tnow)) };
   }
-  // HP rounds its top fully; its inner (bottom) end is lightly rounded — or
-  // fully rounded when it's the only bar (enemies, no PP).
-  drawBarCapsule(ctx, x, y, ratio, healthColor(ratio), R, hasPP ? INNER_R : R, pend);
+  // HP rounds its top fully; its inner (bottom) end is lightly rounded when any bar
+  // sits below it, or fully rounded when it's the only bar (enemies, no PP/stamina).
+  const hpHasBelow = hasPP || hasStam;
+  drawBarCapsule(ctx, x, y, ratio, healthColor(ratio), R, hpHasBelow ? INNER_R : R, pend);
   if (hasPP) {
-    drawBarCapsule(ctx, x, y + h, ppRatio, ppColor(ppRatio), INNER_R, R);
+    // PP is the middle pill when stamina is present (both ends lightly rounded);
+    // otherwise it's the bottom (fully rounded foot).
+    drawBarCapsule(ctx, x, y + h, ppRatio, ppColor(ppRatio), INNER_R, hasStam ? INNER_R : R);
+  }
+  if (hasStam) {
+    // Stamina always sits at the bottom of the stack: lightly-rounded top, full foot.
+    const sy = y + h + (hasPP ? h : 0);
+    drawBarCapsule(ctx, x, sy, staminaRatio, staminaColor(staminaRatio), INNER_R, R);
   }
 }
 
 // The player's name in the EB font, centered just above the health bar, with a
-// "Lv5" plate tucked to the LEFT of the bars. `hasPP` tells us whether the bar
-// is one capsule (others) or two (your own HP+PSI) so the name clears it.
+// "Lv5" plate tucked to the LEFT of the bars. `barCount` is how many capsules the
+// stack is (1 for others, 3 for your own HP+PSI+stamina) so the name clears it.
 function drawNameplate(
   ctx: CanvasRenderingContext2D,
   centerX: number,
@@ -234,14 +251,13 @@ function drawNameplate(
   spriteGroupId: number,
   name: string,
   level: number,
-  hasPP: boolean,
+  barCount: number,
   pk = false
 ): void {
   const plate = getNameplate(name, level, pk);
   if (!plate) return;
   const spriteH = getSpriteGroupMeta(spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
   const capsule = BAR_H + 1; // one bar capsule (matches drawHealthBar's h)
-  const barCount = hasPP ? 2 : 1;
   const barTop = feetY - spriteH - BAR_GAP - barCount * capsule;
   // Draw at half logical size: the 2x supersampled backbuffer still renders the
   // 8px font as crisp whole pixels, but it's half the on-screen height.
@@ -309,7 +325,7 @@ function drawStatusPips(
   centerX: number,
   feetY: number,
   spriteGroupId: number,
-  hasPP: boolean,
+  barCount: number,
   statuses: string[] | undefined
 ): void {
   if (!statuses || statuses.length === 0) return;
@@ -319,7 +335,6 @@ function drawStatusPips(
   if (pips.length === 0) return;
   const spriteH = getSpriteGroupMeta(spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
   const capsule = BAR_H + 1;
-  const barCount = hasPP ? 2 : 1;
   const barTop = feetY - spriteH - BAR_GAP - barCount * capsule;
   const PIP = 2.5;
   const GAP = 1;
@@ -656,16 +671,35 @@ export class Renderer {
       sy: number,
       part: SpritePart,
       flash: boolean,
-      downedAngle?: number
+      downedAngle?: number,
+      sink = 0
     ) => {
+      const meta = getSpriteGroupMeta(groupId);
+      const h = meta?.height ?? DEFAULT_SPRITE_H;
+      const w = meta?.width ?? 16;
+      // Death sink: in its final seconds a downed body slides STRAIGHT DOWN into
+      // the floor (mirrors DeathFx). `sink` is px descended; everything below a
+      // FIXED screen-space mask at the resting ground line is clipped away, so the
+      // body slides under the floor instead of just dropping. The flat (rotated)
+      // body's bottom edge at rest sits at restY - h/2 + w/2 (w = rotated extent).
+      let clipped = false;
+      let feetY = sy;
+      if (sink > 0) {
+        feetY = sy + Math.round(sink);
+        const maskY = sy - h / 2 + w / 2;
+        this.ctx.save();
+        this.ctx.beginPath();
+        this.ctx.rect(sx - 64, maskY - 256, 128, 256);
+        this.ctx.clip();
+        clipped = true;
+      }
       // Downed = KO'd: rotate the whole sprite around its mid so it lays on its
       // back. `downedAngle` is the live KO-throw angle (tweens 0→±90°, see
       // KoThrow); undefined = upright. Each FG-priority part rotates around the
       // SAME pivot, so the slices still compose into one coherent rotated body.
       if (downedAngle !== undefined) {
-        const h = getSpriteGroupMeta(groupId)?.height ?? DEFAULT_SPRITE_H;
         const px = sx;
-        const py = sy - h / 2;
+        const py = feetY - h / 2;
         this.ctx.save();
         this.ctx.translate(px, py);
         this.ctx.rotate(downedAngle);
@@ -673,13 +707,14 @@ export class Renderer {
       }
       const itemHere = itemId !== null && part !== 'upper';
       if (itemHere && isItemBehind(direction)) {
-        drawHeldItem(this.ctx, itemId!, direction, frame, pose, sx, sy);
+        drawHeldItem(this.ctx, itemId!, direction, frame, pose, sx, feetY);
       }
-      drawSprite(this.ctx, groupId, direction, frame, sx, sy, part, pose, flash);
+      drawSprite(this.ctx, groupId, direction, frame, sx, feetY, part, pose, flash);
       if (itemHere && !isItemBehind(direction)) {
-        drawHeldItem(this.ctx, itemId!, direction, frame, pose, sx, sy);
+        drawHeldItem(this.ctx, itemId!, direction, frame, pose, sx, feetY);
       }
       if (downedAngle !== undefined) this.ctx.restore();
+      if (clipped) this.ctx.restore();
     };
 
     // KO throw render offset (screen px) + rotation for a downed body. The body,
@@ -693,6 +728,32 @@ export class Renderer {
       const k = e.koThrow;
       if (!k) return { ox: 0, oy: 0, angle: Math.PI / 2 };
       return { ox: Math.round(k.offX), oy: Math.round(k.offY - k.z), angle: k.angle };
+    };
+
+    // Death sink (everyone sees it): the body slides into the ground for its final
+    // exit, the same as a slain NPC (DeathFx). TWO drivers, whichever is further —
+    // mirroring the vignette (t = max(timeT, giveUpProgress)):
+    //   • the clock running out  — sink over the last SINK_WINDOW_MS
+    //   • holding to give up      — sink over the last (1 - GU_SINK_START) of the hold,
+    //     so the body is fully swallowed exactly as the give-up vignette hits black.
+    // Returns px descended (fed to drawEntityPart's `sink`), past the sprite's
+    // width so the rotated body is fully under by the end.
+    const SINK_WINDOW_MS = 3000;
+    const GU_SINK_START = 0.7;
+    const sinkPx = (
+      e: { downed?: boolean; downedUntil?: number; spriteGroupId: number },
+      giveUp = 0
+    ): number => {
+      if (!e.downed) return 0;
+      let p = 0;
+      if (e.downedUntil !== undefined) {
+        const remain = e.downedUntil - now;
+        if (remain <= SINK_WINDOW_MS) p = Math.max(0, Math.min(1, 1 - remain / SINK_WINDOW_MS));
+      }
+      if (giveUp > GU_SINK_START) p = Math.max(p, (giveUp - GU_SINK_START) / (1 - GU_SINK_START));
+      if (p <= 0) return 0;
+      const w = getSpriteGroupMeta(e.spriteGroupId)?.width ?? 16;
+      return p * (w + 2);
     };
 
     const playerSx = Math.round(player.x) - camX;
@@ -712,7 +773,8 @@ export class Renderer {
           playerSy + (ko?.oy ?? 0),
           part,
           player.flashUntil > now,
-          ko?.angle
+          ko?.angle,
+          sinkPx(player, player.giveUpProgress)
         );
       },
       () => {
@@ -733,6 +795,8 @@ export class Renderer {
         // stats mirror). Only you see the PSI bar; the nameplate sits above it.
         const s = getStatus();
         const ppRatio = s.ppMax > 0 ? Math.max(0, Math.min(1, s.pp / s.ppMax)) : 0;
+        const staminaRatio =
+          s.staminaMax > 0 ? Math.max(0, Math.min(1, s.stamina / s.staminaMax)) : 0;
         drawHealthBar(
           this.ctx,
           playerSx,
@@ -740,7 +804,8 @@ export class Renderer {
           player.spriteGroupId,
           player.healthRatio,
           ppRatio,
-          player
+          player,
+          staminaRatio
         );
         drawNameplate(
           this.ctx,
@@ -749,10 +814,10 @@ export class Renderer {
           player.spriteGroupId,
           s.name,
           s.level,
-          true,
+          3, // HP + PP + stamina
           player.pk
         );
-        drawStatusPips(this.ctx, playerSx, playerSy, player.spriteGroupId, true, player.statuses);
+        drawStatusPips(this.ctx, playerSx, playerSy, player.spriteGroupId, 3, player.statuses);
       },
       true
     );
@@ -777,7 +842,8 @@ export class Renderer {
             rpScreenY + (ko?.oy ?? 0),
             part,
             (rp.flashUntil ?? 0) > now,
-            ko?.angle
+            ko?.angle,
+            sinkPx(rp)
           );
         },
         () => {
@@ -813,10 +879,10 @@ export class Renderer {
             rp.spriteGroupId,
             rp.name,
             rp.level ?? 1,
-            false,
+            1, // remotes show only the HP capsule
             rp.pk ?? false
           );
-          drawStatusPips(this.ctx, rpScreenX, rpScreenY, rp.spriteGroupId, false, rp.statuses);
+          drawStatusPips(this.ctx, rpScreenX, rpScreenY, rp.spriteGroupId, 1, rp.statuses);
         }
       );
     }
@@ -845,7 +911,7 @@ export class Renderer {
                   undefined,
                   npc
                 );
-              drawStatusPips(this.ctx, nScreenX, nScreenY, npc.spriteGroupId, false, npc.statuses);
+              drawStatusPips(this.ctx, nScreenX, nScreenY, npc.spriteGroupId, 1, npc.statuses);
             }
           : undefined;
       addSprite(

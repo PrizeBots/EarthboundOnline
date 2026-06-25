@@ -27,8 +27,12 @@ export interface PlayerStats {
   level: number;
   hp: number;
   hpMax: number;
-  pp: number;
+  pp: number; // CLIENT-PREDICTED between server syncs (see tickPp)
   ppMax: number;
+  ppRegen: number; // points/sec, from Mental+Spirit; drives the local PP prediction
+  stamina: number; // CLIENT-PREDICTED between server syncs (see tickStamina)
+  staminaMax: number;
+  staminaRegen: number; // points/sec, from stats; drives the local prediction
   exp: number;
   expToNext: number;
   offense: number;
@@ -49,6 +53,10 @@ const stats: PlayerStats = {
   hpMax: 60,
   pp: 7,
   ppMax: 7,
+  ppRegen: 0.5,
+  stamina: 45,
+  staminaMax: 45,
+  staminaRegen: 7.5,
   exp: 0,
   expToNext: 30,
   offense: 7,
@@ -68,6 +76,102 @@ export function setStatus(partial: Partial<PlayerStats>): void {
 
 export function getStatus(): Readonly<PlayerStats> {
   return stats;
+}
+
+// --- Local stamina prediction --------------------------------------------
+// Stamina is server-authoritative, but it changes every frame (run drain /
+// regen), so the client predicts it for a smooth yellow bar and the server
+// corrects via throttled `player_stamina` syncs (reconcileStamina). KEEP the
+// drain/cost constants in sync with server/gameHost.js + Player.ts.
+export const STAMINA_ATTACK_COST = 8;
+export const RUN_DRAIN_PER_SEC = 18;
+const RUN_RECOVER_FRAC = 0.2; // winded → can run again once recharged to this (KEEP IN SYNC)
+
+// "Winded" latch (mirror server/gameHost.js): hitting 0 stamina while running
+// locks running OUT until stamina recharges to RUN_RECOVER_FRAC. Without it,
+// per-frame regen tops stamina just above 0 and you'd sprint forever.
+let winded = false;
+
+/** Per-frame regen toward max (dtMs since last frame). Call from the game loop. */
+export function tickStamina(dtMs: number): void {
+  if (stats.staminaMax <= 0) return;
+  if (stats.stamina < stats.staminaMax) {
+    stats.stamina = Math.min(stats.staminaMax, stats.stamina + stats.staminaRegen * (dtMs / 1000));
+  }
+  if (winded && stats.stamina >= stats.staminaMax * RUN_RECOVER_FRAC) winded = false;
+}
+
+/** Spend stamina locally (predicted). Returns false if there isn't enough. */
+export function spendStamina(amount: number): boolean {
+  if (stats.stamina < amount) return false;
+  stats.stamina = Math.max(0, stats.stamina - amount);
+  return true;
+}
+
+/** Predicted drain while running; clamps at 0 and latches "winded" on empty. */
+export function drainStamina(amount: number): void {
+  stats.stamina = Math.max(0, stats.stamina - amount);
+  if (stats.stamina <= 0) winded = true;
+}
+
+/** True if the player has enough stamina to swing (predicted gate, like PP). */
+export function canAttackStamina(): boolean {
+  return stats.stamina >= STAMINA_ATTACK_COST;
+}
+
+/** True if you can fuel a run: stamina left AND not winded (catching your breath). */
+export function canRun(): boolean {
+  return stats.stamina > 0 && !winded;
+}
+
+/**
+ * Ease the predicted value toward the authoritative server value (reconcile) and
+ * adopt the server's winded latch so client + server agree on when running unlocks.
+ */
+export function reconcileStamina(serverVal: number, max: number, serverWinded: boolean): void {
+  if (max > 0) stats.staminaMax = max;
+  // Snap if we're badly out of sync, otherwise ease so a sync mid-drain doesn't jolt.
+  const diff = serverVal - stats.stamina;
+  stats.stamina = Math.abs(diff) > 8 ? serverVal : stats.stamina + diff * 0.5;
+  stats.stamina = Math.max(0, Math.min(stats.staminaMax, stats.stamina));
+  winded = serverWinded;
+}
+
+// --- Local PP prediction (mirror of stamina) -------------------------------
+// PP regenerates server-side (Mental+Spirit), throttled briefly after a cast or a
+// hit. Like stamina it'd otherwise only jump on server pushes, so the client
+// predicts it for a smooth real-time bar (tickPp) and the server corrects via
+// throttled `player_pp` syncs (reconcilePp). KEEP the throttle constants in sync
+// with server/gameHost.js (PP_COMBAT_WINDOW_MS / PP_COMBAT_FRAC).
+const PP_COMBAT_WINDOW_MS = 4000;
+const PP_COMBAT_FRAC = 0.35;
+let ppCombatUntil = 0;
+
+/** Mark recent combat (a cast or a hit) so regen slows for a few seconds, matching
+ *  the server — keeps the predicted bar from over-filling then snapping back. */
+export function notePpCombat(): void {
+  ppCombatUntil = Date.now() + PP_COMBAT_WINDOW_MS;
+}
+
+/** Per-frame PP regen toward max (dtMs since last frame). Call from the game loop. */
+export function tickPp(dtMs: number): void {
+  if (stats.ppMax <= 0 || stats.pp >= stats.ppMax) return;
+  const rate = stats.ppRegen * (Date.now() < ppCombatUntil ? PP_COMBAT_FRAC : 1);
+  stats.pp = Math.min(stats.ppMax, stats.pp + rate * (dtMs / 1000));
+}
+
+/** Spend PP locally (predicted) on a cast, so the bar drops immediately. */
+export function spendPp(amount: number): void {
+  stats.pp = Math.max(0, stats.pp - amount);
+}
+
+/** Ease the predicted PP toward the authoritative server value (reconcile), like
+ *  stamina — snap if badly out of sync, else ease so a sync mid-regen doesn't jolt. */
+export function reconcilePp(serverVal: number, max: number): void {
+  if (max > 0) stats.ppMax = max;
+  const diff = serverVal - stats.pp;
+  stats.pp = Math.abs(diff) > 4 ? serverVal : stats.pp + diff * 0.5;
+  stats.pp = Math.max(0, Math.min(stats.ppMax, stats.pp));
 }
 
 /**
@@ -135,7 +239,8 @@ export function renderStatus(ctx: CanvasRenderingContext2D): void {
   drawText(ctx, `${stats.hp} / ${stats.hpMax}`, valX, y, FONT_ID);
   y += lh;
   drawText(ctx, 'Psychic Points:', x, y, FONT_ID);
-  drawText(ctx, `${stats.pp} / ${stats.ppMax}`, valX, y, FONT_ID);
+  // pp is a client-PREDICTED float (see tickPp) — floor it for the integer readout.
+  drawText(ctx, `${Math.floor(stats.pp)} / ${stats.ppMax}`, valX, y, FONT_ID);
   y += lh + 2;
   drawText(ctx, 'Experience Points:', x, y, FONT_ID);
   drawText(ctx, `${stats.exp}`, valX, y, FONT_ID);

@@ -11,6 +11,24 @@ declare global {
   }
 }
 
+// DEV-only: a tiny corner link back to the public landing page. In dev the root
+// (/) redirects straight here to char-select, so this is the way to hop over and
+// work on the landing without a browser bounce ('/?view' skips that redirect).
+// Compiled out of prod (import.meta.env.DEV is statically false there).
+function initDevLandingButton(): void {
+  if (!import.meta.env.DEV) return;
+  const a = document.createElement('a');
+  a.href = '/?view';
+  a.textContent = '◂ Landing';
+  a.title = 'Open the public landing page (dev)';
+  a.style.cssText =
+    'position:fixed;top:8px;left:8px;z-index:10000;padding:4px 9px;' +
+    'font:600 12px "Trebuchet MS",system-ui,sans-serif;letter-spacing:.04em;' +
+    'color:#6ad7ff;background:rgba(10,6,18,.78);border:1px solid rgba(106,215,255,.45);' +
+    'border-radius:7px;text-decoration:none;backdrop-filter:blur(2px);';
+  document.body.appendChild(a);
+}
+
 async function main() {
   const canvas = document.getElementById('game') as HTMLCanvasElement;
   if (!canvas) {
@@ -18,6 +36,7 @@ async function main() {
   }
 
   initMuteButton();
+  initDevLandingButton();
 
   // Drive the boot bar off the AssetLoader image counters while we load. Capped
   // at 90% (more images can still be discovered); done() snaps it to 100%.

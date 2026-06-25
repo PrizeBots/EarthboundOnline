@@ -1500,6 +1500,17 @@
       "spawnIntervalMs": 45000,
       "respawnDelayMs": 45000,
       "enabled": true
+    },
+    {
+      "name": "spawner-109",
+      "sprite": 274,
+      "x": 7488,
+      "y": 7156,
+      "poolSize": 6,
+      "maxActive": 3,
+      "spawnIntervalMs": 35000,
+      "respawnDelayMs": 33000,
+      "enabled": true
     }
   ]
 }

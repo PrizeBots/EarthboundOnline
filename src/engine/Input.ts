@@ -151,11 +151,13 @@ export function initInput(gameCanvas?: HTMLCanvasElement) {
   // Touch → pointer bridge. A tap on the GAME CANVAS feeds the same pointer
   // latches a left mouse click does, so on-canvas UI (hotbar, menu items, shops,
   // dialogue "tap to continue", character select) is tappable on mobile. The
-  // on-screen movement/attack/menu controls are separate DOM elements layered
-  // ABOVE the canvas, so their touches target those elements, not this handler —
-  // and unlike a mouse click we DON'T latch mouseAttack, so a UI tap never leaks
-  // through as a sword swing (attack is its own button). preventDefault stops the
-  // browser from also firing a synthetic mouse event / scrolling the page.
+  // on-screen movement/A·B/menu controls are separate DOM elements layered ABOVE
+  // the canvas, so their touches target those elements, not this handler. We keep
+  // pointerIsMouse FALSE (this is touch, not a hovering cursor) and DON'T latch
+  // mouseAttack — so a tap never leaks through the mouse-aim path. Instead Game
+  // turns an in-field world tap into an aimed swing via the click latch (gated on
+  // !isMouseAimActive so a real mouse never double-fires) — that's mobile
+  // tap-to-attack. preventDefault stops a synthetic mouse event / page scroll.
   if (canvas) {
     canvas.addEventListener(
       'touchstart',
@@ -320,4 +322,9 @@ export function getDirection(): { dx: number; dy: number } {
   if (keys.has('ArrowDown') || keys.has('KeyS')) dy += 1;
 
   return { dx, dy };
+}
+
+/** Held Shift = request to run (sprint). Honored only while stamina remains. */
+export function isRunning(): boolean {
+  return keys.has('ShiftLeft') || keys.has('ShiftRight');
 }

@@ -1,6 +1,7 @@
 ﻿import { Direction, Pose, KoThrowState } from '../types';
 import { Entity } from './Entity';
-import { getDirection } from './Input';
+import { getDirection, isRunning } from './Input';
+import { canRun, drainStamina, RUN_DRAIN_PER_SEC } from './StatusModal';
 import { checkPlayerCollision } from './Collision';
 import { blockedByNPC } from './NPCManager';
 import { nextHeldItem } from './Items';
@@ -26,6 +27,10 @@ const RECON_EPS = 2.5;
 function moveSpeedFor(speedStat: number): number {
   return Math.max(SPEED_MIN, Math.min(SPEED_MAX, SPEED_BASE + speedStat * SPEED_PER_STAT));
 }
+// Run (hold-Shift) sprint: multiply the Speed-derived walk speed while there's
+// stamina to burn. KEEP IN SYNC with server/gameHost.js (RUN_MULT). Stamina drain
+// is predicted in update() (RUN_DRAIN_PER_SEC, shared from StatusModal).
+const RUN_MULT = 1.5;
 
 // Player collision box (relative to position, which is center-bottom of sprite)
 const COL_WIDTH = 14;
@@ -80,14 +85,14 @@ export class Player extends Entity {
   // position. Each moving frame produces one input with a monotonic seq, kept here
   // until the server ACKs it via a `pos`; on reconcile we snap to the server spot
   // and replay the un-acked inputs so prediction stays ahead with no rubber-band.
-  private pendingInputs: { seq: number; dx: number; dy: number }[] = [];
+  private pendingInputs: { seq: number; dx: number; dy: number; run: boolean }[] = [];
   private inputSeq = 0;
   /** Riding an escalator/stairway: the glide is client-driven and the server
    *  isn't told until the ride ends, so its `pos` ACKs are stale — suppress
    *  reconciliation (it would yank us back to the escalator's foot mid-glide). */
   riding = false;
   /** The input applied THIS frame, for Game to send (null = idle, send nothing). */
-  lastInputToSend: { seq: number; dx: number; dy: number } | null = null;
+  lastInputToSend: { seq: number; dx: number; dy: number; run: boolean } | null = null;
   private poseTimer = 0;
   // Active knockback slide toward (kbX, kbY); kbFrames counts down to 0.
   private kbX = 0;
@@ -232,13 +237,22 @@ export class Player extends Entity {
     const moving = dx !== 0 || dy !== 0;
 
     if (moving) {
+      // Run only if Shift is held AND we have stamina to spend (predicted; the
+      // server gates the same way). The EFFECTIVE run is baked into the input so a
+      // reconcile replay reproduces the exact same step distance.
+      const wantRun = isRunning();
+      const effRun = wantRun && canRun();
       // Predict locally NOW (instant feel) AND record the input so the server's
       // authoritative result can reconcile against it (see applyInput/reconcile).
       const seq = ++this.inputSeq;
-      this.pendingInputs.push({ seq, dx, dy });
+      this.pendingInputs.push({ seq, dx, dy, run: effRun });
       if (this.pendingInputs.length > 256) this.pendingInputs.shift();
-      this.lastInputToSend = { seq, dx, dy };
-      this.applyInput(dx, dy);
+      // Send RAW intent (Shift state) — the server owns the stamina gate.
+      this.lastInputToSend = { seq, dx, dy, run: wantRun };
+      this.applyInput(dx, dy, effRun);
+      // Drain predicted stamina once per frame while actually running (NOT in
+      // applyInput, which also runs during reconcile replay — that would double-drain).
+      if (effRun) drainStamina(RUN_DRAIN_PER_SEC / 60);
     } else {
       this.moving = false;
       this.resetAnimation();
@@ -252,7 +266,7 @@ export class Player extends Entity {
    * reconciliation replay, and an EXACT mirror of the server's `_stepPlayer`
    * (gameHost.js) so the authoritative result matches our prediction with no drift.
    */
-  private applyInput(dx: number, dy: number): void {
+  private applyInput(dx: number, dy: number, run = false): void {
     if (dx === 0 && dy === 0) return;
     this.direction = this.dirFromInput(dx, dy);
     this.moving = true;
@@ -261,7 +275,7 @@ export class Player extends Entity {
     const curColX = this.x - COL_WIDTH / 2;
     const curColY = this.y + COL_OFFSET_Y;
     const diagonal = dx !== 0 && dy !== 0;
-    const base = moveSpeedFor(this.speed);
+    const base = moveSpeedFor(this.speed) * (run ? RUN_MULT : 1);
     const moveSpeed = diagonal ? base * Math.SQRT1_2 : base;
     const newX = this.x + dx * moveSpeed;
     const newY = this.y + dy * moveSpeed;
@@ -304,7 +318,7 @@ export class Player extends Entity {
 
     this.x = sx;
     this.y = sy;
-    for (const i of this.pendingInputs) this.applyInput(i.dx, i.dy);
+    for (const i of this.pendingInputs) this.applyInput(i.dx, i.dy, i.run);
 
     if (Math.hypot(this.x - px, this.y - py) < RECON_EPS) {
       // Within tolerance — keep the smooth local prediction (incl. walk frame).

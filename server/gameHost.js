@@ -22,7 +22,14 @@ const { SpatialGrid } = require('./aoi');
 const wire = require('./wire'); // binary codec for the position firehose (§5)
 const { createEventRuntime } = require('./eventRuntime');
 const { loadShops } = require('./shops');
-const { sanitizeAlloc, deriveCombatStats, STAT_KEYS, defaultAlloc } = require('./charStats');
+const {
+  sanitizeBuild,
+  deriveCombatStats,
+  STAT_KEYS,
+  defaultAlloc,
+  POINTS_PER_LEVEL,
+  STAT_SPEND_MAX,
+} = require('./charStats');
 const status = require('./status'); // EB status-condition engine (shared with npcSim)
 const buffs = require('./buffs'); // temporary timed stat boosts (consumables / future PSI)
 
@@ -72,12 +79,37 @@ const NOMINAL_STEPS_PER_TICK = SIM_TICK_MS / SIM_FRAME_MS; // ≈ 2.0
 // can't out-run the wall clock. 3x a nominal tick (~100ms of motion) is enough to
 // absorb timer jitter while bounding a single catch-up burst.
 const MAX_STEPS_BURST = Math.max(2, Math.round(NOMINAL_STEPS_PER_TICK * 3)); // = 6 @ 33ms
+// Run (hold-Shift) + stamina economy. KEEP IN SYNC with src/engine/Player.ts.
+// Running multiplies the Speed-derived walk speed and burns stamina; an attack
+// costs a fixed chunk (gated like PP). Stamina pool/regen come from stats
+// (deriveCombatStats: Spirit→max, Muscle→regen).
+const RUN_MULT = 1.5; // run speed = walk speed * this (while you can run)
+const RUN_DRAIN_PER_STEP = 18 / 60; // stamina drained per 60Hz movement step
+const STAMINA_ATTACK_COST = 8; // stamina per swing (not enough = can't attack)
+// "Winded" latch: hitting 0 stamina while running locks OUT running until it
+// recharges to this fraction of max. Without it, per-tick regen tops stamina just
+// above 0 every step, so `stamina > 0` keeps passing and you sprint forever.
+const RUN_RECOVER_FRAC = 0.2;
+
+// Passive PP regen (ABILITIES.md §7). The per-second rate is the build's `ppRegen`
+// (Mental + Spirit, deriveCombatStats). It's throttled to a fraction for a short
+// window after casting or taking a hit, so PSI still "runs dry" mid-fight (preserves
+// the Mental-lane burst identity) and refills you BETWEEN fights. Magnet + items
+// remain the active/clutch restores.
+const PP_COMBAT_WINDOW_MS = 4000; // "in combat" = a cast or a hit within this window
+const PP_COMBAT_FRAC = 0.35; // regen-rate multiplier while in combat (vs out of it)
 
 // Area-of-interest fan-out (NETWORK_REMODEL.md §4). ON by default now (built +
 // validated: smoke:net 7/7, ~9.4x bandwidth). Set AOI_ENABLED=0 to fall back to
 // the legacy global broadcast. The spatial grid is always maintained.
 const AOI_ENABLED = process.env.AOI_ENABLED !== '0';
 const NET_DEBUG = process.env.NET_DEBUG === '1';
+// In-process bot fleet (server/botManager.js), driven from the ?netdebug BOTS tab.
+// The `bot` control message is gated on dev/admin role; BOTS_ENABLED=1 also opens
+// it for anonymous LOCAL dev (where everyone is role 'player'). Off in prod by
+// default → anon clients opening ?netdebug can't spawn bots.
+const BOTS_ENABLED = process.env.BOTS_ENABLED === '1';
+const { BotFleet } = require('./botManager');
 // Single monotonic server clock (ms), shared by the firehose frame timestamp and
 // the pong's `srv` field. The client maps server send-times onto its own clock via
 // the ping/pong offset and buffers snapshots on the SERVER-time axis, so arrival
@@ -185,9 +217,8 @@ const REVIVE_RANGE = 44;
 const PSI_HEAL_RANGE = 160;
 const EQUIP_SLOTS = ['weapon', 'body', 'arms', 'other'];
 // Skill points granted per level-up (banked until spent on the pentagon) and the
-// per-stat cap a spend can raise an allocation to. Both server-authoritative.
-const POINTS_PER_LEVEL = 1;
-const STAT_SPEND_MAX = 99;
+// per-stat cap a spend can raise an allocation to — both server-authoritative,
+// canonical in charStats.js (imported above) so the spend + load paths agree.
 // Crit (SMAAAASH!) chance as a percentage, derived from the attacker's Luck.
 // Tunable in one place; ~1%/Luck so a fresh hero (Luck 9) crits ~9% of landed
 // hits, capped so a maxed build can't crit on (nearly) every swing.
@@ -473,6 +504,9 @@ const PSI_DIR = [
 const GROWTH = {
   maxHp: 3,
   ppMax: 0,
+  staminaMax: 0, // grows only via spending points on Spirit (re-derived)
+  staminaRegen: 0, // grows only via spending points on Muscle (re-derived)
+  ppRegen: 0, // grows only via spending points on Mental/Spirit (re-derived)
   offense: 0,
   defense: 0,
   speed: 0,
@@ -503,6 +537,10 @@ function progressionFromAlloc(alloc, level = 1, exp = 0) {
     maxHp: d.maxHp,
     pp: d.ppMax,
     ppMax: d.ppMax,
+    stamina: d.staminaMax,
+    staminaMax: d.staminaMax,
+    staminaRegen: d.staminaRegen,
+    ppRegen: d.ppRegen,
     exp: 0,
     offense: d.offense,
     defense: d.defense,
@@ -523,6 +561,7 @@ function levelUp(p) {
   for (const k of Object.keys(GROWTH)) p[k] += GROWTH[k];
   p.hp = p.maxHp; // a level-up fully heals
   p.pp = p.ppMax;
+  p.stamina = p.staminaMax;
 }
 
 // StatusModal-shaped payload (field names match PlayerStats: hpMax/ppMax). The
@@ -537,6 +576,10 @@ function statsPayload(p) {
     hpMax: p.maxHp,
     pp: p.pp,
     ppMax: p.ppMax,
+    ppRegen: p.ppRegen, // points/sec — drives the client's smooth PP-bar prediction
+    stamina: p.stamina,
+    staminaMax: p.staminaMax,
+    staminaRegen: p.staminaRegen,
     exp: p.exp,
     expToNext: p.expToNext,
     offense: p.offense + bb('offense'),
@@ -1653,8 +1696,11 @@ class GameHost {
     const role = account && typeof account.role === 'string' ? account.role : 'player';
 
     const save = character.save && typeof character.save === 'object' ? character.save : {};
-    const alloc = sanitizeAlloc(save.alloc);
     const level = Number.isInteger(save.level) && save.level >= 1 ? save.level : 1;
+    // Validate the alloc AGAINST the level: a leveled build's stats grow past the
+    // creation spread (spent skill points), so the creation-strict sanitizeAlloc
+    // would reset it to default and silently wipe every spent point on reload.
+    const alloc = sanitizeBuild(save.alloc, level);
     const exp = Number.isInteger(save.exp) && save.exp >= 0 ? save.exp : 0;
 
     const inventory = Array.isArray(save.inventory)
@@ -1843,10 +1889,31 @@ class GameHost {
     const block = progressionFromAlloc(alloc, p.level, p.exp);
     const hp = Math.min(p.hp, block.maxHp);
     const pp = Math.min(p.pp, block.ppMax);
+    const stamina = Math.min(p.stamina ?? block.staminaMax, block.staminaMax);
     Object.assign(p, block);
     p.hp = hp;
     p.pp = pp;
+    p.stamina = stamina;
     this.recomputeEquipStats(p);
+  }
+
+  // Apply a full build (level + creation/level-up allocation) to a player and top
+  // them up to the new caps. Used by the bot fleet to give simulated players a
+  // random level/build — they get the SAME server-authoritative progression a real
+  // player of that level would (reapplyAlloc → deriveCombatStats + replayed growth).
+  applyBuild(playerId, level, alloc) {
+    const entry = this.players.get(playerId);
+    const pts = this.points.get(playerId);
+    if (!entry || !pts) return false;
+    entry.level = Math.max(1, level | 0);
+    entry.exp = expToReach(entry.level);
+    pts.alloc = { ...alloc };
+    pts.unspentPoints = 0;
+    this.reapplyAlloc(entry, pts.alloc); // re-derive combat stats at the new level
+    entry.hp = entry.maxHp; // bots spawn at full readiness
+    entry.pp = entry.ppMax;
+    entry.stamina = entry.staminaMax;
+    return true;
   }
 
   // True if player `entry` is within INTERACT_REACH of a live static interactable
@@ -1889,7 +1956,16 @@ class GameHost {
     entry.direction = dirFromInput(dx, dy);
     entry.pose = 'walk';
     const diagonal = dx !== 0 && dy !== 0;
-    const base = moveSpeedFor(entry.speed);
+    // Run only if the client held Shift AND there's stamina to burn; drain it per
+    // step (authoritative — the client predicts the same drain). Out of stamina =
+    // walk speed, no matter the Shift state.
+    const running = !!input.run && !entry.winded && (entry.stamina ?? 0) > 0;
+    let base = moveSpeedFor(entry.speed);
+    if (running) {
+      base *= RUN_MULT;
+      entry.stamina = Math.max(0, (entry.stamina ?? 0) - RUN_DRAIN_PER_STEP);
+      if (entry.stamina <= 0) entry.winded = true; // must catch your breath (recover to 20%)
+    }
     const sp = diagonal ? base * SQRT1_2 : base;
     const lvl = entry.level || 1;
     // Start-of-step foot box (the "already inside → let out" reference, like the client).
@@ -1951,6 +2027,42 @@ class GameHost {
       Math.max(SIM_FRAME_MS, this._lastSimAt ? now - this._lastSimAt : SIM_TICK_MS)
     );
     this._lastSimAt = now;
+    // Stamina regen for EVERY player (idle ones skip the move loop below, but
+    // still recharge). Running drains it per-step in _stepPlayer; net = regen −
+    // drain. Owner gets a throttled sync so its predicted bar stays honest.
+    const staSec = dt / 1000;
+    for (const [, e] of this.players) {
+      if (e.editor) continue;
+      const smax = e.staminaMax || 0;
+      if (smax > 0) {
+        const cur = e.stamina ?? smax;
+        if (cur < smax) e.stamina = Math.min(smax, cur + (e.staminaRegen || 0) * staSec);
+        // Catch your breath: a winded player can run again once recharged to 20%.
+        if (e.winded && e.stamina >= smax * RUN_RECOVER_FRAC) e.winded = false;
+      }
+      this._maybeSendStamina(e, now);
+      // Passive PP regen: a slow trickle fueled by Mental + Spirit (ppRegen),
+      // throttled to PP_COMBAT_FRAC for a few seconds after a cast/hit. Accumulate
+      // fractionally but commit only WHOLE points so the integer pp the client sees
+      // (statsPayload.pp) stays clean; push a stats update to the owner on a tick.
+      const pmax = e.ppMax || 0;
+      if (pmax > 0 && (e.pp ?? pmax) < pmax) {
+        const inCombat = now - (e._combatAt || 0) < PP_COMBAT_WINDOW_MS;
+        const rate = (e.ppRegen || 0) * (inCombat ? PP_COMBAT_FRAC : 1);
+        e._ppAccum = (e._ppAccum || 0) + rate * staSec;
+        const whole = Math.floor(e._ppAccum);
+        if (whole > 0) {
+          e._ppAccum -= whole;
+          e.pp = Math.min(pmax, (e.pp ?? 0) + whole);
+        }
+      } else {
+        e._ppAccum = 0; // full (or no pool) — don't bank regen toward the next drain
+      }
+      // Throttled PP sync (mirror of stamina): the client predicts the smooth fill
+      // (tickPp) and eases toward this authoritative value (onPlayerPp → reconcilePp),
+      // so we send a tiny message ~5/s instead of a full player_stats per regen tick.
+      this._maybeSendPp(e, now);
+    }
     this._stepAccum = (this._stepAccum || 0) + dt / SIM_FRAME_MS;
     let stepBudget = Math.floor(this._stepAccum);
     if (stepBudget > MAX_STEPS_BURST) {
@@ -1966,9 +2078,17 @@ class GameHost {
         q.length = 0;
         continue;
       }
-      // Frozen (paralysis/sleep/diamond) or mid door-fade: consume the inputs but
-      // don't move (mirror the client's frozen/warp holds), so seq still advances.
-      const held = status.isActionBlocked(entry, now) || (entry.warping && now < entry.warpUntil);
+      // Frozen (paralysis/sleep/diamond), mid door-fade, or KO'd (bleeding out /
+      // laid out downed): consume the inputs but don't move (mirror the client's
+      // frozen/warp/KO holds), so seq still advances. Without the dying/downed gate
+      // a knocked-out player still slid around if inputs kept arriving — visible as
+      // KO'd bodies sliding on their sides (a bot feeding inputs surfaced it, but a
+      // real client spamming movement while downed had the same hole).
+      const held =
+        status.isActionBlocked(entry, now) ||
+        (entry.warping && now < entry.warpUntil) ||
+        entry.dying ||
+        entry.downed;
       let lastSeq = entry._ackSeq || 0;
       let x0 = entry.x;
       let y0 = entry.y;
@@ -2026,6 +2146,38 @@ class GameHost {
     }
   }
 
+  // Owner-only stamina sync (reconciliation for the client's predicted bar).
+  // Throttled to ~5/s, with a 1s heartbeat when idle, so the cost is one tiny
+  // message per player and the predicted value never drifts for long.
+  _maybeSendStamina(entry, now) {
+    if (!entry._ws) return;
+    const v = entry.stamina ?? 0;
+    const w = !!entry.winded;
+    const since = now - (entry._staminaSentAt || 0);
+    if (since < 180) return; // throttle: at most ~5/s
+    const changed = Math.abs(v - (entry._staminaSent ?? -1e9)) >= 1 || w !== entry._windedSent;
+    if (!changed && since < 1000) return; // idle: heartbeat once a second
+    entry._staminaSent = v;
+    entry._windedSent = w;
+    entry._staminaSentAt = now;
+    entry._ws.send(
+      JSON.stringify({ type: 'player_stamina', s: Math.round(v), m: entry.staminaMax || 0, w })
+    );
+  }
+
+  // Owner-only PP sync (reconciliation for the client's predicted bar). Same shape
+  // as stamina: throttled ~5/s with a 1s idle heartbeat, one tiny message per player.
+  _maybeSendPp(entry, now) {
+    if (!entry._ws) return;
+    const v = Math.round(entry.pp ?? 0);
+    const since = now - (entry._ppSentAt || 0);
+    if (since < 180) return; // throttle: at most ~5/s
+    if (v === entry._ppSent && since < 1000) return; // idle: heartbeat once a second
+    entry._ppSent = v;
+    entry._ppSentAt = now;
+    entry._ws.send(JSON.stringify({ type: 'player_pp', pp: v, max: entry.ppMax || 0 }));
+  }
+
   /** Is the player at a shop clerk? `store` null = any clerk (sell works at any
    *  shop); a number requires the clerk that runs THAT store (buy). */
   _nearShop(entry, store) {
@@ -2057,6 +2209,7 @@ class GameHost {
     // Shielded mid door-transition: the player is a frozen ghost at the doorway
     // and can't move or defend, so enemy swings whiff (see player.warping).
     if (p.warping && Date.now() < p.warpUntil) return;
+    p._combatAt = Date.now(); // taking a hit throttles PP regen (in combat)
     // Defense softens incoming hits (stat defense + equipped armor + any active
     // defense buff); always at least 1 so leveling/gear never makes a player
     // untouchable.
@@ -2544,6 +2697,29 @@ class GameHost {
         if (e && e._rtc && typeof msg.cand === 'string') e._rtc.onCandidate(msg.cand, msg.mid);
         break;
       }
+      // Bot fleet control (?netdebug BOTS tab). Dev/admin only — or BOTS_ENABLED=1
+      // for local dev. {op:'spawn'|'despawn'|'stop'|'stats', count?, behavior?}.
+      case 'bot': {
+        const requester = this.players.get(playerId);
+        if (!BOTS_ENABLED && !isDevPlayer(requester)) {
+          ws.send(
+            JSON.stringify({ type: 'notice', code: 'forbidden', text: 'Bots are dev-only.' })
+          );
+          break;
+        }
+        if (!this.botFleet) this.botFleet = new BotFleet(this);
+        const f = this.botFleet;
+        if (msg.op === 'spawn') f.spawn(msg.count || 1, { behavior: msg.behavior });
+        else if (msg.op === 'despawn') f.despawn(msg.count || 1);
+        else if (msg.op === 'stop') f.stop();
+        // every op (incl. 'stats') replies with the fresh readout
+        try {
+          ws.send(JSON.stringify({ type: 'bot_stats', ...f.stats() }));
+        } catch {
+          /* socket gone */
+        }
+        break;
+      }
       case 'join': {
         // Two paths: a signed-in character (sessionToken + characterId, loaded
         // from the store and saved back), or an anonymous ephemeral player (the
@@ -2869,6 +3045,7 @@ class GameHost {
           seq,
           dx: Math.sign(Number(msg.dx) || 0),
           dy: Math.sign(Number(msg.dy) || 0),
+          run: !!msg.run, // hold-Shift; honored only if stamina remains (_stepPlayer)
         });
         if (entry._inputs.length > MAX_INPUT_QUEUE) {
           entry._inputs.splice(0, entry._inputs.length - MAX_INPUT_QUEUE);
@@ -2999,6 +3176,10 @@ class GameHost {
       case 'attack': {
         const entry = this.players.get(playerId);
         if (!entry) break;
+        // Stamina gate (mirrors the PP gate on PSI): too tired = no swing at all.
+        // The client predicts this and won't even send, but a hacked client is
+        // dropped here too. Actual drain happens only if the swing fires (below).
+        if ((entry.stamina ?? 0) < STAMINA_ATTACK_COST) break;
         // Mouse-aim: the client sends a snapped 8-way `dir` (for sprite facing) plus
         // a raw `aimx,aimy` unit vector (for the true-angle hitbox/projectile). Adopt
         // the facing as authoritative so movement/AOI broadcasts + the swing pose
@@ -3040,7 +3221,7 @@ class GameHost {
         // Server-authoritative: resolve from the tracked position so reach can't
         // be spoofed. Damage scales with the player's Offense stat + weapon; crit
         // chance comes from Luck (SMAAAASH! → 2× damage, broadcast to all).
-        this.npcSim.handleAttack(
+        const swungFired = this.npcSim.handleAttack(
           entry.x,
           entry.y,
           swingDir,
@@ -3068,6 +3249,13 @@ class GameHost {
           Number(msg.aimx),
           Number(msg.aimy)
         );
+        // Charge stamina only when the swing actually fired (cleared cooldown), so
+        // rapid clicks dropped on cooldown don't bleed the bar. Sync is throttled
+        // via _maybeSendStamina; force one on the next tick by clearing the gate.
+        if (swungFired) {
+          entry.stamina = Math.max(0, (entry.stamina ?? 0) - STAMINA_ATTACK_COST);
+          entry._staminaSentAt = 0; // let the next sim tick push the new value promptly
+        }
         break;
       }
 
@@ -3655,6 +3843,7 @@ class GameHost {
         }
 
         entry.pp -= def.pp;
+        entry._combatAt = Date.now(); // throttle PP regen briefly after a cast
 
         // Effect target for the projectile animation: the support target's spot
         // (self or ally) for heal/cure/revive; the struck enemy for offense PSI.
@@ -3666,6 +3855,10 @@ class GameHost {
         // Fan of projectile endpoints (Fire cone): one {tx,ty} per pellet, so the
         // client sprays a shotgun of FX from the caster (null = single projectile).
         let beams = null;
+        // Set when the cast's visual is carried by server PROJECTILES (the Fire cone
+        // now), so we skip the psi_cast flipbook broadcast — the projectiles ARE the
+        // visual (and they're what stops at walls + syncs damage to the visual).
+        let projVisual = false;
         if (def.reviveFrac) {
           // Revive the downed ally to a fraction of their max HP (γ half, Ω full).
           this._reviveDowned(target, Math.ceil(target.maxHp * def.reviveFrac));
@@ -3691,43 +3884,41 @@ class GameHost {
           //                      own strike. `hits` carries every struck spot so
           //                      the client drops a bolt FX on each.
           //   else (radius)    — nearest enemy in range, or every one if `multi`.
-          const v = PSI_DIR[entry.direction] || [0, 1];
+          // Direction: a directional cast (Fire's line) carries the player's
+          // mouse-aim vector — normalize it and fire the cone along it, exactly like
+          // a melee/ranged swing. Also adopt the snapped facing so the cast points
+          // (and reads to other clients) toward the cursor. Falls back to the 8-way
+          // facing for keyboard/no-aim casts. Radius/bolts ignore direction.
+          let v = PSI_DIR[entry.direction] || [0, 1];
+          if (Number.isFinite(msg.aimx) && Number.isFinite(msg.aimy)) {
+            const m = Math.hypot(msg.aimx, msg.aimy);
+            if (m > 1e-3) v = [msg.aimx / m, msg.aimy / m];
+            const adir = msg.dir | 0;
+            if (adir >= 0 && adir < 8) entry.direction = adir;
+          }
           if (def.shape === 'line') {
-            const len = def.length || def.range || 240;
-            const spread = def.spread || 0;
-            this.npcSim.psiStrikeLine(
+            // Traveling cone: a fan of piercing projectiles (sharing one hit-set so
+            // each enemy takes the cast's damage once) that fly out at the cast speed
+            // and damage on contact — damage now lands AS the fire reaches each enemy,
+            // and a pellet that meets a wall dissolves there while the rest fly on.
+            // The projectiles broadcast themselves to clients (which draw the PSI
+            // flipbook via the 'psi:<anim>' sprite), so we skip the psi_cast fan.
+            this.npcSim.psiStrikeCone(
               entry.x,
               entry.y,
               v[0],
               v[1],
-              len,
-              def.width || 32,
-              spread,
+              def.length || def.range || 240,
+              def.spread || 0,
               def.damage || 0,
               playerId,
-              def.inflict
+              def.inflict,
+              entry.pk,
+              entry.level || 1,
+              def.projSpeed || 0,
+              `psi:${def.anim || psiId}`
             );
-            // Spray a fan of projectiles across the cone (more pellets the wider
-            // it spreads). The half-angle matches the cone edge (atan of spread);
-            // each pellet flies from the caster to a point on the far arc.
-            const mag = Math.hypot(v[0], v[1]) || 1;
-            const fx = v[0] / mag;
-            const fy = v[1] / mag;
-            const half = Math.atan(spread); // cone half-angle (0 → straight beam)
-            const pellets = Math.max(1, Math.min(9, 1 + Math.round(spread * 10)));
-            beams = [];
-            for (let p = 0; p < pellets; p++) {
-              const a = pellets === 1 ? 0 : -half + (2 * half * p) / (pellets - 1);
-              const rx = fx * Math.cos(a) - fy * Math.sin(a);
-              const ry = fx * Math.sin(a) + fy * Math.cos(a);
-              beams.push({
-                tx: Math.round(entry.x + rx * len),
-                ty: Math.round(entry.y + ry * len),
-              });
-            }
-            // Center pellet is also the primary (tx,ty) for back-compat clients.
-            tx = Math.round(entry.x + fx * len);
-            ty = Math.round(entry.y + fy * len);
+            projVisual = true;
           } else if (def.shape === 'bolts') {
             const struck = this.npcSim.psiStrikeBolts(
               entry.x,
@@ -3776,17 +3967,21 @@ class GameHost {
         });
         // Cast animation to EVERYONE (incl. caster): `id` is the PsiAnim catalog
         // id; (x,y)=caster, (tx,ty)=target so a projectile flies caster→target.
-        this.broadcastAll({
-          type: 'psi_cast',
-          id: def.anim || psiId,
-          caster: playerId,
-          x: Math.round(entry.x),
-          y: Math.round(entry.y),
-          tx,
-          ty,
-          ...(hits ? { hits } : {}),
-          ...(beams ? { beams } : {}),
-        });
+        // Skipped when the cast's visual rides server projectiles (the Fire cone) —
+        // those broadcast themselves and the client draws the flipbook on each.
+        if (!projVisual) {
+          this.broadcastAll({
+            type: 'psi_cast',
+            id: def.anim || psiId,
+            caster: playerId,
+            x: Math.round(entry.x),
+            y: Math.round(entry.y),
+            tx,
+            ty,
+            ...(hits ? { hits } : {}),
+            ...(beams ? { beams } : {}),
+          });
+        }
         break;
       }
 

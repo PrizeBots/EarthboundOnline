@@ -333,5 +333,16 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+    rollupOptions: {
+      // Multi-page build. index.html is the PUBLIC landing page; play.html is the
+      // game (the old index.html, moved). The stub pages share the site chrome.
+      // Every .html that should ship to dist/ must be listed here — Vite only
+      // crawls index.html by default.
+      input: {
+        index: path.resolve(__dirname, 'index.html'),
+        play: path.resolve(__dirname, 'play.html'),
+        shop: path.resolve(__dirname, 'shop.html'),
+      },
+    },
   },
 });

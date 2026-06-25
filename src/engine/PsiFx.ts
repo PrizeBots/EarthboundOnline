@@ -136,6 +136,27 @@ export function updatePsiFx(): void {
   active = active.filter((fx) => !fx.done);
 }
 
+/** Draw frame `frameIdx` (wraps) of PSI anim `id` centered at SCREEN px (sx,sy).
+ *  Lets the projectile renderer paint a traveling PSI cone pellet as its flipbook
+ *  (so the Fire cone keeps its authored look while riding the server projectile).
+ *  No-op until the frames have decoded / if none authored. */
+export function drawPsiFrame(
+  ctx: CanvasRenderingContext2D,
+  id: string,
+  frameIdx: number,
+  sx: number,
+  sy: number
+): void {
+  const L = getLoaded(id);
+  if (!L || !L.frames.length) return;
+  const img = L.frames[((frameIdx % L.frames.length) + L.frames.length) % L.frames.length];
+  if (!img || !img.complete || img.naturalWidth === 0) return;
+  const dw = PSI_W * SCALE;
+  const dh = PSI_H * SCALE;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(img, Math.round(sx - dw / 2), Math.round(sy - dh / 2), dw, dh);
+}
+
 /**
  * Draw a PSI's FIRST authored frame as an icon (e.g. a hotbar slot), like a
  * weapon/item sprite. `gameId` is the ability id ('lifeup','fire',…) — resolved

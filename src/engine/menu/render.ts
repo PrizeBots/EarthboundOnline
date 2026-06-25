@@ -51,7 +51,15 @@ import {
   ListLayout,
 } from './layout';
 import { PSI_TABS, PSI_CATEGORY_LABEL, familiesInTab } from '../PsiTuning';
-import { SETTINGS_ROWS, getSlider, getToggle } from '../Settings';
+import {
+  SETTINGS_ROWS,
+  getSlider,
+  getToggle,
+  getOptionLabel,
+  getCrosshairColor,
+  getCrosshairType,
+} from '../Settings';
+import { drawCrosshair } from '../Aim';
 
 /** Shop UI: a Buy/Sell chooser top-left, the active list beside it, money
  *  top-right, and an optional note line at the bottom. */
@@ -356,6 +364,27 @@ export function renderSettings(ctx: CanvasRenderingContext2D, v: MenuView): void
       ctx.fillRect(barX, barY, SETTINGS_BAR_W, barH);
       ctx.fillStyle = '#aebbd6';
       ctx.fillRect(barX, barY, Math.round(SETTINGS_BAR_W * val), barH);
+    } else if (row.kind === 'option') {
+      const midY = r.y + Math.floor(FONT_LINE_HEIGHT / 2);
+      if (row.key === 'crosshairColor') {
+        // A swatch of the chosen color (shown IN that color), with a contrasting
+        // border so White/Black still read against the menu.
+        const sw = 16;
+        const sh = 9;
+        const x = rowRight - sw;
+        const y = r.y + Math.floor((FONT_LINE_HEIGHT - sh) / 2);
+        const col = getCrosshairColor();
+        ctx.fillStyle = col === '#000000' ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.6)';
+        ctx.fillRect(x - 1, y - 1, sw + 2, sh + 2);
+        ctx.fillStyle = col;
+        ctx.fillRect(x, y, sw, sh);
+      } else if (row.key === 'crosshairType') {
+        // A live preview of the crosshair shape, drawn in the chosen color.
+        drawCrosshair(ctx, rowRight - 8, midY, getCrosshairType(), getCrosshairColor());
+      } else {
+        const text = getOptionLabel(row.key);
+        drawText(ctx, text, rowRight - measureText(text, FONT_ID), r.y, FONT_ID);
+      }
     } else {
       const on = getToggle(row.key);
       const text = on ? 'ON' : 'OFF';

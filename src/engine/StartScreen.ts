@@ -133,8 +133,7 @@ function render(): void {
 // Signed-out landing.
 function renderTitle(): void {
   const p = panel!;
-  p.appendChild(heading('ZEXONYTE'));
-  p.appendChild(subheading('ONLINE'));
+  p.appendChild(heading('199X'));
 
   if (import.meta.env.DEV) {
     // DEV: skip the form — START signs into a throwaway guest account instantly

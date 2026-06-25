@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>199X — Play</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #000;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      overflow: hidden;
+      /* Mobile: kill page scroll/pinch-zoom/double-tap-zoom and the iOS tap
+         flash + text selection, so touches drive the game, not the browser. */
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    canvas {
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      touch-action: none;
+    }
+    /* Keep DOM form controls (ROM picker, account login) fully editable/selectable
+       despite the body-level user-select:none above. */
+    input, textarea, select {
+      -webkit-user-select: text;
+      user-select: text;
+      -webkit-touch-callout: default;
+    }
+
+    /* Boot screen — painted from static HTML the instant the page parses (before
+       any JS/assets), so the first thing you see is the title + a load bar, not a
+       black screen. JS drives #boot-bar and removes #boot when the game is ready.
+       Pure text/CSS (no ROM-derived art). Swap #boot-title's text for an <img>
+       (your own logo) to use a real title image. */
+    #boot {
+      position: fixed; inset: 0; z-index: 9999;
+      display: flex; align-items: center; justify-content: center;
+      background: radial-gradient(circle at 50% 32%, #1c1238 0%, #0a0612 68%, #000 100%);
+      color: #fff; font-family: 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif;
+      transition: opacity 0.45s ease;
+    }
+    #boot-inner { text-align: center; width: min(82vw, 460px); }
+    #boot-title {
+      font-weight: 800; letter-spacing: 0.12em; line-height: 1.04;
+      font-size: clamp(30px, 7.5vw, 58px);
+      color: #ffd84a; text-shadow: 0 2px 0 #c2410c, 0 5px 18px rgba(0, 0, 0, 0.6);
+    }
+    #boot-title span {
+      display: block; color: #6ad7ff; font-size: 0.46em;
+      letter-spacing: 0.38em; margin-top: 0.35em; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+    }
+    #boot-barwrap {
+      margin: 30px auto 12px; height: 12px; width: 100%;
+      background: rgba(255, 255, 255, 0.12); border-radius: 999px; overflow: hidden;
+      box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.55);
+    }
+    #boot-bar {
+      height: 100%; width: 0%;
+      background: linear-gradient(90deg, #ffd84a, #ff8a3d);
+      border-radius: 999px; transition: width 0.25s ease;
+    }
+    #boot-label { font-size: 13px; letter-spacing: 0.1em; color: #b9a9d6; }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <!-- Instant boot screen (see #boot CSS above). Shown until main.ts finishes
+       loading, then faded out by window.__boot.done(). -->
+  <div id="boot">
+    <div id="boot-inner">
+      <div id="boot-title">199X</div>
+      <div id="boot-barwrap"><div id="boot-bar"></div></div>
+      <div id="boot-label">Loading&hellip;</div>
+    </div>
+  </div>
+  <script>
+    // Minimal boot-screen API, defined BEFORE the module script so main.ts can
+    // drive it. set(frac) advances the bar (monotonic); done() fades it away.
+    window.__boot = (function () {
+      var el = document.getElementById('boot');
+      var bar = document.getElementById('boot-bar');
+      var label = document.getElementById('boot-label');
+      var cur = 0;
+      return {
+        set: function (frac, text) {
+          frac = Math.max(cur, Math.min(1, frac || 0)); // never go backwards
+          cur = frac;
+          if (bar) bar.style.width = (frac * 100).toFixed(1) + '%';
+          if (text && label) label.textContent = text;
+        },
+        done: function () {
+          if (!el) return;
+          if (bar) bar.style.width = '100%';
+          el.style.opacity = '0';
+          setTimeout(function () { if (el) el.style.display = 'none'; }, 480);
+        },
+      };
+    })();
+  </script>
+  <script>
+    // SPC engine memory initializer data (3KB) embedded inline to avoid XHR fetch issues
+    var __spcMemData = (function() {
+      var b64 = "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";
+      var raw = atob(b64);
+      var arr = new Uint8Array(raw.length);
+      for (var i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+      return arr;
+    })();
+    var Module = {};
+  </script>
+  <script src="/spc_engine.js"></script>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

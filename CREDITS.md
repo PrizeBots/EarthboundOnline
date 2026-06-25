@@ -1,6 +1,6 @@
 # Credits & Acknowledgements
 
-Zexonyte Online is a fan project. It is built on the work of many other
+199X is a fan project. It is built on the work of many other
 people and projects. This file lists everything we use and who deserves credit.
 
 > **Note:** We never distribute ROM-derived data. _EarthBound_ assets stay in

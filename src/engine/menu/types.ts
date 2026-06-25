@@ -44,6 +44,17 @@ export interface MenuHooks {
    *  game enters a mode to pick self or an ally, then sends the cast. Returning
    *  true means the game took over (the menu should NOT cast directly). Optional. */
   beginPsiTarget?(abilityId: string): boolean;
+  /** Begin AIM-selection for an OFFENSE PSI on touch (no mouse to aim with): the
+   *  game enters a mode where the next world tap casts the move toward it (the
+   *  mobile equivalent of "aim with the mouse, press the number key"). Returns true
+   *  if the game took over (the menu should NOT cast directly); false on desktop,
+   *  where the cursor already aims. Optional. */
+  beginPsiAim?(abilityId: string): boolean;
+  /** Current mouse-aim for a directional cast (PSI Fire etc.): faces the player to
+   *  the cursor and returns the snapped 8-way `dir` + the raw aim unit vector — the
+   *  same line attacks use. Falls back to the current facing (no mouse / menu open).
+   *  Optional. */
+  getAim?(): { dir: number; aimx: number; aimy: number };
 }
 
 /** Stat-change preview for the highlighted Buy item: how a stat would read after

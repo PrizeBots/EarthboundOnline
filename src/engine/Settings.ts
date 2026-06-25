@@ -12,28 +12,76 @@ import { setMusicVolume, getMusicVolume, setSfxVolume, getSfxVolume } from './Mu
 const STORAGE_KEY = 'eb_settings';
 export const SLIDER_STEP = 0.1; // ±/click granularity for the volume sliders
 
-export type SettingKey = 'bgm' | 'sfx' | 'showMoney';
+export type SettingKey =
+  | 'bgm'
+  | 'sfx'
+  | 'showMoney'
+  | 'crosshairColor'
+  | 'crosshairType'
+  | 'cursorSize';
+
+// Crosshair cursor choices (see Aim.drawReticle). `option` rows cycle through
+// these labels; the index is what's stored. COLOR_CSS maps a color label to its
+// CSS value (kept here so Settings owns the whole option table).
+export const CROSSHAIR_COLORS = ['White', 'Black', 'Red', 'Green'] as const;
+export const CROSSHAIR_TYPES = ['Cross', 'Dot', 'Scope'] as const;
+// Pointer-glove size (see Aim.gloveCursor). Each label maps to an upscale factor
+// on the 13×16 art; final px = factor × 16 tall, all within the 128px cursor cap.
+// Mouse-only — touch devices never show a cursor, so this is desktop QoL.
+export const CURSOR_SIZES = ['Small', 'Medium', 'Large'] as const;
+const CURSOR_SCALES = [2, 3, 4]; // px-per-art-pixel for Small/Medium/Large
+const COLOR_CSS: Record<string, string> = {
+  White: '#ffffff',
+  Black: '#000000',
+  Red: '#ff4040',
+  Green: '#40e060',
+};
 
 /** One row of the Settings screen, shared by layout/render/input so they never
- *  drift. `slider` rows are 0..1 floats; `toggle` rows are booleans. */
+ *  drift. `slider` rows are 0..1 floats; `toggle` rows are booleans; `option` rows
+ *  cycle a labeled list (←/→ or click), storing the selected index. */
 export interface SettingRow {
   key: SettingKey;
   label: string;
-  kind: 'slider' | 'toggle';
+  kind: 'slider' | 'toggle' | 'option';
 }
 export const SETTINGS_ROWS: SettingRow[] = [
   { key: 'bgm', label: 'BGM Volume', kind: 'slider' },
   { key: 'sfx', label: 'Sound FX', kind: 'slider' },
   { key: 'showMoney', label: 'Show $ in corner', kind: 'toggle' },
+  { key: 'crosshairColor', label: 'Crosshair Color', kind: 'option' },
+  { key: 'crosshairType', label: 'Crosshair Style', kind: 'option' },
+  { key: 'cursorSize', label: 'Cursor Size', kind: 'option' },
 ];
+
+// The choice list backing each `option` row.
+const OPTION_LISTS: Partial<Record<SettingKey, readonly string[]>> = {
+  crosshairColor: CROSSHAIR_COLORS,
+  crosshairType: CROSSHAIR_TYPES,
+  cursorSize: CURSOR_SIZES,
+};
 
 interface SettingsState {
   bgm: number; // 0..1
   sfx: number; // 0..1
   showMoney: boolean;
+  crosshairColor: number; // index into CROSSHAIR_COLORS
+  crosshairType: number; // index into CROSSHAIR_TYPES
+  cursorSize: number; // index into CURSOR_SIZES
 }
 
-const DEFAULTS: SettingsState = { bgm: 0.5, sfx: 0.7, showMoney: false };
+const DEFAULTS: SettingsState = {
+  bgm: 0.5,
+  sfx: 0.7,
+  showMoney: false,
+  crosshairColor: 0,
+  crosshairType: 0,
+  cursorSize: 1, // Medium
+};
+
+const wrapIdx = (i: number, n: number): number => ((i % n) + n) % n;
+const clampIdx = (v: unknown, n: number): number =>
+  typeof v === 'number' && v >= 0 && v < n ? Math.floor(v) : 0;
 
 function load(): SettingsState {
   try {
@@ -44,6 +92,9 @@ function load(): SettingsState {
       bgm: clamp01(typeof p.bgm === 'number' ? p.bgm : DEFAULTS.bgm),
       sfx: clamp01(typeof p.sfx === 'number' ? p.sfx : DEFAULTS.sfx),
       showMoney: p.showMoney === true,
+      crosshairColor: clampIdx(p.crosshairColor, CROSSHAIR_COLORS.length),
+      crosshairType: clampIdx(p.crosshairType, CROSSHAIR_TYPES.length),
+      cursorSize: clampIdx(p.cursorSize, CURSOR_SIZES.length),
     };
   } catch {
     return { ...DEFAULTS };
@@ -108,4 +159,51 @@ export function adjustSlider(key: SettingKey, dir: number): void {
 export function flipToggle(key: SettingKey): void {
   if (key === 'showMoney') state.showMoney = !state.showMoney;
   persist();
+}
+
+// Current stored index for an `option` row (0 if it's not an option key).
+function optionIndex(key: SettingKey): number {
+  switch (key) {
+    case 'crosshairColor':
+      return state.crosshairColor;
+    case 'crosshairType':
+      return state.crosshairType;
+    case 'cursorSize':
+      return state.cursorSize;
+    default:
+      return 0;
+  }
+}
+
+/** An option row's current choice label (shown right-aligned on the row). */
+export function getOptionLabel(key: SettingKey): string {
+  const list = OPTION_LISTS[key];
+  if (!list) return '';
+  return list[optionIndex(key)] ?? list[0];
+}
+
+/** Cycle an option row by `dir` (±1, wrapping) and persist. */
+export function cycleOption(key: SettingKey, dir: number): void {
+  const list = OPTION_LISTS[key];
+  if (!list) return;
+  const next = wrapIdx(optionIndex(key) + dir, list.length);
+  if (key === 'crosshairColor') state.crosshairColor = next;
+  else if (key === 'crosshairType') state.crosshairType = next;
+  else if (key === 'cursorSize') state.cursorSize = next;
+  persist();
+}
+
+/** The crosshair's CSS color (from the chosen color option). */
+export function getCrosshairColor(): string {
+  return COLOR_CSS[CROSSHAIR_COLORS[state.crosshairColor]] ?? '#ffffff';
+}
+
+/** The crosshair style index (0 = Cross, 1 = Dot, 2 = Scope). */
+export function getCrosshairType(): number {
+  return state.crosshairType;
+}
+
+/** Upscale factor for the pointer glove (from the chosen Cursor Size). */
+export function getCursorScale(): number {
+  return CURSOR_SCALES[state.cursorSize] ?? CURSOR_SCALES[1];
 }

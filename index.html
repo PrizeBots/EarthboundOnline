@@ -1,122 +1,254 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <title>Zexonyte Online</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      background: #000;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-      overflow: hidden;
-      /* Mobile: kill page scroll/pinch-zoom/double-tap-zoom and the iOS tap
-         flash + text selection, so touches drive the game, not the browser. */
-      touch-action: none;
-      -webkit-user-select: none;
-      user-select: none;
-      -webkit-touch-callout: none;
-      -webkit-tap-highlight-color: transparent;
-    }
-    canvas {
-      image-rendering: pixelated;
-      image-rendering: crisp-edges;
-      touch-action: none;
-    }
-    /* Keep DOM form controls (ROM picker, account login) fully editable/selectable
-       despite the body-level user-select:none above. */
-    input, textarea, select {
-      -webkit-user-select: text;
-      user-select: text;
-      -webkit-touch-callout: default;
-    }
-
-    /* Boot screen — painted from static HTML the instant the page parses (before
-       any JS/assets), so the first thing you see is the title + a load bar, not a
-       black screen. JS drives #boot-bar and removes #boot when the game is ready.
-       Pure text/CSS (no ROM-derived art). Swap #boot-title's text for an <img>
-       (your own logo) to use a real title image. */
-    #boot {
-      position: fixed; inset: 0; z-index: 9999;
-      display: flex; align-items: center; justify-content: center;
-      background: radial-gradient(circle at 50% 32%, #1c1238 0%, #0a0612 68%, #000 100%);
-      color: #fff; font-family: 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif;
-      transition: opacity 0.45s ease;
-    }
-    #boot-inner { text-align: center; width: min(82vw, 460px); }
-    #boot-title {
-      font-weight: 800; letter-spacing: 0.12em; line-height: 1.04;
-      font-size: clamp(30px, 7.5vw, 58px);
-      color: #ffd84a; text-shadow: 0 2px 0 #c2410c, 0 5px 18px rgba(0, 0, 0, 0.6);
-    }
-    #boot-title span {
-      display: block; color: #6ad7ff; font-size: 0.46em;
-      letter-spacing: 0.38em; margin-top: 0.35em; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
-    }
-    #boot-barwrap {
-      margin: 30px auto 12px; height: 12px; width: 100%;
-      background: rgba(255, 255, 255, 0.12); border-radius: 999px; overflow: hidden;
-      box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.55);
-    }
-    #boot-bar {
-      height: 100%; width: 0%;
-      background: linear-gradient(90deg, #ffd84a, #ff8a3d);
-      border-radius: 999px; transition: width 0.25s ease;
-    }
-    #boot-label { font-size: 13px; letter-spacing: 0.1em; color: #b9a9d6; }
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>199X — The timeline is broken</title>
+  <meta name="description" content="199X — MMO Action." />
+  <link rel="stylesheet" href="/site.css" />
+  <script>
+    // Dev convenience: on localhost, boot straight to the game's char-select
+    // (existing dev loop). "/?view" shows the landing in dev. Prod never redirects.
+    (function () {
+      var host = location.hostname;
+      var isLocal = host === 'localhost' || host === '127.0.0.1' || host === '';
+      var params = new URLSearchParams(location.search);
+      if (isLocal && !params.has('view')) {
+        // Carry the query string through so dev flags survive the redirect
+        // (e.g. /?netdebug -> /play.html?netdebug). 'view' is the landing opt-out.
+        params.delete('view');
+        var qs = params.toString();
+        location.replace('/play.html' + (qs ? '?' + qs : ''));
+      }
+    })();
+  </script>
 </head>
-<body>
-  <canvas id="game"></canvas>
 
-  <!-- Instant boot screen (see #boot CSS above). Shown until main.ts finishes
-       loading, then faded out by window.__boot.done(). -->
-  <div id="boot">
-    <div id="boot-inner">
-      <div id="boot-title">ZEXONYTE<span>ONLINE</span></div>
-      <div id="boot-barwrap"><div id="boot-bar"></div></div>
-      <div id="boot-label">Loading&hellip;</div>
-    </div>
+<body>
+  <div class="bg-fx"></div>
+  <div class="site">
+    <header class="site-header">
+      <a class="brand" href="/">199X <small>ONLINE</small></a>
+      <nav class="site-nav">
+        <button class="tab-btn active" data-tab="home">Home</button>
+        <button class="tab-btn" data-tab="devlog">Dev Log</button>
+        <button class="icon-btn" id="audio-toggle" title="Toggle ambient sound" hidden>🔈</button>
+        <!-- Dev-only — revealed by site.js for devs (localhost or ?dev=1). -->
+        <a class="nav-game" id="nav-game" href="/play.html" hidden>Enter Game ▸</a>
+      </nav>
+    </header>
+
+    <!-- ============================== HOME TAB ============================== -->
+    <section class="tab-panel active" id="tab-home">
+      <div class="hero">
+        <div class="hero-copy">
+          <div class="eyebrow">A prison fell on Onett.</div>
+          <div class="eyebrow">and Future Andonuts returned to 199x to destroy it.</div>
+
+          <h1 class="hero-headline">
+            The meteorite was the safety capsule.<br />
+            <span class="accent">And what's inside must be destroyed</span>
+            <div class="eyebrow">**Spankety Spankety!**</div>
+          </h1>
+          <p class="hero-sub">After marinating for an eternity in PSI psychosis, the minion of evil
+             came to Earth for vegenance.
+            When Dr. Andonuts realized the machine built to send <strong>the 4 heroes </strong> in the 
+            past was made from the same material he just used to build the prison capsule, he immediately 
+            started began work on a new phase machine to travel back to 199x and fix his mistake before
+            it's too late.
+            
+            <span class="call">You're one soul in a revived army — pulled back across shattered realities to hold the
+              line and set the timeline right.</span>
+          </p>
+          <div class="soon-banner"><span class="dot"></span> Founders Pass — Coming Soon · No ETA yet</div>
+          <div class="hero-actions">
+            <a class="btn btn-buy" href="#founders">About the Founders Pass ▾</a>
+            <button class="btn btn-ghost" data-tab="devlog">Read the Dev Log</button>
+          </div>
+        </div>
+
+        <!-- CSS placeholder for the real hero art (Ness's house at night, caveman
+             striking the glowing crater). Replace this whole .hero-art block with
+             the pixel-art GIF/render when it exists. -->
+        <div class="hero-art" aria-hidden="true">
+          <!-- Drop the real art at public/img/hero.png → it loads here and hides the
+               CSS placeholder. If the file is missing the <img> removes itself. -->
+          <img class="hero-img" src="/img/hero.png" alt="" onload="this.parentElement.classList.add('has-img')"
+            onerror="this.remove()" />
+          <span class="art-note">// hero art — placeholder</span>
+          <span class="spark p"></span>
+          <span class="spark"></span>
+          <span class="spark p"></span>
+          <span class="spark"></span>
+          <span class="spark"></span>
+          <span class="crater"></span>
+        </div>
+      </div>
+
+      <!-- Section 2: The Briefing (lore, framed as a classified field report) -->
+      <div class="briefing">
+        <div class="section-kicker">The Briefing</div>
+        <div class="dossier">
+          <div class="dossier-head">
+            <span>📂 Log Entry — Dr. Andonuts</span>
+            <span>Year: Unknown</span>
+            <span class="stamp">Classified</span>
+          </div>
+          <div class="dossier-body">
+            <p>"My calculations were correct, but my destination was catastrophic. I used a
+              space-age alloy called <b>Zexonyte</b> to build the Absolutely Safe Capsule at
+              the end of time to trap Pokey forever. But eternity is a long time for malice to
+              fester. Over billions of years, that capsule drifted through the cosmos,
+              calcified, and became the very meteorite that crashed behind Ness's house in
+              199X.</p>
+            <p>The timeline is in a recursive loop. The radiation — <b>Chemical Z</b> — is
+              bleeding into the soil, putting Ness into a psychic coma and mutating the
+              wildlife. I have modified my Instant Revitalizing Machines to pull souls from
+              parallel realities into physical forms. You are those souls. I need an army to
+              hold the line while my prehistoric companion hacks away at the capsule hull."</p>
+            <div class="dossier-sign">— DR. ANDONUTS<span class="cursor">_</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 3: Tech & Roadmap (proof it's real) -->
+      <div class="section">
+        <div class="section-kicker">The Reality</div>
+        <div class="section-title">A live engine, already running</div>
+        <div class="roadmap-grid">
+          <div class="tech-card">
+            <h3>The Engine</h3>
+            <p>199X runs on a high-performance <code>node-datachannel</code> (WebRTC)
+              architecture — real-time action combat that streams straight to your browser.
+              Open a tab and you're in the crater, sword already swinging.</p>
+          </div>
+          <div class="tech-card">
+            <span class="phase-badge">Founders Alpha — Phase 1</span>
+            <ul class="phase-list">
+              <li><span class="tick">▸</span><span><b>Levels 1–10.</b> Full progression from revival to your first real
+                  power.</span></li>
+              <li><span class="tick">▸</span><span><b>Onett Suburbs.</b> The opening zone — explorable and
+                  mutating.</span></li>
+              <li><span class="tick">▸</span><span><b>Town Hall Liberation.</b> The first cooperative objective.</span>
+              </li>
+              <li><span class="tick">▸</span><span><b>Giant Step Pre-Raid.</b> The road to the first sanctuary.</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 4: Founders CTA -->
+      <div class="section" id="founders">
+        <div class="section-narrow founders">
+          <h2>🔬 Join the Founding Research Batch</h2>
+          <p class="lede">
+            Every pass <b>funds Dr. Andonuts' research</b> and grants your account access to
+            the Pre-Alpha phase. Only <b>100 Founders Lab Passes</b> will ever exist.
+          </p>
+          <ul class="perks">
+            <li><span class="tick">▸</span><span class="txt"><b>Direct Access.</b> Defend the Onett crater alongside Dr.
+                Andonuts and his Caveman.</span></li>
+            <li><span class="tick">▸</span><span class="txt"><b>Fund the Engine.</b> Help stress-test our custom
+                real-time WebRTC architecture.</span></li>
+            <li><span class="tick">▸</span><span class="txt"><b>Exclusive Perks.</b> Earn permanent legendary status and
+                unique cosmetic unlocks for the full launch.</span></li>
+          </ul>
+          <div class="buy-row">
+            <div class="soon-banner"><span class="dot"></span> Coming Soon · No release date yet</div>
+            <button class="btn btn-buy btn-block" disabled>Buy Founders Lab Pass — Coming Soon</button>
+            <div class="slots">Only <b>100</b> passes at launch · Planned ~$29.99</div>
+            <a class="btn btn-ghost btn-block" href="/shop.html">Founders Pass details ›</a>
+          </div>
+        </div>
+      </div>
+
+      <footer class="site-footer">
+        <span>© 2026 199X. An independent fan project. EarthBound is a trademark of Nintendo / HAL Laboratory / APE /
+          Shigesato Itoi — 199X is not affiliated with or endorsed by them.</span>
+        <a href="/shop.html">Founders Pass</a>
+      </footer>
+    </section>
+
+    <!-- ============================== DEV LOG TAB ============================== -->
+    <section class="tab-panel" id="tab-devlog">
+      <div class="devlog">
+        <div class="devlog-head">
+          <div class="section-kicker">Transmissions from the lab</div>
+          <h2 class="section-title">Dev Log</h2>
+        </div>
+
+        <!-- Add new entries at the top. Format: .log-entry > .log-date + h3 + p -->
+        <div class="log-empty">// AWAITING FIRST TRANSMISSION …</div>
+
+        <!--
+        Example entry (copy this when you post the first real update):
+        <div class="log-entry">
+          <div class="log-date">199X.06.25</div>
+          <h3>The crater opens</h3>
+          <p>First public build of the engine is live for Founders…</p>
+        </div>
+        -->
+      </div>
+
+      <footer class="site-footer">
+        <span>© 2026 199X. An independent fan project. EarthBound is a trademark of Nintendo / HAL Laboratory / APE /
+          Shigesato Itoi — 199X is not affiliated with or endorsed by them.</span>
+        <a href="/shop.html">Founders Pass</a>
+      </footer>
+    </section>
   </div>
+
+  <!-- Ambient audio: hidden until a real track exists at /audio/ambient.mp3.
+       Drop the file in public/audio/ and the toggle reveals itself. -->
+  <audio id="ambient" loop preload="none">
+    <source src="/audio/ambient.mp3" type="audio/mpeg" />
+  </audio>
+
   <script>
-    // Minimal boot-screen API, defined BEFORE the module script so main.ts can
-    // drive it. set(frac) advances the bar (monotonic); done() fades it away.
-    window.__boot = (function () {
-      var el = document.getElementById('boot');
-      var bar = document.getElementById('boot-bar');
-      var label = document.getElementById('boot-label');
-      var cur = 0;
-      return {
-        set: function (frac, text) {
-          frac = Math.max(cur, Math.min(1, frac || 0)); // never go backwards
-          cur = frac;
-          if (bar) bar.style.width = (frac * 100).toFixed(1) + '%';
-          if (text && label) label.textContent = text;
-        },
-        done: function () {
-          if (!el) return;
-          if (bar) bar.style.width = '100%';
-          el.style.opacity = '0';
-          setTimeout(function () { if (el) el.style.display = 'none'; }, 480);
-        },
-      };
+    (function () {
+      // ---- Tabs (Home / Dev Log) ----
+      var tabs = document.querySelectorAll('[data-tab]');
+      function show(name) {
+        document.querySelectorAll('.tab-panel').forEach(function (p) {
+          p.classList.toggle('active', p.id === 'tab-' + name);
+        });
+        document.querySelectorAll('.tab-btn').forEach(function (b) {
+          b.classList.toggle('active', b.dataset.tab === name);
+        });
+        location.hash = name === 'devlog' ? 'devlog' : '';
+        window.scrollTo(0, 0);
+      }
+      tabs.forEach(function (el) {
+        el.addEventListener('click', function (e) {
+          // Ghost button is a real link target? no — it's a button; tab buttons too.
+          show(el.dataset.tab);
+          if (el.tagName === 'BUTTON') e.preventDefault();
+        });
+      });
+      if (location.hash === '#devlog') show('devlog');
+
+      // ---- Ambient audio toggle (degrades if the track is missing) ----
+      var audio = document.getElementById('ambient');
+      var btn = document.getElementById('audio-toggle');
+      if (audio && btn) {
+        var ok = false;
+        audio.addEventListener('canplay', function () {
+          ok = true; btn.hidden = false;
+        });
+        // Loading the source fails (no file yet) -> keep the toggle hidden.
+        audio.addEventListener('error', function () { btn.hidden = true; });
+        try { audio.load(); } catch (e) { }
+        btn.addEventListener('click', function () {
+          if (!ok) return;
+          if (audio.paused) { audio.play(); btn.textContent = '🔊'; }
+          else { audio.pause(); btn.textContent = '🔈'; }
+        });
+      }
     })();
   </script>
-  <script>
-    // SPC engine memory initializer data (3KB) embedded inline to avoid XHR fetch issues
-    var __spcMemData = (function() {
-      var b64 = "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";
-      var raw = atob(b64);
-      var arr = new Uint8Array(raw.length);
-      for (var i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
-      return arr;
-    })();
-    var Module = {};
-  </script>
-  <script src="/spc_engine.js"></script>
-  <script type="module" src="/src/main.ts"></script>
+  <script src="/site.js"></script>
 </body>
+
 </html>

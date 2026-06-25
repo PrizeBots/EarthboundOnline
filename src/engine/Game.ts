@@ -13,10 +13,12 @@ import {
   getKeySet,
   consumePointerClick,
   isPointerDown,
+  isMouseAimActive,
+  getPointer,
   flushKeys,
   releaseVirtualTaps,
 } from './Input';
-import { mountTouchControls, setTouchContext } from './TouchControls';
+import { mountTouchControls, setTouchContext, isTouchDevice } from './TouchControls';
 import { pollGamepads, mountGamepadDebug, consumeGamepadNav } from './Gamepad';
 import { hotbarBoxAt, setFavoriteThing, setPsiDev } from './menu/layout';
 import { loadMapData, getSector, getDrawTilesetId } from './MapManager';
@@ -39,6 +41,7 @@ import {
   liveNpcForKey,
   npcById,
   resetNpcInterp,
+  markNpcsGone,
 } from './NPCManager';
 import { NPC } from './NPC';
 import { beginGiftOpen, giftOpened } from './Gifts';
@@ -83,7 +86,17 @@ import { openLevelUp, isLevelUpOpen } from './LevelUpModal';
 import { loadNameOverrides, getSpriteName } from './SpriteNames';
 import { loadCustomSprites } from './CustomSprites';
 import { loadSongNameOverrides } from './SongNames';
-import { setStatus } from './StatusModal';
+import {
+  setStatus,
+  tickStamina,
+  spendStamina,
+  canAttackStamina,
+  reconcileStamina,
+  STAMINA_ATTACK_COST,
+  tickPp,
+  reconcilePp,
+  notePpCombat,
+} from './StatusModal';
 import {
   pushRemoteSnapshot,
   dropRemoteBuffer,
@@ -141,7 +154,7 @@ import {
 } from './MenuManager';
 import { renderXpBar, XP_BAR_BOTTOM } from './XpBar';
 import { preloadSwirl, swirlReady, drawSwirl } from './SwirlTransition';
-import { computeAim, drawReticle } from './Aim';
+import { computeAim, aimFromScreen, drawReticle, gloveCursor, dirToVector } from './Aim';
 import {
   initDialogue,
   openDialogue,
@@ -316,10 +329,14 @@ export class Game {
   // Epoch-ms the current give-up hold began (0 = not holding). The downed player
   // must hold for GIVE_UP_HOLD_MS to die; releasing early resets it.
   private giveUpHoldStart = 0;
+  // Latched once the give-up hold completes (sendGiveUp fired). Keeps the vignette
+  // black + the body sunk while we wait for the server's respawn/revive, and stops
+  // _updateGiveUp from re-sending. Cleared when the downed state resolves.
+  private giveUpSent = false;
   // Active PSI target-selection (party-target PSI: Lifeup/Healing/revive). While
   // set, the world is in "pick a target" mode (self/ally, or a downed ally for
   // revive) instead of normal play. Null = not targeting.
-  private psiTargeting: { abilityId: string; kind: 'ally' | 'downed' } | null = null;
+  private psiTargeting: { abilityId: string; kind: 'ally' | 'downed' | 'aim' } | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
@@ -563,6 +580,22 @@ export class Game {
       itemUseFx: (id) => spawnItemFx(id, this.player.x, this.player.y),
       // Party-target PSI: enter target mode (pick self or an ally), then cast.
       beginPsiTarget: (abilityId) => this._beginPsiTarget(abilityId),
+      // Offense PSI on touch: enter aim mode (next world tap casts toward it).
+      beginPsiAim: (abilityId) => this._beginPsiAim(abilityId),
+      // Directional PSI (Fire etc.) aims at the cursor like a melee/ranged swing:
+      // face the player to the aim and hand back the same vector. While a menu is
+      // open the cursor is on UI, not the world — fall back to the current facing.
+      getAim: () => {
+        if (!isMenuOpen()) {
+          const aim = computeAim(this.camera, this.player);
+          if (aim.active) {
+            this.player.direction = aim.dir;
+            return { dir: aim.dir, aimx: aim.vx, aimy: aim.vy };
+          }
+        }
+        const v = dirToVector(this.player.direction);
+        return { dir: this.player.direction, aimx: v.vx, aimy: v.vy };
+      },
     });
     initChat(getKeySet());
     initDialogue(getKeySet());
@@ -701,6 +734,9 @@ export class Game {
         onNpcUpdate: (rows, t) => {
           applyNpcUpdates(rows, t);
         },
+        onNpcLeave: (ids) => {
+          markNpcsGone(ids); // server says these left our view → hide immediately
+        },
         onNpcHp: (rows) => {
           applyNpcHp(rows);
         },
@@ -720,6 +756,7 @@ export class Game {
             clearMortalRoll(this.player);
             this.player.hp = hp;
             this.player.maxHp = maxHp;
+            if (dmg > 0) notePpCombat(); // taking a hit throttles PP regen (mirror server)
             if (dmg > 0) {
               // Lunge the attacker into range. The server CONFIRMED this enemy
               // connected, but we render it ~interp+latency in the past, so it can
@@ -936,6 +973,7 @@ export class Game {
             this.player.downedUntil = until;
             this.player.downedTotalMs = ms;
             this.player.giveUpProgress = 0;
+            this.giveUpSent = false;
             this.player.moving = false;
             spawnKoThrow(this.player, dx, dy, force);
             playEventSfx('player-die'); // the meter hit 0 — you fell
@@ -955,6 +993,7 @@ export class Game {
             clearMortalRoll(this.player);
             this.player.downed = false;
             this.player.giveUpProgress = 0;
+            this.giveUpSent = false;
             clearKoThrow(this.player);
           } else {
             const rp = this.remotePlayers.get(id);
@@ -1011,6 +1050,7 @@ export class Game {
             // True death resolved the KO — clear the downed/vignette/throw state.
             this.player.downed = false;
             this.player.giveUpProgress = 0;
+            this.giveUpSent = false;
             clearKoThrow(this.player);
             // While editing (dev), the free camera owns the view — don't yank it
             // back to the avatar. The server shouldn't respawn us at all in editor
@@ -1077,6 +1117,16 @@ export class Game {
             spawnLevelUp(this.player.x, this.player.y);
             playEventSfx('level-up');
           }
+        },
+        onPlayerStamina: (stamina, max, winded) => {
+          // Throttled authoritative stamina sync — ease our predicted value toward
+          // it (and adopt the winded latch) so a mid-drain correction doesn't jolt.
+          reconcileStamina(stamina, max, winded);
+        },
+        onPlayerPp: (pp, max) => {
+          // Throttled authoritative PP sync — ease the predicted bar toward it (same
+          // as stamina), so regen reads smooth while staying server-correct.
+          reconcilePp(pp, max);
         },
         onPoints: (points, alloc) => {
           // Authoritative banked points + alloc (server pushes on level-up / spend /
@@ -1678,6 +1728,10 @@ export class Game {
   }
 
   private update() {
+    // Predicted stamina + PP regen — one fixed 60Hz step's worth, every step (even
+    // with a menu open). Server syncs correct any drift (onPlayerStamina/onPlayerPp).
+    tickStamina(1000 / 60);
+    tickPp(1000 / 60);
     // A virtual (touch/gamepad) tap is injected as a one-frame key press. With the
     // fixed-timestep loop several sim steps can run in a single animation frame, so
     // the tap must be released at the end of EVERY step — otherwise one tap would
@@ -1874,22 +1928,26 @@ export class Game {
       return;
     }
 
+    // The cursor is contextual: over the world it aims (left-click = swing); over
+    // the hotbar it's the UI glove (left-click = use that slot). So when the pointer
+    // is on a hotbar slot, consume the click HERE — consumePointerClick also clears
+    // the attack latch, so the same button triggers the slot instead of swinging.
+    // KeyF still attacks regardless (keyboard isn't aiming at the bar).
+    if (this.pointerOverHotbar()) {
+      const tap = consumePointerClick();
+      if (tap) {
+        const box = hotbarBoxAt(tap.x, tap.y);
+        if (box >= 0) triggerHotbarSlot(box);
+      }
+    }
+
     // F = attack swing, H = hurt flinch (debug hook). Weapons are swapped via the
     // 1/2 hotbar now — there's no separate cycle key. A swing that actually starts
     // is sent to the server, which resolves the hit (server-authoritative damage).
-    if (isAttackPressed() && this.player.attack()) {
-      // Aim at the cursor: snap the player's facing to the aim so the swing points
-      // where the mouse is, and hand the server the raw aim vector for the true-
-      // angle hitbox/projectile. No mouse (touch/keyboard) → aim falls back to the
-      // current facing, so the old behavior is preserved.
-      const aim = computeAim(this.camera, this.player);
-      this.player.direction = aim.dir;
-      sendAttack(this.player.x, this.player.y, aim.dir, aim.vx, aim.vy);
-      playEventSfx('player-attack');
-      // Predict the swing's knockback so a struck enemy/player lurches THIS frame
-      // instead of a round-trip later (server still resolves the real hit).
-      predictMeleeKnockback(this.player.x, this.player.y, aim.dir, this.player.level);
-      this.predictPvpKnockback(this.player.x, this.player.y, aim.dir);
+    if (isAttackPressed()) {
+      // KeyF (A button) or left-click: swing aimed at the cursor (mouse) or the
+      // current facing (touch / keyboard). See performAttack.
+      this.performAttack(computeAim(this.camera, this.player));
     }
     // 1/2 = trigger the quick-select slot during overworld play (brandish a
     // weapon, use a consumable, or cast an assigned PSI move).
@@ -1901,7 +1959,16 @@ export class Game {
     const tap = consumePointerClick();
     if (tap) {
       const box = hotbarBoxAt(tap.x, tap.y);
-      if (box >= 0) triggerHotbarSlot(box);
+      if (box >= 0) {
+        triggerHotbarSlot(box);
+      } else if (!isMouseAimActive()) {
+        // Mobile tap-to-attack: a tap on the WORLD (not the hotbar) swings toward
+        // it — the touch equivalent of PC click-to-aim. Touch-only: on a real mouse
+        // the click already swung above via mouseAttack (isMouseAimActive), so this
+        // branch is skipped and we never double-fire. The tap point is game-space
+        // px, same as the cursor, so aimFromScreen reuses the click-aim math.
+        this.performAttack(aimFromScreen(this.camera, this.player, tap.x, tap.y));
+      }
     }
     if (isHurtPressed()) this.player.hurt();
     if (isToggleBoxesPressed()) setDebugBoxes(!debugBoxesOn());
@@ -1977,13 +2044,35 @@ export class Game {
     // The server simulates it and ACKs via `pos` → reconcile. Idle frames send
     // nothing (the server holds position).
     const inp = this.player.lastInputToSend;
-    if (inp) sendInput(inp.seq, inp.dx, inp.dy);
+    if (inp) sendInput(inp.seq, inp.dx, inp.dy, inp.run);
 
     if (!this.loadingPromise) {
       this.loadingPromise = this.loadNearbySectors().finally(() => {
         this.loadingPromise = null;
       });
     }
+  }
+
+  /** Run one melee swing aimed along `aim` (a unit vector + its snapped facing):
+   *  the stamina gate + "Too tired" notice, start the swing, face the aim, tell the
+   *  server (authoritative damage), and predict the knockback THIS frame. Shared by
+   *  the keyboard/click/A-button attack (computeAim) and mobile tap-to-attack
+   *  (aimFromScreen) so every swing path behaves identically. */
+  private performAttack(aim: { vx: number; vy: number; dir: Direction }): void {
+    // Stamina gate (mirrors the PP gate on PSI): no stamina → no swing, just a
+    // "Too tired" notice — only on a genuine attempt, not mid-swing. Server enforces
+    // the same gate + drain.
+    if (!canAttackStamina()) {
+      if (this.player.pose !== 'attack') spawnNoticeText(this.player.x, this.player.y, 'Too tired');
+      return;
+    }
+    if (!this.player.attack()) return; // already swinging / can't start
+    spendStamina(STAMINA_ATTACK_COST); // predicted; server is authoritative
+    this.player.direction = aim.dir; // snap facing to the aim so the swing points there
+    sendAttack(this.player.x, this.player.y, aim.dir, aim.vx, aim.vy);
+    playEventSfx('player-attack');
+    predictMeleeKnockback(this.player.x, this.player.y, aim.dir, this.player.level);
+    this.predictPvpKnockback(this.player.x, this.player.y, aim.dir);
   }
 
   /**
@@ -1999,6 +2088,12 @@ export class Game {
   // giveUpProgress (0..1) drives both the on-screen meter and that vignette boost.
   private _updateGiveUp(): void {
     const GIVE_UP_HOLD_MS = 2000;
+    // Already committed: hold the vignette fully black + the body fully sunk until
+    // the server resolves the death (respawn) — don't re-send or pop the body up.
+    if (this.giveUpSent) {
+      this.player.giveUpProgress = 1;
+      return;
+    }
     const held = getKeySet().size > 0 || isPointerDown();
     const now = Date.now();
     if (!held) {
@@ -2011,8 +2106,9 @@ export class Game {
     this.player.giveUpProgress = Math.min(1, dur / GIVE_UP_HOLD_MS);
     if (dur >= GIVE_UP_HOLD_MS) {
       sendGiveUp();
+      this.giveUpSent = true;
       this.giveUpHoldStart = 0;
-      this.player.giveUpProgress = 0;
+      this.player.giveUpProgress = 1; // stay black + sunk until the server respawns us
     }
   }
 
@@ -2030,11 +2126,46 @@ export class Game {
     return true;
   }
 
+  /** Enter AIM mode for an offense PSI — touch only (desktop aims with the mouse,
+   *  so we return false and the menu casts immediately). The next world tap casts
+   *  the move toward it (see _updatePsiTargeting 'aim'). */
+  private _beginPsiAim(abilityId: string): boolean {
+    if (!isTouchDevice()) return false;
+    this.psiTargeting = { abilityId, kind: 'aim' };
+    return true;
+  }
+
   /** Pick mode each frame: Esc cancels; the action key self-casts (ally PSI only);
    *  a click resolves to the nearest valid target (self or ally) and casts. */
   private _updatePsiTargeting(): void {
     const t = this.psiTargeting!;
     if (getKeySet().has('Escape')) {
+      this.psiTargeting = null;
+      return;
+    }
+    // Offense PSI aim (touch): the next world tap casts the move toward it. A tap on
+    // the player (or the hotbar) doesn't fire — tap self to cancel, leaving the
+    // hotbar free to re-arm a different move.
+    if (t.kind === 'aim') {
+      // Q / Menu button also backs out (it's on-screen during aim).
+      if (getKeySet().has('KeyQ')) {
+        getKeySet().delete('KeyQ');
+        this.psiTargeting = null;
+        return;
+      }
+      const click = consumePointerClick();
+      if (!click) return;
+      if (hotbarBoxAt(click.x, click.y) >= 0) return; // tapped the bar — ignore
+      const aim = aimFromScreen(this.camera, this.player, click.x, click.y);
+      const px = Math.round(this.player.x - this.camera.x);
+      const py = Math.round(this.player.y - this.camera.y);
+      if (Math.hypot(click.x - px, click.y - py) <= 12) {
+        this.psiTargeting = null; // tapped self → cancel
+        return;
+      }
+      this.player.direction = aim.dir;
+      sendUsePsi(t.abilityId, undefined, aim.vx, aim.vy, aim.dir);
+      playEventSfx('player-try-psi');
       this.psiTargeting = null;
       return;
     }
@@ -2086,7 +2217,7 @@ export class Game {
   private _renderPsiTargeting(ctx: CanvasRenderingContext2D): void {
     const t = this.psiTargeting;
     if (!t) return;
-    const color = t.kind === 'downed' ? '#ff7a7a' : '#7affa0';
+    const color = t.kind === 'downed' ? '#ff7a7a' : t.kind === 'aim' ? '#ffd86b' : '#7affa0';
     const ring = (wx: number, wy: number) => {
       const sx = Math.round(wx - this.camera.x);
       const sy = Math.round(wy - this.camera.y) - 12;
@@ -2096,14 +2227,19 @@ export class Game {
       ctx.arc(sx, sy, 11, 0, Math.PI * 2);
       ctx.stroke();
     };
-    if (t.kind === 'ally') ring(this.player.x, this.player.y);
-    for (const [, rp] of this.remotePlayers) {
-      if (t.kind === 'downed' ? rp.downed : !rp.downed) ring(rp.x, rp.y);
-    }
+    // Aim (offense, touch): no per-target rings — ring the caster to mark the
+    // "tap me to cancel" spot. Ally/downed: ring every valid target.
+    if (t.kind === 'ally' || t.kind === 'aim') ring(this.player.x, this.player.y);
+    if (t.kind !== 'aim')
+      for (const [, rp] of this.remotePlayers) {
+        if (t.kind === 'downed' ? rp.downed : !rp.downed) ring(rp.x, rp.y);
+      }
     const label =
       t.kind === 'downed'
         ? 'Click a downed ally   [Esc] cancel'
-        : 'Click an ally  ·  Z = self   [Esc] cancel';
+        : t.kind === 'aim'
+          ? 'Tap a target  ·  tap yourself to cancel'
+          : 'Click an ally  ·  Z = self   [Esc] cancel';
     const tw = Math.ceil(measureText(label, FONT_ID) * 0.5);
     const x = Math.round((SCREEN_WIDTH - tw) / 2);
     ctx.fillStyle = '#000a';
@@ -2386,6 +2522,13 @@ export class Game {
     setLevelUpBelowEvent(eventTimerShown);
   }
 
+  /** True when the mouse cursor is over a hotbar slot — the switch between "aim the
+   *  world" (reticle, click = swing) and "use the hotbar" (glove, click = slot). */
+  private pointerOverHotbar(): boolean {
+    const p = getPointer();
+    return hotbarBoxAt(p.x, p.y) >= 0;
+  }
+
   private render() {
     // Sync the on-screen touch controls to the current phase (visibility,
     // attack-in-menu, action label). Virtual-tap release happens per sim step in
@@ -2459,27 +2602,6 @@ export class Game {
       if (clipped) this.ctx.restore();
     }
 
-    // Mouse-aim cursor (melee bracket / ranged crosshair) — replaces the OS arrow,
-    // above the world but below menus/dialogue/fade. Only while actually able to
-    // attack: not in the editor, mid-warp, downed, PSI-targeting, or with a menu/
-    // dialogue up. When it draws, hide the native cursor; otherwise restore it so
-    // menus stay clickable (the editor manages its own cursor, so leave it alone).
-    const combatAimable =
-      this.phase === 'playing' &&
-      !this.editor?.isActive() &&
-      !this.transitioning &&
-      !this.psiTargeting &&
-      !this.player.downed &&
-      !isMenuOpen() &&
-      !isDialogueOpen();
-    const drewReticle =
-      combatAimable && drawReticle(this.ctx, this.camera, this.player, this.weaponRange);
-    // Hide the OS arrow only while our cursor is drawn; restore it everywhere else
-    // (menus, dialogue, editor) so DOM/canvas UI stays clickable. Write only on
-    // change to avoid touching the DOM every frame.
-    const wantCursor = drewReticle ? 'none' : '';
-    if (this.ctx.canvas.style.cursor !== wantCursor) this.ctx.canvas.style.cursor = wantCursor;
-
     // PSI target-selection overlay (rings on valid targets + prompt), gameplay only.
     if (this.psiTargeting) this._renderPsiTargeting(this.ctx);
 
@@ -2524,14 +2646,14 @@ export class Game {
 
     // Quick-select hotbar HUD — bottom of the UI depth stack: drawn only when
     // the player has plain field control. Any higher layer hides it — the menu,
-    // NPC dialogue, the level-up pentagon, chat typing, a door fade, or the
-    // editor. (When the menu is open, renderMenu draws the bar itself, and only
-    // on its browsing screens.)
+    // NPC dialogue, the level-up pentagon, a door fade, or the editor. (When the
+    // menu is open, renderMenu draws the bar itself, and only on its browsing
+    // screens.) Chat typing does NOT hide it: the input box is sized to sit in
+    // the bottom-left gap LEFT of hotbar slot 1, so the hotbar stays visible.
     const hudBlocked =
       isMenuOpen() ||
       isDialogueOpen() ||
       isLevelUpOpen() ||
-      isChatTyping() ||
       this.transitioning ||
       !!this.editor?.isActive();
     if (!hudBlocked) {
@@ -2549,5 +2671,29 @@ export class Game {
 
     // Editor overlays (dev only) — grids, readout highlights, tool overlays.
     if (this.editor?.isActive()) this.editor.drawOverlay();
+
+    // Combat aim reticle (melee squares / ranged scoped circles) — drawn LAST so it
+    // sits on top of the HUD. Only while actually able to attack: not in the editor,
+    // mid-warp, downed, PSI-targeting, or with a menu/dialogue up.
+    const combatAimable =
+      this.phase === 'playing' &&
+      !this.editor?.isActive() &&
+      !this.transitioning &&
+      !this.psiTargeting &&
+      !this.player.downed &&
+      !isMenuOpen() &&
+      !isDialogueOpen();
+    // Default cursor is the crosshair anywhere in the world; the glove only takes
+    // over on clickable UI (the hotbar here; menus/dialogue gate combatAimable off).
+    const aiming = combatAimable && !this.pointerOverHotbar();
+    const drewReticle = aiming && drawReticle(this.ctx, this.camera, this.player);
+    // Cursor by context: aiming the world → hide it (the crosshair IS the cursor);
+    // hovering the hotbar / a menu / dialogue with a mouse → the EB glove pointer;
+    // editor / no-mouse → leave the native arrow for precise dev work.
+    let wantCursor = '';
+    if (drewReticle) wantCursor = 'none';
+    else if (this.phase === 'playing' && !this.editor?.isActive() && isMouseAimActive())
+      wantCursor = gloveCursor();
+    if (this.ctx.canvas.style.cursor !== wantCursor) this.ctx.canvas.style.cursor = wantCursor;
   }
 }

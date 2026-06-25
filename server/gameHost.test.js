@@ -915,16 +915,25 @@ check('use_psi (heal) spends PP and broadcasts psi_cast at the caster', () => {
   assert.strictEqual(cast.ty, cast.y);
 });
 
-check('use_psi (offense) spends PP and broadcasts a projectile psi_cast', () => {
-  const p = host.players.get(aliceId);
-  p.pp = 9;
-  alice.clear();
-  alice.recv({ type: 'use_psi', psiId: 'psi_fire_alpha' });
-  assert.strictEqual(host.players.get(aliceId).pp, 9 - 6, 'PSI Fire α costs 6 PP (canon)');
-  const cast = alice.last('psi_cast');
-  assert(cast && cast.id === 'psi_fire_alpha', 'fire broadcasts its anim id');
-  assert(typeof cast.tx === 'number' && typeof cast.ty === 'number', 'carries a projectile target');
-});
+check(
+  'use_psi (Fire cone) spends PP and does NOT broadcast a psi_cast (projectiles carry it)',
+  () => {
+    const p = host.players.get(aliceId);
+    p.pp = 9;
+    alice.clear();
+    alice.recv({ type: 'use_psi', psiId: 'psi_fire_alpha' });
+    assert.strictEqual(host.players.get(aliceId).pp, 9 - 6, 'PSI Fire α costs 6 PP (canon)');
+    // The directional cone now travels as server projectiles (damage syncs to the
+    // visual + each pellet dissolves at a wall), so it no longer broadcasts a psi_cast
+    // flipbook fan — the projectiles ARE the visual. (Projectile spawn + damage is
+    // covered in combat.test, where the sim's broadcast/roster are wired.)
+    assert.strictEqual(
+      alice.ofType('psi_cast').length,
+      0,
+      'no psi_cast — projectiles are the visual'
+    );
+  }
+);
 
 check('use_psi is refused without enough PP (no cast)', () => {
   const p = host.players.get(aliceId);

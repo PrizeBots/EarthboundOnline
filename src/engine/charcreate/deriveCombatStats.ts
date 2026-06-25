@@ -13,6 +13,8 @@
 export interface DerivedStats {
   maxHp: number;
   ppMax: number;
+  staminaMax: number; // Spirit-driven pool (run + attack fuel)
+  staminaRegen: number; // Muscle-driven recharge, points/sec
   offense: number;
   defense: number;
   speed: number;
@@ -31,6 +33,8 @@ export function deriveCombatStats(alloc: Record<string, number>): DerivedStats {
   return {
     maxHp: 30 + muscle + spirit * 5, // Spirit primary; Muscle only a little
     ppMax: 2 + mental * 2,
+    staminaMax: 40 + spirit * 5, // Spirit sets the pool size
+    staminaRegen: 6 + muscle * 1.5, // Muscle sets recharge rate (per second)
     offense: (3 + muscle * 1.5) | 0,
     defense: (1 + spirit * 1.2) | 0,
     speed: (3 + speed * 1.2) | 0,
