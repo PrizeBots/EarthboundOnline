@@ -55,7 +55,7 @@ const BROADCAST_HZ = 30;
 // there (and a swing aimed at the stale spot misses server-side). Every this-many ms
 // we re-mark NPCs dirty so their current position re-reaches every in-AOI client and
 // any stale copy converges. Cheap: a synced client just gets a ~6-byte no-op delta.
-const NPC_RESYNC_MS = 500;
+const NPC_RESYNC_MS = 200;
 const ACTIVE_RADIUS = 512; // px from any player
 
 const CARDINALS = [
@@ -3961,12 +3961,27 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         const stat = []; // [id, [statusId,...]] rows for actors whose set changed
         const equips = []; // [id, itemId|null] rows for actors whose held item changed
         const nowSend = Date.now();
-        // Resync heartbeat (see NPC_RESYNC_MS): periodically re-flag every live NPC so
-        // its current position re-reaches every in-AOI client, unfreezing any copy
-        // left stale when the NPC went idle out of that client's view.
+        // Resync heartbeat (see NPC_RESYNC_MS): periodically re-flag live NPCs so their
+        // current position re-reaches every in-AOI client, unfreezing any copy left
+        // stale when an AOI-filtered update was missed. Only NPCs within AOI reach of a
+        // player can be in anyone's view, so re-flag just those — that keeps the cost
+        // low enough to run it often (tight staleness bound = fewer frozen-looking
+        // enemies and fewer "hit by something that looks far away" mis-renders).
         if (nowSend - _lastResync >= NPC_RESYNC_MS) {
           _lastResync = nowSend;
-          for (const n of actors) if (!n.dead) n.dirty = true;
+          const ps = getPlayers();
+          const reach2 = (ACTIVE_RADIUS + 128) ** 2;
+          for (const n of actors) {
+            if (n.dead) continue;
+            for (let i = 0; i < ps.length; i++) {
+              const ex = n.x - ps[i].x;
+              const ey = n.y - ps[i].y;
+              if (ex * ex + ey * ey <= reach2) {
+                n.dirty = true;
+                break;
+              }
+            }
+          }
         }
         for (const n of actors) {
           // Send while moving (dirty), PLUS one final at-rest frame the tick after it
