@@ -1131,7 +1131,9 @@ class GameHost {
     }
     const cell = this.aoi.cellSize;
     const byCell = new Map(); // "cx:cy" -> rows[]
+    const dirtyById = new Map(); // id -> row, for the AOI-leave position check below
     for (const r of rows) {
+      dirtyById.set(r[0], r);
       const key = Math.floor(r[1] / cell) + ':' + Math.floor(r[2] / cell);
       let arr = byCell.get(key);
       if (!arr) byCell.set(key, (arr = []));
@@ -1170,6 +1172,30 @@ class GameHost {
           mine.length = AOI_MAX_NPCS;
         }
         this._sendNpcUpdate(entry, mine, over, ts);
+      }
+      // AOI despawn (mirrors player_leave): explicitly tell the client to DROP any
+      // NPC that has left its 3×3 block — moved out, or the player walked away — so
+      // a stale copy is hidden the INSTANT it's bogus instead of lingering until the
+      // client's staleness timeout. The per-client delta baseline (_npcBase) is the
+      // set the client currently knows; an entry whose CURRENT position (the dirty
+      // row if it moved this tick, else its last-sent spot) falls outside the block
+      // has left. Deleting it also re-keyframes it cleanly on re-entry. (BINARY+WS
+      // path only — RTC/JSON keep the timeout backstop; both are non-default.)
+      const base = entry._npcBase;
+      if (base && base.size) {
+        let gone = null;
+        for (const [id, v] of base) {
+          const d = dirtyById.get(id);
+          const ncx = Math.floor((d ? d[1] : v[0] / 2) / cell);
+          const ncy = Math.floor((d ? d[2] : v[1] / 2) / cell);
+          if (Math.abs(ncx - cx) > 1 || Math.abs(ncy - cy) > 1) (gone || (gone = [])).push(id);
+        }
+        if (gone) {
+          for (const id of gone) base.delete(id);
+          const msg = JSON.stringify({ type: 'npc_leave', ids: gone });
+          entry._ws.send(msg);
+          this._recordSend('npc_leave', msg.length, 1);
+        }
       }
     }
   }

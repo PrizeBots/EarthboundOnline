@@ -643,6 +643,17 @@ export function resetNpcInterp(): void {
   for (const id of [...npcInterp.ids()]) npcInterp.drop(id);
 }
 
+/** Server told us these NPCs left our view (npc_leave / AOI despawn) — hide them
+ *  immediately instead of waiting on the staleness timeout. Mark stale + drop the
+ *  interp buffer; an incoming update (re-entry) clears it via applyNpcUpdates. */
+export function markNpcsGone(ids: number[]): void {
+  for (const id of ids) {
+    const npc = npcsById[id];
+    if (npc) npc.stale = true;
+    npcInterp.drop(String(id));
+  }
+}
+
 export function applyNpcUpdates(rows: NpcUpdate[], t?: number): void {
   for (const [id, x, y, dir, frame, poseCode] of rows) {
     const npc = npcsById[id];

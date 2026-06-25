@@ -67,6 +67,9 @@ type NetworkCallback = {
    *  client-clock time of the snapshot (server send-time mapped via the clock
    *  offset) for server-time-axis interpolation; omitted pre-sync → use now. */
   onNpcUpdate: (npcs: NpcUpdate[], t?: number) => void;
+  /** AOI despawn: these NPC wire ids left our view — hide them now (vs the client's
+   *  staleness timeout). The server sends it the tick they leave the block. */
+  onNpcLeave?: (ids: number[]) => void;
   /** Authoritative enemy HP (welcome snapshot + on-damage deltas). */
   onNpcHp: (hps: NpcHp[]) => void;
   /** An actor's active status set changed: [npcId, [statusId,…]] rows. */
@@ -703,6 +706,9 @@ function openSocket() {
         break;
       case 'npc_update':
         callbacks?.onNpcUpdate(msg.npcs, frameClientTime(msg.ts));
+        break;
+      case 'npc_leave':
+        if (Array.isArray(msg.ids)) callbacks?.onNpcLeave?.(msg.ids);
         break;
       case 'npc_status':
         if (msg.statuses) callbacks?.onNpcStatus?.(msg.statuses);
