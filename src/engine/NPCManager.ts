@@ -635,6 +635,14 @@ export function npcById(id: number): NPC | null {
   return npcsById[id] ?? null;
 }
 
+/** Drop every buffered NPC interpolation snapshot. Call on (re)connect so a stale
+ *  ghost position can't linger: the welcome snapshot then re-seeds each near NPC,
+ *  and an empty buffer means that first row snaps directly (treated as "fresh")
+ *  instead of gliding from the old chase spot. */
+export function resetNpcInterp(): void {
+  for (const id of [...npcInterp.ids()]) npcInterp.drop(id);
+}
+
 export function applyNpcUpdates(rows: NpcUpdate[], t?: number): void {
   for (const [id, x, y, dir, frame, poseCode] of rows) {
     const npc = npcsById[id];

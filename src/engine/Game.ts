@@ -38,6 +38,7 @@ import {
   predictMeleeKnockback,
   liveNpcForKey,
   npcById,
+  resetNpcInterp,
 } from './NPCManager';
 import { NPC } from './NPC';
 import { beginGiftOpen, giftOpened } from './Gifts';
@@ -584,6 +585,10 @@ export class Game {
           // over from the previous session so stale copies don't linger as ghosts;
           // the fresh AOI spawns (player_join) repopulate the current neighbours.
           this.remotePlayers.clear();
+          // Same for NPCs: drop the interp buffers so a stale ghost snaps straight to
+          // its real spot when the welcome snapshot (sent right after) re-seeds it,
+          // instead of gliding ~80ms from the old chase position.
+          resetNpcInterp();
           for (const p of players) {
             this.remotePlayers.set(p.id, p);
             this.resolveRemoteSprite(p);
