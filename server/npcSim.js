@@ -3317,7 +3317,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     projSpeed = 0,
     pierce = false,
     projSprite = null,
-    rewindMs = 0
+    rewindMs = 0,
+    aimx = NaN,
+    aimy = NaN
   ) {
     const now = Date.now();
     // The attacker's weight class drives knockback vs the victim's (see
@@ -3348,7 +3350,15 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     // Damage scales with the attacker's Offense stat (leveling makes you hit
     // harder); falls back to the flat constant if none was passed.
     const base = offense > 0 ? offense : ATTACK_DAMAGE;
-    const v = DIR_VEC[dir] || DIR_VEC[0];
+    // Aim vector: a mouse-aimed swing carries a raw (aimx,aimy); normalize it to a
+    // unit vector so the hitbox/projectile fire at the TRUE angle (reach/speed come
+    // from server constants, so a spoofed magnitude can't extend them). Falls back
+    // to the 8-way facing for keyboard/touch/legacy callers with no aim vector.
+    let v = DIR_VEC[dir] || DIR_VEC[0];
+    if (Number.isFinite(aimx) && Number.isFinite(aimy)) {
+      const len = Math.hypot(aimx, aimy);
+      if (len > 1e-3) v = [aimx / len, aimy / len];
+    }
     // Ranged weapon: don't resolve a hitbox here — launch a projectile that flies
     // forward over the next ticks (stepProjectiles) and damages the first target
     // it overlaps, or EVERY new target if the weapon pierces. Same dodge/crit/LoS/
@@ -4081,17 +4091,20 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       for (const n of actors) {
         if (!inRange(n.x, n.y)) continue;
         if (!n.dead) {
-          const hurt = n.pose === 'hurt';
-          if (n.x !== n.homeX || n.y !== n.homeY || n.dir !== n.homeDir || n.frame !== 0 || hurt) {
-            npcs.push([
-              n.id,
-              Math.round(n.x * 2) / 2,
-              Math.round(n.y * 2) / 2,
-              n.dir,
-              n.frame,
-              poseCode(n),
-            ]);
-          }
+          // Send EVERY live in-range NPC's current position — not just ones away
+          // from home. A reconnecting client carries STALE ghost positions for
+          // actors it last saw chasing; the fresh server respawned them at home, so
+          // an at-home guard omitted them and the ghost never corrected (frozen,
+          // unhittable, but solid). Repositioning all near NPCs clears the ghosts.
+          // It's a one-time per-join message, so the extra rows are cheap.
+          npcs.push([
+            n.id,
+            Math.round(n.x * 2) / 2,
+            Math.round(n.y * 2) / 2,
+            n.dir,
+            n.frame,
+            poseCode(n),
+          ]);
           if (n.itemId) npcEquips.push([n.id, n.itemId]);
         }
         // HP mirrors hpSnapshot: every enemy (incl. dead → hp 0), plus damaged
