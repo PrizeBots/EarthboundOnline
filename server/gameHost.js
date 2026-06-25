@@ -713,7 +713,10 @@ class GameHost {
         data.type === 'npc_update' ? this.publishNpcUpdate(data.npcs) : this.broadcastAll(data),
       // `inflict` = status procs the hit carries (e.g. paralysis), applied to the
       // victim's status set by damagePlayer; `knock` = the knockback landing spot.
-      (playerId, dmg, _enemy, knock, inflict) => this.damagePlayer(playerId, dmg, knock, inflict),
+      // `enemy` is the attacker NPC id — forwarded to the victim's client so it can
+      // lunge that enemy into range for the hit (it renders ~interp+latency behind).
+      (playerId, dmg, enemy, knock, inflict) =>
+        this.damagePlayer(playerId, dmg, knock, inflict, enemy),
       (playerId, xp, _enemy, loot) => this.awardKill(playerId, xp, loot),
       // PvP: a player's swing landed on another player — apply it to the victim's
       // server-authoritative HP (same path as an enemy hit).
@@ -1945,7 +1948,7 @@ class GameHost {
     this._publishPlayerEvent({ type: 'player_push', id: playerId, x: p.x, y: p.y });
   }
 
-  damagePlayer(playerId, dmg, knock, inflict) {
+  damagePlayer(playerId, dmg, knock, inflict, byNpc) {
     const p = this.players.get(playerId);
     if (!p || p.hp <= 0) return;
     if (p.editor) return; // out of the world in the dev editor — untargetable
@@ -1972,6 +1975,9 @@ class GameHost {
         hp: p.hp,
         maxHp: p.maxHp,
         dmg: eff,
+        // Attacker NPC id (enemy hits only): lets the victim's client lunge that
+        // enemy into range so the hit reads as a connect, not a swing from a tile away.
+        ...(byNpc != null ? { byNpc } : {}),
       });
       this._applyHitStatuses(p, inflict); // break sleep + roll any inflicts
       if (knock) {
@@ -3135,6 +3141,65 @@ class GameHost {
           );
           entry._ws.send(
             JSON.stringify({ type: 'notice', text: `You revived ${target.name} with ${def.name}!` })
+          );
+          this.broadcastExcept(
+            {
+              type: 'item_use',
+              id: playerId,
+              item: itemId,
+              x: Math.round(entry.x),
+              y: Math.round(entry.y),
+            },
+            playerId
+          );
+          this._saveCharacter(playerId);
+          break;
+        }
+        // Stat capsules (EB IQ/Guts/Speed/Vital/Luck) + Rock candy: PERMANENT
+        // progression expressed through our level-up pentagon, not a one-off buff.
+        // `skill` raises one of the 5 creation stats by 1 — the exact same path a
+        // spent level-up point takes (alloc++ -> reapplyAlloc -> derive). `skillPoint`
+        // banks a free point the player spends where they like (Rock candy = wildcard).
+        // Server-authoritative: only the alloc/derive the server owns ever changes.
+        if (def.skill || def.skillPoint) {
+          const prog = this.points.get(playerId);
+          if (!prog) break;
+          if (def.skill) {
+            if (!STAT_KEYS.includes(def.skill)) break; // bad data — keep the item, no-op
+            if ((prog.alloc[def.skill] || 0) >= STAT_SPEND_MAX) {
+              entry._ws.send(
+                JSON.stringify({ type: 'notice', text: `${def.name} would have no effect.` })
+              );
+              break;
+            }
+            prog.alloc[def.skill] = (prog.alloc[def.skill] || 0) + 1;
+            this.reapplyAlloc(entry, prog.alloc); // re-derive combat stats from the new build
+            this.broadcastAll({
+              type: 'player_stats',
+              id: playerId,
+              stats: statsPayload(entry),
+              leveled: false,
+              gained: 0,
+            });
+            // maxHp may have grown (Spirit/Muscle) — refresh every client's bar.
+            this.broadcastAll({
+              type: 'player_hp',
+              id: playerId,
+              hp: entry.hp,
+              maxHp: entry.maxHp,
+              dmg: 0,
+            });
+          } else {
+            // Wildcard: bank a point for the owner to spend on the pentagon.
+            const grant = Math.max(1, def.skillPoint | 0);
+            prog.unspentPoints = (prog.unspentPoints || 0) + grant;
+            const spHandle = this.saves.get(playerId);
+            if (spHandle) spHandle.unspentPoints = prog.unspentPoints;
+          }
+          this._sendPoints(playerId); // refresh banked points + alloc (pentagon UI)
+          entry.inventory.splice(slot, 1);
+          entry._ws.send(
+            JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) })
           );
           this.broadcastExcept(
             {

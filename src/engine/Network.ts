@@ -82,7 +82,15 @@ type NetworkCallback = {
    * A player's HP changed (enemy hit / respawn refill / item use). dmg>0 = took
    * a hit; heal>0 = restored HP (e.g. ate a Cookie).
    */
-  onPlayerHp: (id: string, hp: number, maxHp: number, dmg: number, heal: number) => void;
+  onPlayerHp: (
+    id: string,
+    hp: number,
+    maxHp: number,
+    dmg: number,
+    heal: number,
+    /** Attacker NPC wire id (enemy hits only) — to lunge it into range for the hit. */
+    byNpc?: number
+  ) => void;
   /**
    * A crit or a miss happened at world (x, y). `byPlayer` is the attacking
    * player's id (null for enemy/NPC swings); `targetPlayer` is the defending
@@ -730,7 +738,7 @@ function openSocket() {
         callbacks?.onEquipped(msg.slots ?? {}, msg.attackSpeed);
         break;
       case 'player_hp':
-        callbacks?.onPlayerHp(msg.id, msg.hp, msg.maxHp, msg.dmg ?? 0, msg.heal ?? 0);
+        callbacks?.onPlayerHp(msg.id, msg.hp, msg.maxHp, msg.dmg ?? 0, msg.heal ?? 0, msg.byNpc);
         break;
       case 'player_mortal':
         callbacks?.onPlayerMortal?.(

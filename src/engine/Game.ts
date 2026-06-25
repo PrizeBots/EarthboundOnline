@@ -18,7 +18,7 @@ import {
 } from './Input';
 import { mountTouchControls, setTouchContext } from './TouchControls';
 import { pollGamepads, mountGamepadDebug, consumeGamepadNav } from './Gamepad';
-import { hotbarBoxAt } from './menu/layout';
+import { hotbarBoxAt, setFavoriteThing } from './menu/layout';
 import { loadMapData, getSector, getDrawTilesetId } from './MapManager';
 import { loadDoors, getDoorAt, getStairAt, DoorData } from './DoorManager';
 import { setActiveRoomFromPoint, loadRegionRooms } from './Rooms';
@@ -37,6 +37,7 @@ import {
   predictPlayerPush,
   predictMeleeKnockback,
   liveNpcForKey,
+  npcById,
 } from './NPCManager';
 import { NPC } from './NPC';
 import { beginGiftOpen, giftOpened } from './Gifts';
@@ -665,6 +666,10 @@ export class Game {
           // a slot only if the player parked it there.
           setHotbar(slots);
         },
+        onFavoriteThing: (thing) => {
+          // Names the "PSI ????" special "PSI <favorite thing>" (blank → Rockin').
+          setFavoriteThing(thing);
+        },
         onNpcUpdate: (rows, t) => {
           applyNpcUpdates(rows, t);
         },
@@ -680,7 +685,7 @@ export class Game {
         onNpcDeath: (id, dx, dy, force) => {
           applyNpcDeath(id, dx, dy, force);
         },
-        onPlayerHp: (id, hp, maxHp, dmg, heal) => {
+        onPlayerHp: (id, hp, maxHp, dmg, heal, byNpc) => {
           if (id === this.localPlayerId) {
             // Any authoritative HP settles a mortal roll (survived a heal, or a
             // plain hit/refill) — stop the death slide and snap to the real value.
@@ -688,6 +693,31 @@ export class Game {
             this.player.hp = hp;
             this.player.maxHp = maxHp;
             if (dmg > 0) {
+              // Lunge the attacker into range. The server CONFIRMED this enemy
+              // connected, but we render it ~interp+latency in the past, so it can
+              // look a tile short of us. Nudge it toward us to just within reach; the
+              // predOff reconcile (RemoteInterp) eases it back as its real position
+              // arrives, so it reads as a lunge-strike, not a snap. Confirmed-event
+              // driven, so unlike blind forward-prediction it can't mispredict.
+              if (byNpc != null) {
+                const npc = npcById(byNpc);
+                if (npc && !npc.dead) {
+                  const ex = this.player.x - npc.x;
+                  const ey = this.player.y - npc.y;
+                  const gap = Math.hypot(ex, ey);
+                  const LUNGE_REACH = 16; // px — put the enemy ~touching for the hit
+                  const LUNGE_MAX = 48; // px — cap so a very stale enemy can't teleport
+                  if (gap > 0.001 && gap - LUNGE_REACH > 1) {
+                    injectPredOffset(
+                      npc,
+                      ex / gap,
+                      ey / gap,
+                      Math.min(gap - LUNGE_REACH, LUNGE_MAX),
+                      LUNGE_MAX
+                    );
+                  }
+                }
+              }
               // Roll the bar: hold the pre-hit fill, flash the lost chunk, drain it.
               noteHealthDamage(this.player, hp + dmg, performance.now());
               spawnOwnDamageNumber(this.player.x, this.player.y, dmg); // red — only we see our own

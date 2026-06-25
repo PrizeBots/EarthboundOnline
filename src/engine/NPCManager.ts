@@ -630,6 +630,11 @@ export function setDialogueBranchLive(textId: string, branch: DialogueBranch | n
  * HOME position on purpose: wanderers are leashed within 32px of home, so
  * re-bucketing on movement is unnecessary.
  */
+/** Live NPC by its wire id (the server's enemy/car-pool index), or null. */
+export function npcById(id: number): NPC | null {
+  return npcsById[id] ?? null;
+}
+
 export function applyNpcUpdates(rows: NpcUpdate[], t?: number): void {
   for (const [id, x, y, dir, frame, poseCode] of rows) {
     const npc = npcsById[id];
