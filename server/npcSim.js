@@ -3969,7 +3969,13 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           for (const n of actors) if (!n.dead) n.dirty = true;
         }
         for (const n of actors) {
-          if (n.dirty && !n.dead) {
+          // Send while moving (dirty), PLUS one final at-rest frame the tick after it
+          // stops (_sentMoving was set, dirty now clear). That final frame gives the
+          // client a zero-velocity last segment so it HOLDS the NPC, instead of
+          // extrapolating its stale velocity forward (the stop-and-go overshoot that
+          // spikes the coast rate now that the server keeps up).
+          if (!n.dead && (n.dirty || n._sentMoving)) {
+            n._sentMoving = n.dirty; // true while moving; false on the at-rest frame
             n.dirty = false;
             moved.push([
               n.id,

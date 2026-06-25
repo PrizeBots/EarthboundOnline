@@ -28,6 +28,10 @@ const BUFFER_MAX_AGE_MS = 1000;
 // genuine stop/disconnect can't drift the entity forever. ~150ms covers a full
 // 10Hz NPC gap and several 30Hz player gaps.
 const MAX_EXTRAP_MS = 150;
+// Below this much movement over the last segment, treat the entity as AT REST and
+// hold it rather than extrapolate (a stopped NPC sends a final at-rest frame, so its
+// last segment is ~0). Above half-pixel quantization jitter, below a real walk step.
+const COAST_MIN_PX = 1.5;
 
 // Server-time playout clock (jitter-immune interpolation). Each snapshot carries
 // the server's send time (mapped onto our clock by Network.frameClientTime), so
@@ -352,7 +356,12 @@ export function createInterpolator(opts: number | InterpOpts = PLAYER_DELAY_MS):
       const span = prev ? last.t - prev.t : 0;
       const dx = prev ? last.x - prev.x : 0;
       const dy = prev ? last.y - prev.y : 0;
-      if (prev && span > 0 && Math.hypot(dx, dy) <= TELEPORT_DIST) {
+      const speed = Math.hypot(dx, dy);
+      // Only extrapolate a genuinely MOVING entity. A near-zero last segment means
+      // it's at rest (the server sends a final at-rest frame on stop) — hold it
+      // rather than coast on a stale heading (the stop-and-go overshoot), and don't
+      // count it as an underrun.
+      if (prev && span > 0 && speed > COAST_MIN_PX && speed <= TELEPORT_DIST) {
         coastEvents++; // buffer underran on a MOVING entity — the key buffer-too-small signal
         const ahead = Math.min(renderT - last.t, MAX_EXTRAP_MS);
         apply(target, last, last.x + (dx / span) * ahead, last.y + (dy / span) * ahead);
