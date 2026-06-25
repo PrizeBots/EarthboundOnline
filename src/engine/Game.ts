@@ -18,7 +18,7 @@ import {
 } from './Input';
 import { mountTouchControls, setTouchContext } from './TouchControls';
 import { pollGamepads, mountGamepadDebug, consumeGamepadNav } from './Gamepad';
-import { hotbarBoxAt, setFavoriteThing } from './menu/layout';
+import { hotbarBoxAt } from './menu/layout';
 import { loadMapData, getSector, getDrawTilesetId } from './MapManager';
 import { loadDoors, getDoorAt, getStairAt, DoorData } from './DoorManager';
 import { setActiveRoomFromPoint, loadRegionRooms } from './Rooms';
@@ -665,10 +665,6 @@ export class Game {
           // the equipped weapon shows its own green ring on the Equip screen / on
           // a slot only if the player parked it there.
           setHotbar(slots);
-        },
-        onFavoriteThing: (thing) => {
-          // Names the "PSI ????" special "PSI <favorite thing>" (blank → Rockin').
-          setFavoriteThing(thing);
         },
         onNpcUpdate: (rows, t) => {
           applyNpcUpdates(rows, t);
