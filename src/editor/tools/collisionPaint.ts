@@ -7,6 +7,7 @@ import {
   setCellCollisionLive,
   clearCellCollisionLive,
   FG_PROMOTE_BIT,
+  FORCE_BG_BIT,
 } from '../../engine/Collision';
 import { Camera } from '../../engine/Camera';
 import { MAP_WIDTH_TILES, TILE_SIZE } from '../../types';
@@ -31,12 +32,14 @@ const MINITILE = 8;
 // The paint operations the Room Builder modes map onto:
 //   solid → 0x80 wall   walk → clear walls/priority (keep FG)
 //   fg    → toggle 0x40 "draw this tile in FRONT so you hide behind it"
+//   bg    → toggle 0x20 "entities ALWAYS draw on top of this tile" (inverse of fg)
 //   prilo/prihi → native 0x01/0x02 (advanced; only bite where the ROM already
 //                 has foreground art)   clear → wipe the cell to 0
-export type CollisionOp = 'solid' | 'walk' | 'fg' | 'prilo' | 'prihi' | 'clear';
+export type CollisionOp = 'solid' | 'walk' | 'fg' | 'bg' | 'prilo' | 'prihi' | 'clear';
 
 const BIT: Record<string, number> = { solid: 0x80, prilo: 0x01, prihi: 0x02 };
-const HIDE_BIT = FG_PROMOTE_BIT; // 0x40 — orthogonal modifier
+const HIDE_BIT = FG_PROMOTE_BIT; // 0x40 — orthogonal modifier (hide behind)
+const BG_BIT = FORCE_BG_BIT; // 0x20 — orthogonal modifier (always on top)
 // solid / pri-lo / pri-hi are mutually exclusive — painting one clears the
 // other two (a paint OVERWRITES the cell's type instead of stacking bits).
 const TYPE_MASK = BIT.solid | BIT.prilo | BIT.prihi;
@@ -55,6 +58,8 @@ export class CollisionPaint {
   // Mirrors the Walls tool's Block/Clear so erasing a front tile is explicit
   // instead of the old "re-paint to toggle off" gesture.
   fgErase = false;
+  // Background tool sub-mode: false = Place (set 0x20), true = Erase (clear it).
+  bgErase = false;
 
   // Authored per-map-cell bytes: key -> byte (only where it differs from the
   // tile's arrangement default). Saved as the override file's `cells` section.
@@ -66,6 +71,7 @@ export class CollisionPaint {
   private op: CollisionOp = 'solid';
   private lastPaintPoint: WorldPoint | null = null;
   private fgSetting = true; // first cell of an FG stroke decides set vs clear
+  private bgSetting = true; // first cell of a BG stroke decides set vs clear
   private strokeChanges = new Map<string, { cell: CellRef; before: number; after: number }>();
 
   // Room-crop preview
@@ -158,9 +164,12 @@ export class CollisionPaint {
       case 'clear':
         return 0;
       case 'walk':
-        return before & ~TYPE_MASK; // drop wall/priority, keep FG-promote
+        return before & ~TYPE_MASK; // drop wall/priority, keep FG-promote / on-top
       case 'fg':
-        return this.fgSetting ? before | HIDE_BIT : before & ~HIDE_BIT;
+        // Front and Background are opposites — placing one clears the other.
+        return this.fgSetting ? (before | HIDE_BIT) & ~BG_BIT : before & ~HIDE_BIT;
+      case 'bg':
+        return this.bgSetting ? (before | BG_BIT) & ~HIDE_BIT : before & ~BG_BIT;
       case 'solid':
         return (before & ~TYPE_MASK) | BIT.solid;
       case 'prilo':
@@ -199,6 +208,8 @@ export class CollisionPaint {
     this.op = op;
     // Front: Place sets 0x40, Erase clears it (explicit, like Walls Block/Clear).
     if (op === 'fg') this.fgSetting = !this.fgErase;
+    // Background: Place sets 0x20 (entities on top), Erase clears it.
+    if (op === 'bg') this.bgSetting = !this.bgErase;
     this.painting = true;
     this.strokeChanges = new Map();
     this.lastPaintPoint = { ...p };
@@ -276,14 +287,15 @@ export class CollisionPaint {
   // --- overlay --------------------------------------------------------------
 
   /** Tint the collision/priority bits over the world: wall = yellow (black X),
-   *  front/FG-promote = light blue, wall+front = green (black X), pri-lo = blue,
-   *  pri-hi = purple. `hover` draws the brush box (skipped when brushCursor is
-   *  false). `show` filters which layers tint. */
+   *  front/FG-promote = light blue, wall+front = green (black X), background/
+   *  on-top = red, wall+background = orange (black X), pri-lo = blue, pri-hi =
+   *  purple. `hover` draws the brush box (skipped when brushCursor is false).
+   *  `show` filters which layers tint. */
   drawOverlay(
     ctx: CanvasRenderingContext2D,
     camera: Camera,
     hover: WorldPoint,
-    show: { solid: boolean; pri: boolean; fg: boolean },
+    show: { solid: boolean; pri: boolean; fg: boolean; bg: boolean },
     brushCursor = true
   ): void {
     const camX = Math.round(camera.x);
@@ -314,14 +326,19 @@ export class CollisionPaint {
             ctx.fillStyle = 'rgba(175,80,255,0.6)';
             ctx.fillRect(cx, cy, MINITILE, MINITILE);
           }
-          // Wall = yellow, Front (hide-behind) = light blue, BOTH = green. A
-          // black X marks any wall (the cell blocks movement). Drawn together so
-          // a cell that's both a wall AND has a front copy reads as one green X.
+          // Wall = yellow, Front (hide-behind) = light blue, wall+front = green,
+          // Background (always-on-top) = red, wall+background = orange. A black X
+          // marks any wall (the cell blocks movement). Front and Background are
+          // mutually exclusive, so a cell tints to exactly one of these.
           const isWall = show.solid && b & 0x80;
           const isFront = show.fg && b & HIDE_BIT;
-          if (isWall || isFront) {
-            ctx.fillStyle =
-              isWall && isFront
+          const isBack = show.bg && b & BG_BIT;
+          if (isWall || isFront || isBack) {
+            ctx.fillStyle = isBack
+              ? isWall
+                ? 'rgba(255,140,40,0.5)' // orange: wall + background
+                : 'rgba(235,60,60,0.5)' // red: background (on-top)
+              : isWall && isFront
                 ? 'rgba(80,220,90,0.5)' // green: wall + front copy
                 : isWall
                   ? 'rgba(245,215,40,0.5)' // yellow: wall

@@ -109,29 +109,167 @@
     "heal": 6
   },
   "89": {
-    "heal": 10
+    "heal": 24
   },
   "90": {
-    "heal": 50
+    "heal": 48
+  },
+  "91": {
+    "heal": 42
+  },
+  "92": {
+    "heal": 84
+  },
+  "93": {
+    "heal": 84
+  },
+  "94": {
+    "heal": 108
+  },
+  "95": {
+    "heal": 120
+  },
+  "96": {
+    "heal": 216
+  },
+  "97": {
+    "heal": 240
+  },
+  "98": {
+    "healPp": 20
+  },
+  "99": {
+    "healPp": 80
+  },
+  "100": {
+    "heal": 300,
+    "healPp": 50
+  },
+  "101": {
+    "skillPoint": 1
+  },
+  "102": {
+    "heal": 60
+  },
+  "103": {
+    "heal": 30
+  },
+  "106": {
+    "heal": 6
+  },
+  "107": {
+    "heal": 60
   },
   "108": {
+    "heal": 84
+  },
+  "109": {
+    "heal": 9999
+  },
+  "110": {
+    "healPp": 10
+  },
+  "111": {
+    "cure": ["cold"]
+  },
+  "112": {
+    "cure": ["poison"]
+  },
+  "113": {
+    "skillPoint": 1
+  },
+  "114": {
+    "skillPoint": 1
+  },
+  "115": {
+    "skillPoint": 1
+  },
+  "116": {
+    "skillPoint": 1
+  },
+  "117": {
+    "skillPoint": 1
+  },
+  "127": {
+    "cure": ["sunstroke", "crying", "cold"]
+  },
+  "128": {
+    "cure": ["poison", "nauseous", "cold", "sunstroke", "sleep", "crying"]
+  },
+  "129": {
+    "revive": 60,
+    "cure": [
+      "poison",
+      "nauseous",
+      "cold",
+      "sunstroke",
+      "sleep",
+      "crying",
+      "strange",
+      "possessed",
+      "paralysis",
+      "diamond"
+    ]
+  },
+  "130": {
+    "revive": 9999,
+    "cure": [
+      "poison",
+      "nauseous",
+      "cold",
+      "sunstroke",
+      "sleep",
+      "crying",
+      "strange",
+      "possessed",
+      "paralysis",
+      "diamond"
+    ]
+  },
+  "157": {
     "buffs": [
       {
-        "stat": "offense",
-        "amount": 10,
-        "durationMs": 60000
+        "stat": "defense",
+        "amount": 30,
+        "durationMs": 30000
       }
     ]
   },
-  "129": {
-    "revive": 60
+  "159": {
+    "buffs": [
+      {
+        "stat": "guts",
+        "amount": 50,
+        "durationMs": 30000
+      }
+    ]
   },
-  "130": {
-    "revive": 9999
+  "161": {
+    "buffs": [
+      {
+        "stat": "defense",
+        "amount": 20,
+        "durationMs": 30000
+      }
+    ]
+  },
+  "188": {
+    "heal": 9999
+  },
+  "189": {
+    "heal": 30
+  },
+  "190": {
+    "heal": 24
+  },
+  "191": {
+    "heal": 60
+  },
+  "198": {
+    "heal": 30
   },
   "207": {
-    "healPp": 500,
-    "cost": 5
+    "healPp": 20
   },
   "215": {
     "ranged": true,
@@ -140,7 +278,85 @@
     "projSprite": "beam",
     "pierce": true
   },
+  "223": {
+    "heal": 42
+  },
+  "224": {
+    "heal": 6
+  },
+  "225": {
+    "heal": 6
+  },
+  "226": {
+    "heal": 60
+  },
+  "227": {
+    "heal": 240
+  },
+  "232": {
+    "heal": 12
+  },
+  "233": {
+    "heal": 96
+  },
+  "234": {
+    "heal": 108
+  },
+  "235": {
+    "heal": 300
+  },
+  "236": {
+    "heal": 216
+  },
+  "237": {
+    "heal": 42
+  },
+  "238": {
+    "heal": 84
+  },
+  "239": {
+    "heal": 84
+  },
+  "240": {
+    "heal": 126
+  },
+  "241": {
+    "heal": 168
+  },
+  "242": {
+    "heal": 150
+  },
+  "243": {
+    "heal": 204
+  },
+  "244": {
+    "heal": 252
+  },
+  "245": {
+    "heal": 300
+  },
+  "246": {
+    "healPp": 40
+  },
+  "247": {
+    "healPp": 40
+  },
+  "251": {
+    "heal": 18
+  },
   "252": {
-    "revive": 9999
+    "revive": 9999,
+    "cure": [
+      "poison",
+      "nauseous",
+      "cold",
+      "sunstroke",
+      "sleep",
+      "crying",
+      "strange",
+      "possessed",
+      "paralysis",
+      "diamond"
+    ]
   }
 }

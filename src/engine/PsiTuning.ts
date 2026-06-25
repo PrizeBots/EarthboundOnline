@@ -54,6 +54,7 @@ export interface PsiMove {
   reviveFrac?: number; // revive a downed ally to this fraction of max HP
   cures?: boolean; // clear the target's status conditions
   inflict?: PsiInflict[]; // status procs on the enemy
+  unlockMental?: number; // Mental level at which this move is LEARNED (see below)
 }
 
 /** Fields the override layer may change (everything but identity/grouping). */
@@ -317,6 +318,18 @@ export const PSI_FAMILIES: PsiFamily[] = PSI_FAMILY_SPECS.map(expandFamily);
 
 // The base table: every move, flattened. KEEP IN SYNC with server gameHost.js.
 export const PSI_BASE: PsiMove[] = PSI_FAMILIES.flatMap((f) => f.moves);
+
+// Mental level each move is LEARNED at — its rank when costed moves are sorted by
+// PP (cheap = early), one move per Mental point (see ABILITIES.md §3.4). Free moves
+// (PSI Magnet, pp<=1) learn at Mental 1. `.slice()` so PSI_BASE menu order is kept.
+// KEEP IN SYNC with assignUnlockMental() in server/gameHost.js.
+{
+  const costed = PSI_BASE.filter((m) => m.pp > 1)
+    .slice()
+    .sort((a, b) => a.pp - b.pp); // stable: ties keep family/tier order
+  costed.forEach((m, i) => (m.unlockMental = i + 1));
+  PSI_BASE.filter((m) => m.pp <= 1).forEach((m) => (m.unlockMental = 1));
+}
 
 const BASE_BY_ID: Record<string, PsiMove> = Object.fromEntries(PSI_BASE.map((m) => [m.id, m]));
 

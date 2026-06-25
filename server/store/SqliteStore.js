@@ -19,7 +19,7 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
-const { DuplicateUsernameError, SlotsFullError, MAX_CHARACTERS } = require('./errors');
+const { DuplicateUsernameError, SlotsFullError, DEFAULT_MAX_CHARACTERS } = require('./errors');
 
 // Bump when MIGRATIONS grows. PRAGMA user_version tracks what's applied so an
 // existing eb.db upgrades in place on boot.
@@ -70,6 +70,27 @@ const MIGRATIONS = [
         data       TEXT    NOT NULL,
         updated_at INTEGER NOT NULL
       );
+    `);
+  },
+
+  // v3 — per-account character cap. Defaults to DEFAULT_MAX_CHARACTERS (3) so
+  // existing accounts are unchanged; an admin/tester can be bumped (e.g. to 10)
+  // by setting this column. Mirrors SCHEMA_SQL in SupabaseStore.js.
+  (db) => {
+    db.exec(`
+      ALTER TABLE accounts
+        ADD COLUMN max_characters INTEGER NOT NULL DEFAULT ${DEFAULT_MAX_CHARACTERS};
+    `);
+  },
+
+  // v4 — account role. 'player' (default) | 'dev' | 'admin'. Server-verified
+  // (loaded at join, never trusted from the client), so it can gate dev/admin
+  // powers in PROD — e.g. the PSI/ability unlock bypass (devs test everything).
+  // Flip with server/setRole.js. Mirrors SCHEMA_SQL in SupabaseStore.js.
+  (db) => {
+    db.exec(`
+      ALTER TABLE accounts
+        ADD COLUMN role TEXT NOT NULL DEFAULT 'player';
     `);
   },
 ];
@@ -131,6 +152,9 @@ class SqliteStore {
       ),
       deleteChar: db.prepare(`DELETE FROM characters WHERE id = ?`),
 
+      setMaxChars: db.prepare(`UPDATE accounts SET max_characters = @max WHERE id = @id`),
+      setRole: db.prepare(`UPDATE accounts SET role = @role WHERE id = @id`),
+
       worldDocByName: db.prepare(`SELECT * FROM world_docs WHERE name = ?`),
       upsertWorldDoc: db.prepare(
         `INSERT INTO world_docs (name, data, updated_at) VALUES (@name, @data, @updatedAt)
@@ -147,6 +171,8 @@ class SqliteStore {
       id: row.id,
       username: row.username,
       passwordHash: row.password_hash,
+      maxCharacters: row.max_characters,
+      role: row.role || 'player',
       createdAt: row.created_at,
     };
   }
@@ -255,20 +281,22 @@ class SqliteStore {
   }
 
   /**
-   * Create a character in the lowest free slot (0..MAX_CHARACTERS-1).
-   * Throws SlotsFullError if the account already has MAX_CHARACTERS.
+   * Create a character in the lowest free slot (0..max-1), where `max` is the
+   * account's per-account `max_characters` cap. Throws SlotsFullError if full.
    */
   createCharacter({ accountId, name, spriteGroupId, appearance, save, now }) {
     const create = this.db.transaction(() => {
+      const acct = this._stmt.accountById.get(accountId);
+      const max = acct ? acct.max_characters : DEFAULT_MAX_CHARACTERS;
       const used = new Set(this._stmt.charsByAccount.all(accountId).map((r) => r.slot));
       let slot = -1;
-      for (let s = 0; s < MAX_CHARACTERS; s++) {
+      for (let s = 0; s < max; s++) {
         if (!used.has(s)) {
           slot = s;
           break;
         }
       }
-      if (slot === -1) throw new SlotsFullError(accountId);
+      if (slot === -1) throw new SlotsFullError(accountId, max);
       const info = this._stmt.insertChar.run({
         accountId,
         slot,
@@ -292,6 +320,18 @@ class SqliteStore {
 
   deleteCharacter(id) {
     this._stmt.deleteChar.run(id);
+  }
+
+  /** Set the per-account character cap. @returns the updated account (or null). */
+  setMaxCharacters(accountId, max) {
+    this._stmt.setMaxChars.run({ id: accountId, max });
+    return this._account(this._stmt.accountById.get(accountId));
+  }
+
+  /** Set an account's role ('player' | 'dev' | 'admin'). @returns updated account. */
+  setRole(accountId, role) {
+    this._stmt.setRole.run({ id: accountId, role });
+    return this._account(this._stmt.accountById.get(accountId));
   }
 
   close() {

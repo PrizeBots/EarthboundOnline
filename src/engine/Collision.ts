@@ -68,6 +68,16 @@ const cellOverrides = new Map<number, Map<number, number>>();
 // the one-paint "hide behind this" for BG buildings the ROM never made foreground.
 export const FG_PROMOTE_BIT = 0x40;
 
+// "Background"/On-top is the per-minitile 0x20 bit — the INVERSE of FG_PROMOTE.
+// It forces sprites to ALWAYS draw OVER this cell, overriding any native ROM
+// priority the tile graphic carries (canopy 0x02 / counter 0x01) so a player
+// or NPC standing on / under it is never hidden. Painted red in the Room
+// Builder (orange when the cell is also a wall). getSpritePriority skips a
+// force-bg cell entirely. Mutually exclusive with FG_PROMOTE in the painter.
+// Render-only: it never affects movement/room-crop (those mask 0x80), so the
+// server/npcSim and the py checker need no changes.
+export const FORCE_BG_BIT = 0x20;
+
 function rebuildCellOverrides(): void {
   cellOverrides.clear();
   const cells = collisionOverrides?.cells ?? {};
@@ -87,6 +97,18 @@ export function getPromotedMinitiles(tileX: number, tileY: number): number[] {
   if (!row) return [];
   const out: number[] = [];
   for (let i = 0; i < 16; i++) if ((row[i] & FG_PROMOTE_BIT) !== 0) out.push(i);
+  return out;
+}
+
+/** Minitile indices (0-15) of a map tile flagged "Background"/on-top (0x20) — the
+ *  renderer must NOT re-cover these when it redraws the FG over a behind-FG
+ *  sprite, so entities always stay on top of them (even when the sprite is sunk
+ *  behind by OTHER furniture at its feet). Reads the effective row (live paints). */
+export function getBackgroundMinitiles(tileX: number, tileY: number): number[] {
+  const row = effectiveRow(tileX, tileY);
+  if (!row) return [];
+  const out: number[] = [];
+  for (let i = 0; i < 16; i++) if ((row[i] & FORCE_BG_BIT) !== 0) out.push(i);
   return out;
 }
 
@@ -415,6 +437,11 @@ export function getSpritePriority(worldX: number, worldY: number): number {
       if (!row) continue;
 
       const b = row[(mty & 3) * 4 + (mtx & 3)];
+      // NOTE: Force-Background (0x20) does NOT change bucketing here — a back
+      // tile can still sink the sprite behind (so it CAN be occluded when the
+      // entity is genuinely behind it). Whether a back tile actually re-covers
+      // the sprite is a per-tile DEPTH decision made in Renderer.redrawFGOver
+      // (only when the entity's feet are north of the tile).
       // Explicit Behind/Hide (0x40) grants whole-body priority even on SOLID
       // cells — that's the whole point: you walk up against a building and your
       // foot box reaches into its solid front wall (which you painted Behind),

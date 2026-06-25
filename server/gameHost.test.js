@@ -716,6 +716,74 @@ check('an anonymous player can spend banked points (server-authoritative)', () =
   assert.strictEqual(alice.last('points_update').points, before - 1, 'echoed remaining points');
 });
 
+// ---- Stat capsules + Rock candy: bank a free skill point (spent via the
+// reused level-up button → pentagon), so all capsules behave like Rock candy. ----
+const VITAL_CAP = '116'; // override layer: skillPoint 1 (a free pentagon point)
+const ROCK_CANDY = '101'; // override layer: skillPoint 1 (a free pentagon point)
+
+check('use_item stat capsule → banks a free skill point (lights the button), consumed', () => {
+  const p = host.players.get(aliceId);
+  const prog = host.points.get(aliceId);
+  if (!p.inventory.includes(VITAL_CAP)) p.inventory.push(VITAL_CAP);
+  const ptsBefore = prog.unspentPoints || 0;
+  alice.clear();
+  alice.recv({ type: 'use_item', itemId: VITAL_CAP });
+  assert.strictEqual(prog.unspentPoints, ptsBefore + 1, 'capsule banked one free point');
+  assert.strictEqual(
+    alice.last('points_update').points,
+    ptsBefore + 1,
+    'echoed new total (button lights)'
+  );
+  const inv = alice.last('inventory');
+  assert(inv && !inv.items.some((i) => i.id === VITAL_CAP), 'capsule was consumed');
+});
+
+check('use_item Rock candy → banks one free skill point, consumed', () => {
+  const p = host.players.get(aliceId);
+  const prog = host.points.get(aliceId);
+  if (!p.inventory.includes(ROCK_CANDY)) p.inventory.push(ROCK_CANDY);
+  const ptsBefore = prog.unspentPoints || 0;
+  alice.clear();
+  alice.recv({ type: 'use_item', itemId: ROCK_CANDY });
+  assert.strictEqual(prog.unspentPoints, ptsBefore + 1, 'one free point banked');
+  assert.strictEqual(alice.last('points_update').points, ptsBefore + 1, 'echoed new total');
+  const inv = alice.last('inventory');
+  assert(inv && !inv.items.some((i) => i.id === ROCK_CANDY), 'rock candy consumed');
+});
+
+// ---- Condiment seasoning (canon auto-apply, no-waste) ----
+const HAMBURGER = '90'; // base heal 48; preferred condiment = Ketchup (+16)
+const KETCHUP = '118';
+const SUGAR = '119'; // a MISMATCH for hamburger (would only give +2)
+
+check('use_item food + carried preferred condiment → big bonus, condiment consumed', () => {
+  const p = host.players.get(aliceId);
+  if (!p.inventory.includes(HAMBURGER)) p.inventory.push(HAMBURGER);
+  if (!p.inventory.includes(KETCHUP)) p.inventory.push(KETCHUP);
+  p.maxHp = 500; // lift the cap so the full base+seasoning heal is observable
+  p.hp = 1;
+  const before = p.hp;
+  alice.clear();
+  alice.recv({ type: 'use_item', itemId: HAMBURGER });
+  assert.strictEqual(p.hp - before, 48 + 16, `expected base+seasoning heal, got ${p.hp - before}`);
+  const inv = alice.last('inventory');
+  assert(inv && !inv.items.some((i) => i.id === HAMBURGER), 'hamburger consumed');
+  assert(!p.inventory.includes(KETCHUP), 'ketchup consumed as seasoning');
+});
+
+check('use_item food + only a MISMATCHED condiment → no seasoning, condiment kept', () => {
+  const p = host.players.get(aliceId);
+  if (!p.inventory.includes(HAMBURGER)) p.inventory.push(HAMBURGER);
+  if (!p.inventory.includes(SUGAR)) p.inventory.push(SUGAR);
+  p.maxHp = 500;
+  p.hp = 1;
+  const before = p.hp;
+  alice.clear();
+  alice.recv({ type: 'use_item', itemId: HAMBURGER });
+  assert.strictEqual(p.hp - before, 48, 'only the base hamburger heal, no seasoning');
+  assert(p.inventory.includes(SUGAR), 'mismatched sugar must NOT be auto-spent');
+});
+
 // ===================== 4b. PK toggle =====================
 
 check('set_pk on → flag set, lock armed, broadcast to everyone', () => {
@@ -829,6 +897,11 @@ check('a lethal hit starts the mortal roll; the roll-out DOWNS the player (KO)',
 // caster / strike the nearest enemy), and broadcasts psi_cast (the animation) to
 // EVERYONE incl. the caster, with the PsiAnim id + caster/target positions.
 
+// Give Alice a caster's PP pool so the Mental unlock gate clears these moves —
+// this block exercises PP/cast/effects, not the gate (see the gate test below).
+// ppMax = 2 + 2*Mental, so 100 ≈ Mental 49 → everything but Rockin' Ω is learned.
+host.players.get(aliceId).ppMax = 100;
+
 check('use_psi (heal) spends PP and broadcasts psi_cast at the caster', () => {
   const p = host.players.get(aliceId);
   p.hp = p.maxHp;
@@ -872,6 +945,27 @@ check('use_psi is blocked while "can\'t concentrate" (noPsi), even with PP', () 
   assert.strictEqual(host.players.get(aliceId).pp, 9, 'PP untouched while noPsi');
   assert.strictEqual(alice.ofType('psi_cast').length, 0, 'no cast while noPsi');
   p.statuses = {};
+});
+
+check('use_psi enforces the Mental unlock gate; dev role bypasses it', () => {
+  const p = host.players.get(aliceId);
+  p.statuses = {};
+  p.ppMax = 22; // Mental ~10 → Rockin' Ω (unlockMental 50) NOT learned
+  p.pp = 99; // plenty of PP — so only the unlock gate can refuse
+  p.role = 'player';
+  alice.clear();
+  alice.recv({ type: 'use_psi', psiId: 'psi_omega' });
+  assert.strictEqual(alice.ofType('psi_cast').length, 0, 'locked move is refused (no cast)');
+  assert.strictEqual(host.players.get(aliceId).pp, 99, 'no PP spent on a locked move');
+  // Dev/admin bypass the gate entirely — they can test every move.
+  p.role = 'dev';
+  alice.clear();
+  alice.recv({ type: 'use_psi', psiId: 'psi_omega' });
+  assert(alice.last('psi_cast'), 'dev role casts the locked move (bypass)');
+  // restore for later tests
+  p.role = 'player';
+  p.ppMax = 100;
+  p.pp = 99;
 });
 
 check("Healing PSI clears the caster's status conditions", () => {

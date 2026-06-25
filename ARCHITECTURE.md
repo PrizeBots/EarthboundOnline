@@ -474,7 +474,17 @@ soft CIRCLE of reveal around the player ghosts the overlapping promoted tiles
 (Pass 3b radial falloff, ~0.1 alpha at centre) so you can see what's behind
 the building — yourself, other players, enemies, gift boxes (all of which draw
 in the behind-FG pass, so fading the FG redraw exposes them); the rest of the
-building stays opaque. Promoted tiles are stored as
+building stays opaque. The **inverse** is the per-minitile `0x20` background bit
+(Room Builder "🔻 Back" tool, painted red / orange when also a wall): the FG
+re-cover pass (`redrawFGOver`) clips `0x20` minitiles OUT so entities draw on top
+of them — but DEPTH-CONDITIONALLY: only when the entity's feet are fully in front
+of (south of) the tile (`feetY >= (row+1)*TILE_SIZE`, the tile's BOTTOM edge — so
+the player walking up to a counter is on top, but an NPC clerk standing AT the
+counter row is still covered). When the feet are level-with or north of the tile,
+the back tile still occludes normally.
+`getSpritePriority` is unchanged (a back cell can still bucket the sprite behind).
+`0x20` and `0x40` are mutually exclusive; `0x20` is render-only (movement/room-crop
+mask `0x80`, so npcSim and the py checker need no change). Promoted tiles are stored as
 `foreground: ["x,y", ...]` in `overrides/collision.json`; native ROM foreground
 (trees/overhangs) is untouched. Saves per-arrangement byte diffs plus that
 foreground list, applied at three synced
@@ -777,7 +787,31 @@ and `revive` (HP an **auto-revive** restores). `server/buffs.js` is the buff eng
 at each use-site — attack offense, incoming-damage defense, dodge-from-speed — and
 pruned each tick; `statsPayload` reports EFFECTIVE base+buff so the status screen
 agrees). `use_item` applies heal/healPp/cure/buffs and refuses an all-no-op use
-(full bars, nothing to cure).
+(full bars, nothing to cure). **Stat capsules + Rock candy** are PERMANENT
+progression, routed through the level-up pentagon: `skillPoint` (set on all five
+capsules + Rock candy in `equip_stats.json`) banks N free skill points on use. The
+banked total lights the **reused level-up button** (`LevelUpButton`, label "SKILL")
+— the same chip a real level-up raises — and the player spends it in the pentagon
+(`spend_points → reapplyAlloc → deriveCombatStats`), choosing any of the 5 stats.
+So a used capsule and a level-up are one currency; the player always picks where it
+goes. (The `skill` field — a fixed +1 to one named pentagon stat on use — is still a
+supported authoring option, just not used by the stock capsules.) Server-authoritative:
+only the server-owned `alloc`/derive ever change.
+
+**Condiment seasoning.** Eating a food auto-applies the best condiment in the
+player's bag (`gameHost._pickCondiment`): the food's _preferred_ condiment or the
+universal Jar of delisauce adds the big `good` bonus to its HP/PP; a mismatched
+condiment is **never** auto-spent (no token `bad` bonus — it'd just waste it). The
+food + that one condiment are consumed atomically server-side, so the canon
+"Rock candy dupe" can't exist. The table is ROM-derived
+(`tools/extract_condiments.py` → `public/assets/map/condiments.json`, keyed by food
+id: `{pref, good, bad, effect}`). Works from the Goods menu and the hotbar alike
+(both route through `use_item`).
+
+**Glitter FX (`GlitterFx.ts`).** A '90s nod: using a Rock candy while a Sugar
+packet is in your Goods makes `gameHost` broadcast a `glitter` message; every
+client bursts golden sparkles around that player (`spawnGlitterFx`, procedural —
+no art). Purely cosmetic; the sugar is not consumed and nothing is duped.
 
 **Mortal Damage (EB rolling-HP death).** A lethal hit does NOT drop you instantly.
 `damagePlayer` splits on `newHp`: survivable hits apply at once; a hit that would

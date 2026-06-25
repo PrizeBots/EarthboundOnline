@@ -74,8 +74,9 @@ type Brush =
 
 // The ONE "what does clicking do?" selector. Each tool reveals only its own
 // controls: Select picks/resizes rooms; Paint draws tiles; Walls paints
-// walkability; Front paints the foreground (hide-behind) layer.
-type RoomTool = 'select' | 'paint' | 'walls' | 'front';
+// walkability; Front paints the foreground (hide-behind) layer; Back paints the
+// always-on-top (entities draw over the tile) layer.
+type RoomTool = 'select' | 'paint' | 'walls' | 'front' | 'back';
 
 interface Footprint {
   w: number;
@@ -162,6 +163,7 @@ class RoomBuilderTool implements EditorTool {
   private tool: RoomTool = 'select';
   private wallsErase = false;
   private fgSeg: HTMLDivElement | null = null;
+  private bgSeg: HTMLDivElement | null = null;
   private paintMode: 'tiles' | CollisionOp = 'tiles';
   private colHover: WorldPoint = { x: 0, y: 0 };
   private advOpen = false;
@@ -177,12 +179,13 @@ class RoomBuilderTool implements EditorTool {
   // layer's overlay is drawn under EVERY tool, so you can paint tiles while
   // seeing the walls + front you've laid down. The active collision tool always
   // force-shows its own layer regardless of these toggles.
-  private layerVis: { walls: boolean; front: boolean; pri: boolean } = {
+  private layerVis: { walls: boolean; front: boolean; back: boolean; pri: boolean } = {
     walls: true,
     front: true,
+    back: true,
     pri: false,
   };
-  private layerBtns: Partial<Record<'walls' | 'front' | 'pri', HTMLButtonElement>> = {};
+  private layerBtns: Partial<Record<'walls' | 'front' | 'back' | 'pri', HTMLButtonElement>> = {};
 
   // selection + corner resize
   private selectedRoomId: string | null = null;
@@ -924,8 +927,9 @@ class RoomBuilderTool implements EditorTool {
         this.layerVis.walls || this.paintMode === 'solid' || this.paintMode === 'walk' || advanced,
       pri: this.layerVis.pri || advanced || this.paintMode === 'clear',
       fg: this.layerVis.front || this.paintMode === 'fg' || this.paintMode === 'clear',
+      bg: this.layerVis.back || this.paintMode === 'bg' || this.paintMode === 'clear',
     };
-    if (inCol || show.solid || show.pri || show.fg) {
+    if (inCol || show.solid || show.pri || show.fg || show.bg) {
       collisionPaint.drawOverlay(ctx, camera, this.colHover, show, inCol);
     }
     // Collision tools draw only their layer overlay — no room boxes/ghost on top.
@@ -1535,6 +1539,7 @@ class RoomBuilderTool implements EditorTool {
     mkTool('🖌 Paint', 'paint', 'Draw tiles into rooms or onto the map with the brush.');
     mkTool('🧱 Walls', 'walls', 'Paint where you can and cannot walk.');
     mkTool('🌳 Front', 'front', 'Paint tiles you hide BEHIND (trees, roofs, signs).');
+    mkTool('🔻 Back', 'back', 'Paint tiles entities always draw ON TOP of (rugs, low decals).');
     this.panel.appendChild(toolRow);
 
     this.toolHelp = document.createElement('div');
@@ -1546,14 +1551,15 @@ class RoomBuilderTool implements EditorTool {
     this.panel.appendChild(this.mkSection('LAYERS — show/hide overlays'));
     const layerRow = document.createElement('div');
     layerRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;';
-    const mkLayer = (label: string, key: 'walls' | 'front' | 'pri', tip: string) => {
+    const mkLayer = (label: string, key: 'walls' | 'front' | 'back' | 'pri', tip: string) => {
       const b = this.mkBtn(label, () => this.toggleLayer(key), layerRow);
       b.dataset.layer = key;
       b.title = tip;
       this.layerBtns[key] = b;
     };
     mkLayer('🧱 Walls', 'walls', 'Show/hide the wall (collision) overlay — red.');
-    mkLayer('🌳 Front', 'front', 'Show/hide the front (hide-behind) overlay — yellow.');
+    mkLayer('🌳 Front', 'front', 'Show/hide the front (hide-behind) overlay — light blue.');
+    mkLayer('🔻 Back', 'back', 'Show/hide the background (always-on-top) overlay — red / orange.');
     mkLayer('▦ Priority', 'pri', 'Show/hide native ROM priority bits — blue / purple.');
     this.panel.appendChild(layerRow);
 
@@ -1582,6 +1588,18 @@ class RoomBuilderTool implements EditorTool {
     fgErase.dataset.fg = 'erase';
     fgErase.title = 'Remove front tiles so they no longer cover players.';
     this.colControls.appendChild(this.fgSeg);
+
+    // Place / Erase segment (Back tool only) — mirrors Front so a painted
+    // background (on-top) tile can be erased explicitly.
+    this.bgSeg = document.createElement('div');
+    this.bgSeg.style.cssText = 'display:none;gap:4px;align-items:center;flex-wrap:wrap;';
+    const bgPlace = this.mkBtn('Place', () => this.setBackErase(false), this.bgSeg);
+    bgPlace.dataset.bg = 'place';
+    bgPlace.title = 'Paint tiles entities always draw on top of.';
+    const bgErase = this.mkBtn('Erase', () => this.setBackErase(true), this.bgSeg);
+    bgErase.dataset.bg = 'erase';
+    bgErase.title = 'Remove background tiles so native priority applies again.';
+    this.colControls.appendChild(this.bgSeg);
 
     const cRow = document.createElement('div');
     cRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;align-items:center;';
@@ -1776,14 +1794,14 @@ class RoomBuilderTool implements EditorTool {
 
   // ── layer visibility (persistent overlays) ─────────────────────────────────
 
-  private toggleLayer(key: 'walls' | 'front' | 'pri'): void {
+  private toggleLayer(key: 'walls' | 'front' | 'back' | 'pri'): void {
     this.layerVis[key] = !this.layerVis[key];
     this.syncLayerBtns();
     this.shell?.toast(`${key} overlay ${this.layerVis[key] ? 'on' : 'off'}`);
   }
 
   private syncLayerBtns(): void {
-    for (const key of ['walls', 'front', 'pri'] as const) {
+    for (const key of ['walls', 'front', 'back', 'pri'] as const) {
       const b = this.layerBtns[key];
       if (!b) continue;
       const on = this.layerVis[key];
@@ -1801,7 +1819,7 @@ class RoomBuilderTool implements EditorTool {
     this.selecting = false;
     this.pendingBlank = false;
     this.sel = null;
-    if (tool !== 'walls' && tool !== 'front') this.advOpen = false;
+    if (tool !== 'walls' && tool !== 'front' && tool !== 'back') this.advOpen = false;
     if (tool === 'select') {
       this.paintMode = 'tiles';
       this.setPainting(false);
@@ -1811,8 +1829,11 @@ class RoomBuilderTool implements EditorTool {
     } else if (tool === 'walls') {
       this.paintMode = this.wallsErase ? 'walk' : 'solid';
       this.setPainting(false);
-    } else {
+    } else if (tool === 'front') {
       this.paintMode = 'fg';
+      this.setPainting(false);
+    } else {
+      this.paintMode = 'bg';
       this.setPainting(false);
     }
     this.syncTool();
@@ -1830,6 +1851,13 @@ class RoomBuilderTool implements EditorTool {
   /** Front sub-toggle: Place sets the 0x40 front bit, Erase clears it. */
   private setFrontErase(erase: boolean): void {
     collisionPaint.fgErase = erase;
+    this.syncTool();
+    this.updateStatus();
+  }
+
+  /** Back sub-toggle: Place sets the 0x20 always-on-top bit, Erase clears it. */
+  private setBackErase(erase: boolean): void {
+    collisionPaint.bgErase = erase;
     this.syncTool();
     this.updateStatus();
   }
@@ -1864,13 +1892,15 @@ class RoomBuilderTool implements EditorTool {
         return 'Paint where you can walk — yellow = wall (green if it also has a front copy). Block adds walls, Clear removes them.';
       case 'front':
         return 'Paint front tiles that cover players (trees, roofs, signs). Light blue = front. Place adds, Erase removes.';
+      case 'back':
+        return 'Paint background tiles entities always draw ON TOP of (rugs, low decals). Red = background, orange if also a wall. Place adds, Erase removes.';
     }
   }
 
   /** Reflect the active tool: show only its controls + highlight buttons. */
   private syncTool(): void {
     const showBrush = this.tool === 'paint';
-    const showCol = this.tool === 'walls' || this.tool === 'front';
+    const showCol = this.tool === 'walls' || this.tool === 'front' || this.tool === 'back';
     if (this.brushHeader) this.brushHeader.style.display = showBrush ? 'block' : 'none';
     if (this.brushTop) this.brushTop.style.display = showBrush ? 'flex' : 'none';
     if (this.paintBtn) this.paintBtn.style.display = showBrush ? 'block' : 'none';
@@ -1883,6 +1913,7 @@ class RoomBuilderTool implements EditorTool {
     if (this.colControls) this.colControls.style.display = showCol ? 'flex' : 'none';
     if (this.wallsSeg) this.wallsSeg.style.display = this.tool === 'walls' ? 'flex' : 'none';
     if (this.fgSeg) this.fgSeg.style.display = this.tool === 'front' ? 'flex' : 'none';
+    if (this.bgSeg) this.bgSeg.style.display = this.tool === 'back' ? 'flex' : 'none';
     if (this.advEl) this.advEl.style.display = showCol && this.advOpen ? 'flex' : 'none';
 
     // Highlight the active tool.
@@ -1901,6 +1932,12 @@ class RoomBuilderTool implements EditorTool {
     // Highlight Front Place/Erase by current erase state.
     this.panel?.querySelectorAll<HTMLButtonElement>('button[data-fg]').forEach((b) => {
       const on = (b.dataset.fg === 'erase') === collisionPaint.fgErase;
+      b.style.color = on ? '#7CFC6A' : '#cde';
+      b.style.borderColor = on ? '#7CFC6A' : '#3a4a5a';
+    });
+    // Highlight Back Place/Erase by current erase state.
+    this.panel?.querySelectorAll<HTMLButtonElement>('button[data-bg]').forEach((b) => {
+      const on = (b.dataset.bg === 'erase') === collisionPaint.bgErase;
       b.style.color = on ? '#7CFC6A' : '#cde';
       b.style.borderColor = on ? '#7CFC6A' : '#3a4a5a';
     });
@@ -2076,7 +2113,9 @@ class RoomBuilderTool implements EditorTool {
             ? 'Walls — click/drag to remove walls.'
             : m === 'fg'
               ? 'Front — click/drag to mark tiles you hide behind (light blue).'
-              : `Advanced (${m}) — click/drag to paint.`;
+              : m === 'bg'
+                ? 'Back — click/drag to mark tiles entities draw on top of (red, orange if also a wall).'
+                : `Advanced (${m}) — click/drag to paint.`;
       return;
     }
     if (this.pendingBlank) {

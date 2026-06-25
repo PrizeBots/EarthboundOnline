@@ -29,6 +29,7 @@ import {
   MENU_ITEMS,
   PSI_TAG,
   isPsiEntry,
+  isPsiUnlocked,
   psiName,
   psiAnimId,
   SHOP_ROOT,
@@ -147,20 +148,36 @@ export function renderCommand(ctx: CanvasRenderingContext2D, v: MenuView): void 
   renderMoney(ctx); // EB-style cash window, shown whenever the menu is open
 }
 
-/** The money window: a small EB cash window pinned to the very top-right ("$N").
- *  Tight to the corner — a small uniform margin and NO extra top/bottom padding
- *  inside the frame, so the box hugs the text (used both in-menu and, when the
- *  player enables it in Settings, as an always-on HUD via renderMoneyOverlay). */
+/** The money window: a small EB cash window on the top row ("$N"), right-aligned
+ *  but reserving room for the DOM mute button so it sits in the gap BETWEEN the
+ *  top-center XP bar and the top-right mute button. Hugs the text on all sides
+ *  (no min width, 1px inner gap) so there's no wasted space. Used both in-menu
+ *  and, when the player enables it in Settings, as an always-on HUD. */
 const MONEY_MARGIN = 3; // gap from the top + right screen edges
-export function renderMoney(ctx: CanvasRenderingContext2D): void {
+// The money glyphs ($ , digits) only ink rows 3..12 of font_0's 16px cell (rows
+// 0-2 and 13-15 are transparent). Size the window to that 10px ink band plus the
+// 3px EB frame and 1px breathing, so the box hugs the text with NO wasted space.
+// The cell's blank rows stay transparent, so nothing clips.
+const MONEY_INK_TOP = 3; // first inked cell row
+const MONEY_INK_H = 10; // inked rows 3..12 inclusive
+const MONEY_FRAME = 3; // EB window border thickness (WindowRenderer: 3 nested 1px outlines)
+const MONEY_INSET = MONEY_FRAME + 1; // frame + 1px gap before the text
+// Logical px reserved at the top-right for the mute button (a fixed-size DOM
+// element). The money window's right edge stops here so the two don't overlap.
+const MUTE_RESERVE = 14;
+export function renderMoney(
+  ctx: CanvasRenderingContext2D,
+  rightReserve: number = MUTE_RESERVE
+): void {
   const label = `$${formatMoney(getMoney())}`;
-  const innerW = Math.max(40, measureText(label, FONT_ID));
-  const winW = innerW + PADDING * 2 + BORDER * 2;
-  const winH = ITEM_H + BORDER * 2; // drop the vertical PADDING → no above/below gap
-  const winX = SCREEN_WIDTH - MONEY_MARGIN - winW; // hard against the right edge
-  const winY = MONEY_MARGIN; // hard against the top edge
+  const textW = measureText(label, FONT_ID); // hug the text — no minimum width
+  const winW = textW + MONEY_INSET * 2;
+  const winH = MONEY_INK_H + MONEY_INSET * 2;
+  const winX = SCREEN_WIDTH - rightReserve - winW;
+  const winY = MONEY_MARGIN;
   drawWindow(ctx, winX, winY, winW, winH, MENU_STYLE);
-  drawText(ctx, label, winX + BORDER + PADDING, winY + BORDER, FONT_ID);
+  // Offset the cell up by MONEY_INK_TOP so its ink band lands at the inset.
+  drawText(ctx, label, winX + MONEY_INSET, winY + MONEY_INSET - MONEY_INK_TOP, FONT_ID);
 }
 
 export function renderGoods(ctx: CanvasRenderingContext2D, v: MenuView): void {
@@ -255,6 +272,13 @@ function drawMiniArrow(ctx: CanvasRenderingContext2D, x: number, y: number): voi
   for (let col = 0; col < 3; col++) ctx.fillRect(x + col, y + col, 1, 5 - col * 2);
 }
 
+/** Veil a PSI row to show it's locked (not learned yet). The font has no color
+ *  param, so we lay a translucent dark rect over the drawn text instead. */
+function dimRow(ctx: CanvasRenderingContext2D, x: number, y: number, w: number): void {
+  ctx.fillStyle = 'rgba(20,24,40,0.55)';
+  ctx.fillRect(x, y - 1, w, FONT_LINE_HEIGHT + 1);
+}
+
 // Canon-style PSI menu: a tab bar (Offense/Recover/Assist/Other), the families in
 // the active tab below it, and — once a family is opened — a tier popup (α/β/γ/Ω/Σ)
 // to the right. The cursor sits on the family list while browsing, and moves to the
@@ -284,6 +308,9 @@ export function renderPsi(ctx: CanvasRenderingContext2D, v: MenuView): void {
     if (!v.psiTierOpen && r.index === v.psiFamilyCursor) drawCursor(ctx, r.x, r.y + 3);
     drawText(ctx, fitText(fam.family, r.w - CURSOR_W - 6), r.x + CURSOR_W, r.y, FONT_ID);
     if (fam.moves.length > 1) drawMiniArrow(ctx, r.x + r.w - 4, r.y + 3);
+    // Dim a family whose cheapest (first) tier isn't learned yet — nothing in it
+    // is castable. Devs see everything bright (isPsiUnlocked returns true).
+    if (fam.moves[0] && !isPsiUnlocked(fam.moves[0])) dimRow(ctx, r.x, r.y, r.w);
   }
   drawScrollbar(ctx, fl.scroll);
 
@@ -297,6 +324,8 @@ export function renderPsi(ctx: CanvasRenderingContext2D, v: MenuView): void {
       if (!m) continue;
       if (r.index === v.psiTierCursor) drawCursor(ctx, r.x, r.y + 3);
       drawText(ctx, psiTierRowLabel(m), r.x + CURSOR_W, r.y, FONT_ID);
+      // Dim a tier that isn't learned yet (Mental too low). Devs: never dimmed.
+      if (!isPsiUnlocked(m)) dimRow(ctx, r.x, r.y, r.w);
     }
     drawScrollbar(ctx, tl.scroll);
   }

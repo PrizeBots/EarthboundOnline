@@ -55,6 +55,7 @@ import {
   MENU_ITEMS,
   psiCost,
   psiTarget,
+  isPsiUnlockedById,
   PSI_TAG,
   isPsiEntry,
   drawCursor,
@@ -486,6 +487,12 @@ function usePsi(abilityId: string): void {
   // for instant feedback; the server enforces it too (gameHost use_psi).
   if (hooks?.psiBlocked?.()) {
     hooks?.notify?.("Can't concentrate!");
+    return;
+  }
+  // Unlock gate: must be LEARNED (Mental >= unlockMental), unless a dev. Instant
+  // client feedback; the server enforces it too (gameHost use_psi). No FX/send.
+  if (!isPsiUnlockedById(abilityId)) {
+    hooks?.notify?.("You haven't learned that PSI yet.");
     return;
   }
   // Gate on PP up front (the server enforces it too — gameHost use_psi — but
@@ -1331,9 +1338,11 @@ export function renderHotbarOverlay(ctx: CanvasRenderingContext2D): void {
   renderHotbar(ctx, buildView());
 }
 
-/** Draw just the top-right money window as an always-on HUD element, when the
- *  player has enabled "Show $ in corner" in Settings. Game calls this when the
- *  menu is CLOSED (the menu's own screens draw the money window themselves). */
+/** Draw the always-on "$N" money window when the player enables "Show $ in
+ *  corner" in Settings. Game calls this when the menu is CLOSED (the menu's own
+ *  screens draw the money window themselves). Sits on the top row, right-aligned
+ *  but left of the mute button — tucked into the gap between the XP bar and the
+ *  mute (renderMoney reserves the mute's width). */
 export function renderMoneyOverlay(ctx: CanvasRenderingContext2D): void {
   if (showMoneyAlways()) renderMoney(ctx);
 }

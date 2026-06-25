@@ -1,8 +1,10 @@
 import { setAllMuted, toggleAllMuted, isMusicMuted } from './MusicManager';
 
-// Browser-meta UI (not a SNES concept): a DOM overlay button in the top-right
-// corner. Lives above the canvas so it's clickable in every game phase and
-// needs no canvas click-coordinate math. Mute state persists in localStorage.
+// Browser-meta UI (not a SNES concept): a DOM overlay button glued to the top-
+// right corner of the GAME CANVAS (not the viewport — the canvas is centered
+// with letterboxing, so we sync to its bounding rect on resize; this also keeps
+// it clear of the viewport-pinned ?netdebug overlay). Lives above the canvas so
+// it's clickable in every game phase. Mute state persists in localStorage.
 //
 // The icon is drawn pixel-art style on a 16x16 canvas and scaled up with
 // image-rendering: pixelated so it matches the game's chunky-pixel aesthetic.
@@ -10,7 +12,8 @@ import { setAllMuted, toggleAllMuted, isMusicMuted } from './MusicManager';
 const STORAGE_KEY = 'eb_muted';
 
 const ICON_RES = 16; // native pixel grid the icon is drawn on
-const ICON_SCALE = 3; // 16 * 3 = 48px on screen
+const ICON_SCALE = 1.5; // 16 * 1.5 = 24px on screen (half the old 48px)
+const PANEL_INSET = 8; // gap from the canvas's top/right edges
 
 // Speaker cone: narrow at the body (left), widening to the right. Each entry
 // is [x, y, w, h] in the 16x16 grid.
@@ -59,17 +62,15 @@ export function initMuteButton(): void {
   btn.id = 'eb-mute';
   Object.assign(btn.style, {
     position: 'fixed',
-    top: '10px',
-    right: '10px',
     zIndex: '1000',
-    width: '52px',
-    height: '52px',
+    width: '26px',
+    height: '26px',
     padding: '0',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     cursor: 'pointer',
-    border: '2px solid #fff',
+    border: '1px solid #fff',
     borderRadius: '0', // blocky, no rounded corners
     background: '#000',
     imageRendering: 'pixelated',
@@ -102,6 +103,33 @@ export function initMuteButton(): void {
   btn.appendChild(canvas);
   render();
   document.body.appendChild(btn);
+  positionToPanel();
+  // The canvas re-letterboxes on window resize; keep the button glued to its corner.
+  window.addEventListener('resize', positionToPanel);
+}
+
+/** Snap the mute button to the top-right corner of the game canvas (viewport
+ *  coords), so it tracks the letterboxed canvas instead of the window edge. The
+ *  always-on money window lives BELOW the XP bar (not the corner), so the button
+ *  simply owns the corner unconditionally. */
+function positionToPanel(): void {
+  const btn = document.getElementById('eb-mute');
+  const canvas = document.getElementById('game') as HTMLCanvasElement | null;
+  if (!btn || !canvas) return;
+  // The Renderer sizes the canvas (sets style.width) AFTER this module's boot.
+  // Until then getBoundingClientRect is a default 300x150 box sitting mid-screen,
+  // which would strand the button in the middle. Skip until the canvas is sized;
+  // the Renderer re-calls this from applyBackbuffer once it is.
+  if (!canvas.style.width) return;
+  const rect = canvas.getBoundingClientRect();
+  btn.style.top = `${rect.top + PANEL_INSET}px`;
+  btn.style.right = `${window.innerWidth - rect.right + PANEL_INSET}px`;
+}
+
+/** Re-anchor the mute button to the canvas corner — the Renderer calls this every
+ *  time it (re)sizes the canvas, which is the only thing that moves the corner. */
+export function syncMuteButtonPosition(): void {
+  positionToPanel();
 }
 
 /**
@@ -110,5 +138,8 @@ export function initMuteButton(): void {
  */
 export function setMuteButtonHidden(hidden: boolean): void {
   const btn = document.getElementById('eb-mute');
-  if (btn) btn.style.display = hidden ? 'none' : 'flex';
+  if (btn) {
+    btn.style.display = hidden ? 'none' : 'flex';
+    if (!hidden) positionToPanel(); // re-sync in case the window resized while hidden
+  }
 }

@@ -111,6 +111,12 @@ function loadShops(assetsDir) {
       cure: Array.isArray(ov.cure) ? ov.cure : null,
       buffs: Array.isArray(ov.buffs) ? ov.buffs : null,
       revive: num(ov.revive, 0),
+      // Stat capsules: `skill` permanently raises one of the 5 creation stats
+      // (muscle/mental/spirit/speed/knowledge) by 1 via the level-up pentagon;
+      // `skillPoint` banks N free points (Rock candy wildcard). gameHost use_item
+      // applies these against the server-owned alloc. null/0 = ordinary item.
+      skill: typeof ov.skill === 'string' ? ov.skill : null,
+      skillPoint: num(ov.skillPoint, 0),
       users: Array.isArray(ov.users) ? ov.users : it.users || [],
       equip,
     };

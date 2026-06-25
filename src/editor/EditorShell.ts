@@ -1150,6 +1150,8 @@ export class EditorShell {
         ? '--'
         : [
             byte & 0x80 ? 'SOLID' : null,
+            byte & 0x40 ? 'FRONT' : null,
+            byte & 0x20 ? 'BACK' : null,
             byte & 0x01 ? 'PRI-LO' : null,
             byte & 0x02 ? 'PRI-HI' : null,
           ]

@@ -11,6 +11,10 @@ let mouseAttack = false;
 let canvas: HTMLCanvasElement | null = null;
 let pointerX = 0;
 let pointerY = 0;
+// True when the pointer is being driven by a real MOUSE (set on mousemove/down,
+// cleared on touch). Gameplay reads this to decide whether to mouse-aim attacks
+// vs. fall back to movement-facing (touch / keyboard-only). See Aim.ts.
+let pointerIsMouse = false;
 let clickPending: { x: number; y: number } | null = null;
 // Drag support (for canvas UI like the hotbar): a one-shot press latch, a live
 // held flag, and a one-shot release latch. Distinct from clickPending so the
@@ -100,6 +104,7 @@ export function initInput(gameCanvas?: HTMLCanvasElement) {
     const p = toGameCoords(e.clientX, e.clientY);
     pointerX = p.x;
     pointerY = p.y;
+    pointerIsMouse = true;
   });
   // Left mouse button = attack. Ignore clicks on UI controls (buttons, inputs,
   // the editor overlay) so they don't trigger a swing. The click is also
@@ -109,6 +114,7 @@ export function initInput(gameCanvas?: HTMLCanvasElement) {
     const t = e.target as HTMLElement | null;
     if (t && t.closest('button, input, textarea, select, [data-ui]')) return;
     mouseAttack = true;
+    pointerIsMouse = true;
     const c = toGameCoords(e.clientX, e.clientY);
     clickPending = c;
     pressPending = c;
@@ -160,6 +166,7 @@ export function initInput(gameCanvas?: HTMLCanvasElement) {
         const c = toGameCoords(t.clientX, t.clientY);
         pointerX = c.x;
         pointerY = c.y;
+        pointerIsMouse = false; // touch, not mouse → attacks keep movement-facing
         clickPending = c;
         pressPending = c;
         pointerHeld = true;
@@ -175,6 +182,7 @@ export function initInput(gameCanvas?: HTMLCanvasElement) {
         const c = toGameCoords(t.clientX, t.clientY);
         pointerX = c.x;
         pointerY = c.y;
+        pointerIsMouse = false;
       },
       { passive: false }
     );
@@ -210,6 +218,12 @@ export function consumePointerRelease(): { x: number; y: number } | null {
 /** Pointer position in game-space pixels (256x224). */
 export function getPointer(): { x: number; y: number } {
   return { x: pointerX, y: pointerY };
+}
+
+/** True when a real mouse last drove the pointer (not touch). Gameplay uses this
+ *  to gate mouse-aim — touch / keyboard-only players keep movement-facing. */
+export function isMouseAimActive(): boolean {
+  return pointerIsMouse;
 }
 
 /** Take the accumulated wheel notches (+down / -up) since the last call, reset

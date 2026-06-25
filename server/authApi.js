@@ -161,10 +161,13 @@ function createAuthApi(store, { now = () => Date.now(), editorApi = false } = {}
   // ------------------------------ characters ------------------------------
 
   api.get('/api/characters', requireAuth, async (req, res) => {
-    const characters = await store.listCharacters(req.accountId);
+    const [account, characters] = await Promise.all([
+      store.getAccountById(req.accountId),
+      store.listCharacters(req.accountId),
+    ]);
     res.json({
       characters: characters.map(publicCharacter),
-      max: MAX_CHARACTERS,
+      max: account ? account.maxCharacters : MAX_CHARACTERS,
     });
   });
 
@@ -208,7 +211,7 @@ function createAuthApi(store, { now = () => Date.now(), editorApi = false } = {}
       res.status(201).json({ character: publicCharacter(character) });
     } catch (e) {
       if (e instanceof SlotsFullError) {
-        return res.status(409).json({ error: `all ${MAX_CHARACTERS} save slots are full` });
+        return res.status(409).json({ error: `all ${e.max} save slots are full` });
       }
       throw e;
     }

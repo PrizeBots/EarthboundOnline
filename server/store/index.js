@@ -26,21 +26,23 @@
  *   deleteSession(token) -> void                        (logout)
  *   deleteExpiredSessions(now) -> number                (count removed)
  *
- * Characters  (max MAX_CHARACTERS per account; `save` is opaque JSON state:
- *              progression/inventory/money/equipment/position/flags)
+ * Characters  (max = the account's `maxCharacters` cap, default 3; `save` is
+ *              opaque JSON state: progression/inventory/money/equipment/pos/flags)
  *   listCharacters(accountId) -> character[]            (slot order)
  *   getCharacter(id) -> character | null
  *   createCharacter({ accountId, name, spriteGroupId, appearance, save, now })
  *       -> character   (auto-assigns lowest free slot; throws SlotsFullError)
  *   updateCharacterSave(id, save, now) -> character     (persist gameplay state)
  *   deleteCharacter(id) -> void
+ *   setMaxCharacters(accountId, max) -> account         (per-account slot cap)
+ *   setRole(accountId, role) -> account                 ('player'|'dev'|'admin')
  *
  * World documents  (key->JSON authored content: the Places outline, etc.;
  *                   written only by the localhost dev editor)
  *   getWorldDoc(name) -> data | null
  *   putWorldDoc(name, data, now) -> { name, updatedAt }
  *
- *   account   = { id, username, passwordHash, createdAt }
+ *   account   = { id, username, passwordHash, maxCharacters, createdAt }
  *   character = { id, accountId, slot, name, spriteGroupId, appearance,
  *                 save, createdAt, updatedAt }
  * ─────────────────────────────────────────────────────────────────────────────

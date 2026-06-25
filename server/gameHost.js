@@ -421,6 +421,32 @@ for (const spec of PSI_FAMILY_SPECS) {
     };
   });
 }
+// Mental level at which each move is LEARNED — its rank when all costed moves are
+// sorted by PP (cheap = early). One move per Mental point, no batches/gaps (see
+// ABILITIES.md §3.4). Free moves (PSI Magnet, pp<=1) learn at Mental 1. KEEP IN
+// SYNC with the same ranking in src/engine/PsiTuning.ts.
+assignUnlockMental(Object.values(PSI_BASE));
+function assignUnlockMental(moves) {
+  moves
+    .filter((m) => m.pp > 1)
+    .sort((a, b) => a.pp - b.pp) // stable: ties keep family/tier order
+    .forEach((m, i) => {
+      m.unlockMental = i + 1;
+    });
+  moves.filter((m) => m.pp <= 1).forEach((m) => (m.unlockMental = 1));
+}
+
+// --- PSI/ability unlock gate ------------------------------------------------
+// ppMax encodes Mental (ppMax = 2 + 2*Mental), so Mental = (ppMax-2)/2. A move is
+// learned once Mental reaches its `unlockMental`. DEV BYPASS: role dev/admin casts
+// every move regardless of stats (test all PSI in prod). The bypass is the single
+// chokepoint every future ability lane will reuse.
+const mentalLevelOf = (entry) => Math.max(0, Math.round((((entry && entry.ppMax) || 0) - 2) / 2));
+const isDevPlayer = (entry) => !!entry && (entry.role === 'dev' || entry.role === 'admin');
+function psiUnlocked(entry, move) {
+  if (isDevPlayer(entry)) return true;
+  return mentalLevelOf(entry) >= (move.unlockMental || 1);
+}
 // Unit facing vectors by Direction (S,N,W,E,NW,SW,SE,NE) — where an offense PSI
 // fizzles toward when no enemy is in range (so the projectile still reads).
 const PSI_DIR = [
@@ -587,6 +613,12 @@ class GameHost {
     this._root = root;
     this.GIFTS = GameHost._loadGifts(assetsDir, root);
 
+    // Condiment seasoning table: foodId -> {pref, good, bad, effect}. ROM-derived
+    // (assets/map/condiments.json, tools/extract_condiments.py). use_item auto-
+    // applies the best condiment a player carries onto a food they eat. Absent
+    // file = no seasoning (foods still heal their base).
+    this.CONDIMENTS = GameHost._loadCondiments(assetsDir);
+
     // Server-authoritative NPC simulation: same world for every client.
     this.npcSim = createNpcSim(assetsDir);
     // World pixel bounds for move validation (clamp players onto the map).
@@ -685,6 +717,41 @@ class GameHost {
       /* no authored overrides yet */
     }
     return gifts;
+  }
+
+  /** Load the ROM-derived condiment seasoning table (assets/map/condiments.json).
+   *  Returns { byFood: {id:{pref,good,bad,effect}}, set: Set(condiment ids),
+   *  universal }. Empty/absent file => seasoning disabled (foods still heal). */
+  static _loadCondiments(assetsDir) {
+    try {
+      const d = JSON.parse(fs.readFileSync(path.join(assetsDir, 'map', 'condiments.json'), 'utf8'));
+      return {
+        byFood: d.byFood || {},
+        set: new Set((d.condiments || []).map((n) => String(n))),
+        universal: String(d.universal || 126),
+      };
+    } catch {
+      return { byFood: {}, set: new Set(), universal: '126' };
+    }
+  }
+
+  /** Pick the best condiment in `inv` to season food `foodId`, EarthBound-style:
+   *  the food's preferred condiment or the universal delisauce both give the big
+   *  `good` bonus; we never auto-spend a condiment for the token `bad` bonus
+   *  (that just wastes it). Returns {condId, amount, effect} or null. The caller
+   *  removes condId from the bag and adds `amount` to hp/pp. */
+  _pickCondiment(inv, foodId) {
+    const c = this.CONDIMENTS;
+    const rule = c.byFood[String(foodId)];
+    if (!rule || (rule.effect !== 'hp' && rule.effect !== 'pp')) return null;
+    const pref = String(rule.pref || 0);
+    // Prefer the food-specific match so the premium universal delisauce is only
+    // burned when it's the only good condiment on hand.
+    let condId = null;
+    if (pref !== '0' && inv.includes(pref)) condId = pref;
+    else if (inv.includes(c.universal)) condId = c.universal;
+    if (!condId || !(rule.good > 0)) return null;
+    return { condId, amount: rule.good, effect: rule.effect };
   }
 
   /** Start the NPC simulation. Call once after construction. */
@@ -1551,6 +1618,13 @@ class GameHost {
     if (!session) return null;
     const character = await this.store.getCharacter(Number(characterId));
     if (!character || character.accountId !== session.accountId) return null;
+    // Server-verified account role ('player' | 'dev' | 'admin') — drives the
+    // dev unlock bypass (devUnlockAll). Loaded here, never trusted from the client.
+    // Guarded so older Store impls (test mocks) without getAccountById still join.
+    const account = this.store.getAccountById
+      ? await this.store.getAccountById(session.accountId)
+      : null;
+    const role = account && typeof account.role === 'string' ? account.role : 'player';
 
     const save = character.save && typeof character.save === 'object' ? character.save : {};
     const alloc = sanitizeAlloc(save.alloc);
@@ -1618,6 +1692,7 @@ class GameHost {
       favoriteThing: typeof save.favoriteThing === 'string' ? save.favoriteThing : '',
       favoriteFood: typeof save.favoriteFood === 'string' ? save.favoriteFood : '',
       momFoodReadyAt: Number.isFinite(save.momFoodReadyAt) ? save.momFoodReadyAt : 0,
+      role,
     };
   }
 
@@ -2523,6 +2598,10 @@ class GameHost {
           warpUntil: 0,
           // Dev editor anchor flag (see 'editor').
           editor: false,
+          // Server-verified account role ('player' | 'dev' | 'admin'). Drives the
+          // dev unlock bypass (devUnlockAll → all PSI/abilities castable). Anonymous
+          // joins are 'player'. NEVER set from a client message.
+          role: init.role || 'player',
           // Last-message timestamp for the idle-disconnect sweep (_reapIdle).
           lastSeen: Date.now(),
           // Server-authoritative progression: fresh (anon) or rebuilt from the
@@ -2598,7 +2677,12 @@ class GameHost {
             // EB naming flavor — the client renders the "PSI ????" special as
             // "PSI <favorite thing>" (blank → "Rockin'"). Display-only.
             favoriteThing: entry.favoriteThing || '',
+            // Account role — the client unlocks the whole PSI menu for dev/admin
+            // (mirrors the server's devUnlockAll). Players gate by Mental.
+            role: entry.role || 'player',
             attackSpeed: entry.attackSpeed, // weapon swing-rate mult (scales client swing pose)
+            weaponRange: entry.weaponRange || 0, // projectile range (0 = melee) → aim reticle
+
             // Saved quest/progress flags (PlayerFlags) — private to this player.
             flags: [...this.flags.get(playerId)],
             // Restore PK state + remaining lock (a player who logged out PK
@@ -2889,12 +2973,25 @@ class GameHost {
       case 'attack': {
         const entry = this.players.get(playerId);
         if (!entry) break;
+        // Mouse-aim: the client sends a snapped 8-way `dir` (for sprite facing) plus
+        // a raw `aimx,aimy` unit vector (for the true-angle hitbox/projectile). Adopt
+        // the facing as authoritative so movement/AOI broadcasts + the swing pose
+        // point where they aimed; clamp to a valid enum, else keep the old facing.
+        const adir = msg.dir | 0;
+        const swingDir = adir >= 0 && adir < 8 ? adir : entry.direction | 0;
+        entry.direction = swingDir;
         // Tell everyone else to play this player's swing. The authoritative move
         // sim broadcasts every pose as 'walk', so the attack pose can't ride the
         // position stream — other clients replay the swing from this signal
-        // (RemoteInterp.applyRemoteSwing). Sent for every swing incl. a whiff.
+        // (RemoteInterp.applyRemoteSwing). `dir` orients the remote swing pose.
+        // Sent for every swing incl. a whiff.
         this._publishPlayerEvent(
-          { type: 'player_attack', id: playerId, attackSpeed: entry.attackSpeed || 1 },
+          {
+            type: 'player_attack',
+            id: playerId,
+            attackSpeed: entry.attackSpeed || 1,
+            dir: swingDir,
+          },
           false
         );
         // Status accuracy penalties: Crying lowers your hit rate, Nausea makes
@@ -2920,7 +3017,7 @@ class GameHost {
         this.npcSim.handleAttack(
           entry.x,
           entry.y,
-          msg.dir | 0,
+          swingDir,
           playerId,
           entry.offense +
             (entry.weaponOffense || 0) +
@@ -2938,7 +3035,12 @@ class GameHost {
           // ~60-80ms) + this player's RTT. Falls back to NPC_INTERP_MS until the
           // first ping reports it. Must match what the client renders or melee
           // tests the hitbox at the wrong moment (the "hits don't land" bug).
-          LAG_COMP ? (entry._interp ?? NPC_INTERP_MS) + (entry._rtt || 0) : 0
+          LAG_COMP ? (entry._interp ?? NPC_INTERP_MS) + (entry._rtt || 0) : 0,
+          // Raw mouse-aim unit vector: when present (and finite/non-zero) the hitbox
+          // and projectile fire at this true angle; otherwise they fall back to the
+          // 8-way `swingDir`. Server normalizes it, so reach/speed can't be spoofed.
+          Number(msg.aimx),
+          Number(msg.aimy)
         );
         break;
       }
@@ -2982,6 +3084,7 @@ class GameHost {
                 type: 'equipped',
                 slots: entry.equipped,
                 attackSpeed: entry.attackSpeed,
+                range: entry.weaponRange || 0,
               })
             );
             break;
@@ -2996,6 +3099,7 @@ class GameHost {
             type: 'equipped',
             slots: entry.equipped,
             attackSpeed: entry.attackSpeed,
+            range: entry.weaponRange || 0,
           })
         );
         entry._ws.send(
@@ -3211,6 +3315,18 @@ class GameHost {
             },
             playerId
           );
+          // '90s recipe nod: Rock candy used while a Sugar packet sits in your
+          // Goods → a glitter burst EVERYONE sees. Cosmetic only — the sugar is
+          // NOT consumed and nothing is duped (the canon dupe glitch can't exist
+          // here; use_item always consumes server-side).
+          if (def.skillPoint && entry.inventory.includes('119')) {
+            this.broadcastAll({
+              type: 'glitter',
+              id: playerId,
+              x: Math.round(entry.x),
+              y: Math.round(entry.y),
+            });
+          }
           this._saveCharacter(playerId);
           break;
         }
@@ -3221,6 +3337,14 @@ class GameHost {
         const now = Date.now();
         const canHp = def.heal && entry.hp < entry.maxHp;
         const canPp = def.healPp && entry.pp < entry.ppMax;
+        // EarthBound seasoning: auto-apply the best condiment the player carries
+        // onto this food (preferred match or universal delisauce → the big `good`
+        // bonus; mismatches are never auto-spent — see _pickCondiment). Only when
+        // the matching bar can actually take it, so a condiment is never wasted.
+        const season = this._pickCondiment(entry.inventory, itemId);
+        const seasonHp = season && season.effect === 'hp' && canHp ? season.amount : 0;
+        const seasonPp = season && season.effect === 'pp' && canPp ? season.amount : 0;
+        const condimentUsed = seasonHp || seasonPp ? season.condId : null;
         // Statuses this item lists that the player currently has (the cure targets).
         const curable = Array.isArray(def.cure)
           ? def.cure.filter((t) => status.defOf(t) && status.hasStatus(entry, t, now))
@@ -3251,7 +3375,7 @@ class GameHost {
         // broadcast so every client redraws the bar, tagging `heal` so the
         // owner's client pops a green number.
         if (canHp) {
-          const healed = Math.min(entry.maxHp, entry.hp + def.heal) - entry.hp;
+          const healed = Math.min(entry.maxHp, entry.hp + def.heal + seasonHp) - entry.hp;
           entry.hp += healed;
           this.broadcastAll({
             type: 'player_hp',
@@ -3265,7 +3389,7 @@ class GameHost {
         // PP-restoring consumables (e.g. PSI-recovery foods) refill the PP bar up
         // to the cap; player_stats pushes the new pp so the caster's bar redraws.
         if (canPp) {
-          entry.pp = Math.min(entry.ppMax, entry.pp + def.healPp);
+          entry.pp = Math.min(entry.ppMax, entry.pp + def.healPp + seasonPp);
         }
         // Status-cure foods clear the listed conditions the player currently has;
         // re-broadcast the active set so the client drops the icons + input lock.
@@ -3291,6 +3415,21 @@ class GameHost {
         if (buffList.length) this._sendPlayerBuffs(entry);
 
         entry.inventory.splice(slot, 1);
+        // Seasoning consumed a condiment too — remove ONE (by value, after the food
+        // splice so the index is current) and tell the player what it did.
+        if (condimentUsed) {
+          const ci = entry.inventory.indexOf(condimentUsed);
+          if (ci >= 0) entry.inventory.splice(ci, 1);
+          const cName =
+            (this.GOODS[condimentUsed] && this.GOODS[condimentUsed].name) || 'condiment';
+          const unit = season.effect === 'pp' ? 'PP' : 'HP';
+          entry._ws.send(
+            JSON.stringify({
+              type: 'notice',
+              text: `${cName} made it tastier! +${season.amount} ${unit}`,
+            })
+          );
+        }
         entry._ws.send(
           JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) })
         );
@@ -3445,7 +3584,17 @@ class GameHost {
         if (!entry || entry.hp <= 0) break;
         const psiId = typeof msg.psiId === 'string' ? msg.psiId : null;
         const def = psiId ? this.PSI[psiId] : null;
-        if (!def || entry.pp < def.pp) break; // unknown ability or not enough PP
+        if (!def) break; // unknown ability
+        // Unlock gate: the move must be LEARNED (Mental >= its unlockMental).
+        // Dev/admin accounts bypass entirely (test every move). Server-authoritative.
+        if (!psiUnlocked(entry, def)) {
+          if (entry._ws)
+            entry._ws.send(
+              JSON.stringify({ type: 'notice', text: "You haven't learned that PSI yet." })
+            );
+          break;
+        }
+        if (entry.pp < def.pp) break; // not enough PP
         // "Can't concentrate" (noPsi) blocks ALL PSI, even a cure — it must wear
         // off. The client also gates this; the server is the authority.
         const now = Date.now();

@@ -73,6 +73,36 @@ pre-launch TODO; see TODO.md):
    (item) + ROM flag, keyed by placement. Authored via the Gift Manager tool (see ARCHITECTURE.md).
 6. `npm run dev` — runs the game in browser
 
+## Database / Persistence
+
+Two backends behind ONE contract (`server/store/index.js`), picked by `createStore`:
+
+- **SQLite** (`SqliteStore.js`) — local/dev, `data/eb.db`. Default when no DB env var is set.
+- **Supabase/Postgres** (`SupabaseStore.js`) — **prod (live)**. Used when `DATABASE_URL` /
+  `SUPABASE_DB_URL` is set.
+
+**The two schemas MUST stay mirrored.** Any schema change is TWO edits, never one:
+
+1. SQLite: append a **versioned migration** to the `MIGRATIONS` array (it bumps
+   `user_version`; applied on the next server boot — nodemon restart).
+2. Supabase: add the matching **idempotent** statement (`CREATE TABLE IF NOT EXISTS` /
+   `ALTER TABLE … ADD COLUMN IF NOT EXISTS`) to `SCHEMA_SQL` (re-run on every prod boot).
+
+How each applies: local SQLite migrates on dev-server restart; **the live Supabase DB only
+updates when a server boots against it** (or you run the SQL via the Supabase API / SQL
+editor). So after a schema change, local is current immediately but **prod is pending until
+the next prod boot** — if prod needs it NOW, apply the SQL through the Supabase API/MCP
+rather than waiting. Use the Supabase API as needed for any direct prod-DB read/write.
+
+**Rules of thumb:**
+
+- New `Store` methods go on the contract + BOTH impls (keep the Supabase swap drop-in) —
+  never as a backend-only special.
+- Prefer the single `save` JSON column (→ Postgres `jsonb`) for volatile gameplay state;
+  reserve real columns for things you query/index (e.g. `role`, `max_characters`).
+- Admin CLIs (`setRole.js`, `setMaxChars.js`) run against whichever backend `createStore`
+  picks — set the DB env var to target prod.
+
 ## Rendering
 
 - Uses EarthBound's native dual-layer system: BG atlas (minitiles 0-383) behind sprites, FG atlas (minitiles 512-895) in front

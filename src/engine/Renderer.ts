@@ -15,9 +15,12 @@ import { isTouchDevice } from './TouchControls';
 import {
   getSpritePriority,
   getPromotedMinitiles,
+  getBackgroundMinitiles,
   getEffectiveRowAt,
   FG_PROMOTE_BIT,
+  FORCE_BG_BIT,
 } from './Collision';
+import { syncMuteButtonPosition } from './MuteButton';
 import { getStatus } from './StatusModal';
 import { rollHealth, pendFlash, HpHolder } from './HealthRoll';
 import { drawText, measureText, getLineHeight } from './TextRenderer';
@@ -500,6 +503,11 @@ export class Renderer {
     this.canvas.style.width = `${SCREEN_WIDTH * this.scale}px`;
     this.canvas.style.height = `${SCREEN_HEIGHT * this.scale}px`;
     this.ctx.imageSmoothingEnabled = false;
+    // The canvas just moved/resized — re-anchor the corner mute button to it.
+    // This is the ONLY place the canvas's CSS size is set, and it runs on the
+    // initial sizing (in the constructor) plus every resize, so the button is
+    // always glued to the real game-view corner.
+    syncMuteButtonPosition();
   }
 
   /** Logical→backbuffer scale in effect (gameSS for gameplay, scale in editor). */
@@ -950,14 +958,38 @@ export class Renderer {
           const arrangementId = getTileAt(col, row);
           const sx = col * TILE_SIZE - camX;
           const sy = row * TILE_SIZE - camY;
+          // Minitiles painted "Background" (0x20): the entity draws on top of
+          // them ONLY when its feet are fully in FRONT of (south of) the tile —
+          // i.e. feet below the tile's BOTTOM edge. That's the player walking up
+          // to a counter from the south (head over the counter). An entity whose
+          // feet are level with the tile's row (an NPC clerk AT the counter) or
+          // north of it (genuinely behind) is still occluded normally — the
+          // counter draws over its feet — so don't clip it.
+          const bg = getBackgroundMinitiles(col, row);
+          const entityOnTop = bg.length > 0 && feetY >= (row + 1) * TILE_SIZE;
+          if (entityOnTop && bg.length === 16) continue; // whole tile stays behind the entity
+          const clipBg = entityOnTop;
+          if (clipBg) {
+            this.ctx.save();
+            this.ctx.beginPath();
+            for (let mi = 0; mi < 16; mi++) {
+              if (bg.includes(mi)) continue;
+              this.ctx.rect(
+                sx + (mi % 4) * MINITILE_SIZE,
+                sy + (mi >> 2) * MINITILE_SIZE,
+                MINITILE_SIZE,
+                MINITILE_SIZE
+              );
+            }
+            this.ctx.clip();
+          }
           if (isComposite(arrangementId)) {
             // Composites just re-cover their FG over the sprite; no behind/reveal.
             drawCompositeFg(this.ctx, arrangementId, sx, sy);
-            continue;
-          }
-          if (hasForegroundTile(sector.tilesetId, sector.paletteId)) {
+          } else if (hasForegroundTile(sector.tilesetId, sector.paletteId)) {
             drawForegroundTile(this.ctx, sector.tilesetId, sector.paletteId, arrangementId, sx, sy);
           }
+          if (clipBg) this.ctx.restore();
         }
       }
     };
@@ -1086,7 +1118,8 @@ export class Renderer {
    * "Collision" toggle). Mirrors CollisionTool.drawOverlay exactly — same
    * getEffectiveRowAt source and colors — so what you see in-game matches the
    * Priority Painter and the collision system: red = solid (0x80), blue = pri-lo
-   * (0x01), purple = pri-hi (0x02), yellow = FG-promote/hide (0x40).
+   * (0x01), purple = pri-hi (0x02), yellow = FG-promote/hide (0x40), orange =
+   * force-background/on-top (0x20).
    */
   private drawCollisionLayers(camX: number, camY: number, vw: number, vh: number, zoom: number) {
     const ctx = this.ctx;
@@ -1129,6 +1162,10 @@ export class Renderer {
           }
           if (b & FG_PROMOTE_BIT) {
             ctx.fillStyle = 'rgba(245,215,40,0.55)'; // behind/hide → yellow
+            ctx.fillRect(cx, cy, M, M);
+          }
+          if (b & FORCE_BG_BIT) {
+            ctx.fillStyle = 'rgba(255,140,40,0.55)'; // always-on-top → orange
             ctx.fillRect(cx, cy, M, M);
           }
         }

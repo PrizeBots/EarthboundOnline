@@ -19,9 +19,11 @@ import {
   PSI_TABS,
   PSI_CATEGORY_LABEL,
   PsiCategory,
+  PsiMove,
   familiesInTab,
   tierLabel,
 } from '../PsiTuning';
+import { getStatus } from '../StatusModal';
 import { SCREEN_WIDTH, SCREEN_HEIGHT } from '../../types';
 import { SETTINGS_ROWS } from '../Settings';
 
@@ -158,6 +160,18 @@ export const COLS = 2;
 // so it sizes to all items. (The nav still guards `next < MENU_ITEMS.length`.)
 export const ROWS = 3;
 
+// The local player's "favorite thing" (EarthBound naming prompt, from the char
+// save via `welcome`). Canon: the "PSI ????" special is named after it; we render
+// "PSI <favorite thing>" and fall back to "Rockin'" when it's blank. Display-only —
+// the move id stays psi_alpha/beta/gamma/omega (tuning + anim unchanged).
+let localFavoriteThing = '';
+const ROCKIN_FAMILY = "PSI Rockin'";
+const ROCKIN_DEFAULT = "Rockin'";
+/** Set the local player's favorite thing (drives the PSI ???? display name). */
+export function setFavoriteThing(thing: string): void {
+  localFavoriteThing = (thing || '').trim();
+}
+
 // PSI abilities castable from the PSI command. DEV: every family is available to
 // every player (no learn/level gate yet — that's wired to level + Mental later);
 // the server validates PP + resolves the effect. The full table (incl. effect
@@ -166,6 +180,26 @@ export const ROWS = 3;
 // via overrides/psi.json (the same file the server merges). The menu reads only
 // id/name/pp/anim/target; effect fields ride along harmlessly.
 export const PSI_ABILITIES = PSI_BASE;
+
+// --- PSI unlock gate (client mirror of gameHost psiUnlocked) ----------------
+// A move is LEARNED once the local player's Mental reaches its unlockMental.
+// Mental is derived from the PP pool: ppMax = 2 + 2*Mental. Dev/admin accounts
+// (role from `welcome`) unlock everything for testing — set via setPsiDev.
+let localPsiDev = false;
+/** Mark the local player as a dev (unlocks the whole PSI menu). From `welcome` role. */
+export function setPsiDev(isDev: boolean): void {
+  localPsiDev = isDev;
+}
+const localMentalLevel = (): number => Math.max(0, Math.round((getStatus().ppMax - 2) / 2));
+/** True if the local player has learned this move (Mental gate) — or is a dev. */
+export function isPsiUnlocked(move: PsiMove): boolean {
+  return localPsiDev || localMentalLevel() >= (move.unlockMental ?? 1);
+}
+/** isPsiUnlocked by move id (unknown id → treated as unlocked, server is authority). */
+export function isPsiUnlockedById(abilityId: string): boolean {
+  const m = PSI_ABILITIES.find((a) => a.id === abilityId);
+  return m ? isPsiUnlocked(m) : true;
+}
 
 /** Who a PSI ability targets: 'ally' (self/friend), 'enemy', or 'self'. */
 export function psiTarget(abilityId: string): string {
@@ -190,9 +224,15 @@ export const PSI_TAG = 'psi:';
 export function isPsiEntry(id: string): boolean {
   return id.startsWith(PSI_TAG);
 }
-/** Display name for a PSI ability id (falls back to the raw id). */
+/** Display name for a PSI ability id (falls back to the raw id). The "PSI ????"
+ *  special (Rockin' family) is renamed to "PSI <favorite thing>" per canon. */
 export function psiName(abilityId: string): string {
-  return PSI_ABILITIES.find((a) => a.id === abilityId)?.name ?? abilityId;
+  const move = PSI_ABILITIES.find((a) => a.id === abilityId);
+  if (!move) return abilityId;
+  if (move.family === ROCKIN_FAMILY) {
+    return `PSI ${localFavoriteThing || ROCKIN_DEFAULT} ${tierLabel(move.tier)}`;
+  }
+  return move.name;
 }
 
 // Shop Buy/Sell chooser labels.

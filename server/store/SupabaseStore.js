@@ -23,7 +23,7 @@
  * (and `node --check`ed, and the SQLite-backed test suite run) WITHOUT the `pg`
  * package installed — it's only pulled in when a SupabaseStore is actually built.
  */
-const { DuplicateUsernameError, SlotsFullError, MAX_CHARACTERS } = require('./errors');
+const { DuplicateUsernameError, SlotsFullError, DEFAULT_MAX_CHARACTERS } = require('./errors');
 
 // Idempotent schema. Mirrors supabase/migrations/0001_init.sql so the store
 // self-heals even when pointed at a bare database (e.g. a connection string used
@@ -36,6 +36,15 @@ const SCHEMA_SQL = `
     password_hash  text   NOT NULL,
     created_at     bigint NOT NULL
   );
+
+  -- Per-account character cap. Defaults to 3; bump for an admin/tester.
+  ALTER TABLE accounts
+    ADD COLUMN IF NOT EXISTS max_characters integer NOT NULL DEFAULT ${DEFAULT_MAX_CHARACTERS};
+
+  -- Account role: 'player' (default) | 'dev' | 'admin'. Server-verified, used to
+  -- gate dev/admin powers in prod (e.g. the PSI/ability unlock bypass). setRole.js.
+  ALTER TABLE accounts
+    ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT 'player';
 
   CREATE TABLE IF NOT EXISTS sessions (
     token      text   PRIMARY KEY,
@@ -123,6 +132,8 @@ class SupabaseStore {
       id: Number(row.id),
       username: row.username,
       passwordHash: row.password_hash,
+      maxCharacters: Number(row.max_characters),
+      role: row.role || 'player',
       createdAt: Number(row.created_at),
     };
   }
@@ -243,29 +254,34 @@ class SupabaseStore {
   }
 
   /**
-   * Create a character in the lowest free slot (0..MAX_CHARACTERS-1) inside a
-   * transaction so two concurrent creates can't claim the same slot. Throws
-   * SlotsFullError when the account is full.
+   * Create a character in the lowest free slot (0..max-1), where `max` is the
+   * account's per-account `max_characters` cap, inside a transaction so two
+   * concurrent creates can't claim the same slot. Throws SlotsFullError when full.
    */
   async createCharacter({ accountId, name, spriteGroupId, appearance, save, now }) {
     await this._ready;
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      // Lock this account's rows so a concurrent create serializes behind us.
-      const used = await client.query(
-        `SELECT slot FROM characters WHERE account_id = $1 FOR UPDATE`,
+      // Lock the account row so a concurrent create serializes behind us, and
+      // read its per-account cap in the same statement.
+      const acct = await client.query(
+        `SELECT max_characters FROM accounts WHERE id = $1 FOR UPDATE`,
         [accountId]
       );
+      const max = acct.rows[0] ? Number(acct.rows[0].max_characters) : DEFAULT_MAX_CHARACTERS;
+      const used = await client.query(`SELECT slot FROM characters WHERE account_id = $1`, [
+        accountId,
+      ]);
       const taken = new Set(used.rows.map((r) => r.slot));
       let slot = -1;
-      for (let s = 0; s < MAX_CHARACTERS; s++) {
+      for (let s = 0; s < max; s++) {
         if (!taken.has(s)) {
           slot = s;
           break;
         }
       }
-      if (slot === -1) throw new SlotsFullError(accountId);
+      if (slot === -1) throw new SlotsFullError(accountId, max);
       const ins = await client.query(
         `INSERT INTO characters
            (account_id, slot, name, sprite_group_id, appearance, save, created_at, updated_at)
@@ -298,6 +314,24 @@ class SupabaseStore {
 
   async deleteCharacter(id) {
     await this._q(`DELETE FROM characters WHERE id = $1`, [id]);
+  }
+
+  /** Set the per-account character cap. @returns the updated account (or null). */
+  async setMaxCharacters(accountId, max) {
+    const r = await this._q(`UPDATE accounts SET max_characters = $2 WHERE id = $1 RETURNING *`, [
+      accountId,
+      max,
+    ]);
+    return this._account(r.rows[0]);
+  }
+
+  /** Set an account's role ('player' | 'dev' | 'admin'). @returns updated account. */
+  async setRole(accountId, role) {
+    const r = await this._q(`UPDATE accounts SET role = $2 WHERE id = $1 RETURNING *`, [
+      accountId,
+      role,
+    ]);
+    return this._account(r.rows[0]);
   }
 
   async close() {

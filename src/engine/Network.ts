@@ -55,12 +55,14 @@ type NetworkCallback = {
   onChat: (id: string, text: string) => void;
   /** A player equipped (or unequipped) a held item (the weapon, for the sprite). */
   onEquip: (id: string, itemId: string | null) => void;
-  /** A remote player started a melee swing — replay the attack pose locally.
-   *  `attackSpeed` scales the swing duration (1 = baseline). */
-  onPlayerAttack?: (id: string, attackSpeed: number) => void;
+  /** A remote player started a swing — replay the attack pose locally. `attackSpeed`
+   *  scales the swing duration (1 = baseline); `dir` is the swing facing (mouse-aim
+   *  snapped to 8-way) so the remote pose points where they aimed. */
+  onPlayerAttack?: (id: string, attackSpeed: number, dir: number) => void;
   /** The LOCAL player's full equipped set (server-authoritative, per slot).
-   *  attackSpeed is the equipped weapon's swing-rate multiplier (1 = baseline). */
-  onEquipped: (slots: Record<string, string | null>, attackSpeed?: number) => void;
+   *  attackSpeed is the equipped weapon's swing-rate multiplier (1 = baseline);
+   *  `range` is the weapon's projectile range (0 = melee) — picks the aim reticle. */
+  onEquipped: (slots: Record<string, string | null>, attackSpeed?: number, range?: number) => void;
   /** Authoritative NPC positions (welcome snapshot + periodic deltas). `t` is the
    *  client-clock time of the snapshot (server send-time mapped via the clock
    *  offset) for server-time-axis interpolation; omitted pre-sync → use now. */
@@ -116,6 +118,9 @@ type NetworkCallback = {
   /** The local player's "favorite thing" (welcome only) — names the PSI ????
    *  special "PSI <favorite thing>" (blank → "Rockin'"). Display-only flavor. */
   onFavoriteThing?: (thing: string) => void;
+  /** The local player's account role (welcome only): 'player' | 'dev' | 'admin'.
+   *  Dev/admin unlock the whole PSI menu (mirrors the server's devUnlockAll). */
+  onRole?: (role: string) => void;
   /** The local player's bank/ATM balance (welcome snapshot + deltas). */
   onBank?: (amount: number) => void;
   /**
@@ -154,6 +159,9 @@ type NetworkCallback = {
   /** Another player used a consumable — play its "use" animation at (x,y).
    *  `item` is the item id; the caster already plays its own. Visual only. */
   onItemUse?: (id: string, item: string, x: number, y: number) => void;
+  /** A player triggered the Rock candy + Sugar packet "recipe" — burst of glitter
+   *  around them at (x,y) for everyone (incl. the user) to see. Visual only. */
+  onGlitter?: (id: string, x: number, y: number) => void;
   /** A ranged weapon fired — spawn the flying shot. (x,y)=muzzle, (vx,vy)=unit
    *  direction, `speed` px/tick, `dist` max travel, `sprite` look. Visual only;
    *  the server owns travel/damage and follows up with `proj_end`. */
@@ -663,13 +671,16 @@ function openSocket() {
         // Signed-in characters restore saved stats + gear right away (reusing the
         // live progression/equip handlers). Anonymous joins omit these.
         if (msg.stats) callbacks?.onPlayerStats(msg.playerId, msg.stats, false, 0);
-        if (msg.equipped) callbacks?.onEquipped(msg.equipped, msg.attackSpeed);
+        if (msg.equipped)
+          callbacks?.onEquipped(msg.equipped, msg.attackSpeed, msg.weaponRange ?? 0);
         // Restore the saved quick-select hotbar (incl. an assigned PSI, which —
         // unlike the weapon — can't be re-derived from the equip set). After
         // onEquipped so the saved layout wins over the weapon auto-placement.
         if (Array.isArray(msg.hotbar)) callbacks?.onHotbar?.(msg.hotbar);
         // EB naming flavor — names the "PSI ????" special (anonymous joins omit it).
         if (typeof msg.favoriteThing === 'string') callbacks?.onFavoriteThing?.(msg.favoriteThing);
+        // Account role — dev/admin unlock the whole PSI menu for testing.
+        if (typeof msg.role === 'string') callbacks?.onRole?.(msg.role);
         // Restore saved player flags (empty for anonymous joins).
         callbacks?.onFlags?.(Array.isArray(msg.flags) ? msg.flags : []);
         // Restore PK state + remaining lock (a player who logged out PK stays PK).
@@ -732,10 +743,10 @@ function openSocket() {
         callbacks?.onEquip(msg.id, msg.itemId ?? null);
         break;
       case 'player_attack':
-        callbacks?.onPlayerAttack?.(msg.id, msg.attackSpeed ?? 1);
+        callbacks?.onPlayerAttack?.(msg.id, msg.attackSpeed ?? 1, msg.dir ?? 0);
         break;
       case 'equipped':
-        callbacks?.onEquipped(msg.slots ?? {}, msg.attackSpeed);
+        callbacks?.onEquipped(msg.slots ?? {}, msg.attackSpeed, msg.range ?? 0);
         break;
       case 'player_hp':
         callbacks?.onPlayerHp(msg.id, msg.hp, msg.maxHp, msg.dmg ?? 0, msg.heal ?? 0, msg.byNpc);
@@ -786,6 +797,9 @@ function openSocket() {
         break;
       case 'item_use':
         callbacks?.onItemUse?.(msg.id, msg.item, msg.x, msg.y);
+        break;
+      case 'glitter':
+        callbacks?.onGlitter?.(msg.id, msg.x, msg.y);
         break;
       case 'projectile':
         callbacks?.onProjectile?.(
@@ -1008,10 +1022,14 @@ export function sendEditorTeleport(x: number, y: number) {
   }
 }
 
-/** Request a melee swing; the server resolves the hit against enemies. */
-export function sendAttack(x: number, y: number, dir: Direction) {
+/** Request a swing/shot; the server resolves the hit against enemies. `dir` is the
+ *  snapped 8-way facing (sprite + remote orientation); `aimx,aimy` is the raw
+ *  mouse-aim unit vector the server uses for the true-angle hitbox/projectile. */
+export function sendAttack(x: number, y: number, dir: Direction, aimx: number, aimy: number) {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'attack', x: Math.round(x), y: Math.round(y), dir }));
+    ws.send(
+      JSON.stringify({ type: 'attack', x: Math.round(x), y: Math.round(y), dir, aimx, aimy })
+    );
   }
 }
 

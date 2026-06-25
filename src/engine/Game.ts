@@ -18,7 +18,7 @@ import {
 } from './Input';
 import { mountTouchControls, setTouchContext } from './TouchControls';
 import { pollGamepads, mountGamepadDebug, consumeGamepadNav } from './Gamepad';
-import { hotbarBoxAt } from './menu/layout';
+import { hotbarBoxAt, setFavoriteThing, setPsiDev } from './menu/layout';
 import { loadMapData, getSector, getDrawTilesetId } from './MapManager';
 import { loadDoors, getDoorAt, getStairAt, DoorData } from './DoorManager';
 import { setActiveRoomFromPoint, loadRegionRooms } from './Rooms';
@@ -77,7 +77,7 @@ import { drawText, measureText } from './TextRenderer';
 import { FONT_ID } from './menu/layout';
 import { getToken, CharacterSummary } from './Auth';
 import { initNameplates } from './NamePlate';
-import { initLevelUpButton, setLevelUpPoints } from './LevelUpButton';
+import { initLevelUpButton, setLevelUpPoints, setLevelUpBelowEvent } from './LevelUpButton';
 import { openLevelUp, isLevelUpOpen } from './LevelUpModal';
 import { loadNameOverrides, getSpriteName } from './SpriteNames';
 import { loadCustomSprites } from './CustomSprites';
@@ -140,6 +140,7 @@ import {
 } from './MenuManager';
 import { renderXpBar, XP_BAR_BOTTOM } from './XpBar';
 import { preloadSwirl, swirlReady, drawSwirl } from './SwirlTransition';
+import { computeAim, drawReticle } from './Aim';
 import {
   initDialogue,
   openDialogue,
@@ -188,6 +189,7 @@ import { spawnProjectile, endProjectile, updateProjectiles } from './Projectiles
 import { updateDeathFx } from './DeathFx';
 import { spawnKoThrow, advanceKoThrow, clearKoThrow } from './KoThrow';
 import { updateItemFx, renderItemFx, spawnItemFx } from './ItemFx';
+import { updateGlitterFx, renderGlitterFx, spawnGlitterFx } from './GlitterFx';
 import { setDrops, addDrop, removeDrop } from './DropManager';
 import { playEventSfx, loadSfxEvents } from './SfxEvents';
 import { loadCombatJuice } from './CombatJuice';
@@ -271,9 +273,18 @@ export class Game {
   private pendingDoor: DoorData | null = null;
   private waitingForSectors = false;
   private doorSuppressed = false;
+  // The server's authoritative door-exit landing (from the `warp` message), set
+  // by onWarp during a transition. The arrival code adopts THIS as the final
+  // position instead of recomputing its own nudge-out — the server already
+  // resolved a clear spot (findPlayerLanding, also avoiding NPCs/players), so
+  // two independent resolvers can't disagree and snap the player after fade-in.
+  private serverDoorLanding: { x: number; y: number } | null = null;
   // Transition visual: 'fade' = plain black (doors), 'swirl' = EB battle-swirl
   // mask (event warps, when its frames are loaded — else falls back to fade).
   private transitionStyle: 'fade' | 'swirl' = 'fade';
+  // Equipped weapon's projectile range (0 = melee), from the server `equipped`
+  // message. Picks which aim reticle to draw (melee box vs ranged crosshair).
+  private weaponRange = 0;
   // Event runtime (EVENT_MANAGER.md): latest broadcast event UI state + the id of
   // the event the LOCAL player is currently inside (null when not in one).
   private eventStates: EventStateWire[] = [];
@@ -607,7 +618,11 @@ export class Game {
           this.player.reconcile(x, y, seq);
         },
         // Server-authoritative door warp landed: jump our prediction to the dest.
+        // Stash it so an in-progress door transition lands the player exactly here
+        // (the server already resolved a clear spot) instead of recomputing a
+        // divergent client-side nudge that would snap after fade-in.
         onWarp: (x, y) => {
+          this.serverDoorLanding = { x, y };
           this.player.warpTo(x, y);
         },
         onPlayerJoin: (player) => {
@@ -640,17 +655,19 @@ export class Game {
           const rp = this.remotePlayers.get(id);
           if (rp) rp.itemId = itemId;
         },
-        onPlayerAttack: (id, attackSpeed) => {
+        onPlayerAttack: (id, attackSpeed, dir) => {
           // Stamp the swing start; applyRemoteSwing animates the attack pose each
           // frame and reverts to walk on its own (the position stream only ever
-          // carries 'walk' under server-authoritative movement).
+          // carries 'walk' under server-authoritative movement). Orient the swing
+          // to the attacker's aim so a mouse-aimed shot points the right way.
           const rp = this.remotePlayers.get(id);
           if (rp) {
             rp.attackStart = performance.now();
             rp.attackSpeed = attackSpeed;
+            rp.direction = dir as Direction;
           }
         },
-        onEquipped: (slots, attackSpeed) => {
+        onEquipped: (slots, attackSpeed, range) => {
           // Authoritative equipped set for the local player — re-sync the mirror
           // and the held-weapon sprite.
           setEquippedFromServer(slots);
@@ -658,6 +675,8 @@ export class Game {
           // Weapon swing-rate multiplier (server-authoritative) scales the local
           // swing-pose duration so a fast weapon animates as fast as it resolves.
           this.player.attackSpeed = attackSpeed && attackSpeed > 0 ? attackSpeed : 1;
+          // Projectile range (0 = melee) picks which aim reticle we draw.
+          this.weaponRange = range && range > 0 ? range : 0;
         },
         onHotbar: (slots) => {
           // Restore the saved quick-select layout exactly as the player left it
@@ -665,6 +684,14 @@ export class Game {
           // the equipped weapon shows its own green ring on the Equip screen / on
           // a slot only if the player parked it there.
           setHotbar(slots);
+        },
+        onFavoriteThing: (thing) => {
+          // Names the "PSI ????" special "PSI <favorite thing>" (blank → Rockin').
+          setFavoriteThing(thing);
+        },
+        onRole: (role) => {
+          // Dev/admin accounts unlock the whole PSI menu (mirrors server bypass).
+          setPsiDev(role === 'dev' || role === 'admin');
         },
         onNpcUpdate: (rows, t) => {
           applyNpcUpdates(rows, t);
@@ -954,6 +981,11 @@ export class Game {
           // Another player used a consumable — play its "use" animation on them
           // (the local user already spawned their own via the itemUseFx hook).
           spawnItemFx(item, x, y);
+        },
+        onGlitter: (_id, x, y) => {
+          // Rock candy + Sugar packet recipe fired — sparkle for all to see.
+          // Broadcast to everyone incl. the user, so no local optimistic spawn.
+          spawnGlitterFx(x, y);
         },
         onProjectile: (id, x, y, vx, vy, speed, dist, sprite) => {
           // A ranged weapon fired (anyone's, incl. ours) — render the flying shot.
@@ -1494,6 +1526,9 @@ export class Game {
     this.transitionAlpha = 0;
     this.transitionStyle = style;
     this.pendingDoor = door;
+    // Drop any landing left over from a non-transition warp (rejoin / editor
+    // return), so arrival only adopts the `warp` that answers THIS door's use.
+    this.serverDoorLanding = null;
     // A real walk-through door: ask the server to warp us authoritatively (it
     // validates we're on the door + uses the door's OWN dest). We're still on the
     // trigger right now, so the server confirms. Escalator floor-exits and
@@ -1542,49 +1577,27 @@ export class Game {
           const dirMap = [Direction.S, Direction.N, Direction.E, Direction.W];
           const dir = dirMap[door.destDir] ?? Direction.S;
 
-          // Crop to the destination room BEFORE nudging, so the nudge can't
-          // push the player out of the room (rooms are sealed; see bugs.md).
+          // Crop to the destination room BEFORE positioning, so the fallback
+          // can't leave the player outside the room (rooms are sealed; see bugs.md).
           this.updateRoomBounds(door.destX, door.destY);
 
-          // Now collision data is loaded — nudge out of walls
-          let destX = door.destX;
-          let destY = door.destY;
-          const COL_W = 14,
-            COL_H = 8,
-            COL_OY = -8;
+          // Land EXACTLY where the server put us. findPlayerLanding already cleared
+          // walls + NPCs + other players, so adopting its result — instead of
+          // resolving our own nudge-out — is what kills the post-fade snap: with one
+          // source of truth the two resolvers can't disagree. The `warp` message is
+          // sent the instant we ask (sendUseDoor at fade-out start), so it's
+          // effectively always arrived by now; the raw-dest fallback only covers a
+          // dropped/late message, and onWarp snaps us onto truth if it lands later.
+          const landing = this.serverDoorLanding ?? { x: door.destX, y: door.destY };
+          this.serverDoorLanding = null;
 
-          if (checkPlayerCollision(destX - COL_W / 2, destY + COL_OY, COL_W, COL_H)) {
-            // Try nudging in all directions, facing direction first
-            const allNudges: [number, number][] = [];
-            for (let dist = 8; dist <= 32; dist += 8) {
-              if (dir === Direction.S) allNudges.push([0, dist]);
-              else if (dir === Direction.N) allNudges.push([0, -dist]);
-              else if (dir === Direction.W) allNudges.push([-dist, 0]);
-              else if (dir === Direction.E) allNudges.push([dist, 0]);
-            }
-            // Also try all 4 directions
-            for (let dist = 8; dist <= 32; dist += 8) {
-              allNudges.push([0, dist], [0, -dist], [dist, 0], [-dist, 0]);
-            }
-
-            for (const [nx, ny] of allNudges) {
-              const tx = door.destX + nx;
-              const ty = door.destY + ny;
-              if (!checkPlayerCollision(tx - COL_W / 2, ty + COL_OY, COL_W, COL_H)) {
-                destX = tx;
-                destY = ty;
-                break;
-              }
-            }
-          }
-
-          this.player.x = destX;
-          this.player.y = destY;
+          this.player.x = landing.x;
+          this.player.y = landing.y;
           this.player.direction = dir;
           this.player.moving = false;
           this.player.frame = 0;
 
-          this.camera.follow(destX, destY);
+          this.camera.follow(landing.x, landing.y);
           // Suppress doors until player walks out of all trigger zones
           this.doorSuppressed = true;
           this.waitingForSectors = false;
@@ -1730,6 +1743,7 @@ export class Game {
     updateProjectiles(); // ranged-weapon shots fly + retire on the same cadence
     updateDeathFx(); // slain bodies tumble + bounce + fade on the same cadence
     updateItemFx(); // item-use animations (eating a Cookie, etc.) advance too
+    updateGlitterFx(); // Rock candy + Sugar sparkle burst advances + culls
 
     // Remote players + server NPCs/enemies keep gliding even while menus/
     // dialogue/transitions freeze the local world — their senders haven't stopped.
@@ -1859,12 +1873,18 @@ export class Game {
     // 1/2 hotbar now — there's no separate cycle key. A swing that actually starts
     // is sent to the server, which resolves the hit (server-authoritative damage).
     if (isAttackPressed() && this.player.attack()) {
-      sendAttack(this.player.x, this.player.y, this.player.direction);
+      // Aim at the cursor: snap the player's facing to the aim so the swing points
+      // where the mouse is, and hand the server the raw aim vector for the true-
+      // angle hitbox/projectile. No mouse (touch/keyboard) → aim falls back to the
+      // current facing, so the old behavior is preserved.
+      const aim = computeAim(this.camera, this.player);
+      this.player.direction = aim.dir;
+      sendAttack(this.player.x, this.player.y, aim.dir, aim.vx, aim.vy);
       playEventSfx('player-attack');
       // Predict the swing's knockback so a struck enemy/player lurches THIS frame
       // instead of a round-trip later (server still resolves the real hit).
-      predictMeleeKnockback(this.player.x, this.player.y, this.player.direction, this.player.level);
-      this.predictPvpKnockback(this.player.x, this.player.y, this.player.direction);
+      predictMeleeKnockback(this.player.x, this.player.y, aim.dir, this.player.level);
+      this.predictPvpKnockback(this.player.x, this.player.y, aim.dir);
     }
     // 1/2 = trigger the quick-select slot during overworld play (brandish a
     // weapon, use a consumable, or cast an assigned PSI move).
@@ -2334,6 +2354,7 @@ export class Game {
 
     // Local player's event-timer HUD: top-center, stacked directly UNDER the XP
     // bar (anchored to its bottom edge so the two never overlap), while inside.
+    let eventTimerShown = false;
     if (this.myEventId) {
       const mine = this.eventStates.find((e) => e.id === this.myEventId && e.phase === 'active');
       if (mine) {
@@ -2350,10 +2371,14 @@ export class Game {
         ctx.fillStyle = '#c9b0ff';
         ctx.fillText(label, x, y);
         ctx.restore();
+        eventTimerShown = true;
       } else {
         this.myEventId = null; // event ended (or we were ejected) — clear the HUD
       }
     }
+    // Keep the (DOM) level-up chip below the timer while it's up, so the two
+    // top-center elements never collide.
+    setLevelUpBelowEvent(eventTimerShown);
   }
 
   private render() {
@@ -2411,6 +2436,7 @@ export class Game {
       this.ctx.scale(this.camera.zoom, this.camera.zoom);
       renderPsiFx(this.ctx, this.camera);
       renderItemFx(this.ctx, this.camera);
+      renderGlitterFx(this.ctx, this.camera);
       renderEmitters(this.ctx, this.camera);
       renderChat(this.ctx, this.camera, this.player, this.remotePlayers);
       this.ctx.restore();
@@ -2422,10 +2448,32 @@ export class Game {
       const clipped = this._pushRoomClip();
       renderPsiFx(this.ctx, this.camera);
       renderItemFx(this.ctx, this.camera);
+      renderGlitterFx(this.ctx, this.camera);
       renderEmitters(this.ctx, this.camera, this._roomOriginGate());
       renderChat(this.ctx, this.camera, this.player, this.remotePlayers);
       if (clipped) this.ctx.restore();
     }
+
+    // Mouse-aim cursor (melee bracket / ranged crosshair) — replaces the OS arrow,
+    // above the world but below menus/dialogue/fade. Only while actually able to
+    // attack: not in the editor, mid-warp, downed, PSI-targeting, or with a menu/
+    // dialogue up. When it draws, hide the native cursor; otherwise restore it so
+    // menus stay clickable (the editor manages its own cursor, so leave it alone).
+    const combatAimable =
+      this.phase === 'playing' &&
+      !this.editor?.isActive() &&
+      !this.transitioning &&
+      !this.psiTargeting &&
+      !this.player.downed &&
+      !isMenuOpen() &&
+      !isDialogueOpen();
+    const drewReticle =
+      combatAimable && drawReticle(this.ctx, this.camera, this.player, this.weaponRange);
+    // Hide the OS arrow only while our cursor is drawn; restore it everywhere else
+    // (menus, dialogue, editor) so DOM/canvas UI stays clickable. Write only on
+    // change to avoid touching the DOM every frame.
+    const wantCursor = drewReticle ? 'none' : '';
+    if (this.ctx.canvas.style.cursor !== wantCursor) this.ctx.canvas.style.cursor = wantCursor;
 
     // PSI target-selection overlay (rings on valid targets + prompt), gameplay only.
     if (this.psiTargeting) this._renderPsiTargeting(this.ctx);
