@@ -665,6 +665,10 @@ export function applyNpcUpdates(rows: NpcUpdate[], t?: number): void {
     const fresh = !npcInterp.has(key);
     npcInterp.push(key, x, y, dir as Direction, frame, pose, t);
     if (fresh) npc.applyServerState(x, y, dir as Direction, frame, pose);
+    // Got an authoritative position → this NPC is genuinely in view; clear any
+    // ghost-staleness so it renders again (see interpolateNpcs / NPC.stale).
+    npc.lastUpdateAt = performance.now();
+    npc.stale = false;
   }
 }
 
@@ -673,10 +677,20 @@ export function applyNpcUpdates(rows: NpcUpdate[], t?: number): void {
  * Call once per frame (alongside the remote-player interpolation), so server
  * NPCs glide between 10Hz snapshots instead of stepping once per packet.
  */
+// No server position update in this long → the actor left our view on the server
+// (its real position is elsewhere, so the near-player resync heartbeat doesn't
+// refresh our copy). Hide the frozen ghost instead of leaving it until a death/
+// despawn lands. ~3.5 heartbeats (200ms) of margin so a live nearby NPC never trips.
+const STALE_HIDE_MS = 700;
+
 export function interpolateNpcs(): void {
+  const now = performance.now();
   for (const key of npcInterp.ids()) {
     const npc = npcsById[Number(key)];
     if (!npc || npc.dead) continue;
+    // Ghost guard: flag NPCs we've stopped hearing about so the render/collision
+    // filters skip them (see NPC.stale). Only ones that HAD updates can go stale.
+    npc.stale = npc.lastUpdateAt > 0 && now - npc.lastUpdateAt > STALE_HIDE_MS;
     npcInterp.interpolate(key, npc); // authoritative (delayed) position → npc.x/y
     // Layer the client-predicted push/knockback lead on top, then bleed it off so
     // the authoritative stream reconciles it away (see RemoteInterp.applyPredOffset).
@@ -933,7 +947,7 @@ export function blockedByNPC(
     return [npc.x - NPC_COL_W / 2, npc.y + NPC_COL_OY, NPC_COL_W, NPC_COL_H];
   };
   const hits = (npc: NPC): boolean => {
-    if (npc.dead) return false;
+    if (npc.dead || npc.stale) return false; // a ghost (stale) isn't solid — don't bump it
     // person/enemy/car are always solid. A `prop` is solid ONLY when it has an
     // authored col box (furniture, harvested into a placeable object): ROM props
     // without a col are invisible hotspots (phones/signs) whose body lives in the
@@ -1043,19 +1057,19 @@ export function getNpcsInRect(minX: number, minY: number, maxX: number, maxY: nu
       const bucket = npcsByArea.get(cy * AREA_COLS + cx);
       if (!bucket) continue;
       for (const npc of bucket) {
-        if (npc.dead) continue;
+        if (npc.dead || npc.stale) continue;
         ensureSheet(npc);
         result.push(npc);
       }
     }
   }
   for (const npc of roamers) {
-    if (npc.dead || !inRect(npc)) continue;
+    if (npc.dead || npc.stale || !inRect(npc)) continue;
     ensureSheet(npc);
     result.push(npc);
   }
   for (const npc of cars) {
-    if (npc.dead || !inRect(npc)) continue;
+    if (npc.dead || npc.stale || !inRect(npc)) continue;
     ensureSheet(npc);
     result.push(npc);
   }
@@ -1076,7 +1090,7 @@ export function getNearbyNPCs(px: number, py: number): NPC[] {
       const bucket = npcsByArea.get(cy * AREA_COLS + cx);
       if (!bucket) continue;
       for (const npc of bucket) {
-        if (npc.dead) continue; // dead enemy / inactive slot — hidden
+        if (npc.dead || npc.stale) continue; // dead / inactive / ghost — hidden
         ensureSheet(npc); // opened presents persist (shown open), so nothing to skip
         result.push(npc);
       }
@@ -1086,13 +1100,13 @@ export function getNearbyNPCs(px: number, py: number): NPC[] {
   // Roamers and cars aren't bucketed; include the live ones within the window.
   const reach = NEAR_RANGE * AREA_PX;
   for (const npc of roamers) {
-    if (npc.dead) continue;
+    if (npc.dead || npc.stale) continue;
     if (Math.abs(npc.x - px) > reach || Math.abs(npc.y - py) > reach) continue;
     ensureSheet(npc);
     result.push(npc);
   }
   for (const npc of cars) {
-    if (npc.dead) continue; // destroyed — hidden until it respawns at its route start
+    if (npc.dead || npc.stale) continue; // destroyed/ghost — hidden until it respawns
     if (Math.abs(npc.x - px) > reach || Math.abs(npc.y - py) > reach) continue;
     ensureSheet(npc);
     result.push(npc);

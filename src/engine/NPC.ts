@@ -71,6 +71,13 @@ export class NPC extends Entity {
    *  / predictPlayerPush in NPCManager. */
   predOffX = 0;
   predOffY = 0;
+  /** Wall-clock ms of the last server position update we got for this NPC, and a
+   *  derived "no update in a while" flag (set in interpolateNpcs). A real nearby
+   *  NPC refreshes every ≤200ms (the server resync heartbeat); one that's gone
+   *  stale is a GHOST — the server's actual actor moved out of our view — so we
+   *  hide it instead of leaving it frozen until a death/despawn finally lands. */
+  lastUpdateAt = 0;
+  stale = false;
   /**
    * Placement identity (RawNPC.k for ROM/base placements, "+i" for the i-th
    * editor addition). Set by NPCManager.buildStaticNpcs so editor tools can map
