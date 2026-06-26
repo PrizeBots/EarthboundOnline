@@ -56,6 +56,14 @@ export function tickShake(): { x: number; y: number } {
   return { x: ox, y: oy };
 }
 
+/** Zero out accumulated juice (pending hitstop + screen-shake trauma). Called on
+ *  tab-resume: a hidden tab's WS keeps delivering hits, each adding shake/hitstop,
+ *  so without this the camera lurches violently on the first frame back. */
+export function resetJuice(): void {
+  hitstopFrames = 0;
+  trauma = 0;
+}
+
 // --- Hit flash -------------------------------------------------------------
 // How long a struck sprite blinks white. Callers stamp entity.flashUntil =
 // now + FLASH_MS; drawSprite tints while Date.now() is under it.

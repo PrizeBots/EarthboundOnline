@@ -84,7 +84,7 @@ export function getStatus(): Readonly<PlayerStats> {
 // corrects via throttled `player_stamina` syncs (reconcileStamina). KEEP the
 // drain/cost constants in sync with server/gameHost.js + Player.ts.
 export const STAMINA_ATTACK_COST = 8;
-export const RUN_DRAIN_PER_SEC = 18;
+export const RUN_DRAIN_PER_SEC = 24;
 const RUN_RECOVER_FRAC = 0.2; // winded → can run again once recharged to this (KEEP IN SYNC)
 
 // "Winded" latch (mirror server/gameHost.js): hitting 0 stamina while running

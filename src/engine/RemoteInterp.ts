@@ -57,14 +57,29 @@ let jitterFn: () => number = () => 0;
 export function setJitterSource(fn: () => number): void {
   jitterFn = fn;
 }
-/** Build a delay() that tracks jitter, clamped to [floor, ceil] around a base
- *  packet interval. Used by both the player and NPC interpolators. */
+// Live measured server sim rate (Hz). The buffer must size to the rate we're
+// ACTUALLY receiving, not the nominal 30Hz: when the server slips under load
+// (e.g. 18Hz = 55ms spacing) a floor sized for 33ms packets holds barely one
+// snapshot and underruns every frame (the coast/sec spike). 0 = unknown → fall
+// back to each interpolator's nominal packet interval.
+let rateFn: () => number = () => 0;
+/** Wire the live server-rate readout (Network.getServerHz) into the adaptive delay. */
+export function setRateSource(fn: () => number): void {
+  rateFn = fn;
+}
+/** Build a delay() that tracks the live packet rate AND jitter, clamped to
+ *  [floor, ceil]. `nominalIntervalMs` is the fallback spacing before the first
+ *  rate sample arrives. Used by both the player and NPC interpolators. */
 export function adaptiveDelay(
-  packetIntervalMs: number,
+  nominalIntervalMs: number,
   floorMs: number,
   ceilMs: number
 ): () => number {
-  return () => Math.max(floorMs, Math.min(ceilMs, packetIntervalMs + JITTER_K * jitterFn()));
+  return () => {
+    const hz = rateFn();
+    const interval = hz > 0 ? 1000 / hz : nominalIntervalMs;
+    return Math.max(floorMs, Math.min(ceilMs, interval + JITTER_K * jitterFn()));
+  };
 }
 
 interface Snapshot {
@@ -400,9 +415,11 @@ export function createInterpolator(opts: number | InterpOpts = PLAYER_DELAY_MS):
 
 // --- Default instance for remote players (the original module API) ---
 
-// Players broadcast at ~30Hz (~33ms — the player sim went back to 30Hz to unload the
-// prod box). Floor ~66ms keeps ~2 snapshots bracketing the cursor with WAN headroom;
-// ceil 150ms is the safety ceiling. PLAYER_DELAY_MS is the legacy fixed fallback.
+// Players broadcast at ~30Hz (~33ms nominal). The delay now tracks the LIVE server
+// rate (setRateSource): if the sim slips to e.g. 18Hz the interval auto-widens to
+// 55ms so two snapshots still bracket the cursor (no coast). 33 is just the pre-first
+// -sample fallback. Floor ~66ms keeps ~2 snapshots bracketing on a healthy 30Hz link
+// with WAN headroom; ceil 150ms is the safety ceiling.
 const players = createInterpolator({ delay: adaptiveDelay(33, 66, PLAYER_DELAY_MS + 50) });
 
 // The NPC interpolator (NPCManager) registers itself here so the rest of the app —

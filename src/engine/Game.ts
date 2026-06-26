@@ -12,6 +12,7 @@ import {
   isToggleBoxesPressed,
   getKeySet,
   consumePointerClick,
+  consumeRightClick,
   isPointerDown,
   isMouseAimActive,
   getPointer,
@@ -72,6 +73,7 @@ import {
   sendMomFood,
   sendGiveUp,
   sendUsePsi,
+  sendDropItem,
   sendEventTalk,
   mountNetDebug,
   JoinAuth,
@@ -145,6 +147,7 @@ import {
   renderMoneyOverlay,
   triggerHotbarSlot,
   triggerHotbarConsumable,
+  updateFieldHotbarDrag,
   setHotbar,
   autoHotbarNewItems,
   openShop,
@@ -189,6 +192,7 @@ import {
   spawnLootText,
   spawnNoticeText,
   spawnMortalText,
+  clearEmitters,
 } from './Emitter';
 import {
   noteHealthDamage,
@@ -197,7 +201,7 @@ import {
   clearMortalRoll,
   HpHolder,
 } from './HealthRoll';
-import { triggerHitstop, tickHitstop, addShake, tickShake, FLASH_MS } from './Juice';
+import { triggerHitstop, tickHitstop, addShake, tickShake, resetJuice, FLASH_MS } from './Juice';
 import { initPsiFx, updatePsiFx, renderPsiFx, spawnPsiFx } from './PsiFx';
 import { spawnProjectile, endProjectile, updateProjectiles } from './Projectiles';
 import { updateDeathFx } from './DeathFx';
@@ -595,6 +599,15 @@ export class Game {
         }
         const v = dirToVector(this.player.direction);
         return { dir: this.player.direction, aimx: v.vx, aimy: v.vy };
+      },
+      // Toss a bag item onto the ground at the SCREEN point where the drag was
+      // released: convert it to a world target via the camera and send it. The
+      // server clamps the spot to throw range + off walls, then the drop tweens
+      // from the player to the landing (drop_spawn carries the eject arc).
+      dropItemAt: (id, screenX, screenY) => {
+        const wx = screenX + this.camera.x;
+        const wy = screenY + this.camera.y;
+        sendDropItem(id, wx, wy);
       },
     });
     initChat(getKeySet());
@@ -1707,6 +1720,36 @@ export class Game {
       requestAnimationFrame(loop);
     };
     requestAnimationFrame(loop);
+
+    // Background-tab recovery. A hidden tab pauses requestAnimationFrame (so the
+    // game loop freezes) while the WebSocket keeps delivering hits, deaths, drops
+    // and position snapshots. On return the loop's delta clamp (above) stops our
+    // own sim from warp-fast-forwarding, but everything the server did still lands
+    // in ONE frame: a wall of damage numbers, accumulated screen-shake/hitstop, and
+    // every remote snapping forward. resumeFromBackground() flushes that backlog so
+    // the first visible frame is the clean current world, not a chaotic catch-up.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && this.phase === 'playing') {
+        this.resumeFromBackground();
+      }
+    });
+  }
+
+  /** Flush the visual backlog that piled up while the tab was hidden (see the
+   *  visibilitychange handler in start()). */
+  private resumeFromBackground(): void {
+    // Floating numbers/text (damage, heal, MORTAL!, loot) queued while hidden —
+    // drop them so they don't all replay at once.
+    clearEmitters();
+    // Accumulated screen-shake trauma + pending hitstop from every hit taken while
+    // away — zero it so the camera doesn't lurch and the world isn't frozen on return.
+    resetJuice();
+    // Reset interpolation so remote players + NPCs snap cleanly to the CURRENT
+    // server state in one step, instead of gliding through the stale snapshots that
+    // buffered up while we weren't rendering (the same clean-snap the reconnect path
+    // does). Fresh snapshots re-seed each buffer within ~1 packet.
+    for (const id of this.remotePlayers.keys()) dropRemoteBuffer(id);
+    resetNpcInterp();
   }
 
   /**
@@ -1928,18 +1971,13 @@ export class Game {
       return;
     }
 
-    // The cursor is contextual: over the world it aims (left-click = swing); over
-    // the hotbar it's the UI glove (left-click = use that slot). So when the pointer
-    // is on a hotbar slot, consume the click HERE — consumePointerClick also clears
-    // the attack latch, so the same button triggers the slot instead of swinging.
-    // KeyF still attacks regardless (keyboard isn't aiming at the bar).
-    if (this.pointerOverHotbar()) {
-      const tap = consumePointerClick();
-      if (tap) {
-        const box = hotbarBoxAt(tap.x, tap.y);
-        if (box >= 0) triggerHotbarSlot(box);
-      }
-    }
+    // Hotbar pointer: the cursor is contextual — over the world it aims (left-click
+    // = swing); over the bar it's the UI glove. updateFieldHotbarDrag owns the bar
+    // now: a tap uses the slot, a drag OFF the bar throws that item on the ground
+    // (server-validated). It eats the click latch the instant a press lands on the
+    // bar, so the same button never also swings, and the drop/tap resolves on
+    // release. KeyF still attacks regardless (keyboard isn't aiming at the bar).
+    updateFieldHotbarDrag();
 
     // F = attack swing, H = hurt flinch (debug hook). Weapons are swapped via the
     // 1/2 hotbar now — there's no separate cycle key. A swing that actually starts
@@ -1953,22 +1991,16 @@ export class Game {
     // weapon, use a consumable, or cast an assigned PSI move).
     const slot = consumeHotbarSlot();
     if (slot >= 0) triggerHotbarSlot(slot);
-    // Touch/click: a tap on a hotbar box triggers that slot too — the mobile
-    // equivalent of the number keys. (No dialogue/menu is open on this path, so
-    // the pending click is ours to consume.)
+    // Touch/click on the WORLD: a tap swings toward it (hotbar taps/drags were
+    // already handled + consumed by updateFieldHotbarDrag above, so anything left
+    // here is a world tap). The mobile equivalent of PC click-to-aim.
     const tap = consumePointerClick();
-    if (tap) {
-      const box = hotbarBoxAt(tap.x, tap.y);
-      if (box >= 0) {
-        triggerHotbarSlot(box);
-      } else if (!isMouseAimActive()) {
-        // Mobile tap-to-attack: a tap on the WORLD (not the hotbar) swings toward
-        // it — the touch equivalent of PC click-to-aim. Touch-only: on a real mouse
-        // the click already swung above via mouseAttack (isMouseAimActive), so this
-        // branch is skipped and we never double-fire. The tap point is game-space
-        // px, same as the cursor, so aimFromScreen reuses the click-aim math.
-        this.performAttack(aimFromScreen(this.camera, this.player, tap.x, tap.y));
-      }
+    if (tap && !isMouseAimActive()) {
+      // Touch-only: on a real mouse the click already swung above via mouseAttack
+      // (isMouseAimActive), so this branch is skipped and we never double-fire. The
+      // tap point is game-space px, same as the cursor, so aimFromScreen reuses the
+      // click-aim math.
+      this.performAttack(aimFromScreen(this.camera, this.player, tap.x, tap.y));
     }
     if (isHurtPressed()) this.player.hurt();
     if (isToggleBoxesPressed()) setDebugBoxes(!debugBoxesOn());
@@ -2135,11 +2167,14 @@ export class Game {
     return true;
   }
 
-  /** Pick mode each frame: Esc cancels; the action key self-casts (ally PSI only);
-   *  a click resolves to the nearest valid target (self or ally) and casts. */
+  /** Pick mode each frame: Esc/Q/right-click cancel; the action key self-casts (ally
+   *  PSI only); a click resolves to the nearest valid target (self or ally) and casts. */
   private _updatePsiTargeting(): void {
     const t = this.psiTargeting!;
-    if (getKeySet().has('Escape')) {
+    // Back out without casting: Esc, Q, or a right-click. (On touch the player
+    // re-taps the armed PSI in the hotbar to un-arm instead.)
+    if (getKeySet().has('Escape') || getKeySet().has('KeyQ') || consumeRightClick()) {
+      getKeySet().delete('KeyQ'); // tap, not held — don't let it leak to talk/menu
       this.psiTargeting = null;
       return;
     }
@@ -2147,12 +2182,6 @@ export class Game {
     // the player (or the hotbar) doesn't fire — tap self to cancel, leaving the
     // hotbar free to re-arm a different move.
     if (t.kind === 'aim') {
-      // Q / Menu button also backs out (it's on-screen during aim).
-      if (getKeySet().has('KeyQ')) {
-        getKeySet().delete('KeyQ');
-        this.psiTargeting = null;
-        return;
-      }
       const click = consumePointerClick();
       if (!click) return;
       if (hotbarBoxAt(click.x, click.y) >= 0) return; // tapped the bar — ignore
@@ -2236,10 +2265,10 @@ export class Game {
       }
     const label =
       t.kind === 'downed'
-        ? 'Click a downed ally   [Esc] cancel'
+        ? 'Click a downed ally  ·  [Q]/right-click cancel'
         : t.kind === 'aim'
           ? 'Tap a target  ·  tap yourself to cancel'
-          : 'Click an ally  ·  Z = self   [Esc] cancel';
+          : 'Click an ally  ·  Z = self  ·  [Q]/right-click cancel';
     const tw = Math.ceil(measureText(label, FONT_ID) * 0.5);
     const x = Math.round((SCREEN_WIDTH - tw) / 2);
     ctx.fillStyle = '#000a';

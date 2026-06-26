@@ -11,13 +11,15 @@
  * (realistic CPU/egress) with zero TCP overhead — cheaper than real loopback
  * sockets (server/measure_net.js), so it scales to thousands.
  *
- * Bots ACT only through the normal message handlers (input/attack/chat), so
- * movement stays server-authoritative — nothing is cheated. Bot POSITION is read
- * straight from the authoritative entry (host.players) rather than parsing a wire
- * feed the stub throws away.
+ * Bots ACT only through the normal message handlers (input/attack/chat/use_psi/
+ * use_item), so movement and combat stay server-authoritative — nothing is cheated.
+ * Bot POSITION is read straight from the authoritative entry (host.players) rather
+ * than parsing a wire feed the stub throws away.
  *
- * Wander behavior is lifted from server/loadtest.js (the proven CLI harness).
- * Phase 2 ('play' — seek enemy, fight, level, log metrics) is a TODO hook below.
+ * Two behaviors (set per spawn): 'wander' lifts the proven roam from server/
+ * loadtest.js (blind timed swings, pure load/egress realism); 'play' seeks the
+ * nearest enemy, closes to melee, swings, fires offense PSI from range, and quaffs a
+ * heal item when low (see _playStep). Metrics (kills/deaths/TTK) are still TODO.
  */
 const { EventEmitter } = require('events');
 const fs = require('fs');
@@ -51,6 +53,19 @@ const ATTACK_MIN = 120; // ~2s
 const ATTACK_JITTER = 300; // → 2–7s between swings
 const CHAT_MIN = 1200; // ~20s
 const CHAT_JITTER = 2400; // → 20–60s between lines
+
+// Phase-2 ('play') combat tuning (ticks @ 60Hz / px). Bots seek the nearest enemy,
+// close to melee, swing, and fire PSI / quaff a heal item when it makes sense. The
+// server still gates everything (stamina, PP, cooldown, Mental unlock), so these are
+// just how OFTEN a bot TRIES — the authoritative rate is whatever the sim allows.
+const ENGAGE_RANGE = 480; // only chase an enemy within this many px (else roam)
+const RETARGET_CD = 12; // re-pick nearest enemy every ~0.2s (cheap, but not per-tick)
+const MELEE_REACH = 26; // close enough to swing (px)
+const MELEE_CD = 36; // ~0.6s between attempted swings (server cooldown is the real cap)
+const PSI_RANGE = 220; // try offense PSI when the target is within this (px)
+const PSI_CD = 150; // ~2.5s between PSI attempts
+const LOW_HP = 0.4; // quaff a heal item below this fraction of max HP
+const HEAL_CD = 90; // ~1.5s between heal attempts (also throttles the bag rescan)
 
 // Roll a random level + a valid allocation: base 1 in each stat, then scatter the
 // creation points (ALLOC_POINTS) plus one-per-level skill points randomly across the
@@ -261,12 +276,14 @@ class BotFleet {
         b.prevY = entry.y;
         continue;
       }
-      const [dx, dy] =
-        this.behavior === 'play' ? this._playStep(b, entry) : this._wanderStep(b, entry, spawn);
+      const playing = this.behavior === 'play';
+      const [dx, dy] = playing ? this._playStep(b, entry) : this._wanderStep(b, entry, spawn);
       if (dx || dy) b.dir = ((Math.atan2(dy, dx) / (Math.PI / 4) + 8) | 0) % 8;
       this._send(b, { type: 'input', seq: b.seq++, dx, dy });
-      // Per-bot staggered actions (each rolled its own next-action tick at spawn).
-      if (b.ticks >= b.attackAt) {
+      // Wander: blind timed swings (exercises the attack broadcast path under load).
+      // Play mode drives its OWN targeted attack/PSI/heal inside _playStep, so the
+      // generic timer is skipped there to avoid double-firing.
+      if (!playing && b.ticks >= b.attackAt) {
         this._send(b, { type: 'attack', dir: b.dir });
         b.attackAt = b.ticks + ATTACK_MIN + Math.floor(Math.random() * ATTACK_JITTER);
       }
@@ -324,11 +341,103 @@ class BotFleet {
     return 120 + Math.floor(Math.random() * 240); // 2–6s between voluntary turns @ 60Hz
   }
 
-  // Phase 2 hook: seek nearest enemy, approach, attack; use_psi/use_item when low;
-  // accumulate kills/deaths/TTK metrics. For now, falls back to wander so 'play' is
-  // a safe no-op until implemented.
+  // Phase 2: seek the nearest enemy, close to melee, swing, fire PSI from range, and
+  // quaff a heal item when low. Combat sends (attack/use_psi/use_item) happen HERE so
+  // they're aimed at the target — the generic blind-swing timer in _drive is skipped
+  // in play mode. Returns the movement step; _drive sends the 'input' from it.
+  // When there's no enemy in range it falls back to wander, so a 'play' fleet still
+  // roams toward populated areas instead of standing idle.
+  // TODO: accumulate kills/deaths/TTK metrics for the BOTS tab (needs server-side
+  // damage attribution back to the bot's playerId — not wired yet).
   _playStep(b, entry) {
-    return this._wanderStep(b, entry, this.host.SPAWN);
+    if (b.combatInit === undefined) {
+      b.combatInit = true;
+      b.target = null; // cached {id,x,y,hp} of the enemy we're chasing
+      b.retargetAt = 0; // tick to re-acquire the nearest enemy
+      b.atkAt = 0; // next allowed melee attempt
+      b.psiAt = Math.floor(Math.random() * PSI_CD); // stagger first PSI across the fleet
+      b.healAt = 0; // next heal attempt / bag rescan
+      b.psiId = this._pickPsi(entry); // strongest offense PSI this build can cast (or null)
+    }
+
+    // Emergency heal: low HP and a healing consumable in the bag. Throttled so a bot
+    // that has no heal item doesn't rescan its inventory every tick.
+    if (entry.maxHp > 0 && entry.hp / entry.maxHp <= LOW_HP && b.ticks >= b.healAt) {
+      const itemId = this._findHealItem(entry);
+      if (itemId) this._send(b, { type: 'use_item', itemId });
+      b.healAt = b.ticks + HEAL_CD;
+    }
+
+    // (Re)acquire the nearest live enemy in range. Cheap single-object query, but we
+    // still only poll it a few times a second per bot.
+    if (!b.target || b.ticks >= b.retargetAt) {
+      b.target = this.host.npcSim.nearestEnemy(entry.x, entry.y, ENGAGE_RANGE);
+      b.retargetAt = b.ticks + RETARGET_CD;
+    }
+    const t = b.target;
+    if (!t) return this._wanderStep(b, entry, this.host.SPAWN); // nobody to fight → roam
+
+    const ddx = t.x - entry.x;
+    const ddy = t.y - entry.y;
+    const dist = Math.hypot(ddx, ddy) || 1;
+    b.dir = ((Math.atan2(ddy, ddx) / (Math.PI / 4) + 8) | 0) % 8; // face the target
+    const aimx = ddx / dist;
+    const aimy = ddy / dist;
+
+    // Offense PSI from a distance (server owns target selection + the Mental/PP gate).
+    if (b.psiId && dist <= PSI_RANGE && b.ticks >= b.psiAt) {
+      const def = this.host.PSI[b.psiId];
+      if (def && entry.pp >= def.pp) {
+        this._send(b, { type: 'use_psi', psiId: b.psiId, dir: b.dir, aimx, aimy });
+        b.psiAt = b.ticks + PSI_CD;
+      }
+    }
+
+    // In melee range: hold position and swing. Otherwise step toward the target.
+    if (dist <= MELEE_REACH) {
+      if (b.ticks >= b.atkAt) {
+        this._send(b, { type: 'attack', dir: b.dir, aimx, aimy });
+        b.atkAt = b.ticks + MELEE_CD;
+      }
+      return [0, 0];
+    }
+    return headingToStep(Math.atan2(ddy, ddx));
+  }
+
+  // Pick the strongest OFFENSE PSI this build has unlocked, or null. Mirrors gameHost
+  // mentalLevelOf/psiUnlocked (Mental = round((ppMax-2)/2); unlocked at Mental >=
+  // unlockMental) — KEEP IN SYNC. Anon bots have no dev role, so no bypass. Among the
+  // unlocked offense moves it favors the highest unlock tier the bot can afford by PP.
+  _pickPsi(entry) {
+    const psi = this.host.PSI;
+    if (!psi) return null;
+    const mental = Math.max(0, Math.round((((entry && entry.ppMax) || 0) - 2) / 2));
+    let bestId = null;
+    let bestTier = -1;
+    for (const id of Object.keys(psi)) {
+      const def = psi[id];
+      if (!def || !(def.damage > 0)) continue; // offense only
+      if (def.heal || def.cures || def.reviveFrac) continue; // skip support moves
+      const tier = def.unlockMental || 1;
+      if (mental < tier) continue; // not learned
+      if ((def.pp || 0) > ((entry && entry.ppMax) || 0)) continue; // can never afford a full cast
+      if (tier > bestTier) {
+        bestTier = tier;
+        bestId = id;
+      }
+    }
+    return bestId;
+  }
+
+  // First non-equip healing consumable in the bag (GOODS def with heal > 0), or null.
+  _findHealItem(entry) {
+    const goods = this.host.GOODS;
+    if (!goods || !entry.inventory) return null;
+    for (const id of entry.inventory) {
+      const g = goods[id];
+      if (g && !g.equip && g.heal > 0) return id;
+    }
+    return null;
   }
 
   _send(b, obj) {

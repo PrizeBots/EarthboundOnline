@@ -15,6 +15,7 @@ import {
   getNpcInterpDelayMs,
   getCoastEvents,
   setJitterSource,
+  setRateSource,
 } from './RemoteInterp';
 
 // Client-side delta baselines, mirrors of the server's per-socket _npcBase /
@@ -409,9 +410,16 @@ export function getJitterMs(): number {
   return jitterMs;
 }
 
-// Feed the live jitter readout into the interpolators' adaptive delay (one-way:
-// RemoteInterp never imports Network, so no cycle).
+/** Live effective server sim rate (Hz) from the pong — RemoteInterp sizes its
+ *  buffer to this so the interp delay widens when the server slips under load. */
+export function getServerHz(): number {
+  return serverHz;
+}
+
+// Feed the live jitter + server-rate readouts into the interpolators' adaptive
+// delay (one-way: RemoteInterp never imports Network, so no cycle).
 setJitterSource(getJitterMs);
+setRateSource(getServerHz);
 
 function startHeartbeat() {
   stopHeartbeat();
@@ -1123,6 +1131,16 @@ export function sendGiveUp() {
   }
 }
 
+/** Throw one `item` out of the bag onto the ground, aimed at world point (x,y)
+ *  (the toss target). The server re-validates ownership, clamps the target to
+ *  throw range + off walls, removes the item, and spawns a first-touch ground
+ *  drop anyone can pick up. It replies with fresh `inventory`. */
+export function sendDropItem(itemId: string, x: number, y: number) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'drop_item', itemId, x: Math.round(x), y: Math.round(y) }));
+  }
+}
+
 /** Buy `item` from `store`; the server validates stock/price and replies with
  * fresh `inventory` + `money`. */
 export function sendBuy(store: number, item: string) {
@@ -1247,6 +1265,22 @@ export function mountNetDebug(): void {
     return b;
   };
 
+  // --- Header: drag handle + minimize toggle -----------------------------------
+  // The header is the drag grip (grab-anywhere title) and hosts the minimize
+  // button. We track position so a refresh starts where you left it (sessionStorage).
+  const header = document.createElement('div');
+  header.style.cssText =
+    'display:flex;align-items:center;justify-content:space-between;gap:8px;' +
+    'margin:-2px -2px 5px;padding:2px 2px 4px;cursor:move;user-select:none;' +
+    '-webkit-user-select:none;border-bottom:1px solid #0a3a48;';
+  const title = document.createElement('span');
+  title.textContent = 'NET DEBUG';
+  title.style.cssText = 'font:bold 10px monospace;color:#3cd0ff;letter-spacing:.5px;';
+  const minBtn = mkBtn('–');
+  minBtn.style.cssText += 'margin:0;padding:0 6px;line-height:1.2;font-weight:bold;min-width:20px;';
+  header.appendChild(title);
+  header.appendChild(minBtn);
+
   // --- Tab bar: STATS (existing readout) | BOTS (dev fleet control) -------------
   const tabBar = document.createElement('div');
   tabBar.style.cssText = 'display:flex;gap:4px;margin-bottom:5px;';
@@ -1311,16 +1345,77 @@ export function mountNetDebug(): void {
   botsPanel.appendChild(row);
   botsPanel.appendChild(botPre);
 
+  box.appendChild(header);
   box.appendChild(tabBar);
   box.appendChild(statsPanel);
   box.appendChild(botsPanel);
   document.body.appendChild(box);
 
+  // --- Minimize: collapse to just the header (drag grip stays usable) -----------
+  let minimized = false;
+  const applyMin = () => {
+    tabBar.style.display = minimized ? 'none' : '';
+    statsPanel.style.display = minimized || active !== 'stats' ? 'none' : '';
+    botsPanel.style.display = minimized || active !== 'bots' ? 'none' : '';
+    minBtn.textContent = minimized ? '+' : '–';
+    header.style.borderBottom = minimized ? 'none' : '1px solid #0a3a48';
+    header.style.margin = minimized ? '-2px' : '-2px -2px 5px';
+    try {
+      sessionStorage.setItem('netdebug.min', minimized ? '1' : '0');
+    } catch {}
+  };
+  minBtn.onclick = (e) => {
+    e.stopPropagation();
+    minimized = !minimized;
+    applyMin();
+  };
+
+  // --- Drag: grab the header and move the box anywhere; clamp into the viewport --
+  // Switch from right/top anchoring to left/top so we can position freely.
+  const place = (left: number, top: number) => {
+    const w = box.offsetWidth;
+    const h = box.offsetHeight;
+    const x = Math.max(0, Math.min(left, window.innerWidth - w));
+    const y = Math.max(0, Math.min(top, window.innerHeight - h));
+    box.style.left = x + 'px';
+    box.style.top = y + 'px';
+    box.style.right = 'auto';
+    try {
+      sessionStorage.setItem('netdebug.pos', JSON.stringify({ x, y }));
+    } catch {}
+  };
+  let dragDX = 0;
+  let dragDY = 0;
+  const onMove = (e: PointerEvent) => place(e.clientX - dragDX, e.clientY - dragDY);
+  const onUp = () => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+  };
+  header.addEventListener('pointerdown', (e) => {
+    if (e.target === minBtn) return; // let the button click through
+    e.preventDefault();
+    const r = box.getBoundingClientRect();
+    dragDX = e.clientX - r.left;
+    dragDY = e.clientY - r.top;
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  });
+
+  // Restore saved position + minimized state (sessionStorage, per-tab).
+  try {
+    const saved = sessionStorage.getItem('netdebug.pos');
+    if (saved) {
+      const { x, y } = JSON.parse(saved);
+      place(x, y);
+    }
+    minimized = sessionStorage.getItem('netdebug.min') === '1';
+  } catch {}
+
   let active: 'stats' | 'bots' = 'stats';
   const showTab = (t: 'stats' | 'bots') => {
     active = t;
-    statsPanel.style.display = t === 'stats' ? '' : 'none';
-    botsPanel.style.display = t === 'bots' ? '' : 'none';
+    statsPanel.style.display = !minimized && t === 'stats' ? '' : 'none';
+    botsPanel.style.display = !minimized && t === 'bots' ? '' : 'none';
     statsTab.style.background = t === 'stats' ? '#0a3a48' : '#02202b';
     botsTab.style.background = t === 'bots' ? '#0a3a48' : '#02202b';
     if (t === 'bots') sendBotControl('stats'); // prime the readout on open
@@ -1367,6 +1462,7 @@ export function mountNetDebug(): void {
     }
   };
   showTab('stats');
+  applyMin(); // reflect restored minimized state (hides body, sets +/– glyph)
   update();
   setInterval(update, 250);
   // Poll the fleet readout once a second while the BOTS tab is open (the server

@@ -15,9 +15,9 @@ import spawn from '../spawn.json';
 // quickens up to the cap. Clamped so a low allocation never crawls and a maxed
 // one never blurs past the colliders. Replaces the old flat SPEED=2, which made
 // level 1 feel sprint-fast. `moveSpeedFor` is the single source of truth.
-const SPEED_BASE = 1.0; // px/frame floor contribution (KEEP IN SYNC with gameHost.js)
-const SPEED_PER_STAT = 0.07; // px/frame added per point of the Speed stat
-const SPEED_MIN = 0.9; // never slower than this (a crawl isn't fun)
+const SPEED_BASE = 0.8; // px/frame floor contribution (KEEP IN SYNC with gameHost.js)
+const SPEED_PER_STAT = 0.085; // px/frame added per point of the Speed stat
+const SPEED_MIN = 0.75; // never slower than this (a crawl isn't fun)
 const SPEED_MAX = 2.6; // never faster than this (camera/collision stay sane)
 const DEFAULT_SPEED_STAT = 8; // server BASE_STATS.speed — used until stats arrive
 // Reconcile tolerance: ignore authoritative corrections smaller than ~one max
@@ -30,7 +30,7 @@ function moveSpeedFor(speedStat: number): number {
 // Run (hold-Shift) sprint: multiply the Speed-derived walk speed while there's
 // stamina to burn. KEEP IN SYNC with server/gameHost.js (RUN_MULT). Stamina drain
 // is predicted in update() (RUN_DRAIN_PER_SEC, shared from StatusModal).
-const RUN_MULT = 1.5;
+const RUN_MULT = 1.4;
 
 // Player collision box (relative to position, which is center-bottom of sprite)
 const COL_WIDTH = 14;

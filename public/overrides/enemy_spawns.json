@@ -4,7 +4,7 @@
     284, 283, 282, 226, 330, 291, 331, 317, 101, 195, 274, 276, 277, 278, 279, 280, 285, 286, 287,
     288, 289, 290, 292, 294, 296, 297, 298, 300, 301, 302, 303, 304, 305, 306, 307, 308, 309, 311,
     312, 313, 314, 315, 316, 318, 319, 320, 322, 323, 324, 325, 326, 327, 328, 329, 332, 364, 386,
-    387, 388, 389, 390, 391, 392, 413, 415, 416, 417, 444, 461, 361, 281
+    387, 388, 389, 390, 391, 392, 413, 415, 416, 417, 444, 461, 361, 281, 419
   ],
   "spawners": [
     {
@@ -1316,7 +1316,7 @@
       "x": 1593,
       "y": 1553,
       "wanderRadius": 40,
-      "detectRange": 22,
+      "detectRange": 77,
       "giveUpRange": 55,
       "poolSize": 6,
       "maxActive": 3,
@@ -1328,10 +1328,10 @@
       "name": "spawner-97",
       "sprite": 284,
       "x": 1758,
-      "y": 1559,
+      "y": 1557,
       "wanderRadius": 50,
-      "detectRange": 22,
-      "giveUpRange": 55,
+      "detectRange": 155,
+      "giveUpRange": 155,
       "poolSize": 5,
       "maxActive": 2,
       "spawnIntervalMs": 5000,
@@ -1383,8 +1383,8 @@
       "x": 1513,
       "y": 1531,
       "wanderRadius": 40,
-      "detectRange": 44,
-      "giveUpRange": 44,
+      "detectRange": 122,
+      "giveUpRange": 122,
       "poolSize": 7,
       "maxActive": 4,
       "spawnIntervalMs": 44000,
@@ -1511,6 +1511,18 @@
       "spawnIntervalMs": 35000,
       "respawnDelayMs": 33000,
       "enabled": true
+    },
+    {
+      "name": "spawner-110",
+      "sprite": 419,
+      "x": 1051,
+      "y": 1849,
+      "poolSize": 7,
+      "maxActive": 4,
+      "spawnIntervalMs": 3500,
+      "respawnDelayMs": 9000,
+      "enabled": true,
+      "level": 99
     }
   ]
 }

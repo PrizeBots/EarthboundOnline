@@ -229,6 +229,13 @@ export function updateEmitters(): void {
   }
 }
 
+/** Drop every live popup at once. Called on tab-resume so the floating numbers
+ *  that piled up while the rAF loop was paused (the WS kept delivering hits) don't
+ *  all replay in one burst when rendering comes back. */
+export function clearEmitters(): void {
+  popups.length = 0;
+}
+
 /** Quadratic ease-out (fast then settling) for the burst's rise + scale. */
 function easeOut(t: number): number {
   return 1 - (1 - t) * (1 - t);

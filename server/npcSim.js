@@ -23,6 +23,7 @@ const fs = require('fs');
 const path = require('path');
 const status = require('./status'); // EB status-condition engine (catalog + timer/DoT math)
 const { loadShops } = require('./shops'); // item catalog (heal + equip data) so NPCs can USE loot
+const prof = require('./simProfile'); // per-phase tick profiler (PROFILE_SIM=1; no-op when off)
 
 // --- Map constants (mirror src/types.ts) ---
 const MINITILE = 8;
@@ -181,11 +182,11 @@ const DETECT_RANGE = 220; // px — default aggro radius; per-SPAWNER `detectRan
 // `giveUpRange` (Enemy Spawner tool) overrides it; never smaller than detectRange.
 const GIVE_UP_RANGE = 560; // px — chase breaks off when the target exceeds this
 const ATTACK_RANGE = 24; // px — enemy must be this close to land a hit
-const ENEMY_CHASE_SPEED = 1.3; // px/frame while pursuing. Tuned just UNDER a fresh
-// player's baseline walk (~1.56 px/f at Speed 8, SPEED_BASE=1.0 in gameHost.js) so an
-// unallocated character can just barely outrun a chaser, and points spent on Speed
-// widen the lead. Re-tune together with the player SPEED_* constants — keep this below
-// moveSpeedFor(BASE_STATS.speed) or fresh players can't escape.
+const ENEMY_CHASE_SPEED = 1.05; // px/frame while pursuing. Tuned just UNDER a fresh
+// player's baseline walk (~1.27 px/f at the default Speed alloc, SPEED_BASE=0.8 in
+// gameHost.js) so an unallocated character can just barely outrun a chaser, and points
+// spent on Speed widen the lead. Re-tune together with the player SPEED_* constants —
+// keep this below moveSpeedFor(default derived speed) or fresh players can't escape.
 const ENEMY_ATTACK_COOLDOWN_MS = 700; // min time between one enemy's swings
 const ENEMY_ATTACK_POSE_MS = 250; // how long the swing pose shows
 const ENEMY_DAMAGE = 7; // HP per landed hit
@@ -1088,6 +1089,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   const EJECT_MIN = 14;
   const EJECT_MAX = 40;
   const EJECT_MS = 450; // flight time; pickup is locked until now + EJECT_MS
+  // Player-aimed toss: cap how far a player can throw a dropped item from their
+  // own position. Covers ~the visible on-screen area (256x224, player ~centered)
+  // so a forged drop_item can't fling loot across the map. Anti-cheat clamp.
+  const THROW_MAX_DIST = 150;
 
   // Pick a non-solid landing spot a random angle+distance from (ox,oy). Tries a
   // few angles so loot doesn't settle inside a wall; falls back to the origin.
@@ -1100,6 +1105,32 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       if (!blocked(x - 4, y - 4, 8, 8)) return { x, y };
     }
     return { x: ox, y: oy };
+  }
+
+  // A player tossed an item toward (tx,ty). Clamp the target to THROW_MAX_DIST of
+  // the player, then walk from the (clamped) target back toward the player and
+  // return the first spot that clears walls — so it never lands inside solid
+  // geometry and a long throw at a wall just lands short. Falls back to the
+  // player's own tile. Returns the validated landing.
+  function throwLanding(px, py, tx, ty) {
+    let dx = tx - px;
+    let dy = ty - py;
+    const dist = Math.hypot(dx, dy);
+    if (dist > THROW_MAX_DIST) {
+      const k = THROW_MAX_DIST / dist;
+      dx *= k;
+      dy *= k;
+    }
+    const cx = px + dx;
+    const cy = py + dy;
+    const steps = 6;
+    for (let i = 0; i <= steps; i++) {
+      const t = 1 - i / steps; // 1 → (clamped) target, 0 → player
+      const x = px + (cx - px) * t;
+      const y = py + (cy - py) * t;
+      if (!blocked(x - 4, y - 4, 8, 8)) return { x, y };
+    }
+    return { x: px, y: py };
   }
 
   // Wire shape for a drop. Items carry their id (client renders the held sprite);
@@ -1522,6 +1553,17 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // their step by it, so travel-per-SECOND stays constant regardless of tick rate.
   // 1.0 when ticks are on time → a no-op; only engages under actual slip.
   let tickScale = 1;
+  // AI time-slicing. Profiling a 100-player load showed the `ai` phase (every actor
+  // near a player running full decision+move AI at 60Hz) is the dominant sim cost,
+  // bounded by actor count (~all 1376 awake once players blanket the map). Ambient
+  // townsfolk don't need 60Hz decisions, so we stagger them: each non-combat person
+  // runs its AI every AI_STRIDE-th tick (spread by id so ~1/STRIDE run per tick), and
+  // its movement step is multiplied by the stride for that tick (folded into
+  // tickScale, which every mover already honors and sub-steps tunnel-safe) so
+  // travel-per-second is unchanged. Enemies and cars stay full-rate (crisp combat /
+  // fast movers); a townsperson that engages a foe (n._aiBusy) drops to full-rate too.
+  const AI_STRIDE = 2;
+  let aiTickCount = 0;
   // Vehicles (traffic cars — parked or routed) — the attackable, plowing actors.
   // handleAttack damages these in addition to enemies, gated by canHurt (PK
   // rules). KEEP IN SYNC with the actors/enemies rebuilds below.
@@ -1709,9 +1751,13 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // and box as the player uses client-side). Keeps collision mutual: without
   // it a wandering NPC would walk into and overlap a standing player, since the
   // client treats NPC positions as authoritative and can't push back.
-  function hitsPlayer(x, y, w, h, ppos) {
-    for (const p of ppos) {
-      if (p.editor) continue; // editor avatar is non-solid — actors walk through it
+  function hitsPlayer(x, y, w, h, exceptId) {
+    // Broad-phase: only the players bucketed near this box (playerGrid), not the
+    // whole roster. exceptId skips one player by id — door-landing passes the
+    // warping player's id so it never blocks itself; an NPC self.id is numeric and
+    // matches no player id, so it's a no-op for ordinary NPC movement.
+    for (const p of nearPlayers(x + w / 2, y + h / 2, COL_BROAD)) {
+      if (exceptId !== undefined && p.id === exceptId) continue;
       const px = p.x - COL_W / 2;
       const py = p.y + COL_OY;
       if (x < px + COL_W && x + w > px && y < py + COL_H && y + h > py) return true;
@@ -1744,7 +1790,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // chasing pack can't all stack on the same pixel — they jostle for position
   // instead. Dead/tombstoned slots are non-solid.
   function hitsActor(self, x, y, w, h) {
-    for (const o of actors) {
+    // Broad-phase via the per-tick actorGrid (nearActors) instead of scanning every
+    // actor — the per-mover O(allActors) scan that stalled the sim at scale.
+    for (const o of nearActors(x + w / 2, y + h / 2, COL_BROAD)) {
       if (o === self || o.dead || o.kind === 'deleted') continue;
       const [ox, oy, ow, oh] = actorBox(o, o.x, o.y);
       if (x < ox + ow && x + w > ox && y < oy + oh && y + h > oy) return true;
@@ -1764,7 +1812,11 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   function playerBlocked(px, py, level, curX, curY) {
     if (blocked(px, py, COL_W, COL_H)) return true; // walls / room edges
     const haveCur = curX !== undefined && curY !== undefined;
-    for (const o of actors) {
+    // Broad-phase via the actorGrid: only the solid actors near this foot box, not
+    // the whole world. This runs per player movement step (called from the player
+    // sim, off the exported playerBlocked), so the full-list scan here was the
+    // single biggest per-tick cost once the player count climbed.
+    for (const o of nearActors(px + COL_W / 2, py + COL_H / 2, COL_BROAD)) {
       if (o.dead || o.kind === 'deleted') continue;
       if (o.kind !== 'person' && o.kind !== 'enemy' && o.kind !== 'car') continue;
       if (o.kind !== 'car' && level !== undefined && level > (o.level || 1)) continue; // plow lighter
@@ -2033,7 +2085,11 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     // swings when in range — no longer a frozen statue. Foes are enemies always,
     // plus PK players (canHurt-gated, so a peaceful player is never attacked).
     // Props/0-HP people can't fight.
-    if (n.hp > 0) {
+    // Skip the defend-on-sight scan entirely when no foe is anywhere near (coarse
+    // grid, O(1)) — the common case for the vast majority of townsfolk, and the
+    // single biggest `ai` saving at scale. anyFoeNear is a superset of detectRange,
+    // so a real threat is never missed; the exact range check stays in nearestFoeTo.
+    if (n.hp > 0 && anyFoeNear(n.x, n.y)) {
       // Put picked-up loot to use: heal if hurt, else equip a weapon/armor. Done
       // before combat so a fresh weapon's damage applies on this same swing.
       npcUseCarried(n);
@@ -2048,10 +2104,14 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       const foe = nearestFoeTo(n, acqRange, ppos);
       if (foe) {
         n.pursuing = pursuer; // lock on (only meaningful for cops)
+        n._aiBusy = true; // engaged — run full-rate (no AI time-slice) for crisp combat
         tickNpcCombat(n, foe, ppos, now);
         return; // combat owns this tick — skip the wander AI
       }
       n.pursuing = false; // no foe in range — drop the chase; walk-home pulls it back
+      n._aiBusy = false; // back to ambient — eligible for AI time-slicing again
+    } else if (n._aiBusy) {
+      n._aiBusy = false; // foe left the area — release the full-rate combat hold
     }
 
     // Wander/leash radius from home: the entity's RESOLVED wanderRadius (Entity
@@ -2070,11 +2130,15 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     }
 
     if (n.life === 'walk') {
-      const nx = n.x + n.walkDx * SPEED;
-      const ny = n.y + n.walkDy * SPEED;
+      // tickScale carries both slip-compensation AND the AI-stride multiplier (see
+      // AI_STRIDE): a strided townsperson moves ×stride on its turn so its average
+      // walk speed is unchanged. A ≤(3×stride) step from a free cell can't tunnel an
+      // 8px wall, and the single destination check below stays correct.
+      const nx = n.x + n.walkDx * SPEED * tickScale;
+      const ny = n.y + n.walkDy * SPEED * tickScale;
       const stop =
         blocked(nx - COL_W / 2, ny + COL_OY, COL_W, COL_H) ||
-        hitsPlayer(nx - COL_W / 2, ny + COL_OY, COL_W, COL_H, ppos) ||
+        hitsPlayer(nx - COL_W / 2, ny + COL_OY, COL_W, COL_H) ||
         hitsActor(n, nx - COL_W / 2, ny + COL_OY, COL_W, COL_H) ||
         Math.abs(nx - n.homeX) > wr ||
         Math.abs(ny - n.homeY) > wr;
@@ -2181,7 +2245,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       pushActor(o, n.x, n.y, 0, { dir, dist: VEHICLE_FRIENDLY_KB }); // minimal nudge
     }
     if (players)
-      for (const p of players) {
+      for (const p of nearPlayers(n.x, n.y, COL_BROAD)) {
         if (p.editor || (p.hp !== undefined && p.hp <= 0)) continue;
         const px = p.x - COL_W / 2;
         const py = p.y + COL_OY;
@@ -2307,7 +2371,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       }
     }
     if (players) {
-      for (const p of players) {
+      for (const p of nearPlayers(n.x, n.y, range)) {
         if (p.editor) continue; // parked editor avatar is out of the fight
         if (p.hp !== undefined && p.hp <= 0) continue;
         if (!canHurt(n, { isEnemy: false, pk: p.pk })) continue; // only PKers
@@ -2345,12 +2409,17 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // True if an enemy's foot box at (x,y) is clear of walls, players, and other
   // live actors — the "can a body stand here" test shared by spawning, chasing,
   // and door-follow placement.
-  function footFree(self, x, y, players) {
+  // `_players` is vestigial — player collision now reads the per-tick playerGrid
+  // (hitsPlayer), not a passed list. `self.id` excludes the warping player from the
+  // player check on a door landing; for an NPC self the numeric id matches no
+  // player, so nothing is excluded. Kept in the signature so the long
+  // moveToward→tryStep call chain stays untouched.
+  function footFree(self, x, y, _players) {
     const fx = x - COL_W / 2;
     const fy = y + COL_OY;
     return (
       !blocked(fx, fy, COL_W, COL_H) &&
-      !hitsPlayer(fx, fy, COL_W, COL_H, players) &&
+      !hitsPlayer(fx, fy, COL_W, COL_H, self && self.id) &&
       !hitsActor(self, fx, fy, COL_W, COL_H)
     );
   }
@@ -2459,6 +2528,104 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     }
   }
 
+  // Player broad-phase grid — same scheme as actorGrid, rebuilt once per tick from
+  // the live players list (rebuildPlayerGrid, called right after rebuildActorGrid).
+  // Lets NPC-vs-player collision (hitsPlayer) and player targeting (nearestFoeTo)
+  // query only LOCAL players instead of scanning the whole roster every tick — the
+  // O(movers × allPlayers) scan that stalled the sim once a bot fleet pushed the
+  // player count into the hundreds/thousands. Editors are excluded at build time
+  // (non-solid avatars), so the per-query editor check is no longer needed.
+  const playerGrid = new Map(); // "cx,cy" -> player[]
+  function rebuildPlayerGrid(players) {
+    playerGrid.clear();
+    for (const p of players) {
+      if (p.editor) continue; // editor avatar is non-solid — actors walk through it
+      const key = Math.floor(p.x / GRID_CELL) + ',' + Math.floor(p.y / GRID_CELL);
+      let arr = playerGrid.get(key);
+      if (!arr) playerGrid.set(key, (arr = []));
+      arr.push(p);
+    }
+  }
+  function* nearPlayers(x, y, radius) {
+    const r = Math.max(1, Math.ceil(radius / GRID_CELL));
+    const cx = Math.floor(x / GRID_CELL);
+    const cy = Math.floor(y / GRID_CELL);
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dy = -r; dy <= r; dy++) {
+        const arr = playerGrid.get(cx + dx + ',' + (cy + dy));
+        if (arr) for (const p of arr) yield p;
+      }
+    }
+  }
+  // Coarse player-occupancy grid for the ACTIVE_RADIUS "is any player near this
+  // actor?" test (gates per-actor AI + the resync re-flag). The old test scanned
+  // ALL players per actor — O(actors × players), which at 1000 players is ~1.4M
+  // checks/tick and dominates the `ai` phase. A fine 64px grid would instead scan
+  // ~289 cells/actor at radius 512 (string-key Map lookups, also too many). This
+  // grid uses ACTIVE_RADIUS-sized cells: an actor is "near" if its own cell or any
+  // of the 8 neighbours holds a player — O(1) per actor (9 lookups), O(players) to
+  // build. Over-inclusive by up to ~one cell (an actor up to ~2×ACTIVE_RADIUS out
+  // may wake early), which only adds a little cheap wander AI and never false
+  // combat (foe ranges are « ACTIVE_RADIUS). When players blanket the map (the
+  // heavy case) the awake set is identical to the old exact test — just O(1) to find.
+  const ACTIVE_CELL = ACTIVE_RADIUS;
+  const activeCells = new Set();
+  function rebuildActiveCells(players) {
+    activeCells.clear();
+    for (const p of players) {
+      if (p.editor) continue;
+      activeCells.add(Math.floor(p.x / ACTIVE_CELL) + ',' + Math.floor(p.y / ACTIVE_CELL));
+    }
+  }
+  function anyPlayerNear(x, y) {
+    const cx = Math.floor(x / ACTIVE_CELL);
+    const cy = Math.floor(y / ACTIVE_CELL);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        if (activeCells.has(cx + dx + ',' + (cy + dy))) return true;
+      }
+    }
+    return false;
+  }
+
+  // Coarse FOE-occupancy grid: which ACTIVE_CELL cells hold a living enemy or a PK
+  // player. Townsfolk defend on sight via nearestFoeTo (a grid scan + line-of-sight
+  // raycasts) EVERY turn — but enemies are few and clustered, so the vast majority
+  // of the ~1376 actors have no foe within range and that whole scan is wasted. This
+  // gates it: an actor only runs nearestFoeTo if a foe is in its 3×3 coarse
+  // neighbourhood (a superset of detectRange, so a real foe is never missed). At
+  // 1000 dispersed players this is the single biggest `ai` cut.
+  const foeCells = new Set();
+  function rebuildFoeCells(players) {
+    foeCells.clear();
+    for (const e of enemies) {
+      if (e.dead || e.hp <= 0) continue;
+      foeCells.add(Math.floor(e.x / ACTIVE_CELL) + ',' + Math.floor(e.y / ACTIVE_CELL));
+    }
+    for (const p of players) {
+      if (p.editor || p.pk !== true) continue;
+      if (p.hp !== undefined && p.hp <= 0) continue;
+      foeCells.add(Math.floor(p.x / ACTIVE_CELL) + ',' + Math.floor(p.y / ACTIVE_CELL));
+    }
+  }
+  function anyFoeNear(x, y) {
+    if (foeCells.size === 0) return false;
+    const cx = Math.floor(x / ACTIVE_CELL);
+    const cy = Math.floor(y / ACTIVE_CELL);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        if (foeCells.has(cx + dx + ',' + (cy + dy))) return true;
+      }
+    }
+    return false;
+  }
+
+  // Broad-phase query radius for the box collision predicates (hitsActor /
+  // hitsPlayer / playerBlocked). Covers the largest actor box — a car, ~40×28
+  // anchored at its centre — plus a small mover, so the coarse grid is
+  // over-inclusive and the exact AABB that follows stays authoritative.
+  const COL_BROAD = 128;
+
   const UNSTACK_BROAD = 48;
   function unstack(n) {
     const [bx, by, bw, bh] = actorBox(n, n.x, n.y);
@@ -2509,7 +2676,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     let sy = 0;
     let shareSum = 0;
     let cnt = 0;
-    for (const p of players) {
+    for (const p of nearPlayers(n.x, n.y, COL_BROAD)) {
       if (p.editor) continue; // parked editor avatar is non-solid
       if (p.hp !== undefined && p.hp <= 0) continue; // downed players don't shove
       const mP = massOf(p);
@@ -2553,7 +2720,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       const mA = massOf(a);
       const ax = a.x - COL_W / 2;
       const ay = a.y + COL_OY;
-      for (const b of players) {
+      for (const b of nearPlayers(a.x, a.y, COL_BROAD)) {
         if (b === a || b.editor || (b.hp !== undefined && b.hp <= 0)) continue;
         if (massOf(b) >= mA) continue; // a only plows strictly lighter players
         const bx = b.x - COL_W / 2;
@@ -2746,7 +2913,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     {
       let scary = null;
       let scaryD = Infinity;
-      for (const p of players) {
+      // Only players within sight range can trigger a flee (the gates below cap at
+      // detectRange), so the broad-phase scan is bounded to that — no full-roster scan.
+      for (const p of nearPlayers(n.x, n.y, n.detectRange || DETECT_RANGE)) {
         if (p.editor || (p.hp !== undefined && p.hp <= 0) || !outLevels(p, n)) continue;
         const d = Math.hypot(p.x - n.x, p.y - n.y);
         if (d < scaryD) {
@@ -2940,7 +3109,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             : 256;
       const stop =
         blocked(nx - COL_W / 2, ny + COL_OY, COL_W, COL_H) ||
-        hitsPlayer(nx - COL_W / 2, ny + COL_OY, COL_W, COL_H, players) ||
+        hitsPlayer(nx - COL_W / 2, ny + COL_OY, COL_W, COL_H) ||
         hitsActor(n, nx - COL_W / 2, ny + COL_OY, COL_W, COL_H) ||
         Math.hypot(nx - n.homeX, ny - n.homeY) > wr;
       if (!stop) {
@@ -3843,6 +4012,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         // and never below 1 (setInterval can't run early). Movers sub-step collision
         // so the scaled-up move can't tunnel a wall.
         tickScale = Math.min(3, Math.max(1, realDt / NOMINAL_TICK_MS));
+        aiTickCount++;
         _tickEma = _tickEma ? _tickEma * 0.95 + realDt * 0.05 : realDt;
         if (_tickEma > NOMINAL_TICK_MS * 1.6 && now - _tickWarnAt > 5000) {
           _tickWarnAt = now;
@@ -3855,10 +4025,19 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         reviveNpcs(now);
         reviveCars(now);
         if (players.length === 0) return;
-        // Broad-phase grid for this tick: lets unstack/separation/targeting query
-        // only local actors instead of scanning all ~1364 (the O(N^2) stall fix).
+        // Broad-phase grids for this tick: let unstack/separation/targeting and the
+        // box collision predicates (hitsActor/hitsPlayer/playerBlocked) query only
+        // local actors/players instead of scanning all ~1364 actors and the whole
+        // player roster (the O(N^2) stall fix). The player grid must be built before
+        // updateSpawners + actor ticks below, which both do player collision.
+        prof.begin();
         rebuildActorGrid();
+        rebuildPlayerGrid(players);
+        rebuildActiveCells(players);
+        rebuildFoeCells(players);
+        prof.lap('grids');
         updateSpawners(now, players);
+        prof.lap('spawners');
         // Detect door warps: a player whose reported position jumped > WARP_DELTA
         // in one tick teleported (the client warps on a door and sends the new
         // coords). Recorded into recentWarps with an expiry; enemies chasing that
@@ -3902,16 +4081,21 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           // ends prev == current and no stale jump is mistaken for a warp.
           prevPlayerPos.set(p.id, { x: p.x, y: p.y });
         }
+        // O(1) membership for the cleanup passes below (was players.some() inside
+        // each loop — O(players²), ~1M checks/tick at 1000 players).
+        const liveIds = new Set();
+        for (const p of players) liveIds.add(p.id);
         for (const id of prevPlayerPos.keys()) {
-          if (!players.some((p) => p.id === id)) {
+          if (!liveIds.has(id)) {
             prevPlayerPos.delete(id);
             respawnGuard.delete(id);
           }
         }
         // Expire stale warps and drop any whose player left.
         for (const [id, w] of recentWarps) {
-          if (now > w.until || !players.some((p) => p.id === id)) recentWarps.delete(id);
+          if (now > w.until || !liveIds.has(id)) recentWarps.delete(id);
         }
+        prof.lap('warps');
         for (const n of actors) {
           if (n.dead) continue;
           // Drive transient poses (attack/hurt). Runs regardless of proximity so
@@ -3931,13 +4115,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
               }
             }
           }
-          let near = false;
-          for (const p of players) {
-            if (Math.abs(p.x - n.x) < ACTIVE_RADIUS && Math.abs(p.y - n.y) < ACTIVE_RADIUS) {
-              near = true;
-              break;
-            }
-          }
+          // O(1) coarse-grid proximity (was O(players) per actor — see activeCells).
+          const near = anyPlayerNear(n.x, n.y);
           // Tick status conditions: expire ended ones, apply any DoT (no attacker
           // context — DoT never re-knocks or re-paralyzes). No actor inflicts DoT
           // yet, so this is dormant until poison-on-enemies lands.
@@ -3963,15 +4142,32 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             continue;
           }
           if (near) {
-            if (n.kind === 'car') tickCar(n, players, now);
-            else if (n.roam) tickEnemy(n, players, now, onEnemyHit, recentWarps);
-            else tickNpc(n, players, now);
-            // Never let two bodies stay stacked: nudge apart if this tick ended
-            // overlapping another actor. Enemies + townsfolk only — cars are meant
-            // to plow THROUGH actors, not separate from them.
-            if (n.kind === 'enemy' || n.kind === 'person') {
-              unstack(n);
-              pushFromPlayers(n, players); // a heavier player plows this actor aside
+            // Time-slice ambient townsfolk (see AI_STRIDE): a non-combat person runs
+            // its AI every STRIDE-th tick, phase-spread by id so the load is even.
+            // Combat people (_aiBusy, set in tickNpc), enemies, and cars run every
+            // tick. On its turn the step is scaled ×stride (folded into tickScale) so
+            // velocity is preserved; sub-stepping keeps the bigger step tunnel-safe.
+            const stride = n.kind === 'person' && !n._aiBusy ? AI_STRIDE : 1;
+            if (n._aiPhase === undefined) n._aiPhase = n.id % AI_STRIDE;
+            const aiTurn = stride === 1 || (aiTickCount + n._aiPhase) % stride === 0;
+            if (aiTurn) {
+              const savedScale = tickScale;
+              if (stride > 1) tickScale *= stride;
+              const _tm = prof.now();
+              if (n.kind === 'car') tickCar(n, players, now);
+              else if (n.roam) tickEnemy(n, players, now, onEnemyHit, recentWarps);
+              else tickNpc(n, players, now);
+              prof.add('ai.move', prof.now() - _tm);
+              tickScale = savedScale; // anti-stack nudges below are fixed, not velocity
+              // Never let two bodies stay stacked: nudge apart if this tick ended
+              // overlapping another actor. Enemies + townsfolk only — cars are meant
+              // to plow THROUGH actors, not separate from them.
+              if (n.kind === 'enemy' || n.kind === 'person') {
+                const _tu = prof.now();
+                unstack(n);
+                pushFromPlayers(n, players); // a heavier player plows this actor aside
+                prof.add('ai.unstack', prof.now() - _tu);
+              }
             }
           } else if (n.roam && n.mode !== 'patrol') {
             // Off-station with no player nearby (the target fled far): keep
@@ -3980,6 +4176,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             tickEnemy(n, players, now, onEnemyHit, recentWarps);
           }
         }
+        prof.lap('ai');
         // Lag-comp: snapshot each enemy's post-move position so a player's swing
         // can be resolved against where the attacker saw it (histPosAt).
         for (const e of enemies) if (!e.dead) recordHist(e, now);
@@ -3997,13 +4194,20 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           for (let i = groundDrops.length - 1; i >= 0; i--) {
             const d = groundDrops[i];
             if (d.pickableAt && now < d.pickableAt) continue; // still mid-flight
-            const p = players.find(
-              (q) =>
+            // Grid-local scan (was players.find over ALL players — O(drops × players),
+            // and a death cash-fountain spawns many drops at once).
+            let p = null;
+            for (const q of nearPlayers(d.x, d.y, DROP_PICKUP_RADIUS)) {
+              if (
                 !q.editor &&
                 !(q.hp !== undefined && q.hp <= 0) &&
                 Math.abs(q.x - d.x) <= DROP_PICKUP_RADIUS &&
                 Math.abs(q.y - d.y) <= DROP_PICKUP_RADIUS
-            );
+              ) {
+                p = q;
+                break;
+              }
+            }
             if (p && onPickupCb(p.id, dropWire(d))) {
               groundDrops.splice(i, 1);
               broadcast({ type: 'drop_remove', id: d.id });
@@ -4012,6 +4216,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         }
         // Then enemies/townsfolk grab what players left behind (carry-capped).
         pickupByActors(now);
+        prof.lap('post');
+        prof.setContext(players.length, actors.length, 1000 / (_tickEma || NOMINAL_TICK_MS));
+        prof.frame();
       }, 1000 / TICK_HZ);
 
       let _lastResync = 0;
@@ -4021,6 +4228,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         const stat = []; // [id, [statusId,...]] rows for actors whose set changed
         const equips = []; // [id, itemId|null] rows for actors whose held item changed
         const nowSend = Date.now();
+        prof.begin();
         // Resync heartbeat (see NPC_RESYNC_MS): periodically re-flag live NPCs so their
         // current position re-reaches every in-AOI client, unfreezing any copy left
         // stale when an AOI-filtered update was missed. Only NPCs within AOI reach of a
@@ -4029,18 +4237,13 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         // enemies and fewer "hit by something that looks far away" mis-renders).
         if (nowSend - _lastResync >= NPC_RESYNC_MS) {
           _lastResync = nowSend;
-          const ps = getPlayers();
-          const reach2 = (ACTIVE_RADIUS + 128) ** 2;
+          // O(1) per actor via the coarse occupancy grid (was O(actors × players)).
+          // activeCells is refreshed by the 60Hz tick ≤16ms ago — fresh enough, and
+          // it's a slight superset of the old reach² test, so any actor that WOULD
+          // re-flag still does (extras just get a ~6-byte no-op delta).
           for (const n of actors) {
             if (n.dead) continue;
-            for (let i = 0; i < ps.length; i++) {
-              const ex = n.x - ps[i].x;
-              const ey = n.y - ps[i].y;
-              if (ex * ex + ey * ey <= reach2) {
-                n.dirty = true;
-                break;
-              }
-            }
+            if (anyPlayerNear(n.x, n.y)) n.dirty = true;
           }
         }
         for (const n of actors) {
@@ -4076,10 +4279,12 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             equips.push([n.id, n.itemId ?? null]);
           }
         }
+        prof.lap('npcDirtyScan');
         if (moved.length > 0) broadcast({ type: 'npc_update', npcs: moved });
         if (hps.length > 0) broadcast({ type: 'npc_hp', hps });
         if (stat.length > 0) broadcast({ type: 'npc_status', statuses: stat });
         if (equips.length > 0) broadcast({ type: 'npc_equip', equips });
+        prof.lap('npcBroadcast');
       }, 1000 / BROADCAST_HZ);
     },
 
@@ -4186,6 +4391,27 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     },
 
     /**
+     * Nearest LIVE enemy to (x,y) within maxD px, or null. A cheap single-target
+     * query for AI (bot play-mode, etc.) — unlike enemyState() it allocates only
+     * the one result row, so it's safe to poll per-actor per-tick. Straight-line
+     * distance, no line-of-sight check (the attack/PSI handlers resolve the real
+     * hit against live positions, so a wall just means an occasional whiff).
+     */
+    nearestEnemy(x, y, maxD) {
+      let best = null;
+      let bestD = maxD == null ? Infinity : maxD;
+      for (const n of enemies) {
+        if (n.dead || n.hp <= 0) continue;
+        const d = Math.hypot(n.x - x, n.y - y);
+        if (d <= bestD) {
+          bestD = d;
+          best = n;
+        }
+      }
+      return best ? { id: best.id, x: best.x, y: best.y, hp: best.hp, maxHp: best.maxHp } : null;
+    },
+
+    /**
      * Anchor positions of every LIVE static interactable (person/prop) — shop
      * clerks, ATMs, phones, etc. — for server-side proximity gating. The host
      * checks a transacting player against these so buy/sell/ATM can't be invoked
@@ -4226,8 +4452,14 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
      *  even the spiral finds no room. `players` is the live player list; `selfId`
      *  is the warping player, excluded so it never blocks itself. */
     findPlayerLanding(destX, destY, players, selfId) {
-      const self = { id: selfId }; // not in `actors` → hitsActor scans every NPC
+      const self = { id: selfId }; // footFree excludes self.id from the player check
       const others = Array.isArray(players) ? players.filter((p) => p && p.id !== selfId) : [];
+      // This runs on a door warp, OUTSIDE the sim tick, so the per-tick broad-phase
+      // grids that footFree (hitsActor/hitsPlayer) reads may be stale or empty.
+      // Rebuild them against live positions first — a cold path (one warp), so the
+      // O(actors + players) rebuild is negligible.
+      rebuildActorGrid();
+      rebuildPlayerGrid(Array.isArray(players) ? players : []);
       return (
         findFreeNear(destX, destY, self, others) || { x: Math.round(destX), y: Math.round(destY) }
       );
@@ -4284,6 +4516,19 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     spawnItemDrop(x, y, item, name) {
       if (!item) return null;
       return spawnDrop('item', x, y, { item, name: name || '' });
+    },
+
+    /** A player threw a bag item onto the ground, aimed at (tx,ty). It tweens
+     *  from the player (px,py) to the validated landing — arcing out and locked
+     *  from pickup until it lands (EJECT_MS) — so the thrower can't instantly
+     *  re-grab it and it reads as a toss. The target is clamped to THROW_MAX_DIST
+     *  and pulled clear of walls server-side (throwLanding), so a forged spot
+     *  can't fling loot across the map or into solid geometry. The grant on
+     *  pickup still flows through the host's tryPickup (first-touch FFA). */
+    spawnPlayerDrop(px, py, tx, ty, item, name) {
+      if (!item) return null;
+      const land = throwLanding(px, py, tx, ty);
+      return spawnDrop('item', land.x, land.y, { item, name: name || '' }, { x: px, y: py });
     },
 
     /** Run one actor-pickup pass (enemies/townsfolk grab nearby drops). For tests. */

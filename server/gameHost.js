@@ -31,6 +31,7 @@ const {
   STAT_SPEND_MAX,
 } = require('./charStats');
 const status = require('./status'); // EB status-condition engine (shared with npcSim)
+const prof = require('./simProfile'); // per-phase tick profiler (PROFILE_SIM=1; no-op when off)
 const buffs = require('./buffs'); // temporary timed stat boosts (consumables / future PSI)
 
 const POSES = ['walk', 'climb', 'attack', 'hurt'];
@@ -48,9 +49,9 @@ const ATM_SPRITE_GROUPS = new Set([259, 447]);
 const PLAYER_COL_W = 14;
 const PLAYER_COL_H = 8;
 const PLAYER_COL_OY = -8;
-const SPEED_BASE = 1.0; // KEEP IN SYNC with src/engine/Player.ts
-const SPEED_PER_STAT = 0.07;
-const SPEED_MIN = 0.9;
+const SPEED_BASE = 0.8; // KEEP IN SYNC with src/engine/Player.ts
+const SPEED_PER_STAT = 0.085;
+const SPEED_MIN = 0.75;
 const SPEED_MAX = 2.6;
 function moveSpeedFor(speedStat) {
   return Math.max(SPEED_MIN, Math.min(SPEED_MAX, SPEED_BASE + (speedStat || 0) * SPEED_PER_STAT));
@@ -83,8 +84,8 @@ const MAX_STEPS_BURST = Math.max(2, Math.round(NOMINAL_STEPS_PER_TICK * 3)); // 
 // Running multiplies the Speed-derived walk speed and burns stamina; an attack
 // costs a fixed chunk (gated like PP). Stamina pool/regen come from stats
 // (deriveCombatStats: Spirit→max, Muscle→regen).
-const RUN_MULT = 1.5; // run speed = walk speed * this (while you can run)
-const RUN_DRAIN_PER_STEP = 18 / 60; // stamina drained per 60Hz movement step
+const RUN_MULT = 1.4; // run speed = walk speed * this (while you can run)
+const RUN_DRAIN_PER_STEP = 24 / 60; // stamina drained per 60Hz movement step
 const STAMINA_ATTACK_COST = 8; // stamina per swing (not enough = can't attack)
 // "Winded" latch: hitting 0 stamina while running locks OUT running until it
 // recharges to this fraction of max. Without it, per-tick regen tops stamina just
@@ -2031,6 +2032,7 @@ class GameHost {
     // still recharge). Running drains it per-step in _stepPlayer; net = regen −
     // drain. Owner gets a throttled sync so its predicted bar stays honest.
     const staSec = dt / 1000;
+    prof.begin();
     for (const [, e] of this.players) {
       if (e.editor) continue;
       const smax = e.staminaMax || 0;
@@ -2063,6 +2065,7 @@ class GameHost {
       // so we send a tiny message ~5/s instead of a full player_stats per regen tick.
       this._maybeSendPp(e, now);
     }
+    prof.lap('playerRegen');
     this._stepAccum = (this._stepAccum || 0) + dt / SIM_FRAME_MS;
     let stepBudget = Math.floor(this._stepAccum);
     if (stepBudget > MAX_STEPS_BURST) {
@@ -2144,6 +2147,7 @@ class GameHost {
         });
       }
     }
+    prof.lap('playerMove');
   }
 
   // Owner-only stamina sync (reconciliation for the client's predicted bar).
@@ -3726,6 +3730,34 @@ class GameHost {
           JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) })
         );
         entry._ws.send(JSON.stringify({ type: 'money', money: entry.money }));
+        this._saveCharacter(playerId);
+        break;
+      }
+
+      case 'drop_item': {
+        // Throw a bag item onto the ground for anyone to pick up. Fully
+        // server-authoritative & dupe-proof: the item must really be in THIS
+        // socket's bag (identity bound to playerId, never client-supplied), it's
+        // removed BEFORE the drop spawns (no clone), only ONE per message, and it
+        // lands at the player's SERVER position (not a client-chosen spot, so you
+        // can't fling loot across the map). Equipped gear lives outside the bag,
+        // so it can never leak out here. No inventory fiddling while down/dying.
+        const entry = this.players.get(playerId);
+        if (!entry || entry.hp <= 0 || entry.downed || entry.dying) break;
+        const itemId = typeof msg.itemId === 'string' ? msg.itemId : null;
+        const def = itemId ? GOODS[itemId] : null;
+        if (!def) break; // unknown id — ignore
+        const slot = entry.inventory.indexOf(itemId);
+        if (slot === -1) break; // don't own it — ignore (client pre-checks ownership)
+        // Aimed toss target (world px). Default to the player's own spot if the
+        // client omits/forges it; spawnPlayerDrop clamps it to range + off walls.
+        const tx = Number.isFinite(msg.x) ? msg.x : entry.x;
+        const ty = Number.isFinite(msg.y) ? msg.y : entry.y;
+        entry.inventory.splice(slot, 1);
+        this.npcSim.spawnPlayerDrop(entry.x, entry.y, tx, ty, itemId, def.name || '');
+        entry._ws.send(
+          JSON.stringify({ type: 'inventory', items: this.inventoryView(entry.inventory) })
+        );
         this._saveCharacter(playerId);
         break;
       }

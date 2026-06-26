@@ -22,6 +22,9 @@ let clickPending: { x: number; y: number } | null = null;
 let pointerHeld = false;
 let pressPending: { x: number; y: number } | null = null;
 let releasePending: { x: number; y: number } | null = null;
+// One-shot right-click latch (game canvas only). Read as a "cancel/back" gesture
+// — e.g. backing out of PSI target-selection without casting.
+let rightClickPending = false;
 // Mouse-wheel notches accumulated since the last consume (+down / -up). Read by
 // the menu to scroll its lists; clamped so a fast spin can't pile up unbounded.
 let wheelAccum = 0;
@@ -131,7 +134,10 @@ export function initInput(gameCanvas?: HTMLCanvasElement) {
   // the canvas so DOM UI (ROM picker, account forms, inputs) keeps its menu.
   window.addEventListener('contextmenu', (e) => {
     const t = e.target as HTMLElement | null;
-    if (t && (t === canvas || t.tagName === 'CANVAS')) e.preventDefault();
+    if (t && (t === canvas || t.tagName === 'CANVAS')) {
+      e.preventDefault();
+      rightClickPending = true; // a game-surface right-click → a "cancel/back" gesture
+    }
   });
   // Mouse wheel over the game canvas scrolls menu lists (and must not scroll the
   // page). One notch per event; accumulate so a fast flick moves several rows.
@@ -246,6 +252,14 @@ export function consumePointerClick(): { x: number; y: number } | null {
   clickPending = null;
   if (c) mouseAttack = false;
   return c;
+}
+
+/** Take the pending game-canvas right-click once, else false. A "cancel/back"
+ *  gesture (e.g. backing out of PSI target-selection). */
+export function consumeRightClick(): boolean {
+  const r = rightClickPending;
+  rightClickPending = false;
+  return r;
 }
 
 export function isActionPressed(): boolean {

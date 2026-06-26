@@ -55,6 +55,11 @@ export interface MenuHooks {
    *  same line attacks use. Falls back to the current facing (no mouse / menu open).
    *  Optional. */
   getAim?(): { dir: number; aimx: number; aimy: number };
+  /** Throw a bag item onto the ground, aimed at a SCREEN point (game-space px,
+   *  where the drag was released). The game converts it to a world target via the
+   *  camera and sends the drop; the server clamps + validates the spot. The item
+   *  then tweens from the player to the landing (a toss). Optional. */
+  dropItemAt?(itemId: string, screenX: number, screenY: number): void;
 }
 
 /** Stat-change preview for the highlighted Buy item: how a stat would read after

@@ -39,6 +39,12 @@
       "giveUpRange": 200,
       "wanderRadius": 100,
       "combat": "nervous"
+    },
+    "419": {
+      "hp": 500,
+      "level": 12,
+      "xp": 200,
+      "damage": 20
     }
   }
 }

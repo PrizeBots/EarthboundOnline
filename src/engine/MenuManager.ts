@@ -61,6 +61,7 @@ import {
   drawCursor,
   cellAt,
   goodsRowAt,
+  goodsLayout,
   GOODS_COLS,
   equipRowAt,
   equipSelectLayout,
@@ -459,6 +460,20 @@ function useConsumable(id: string): void {
   sendUseItem(id);
 }
 
+/** Throw a bag item onto the ground, aimed at the SCREEN point where the drag was
+ *  released (drag a hotbar slot or a Goods row out into the game area). The game's
+ *  `dropItemAt` hook converts the point to a world target via the camera and sends
+ *  it; the server re-checks ownership, clamps the spot, removes the item, and
+ *  spawns a first-touch ground drop that tweens from the player (a toss). PSI has
+ *  no item, and an equipped weapon lives OUTSIDE the bag (goodsCount 0), so neither
+ *  can be dropped this way (the server rejects them too). */
+function dropThing(id: string, screenX: number, screenY: number): void {
+  if (isPsiEntry(id) || goodsCount(id) === 0) return;
+  playEventSfx('cursor-horizontal');
+  hooks?.notify?.(`Dropped ${getItemName(id) ?? 'it'}.`);
+  hooks?.dropItemAt?.(id, screenX, screenY);
+}
+
 function useOrEquipGood(id: string): void {
   const eq = itemEquip(id);
   if (!eq) {
@@ -572,10 +587,14 @@ function activateSlot(i: number, consumableOnly = false): void {
     equipToggle(id); // swap to this weapon
     return;
   }
-  // Consumable: a depleted slot stays ASSIGNED but does nothing (the faded x0
-  // icon shows it's empty). Restock the item and the same slot works again with
-  // no reassigning.
-  if (goodsCount(id) === 0) return;
+  // Consumable: a depleted slot shows a faded x0 icon so it can be refilled and
+  // re-used quickly. But if the player actually tries to USE a x0 slot, take that
+  // as "I'm done with this" — clear the slot so something else can go there.
+  if (goodsCount(id) === 0) {
+    hotbar[i] = null;
+    persistHotbar();
+    return;
+  }
   useConsumable(id); // food → eat SFX + server use
 }
 
@@ -643,7 +662,21 @@ function updateHotbarDrag(): void {
       // Released back on a Goods row (not a box): treat as a click → use/equip.
       const i = goodsRowAt(rel.x, rel.y);
       const items = getGoods();
-      if (i >= 0 && items[i] && items[i].id === drag.id) useOrEquipGood(items[i].id);
+      if (i >= 0 && items[i] && items[i].id === drag.id) {
+        useOrEquipGood(items[i].id);
+      } else {
+        // Released off the Goods grid AND outside the bag window → throw it on the
+        // ground at that spot (drag an item out of the bag into the visible field
+        // below/around the panel). Inside the panel but off a row = a miss, leave
+        // it be.
+        const lay = goodsLayout();
+        const outside =
+          rel.x < lay.winX ||
+          rel.x > lay.winX + lay.winW ||
+          rel.y < lay.winY ||
+          rel.y > lay.winY + lay.winH;
+        if (outside) dropThing(drag.id, rel.x, rel.y);
+      }
     } else if (menuState === 'psi') {
       if (psiTierOpen) {
         // Released on the same tier row (not a box): treat as a click → cast.
@@ -664,6 +697,43 @@ function updateHotbarDrag(): void {
     drag = null;
   }
   if (drag && !isPointerDown()) drag = null; // safety: never get stuck dragging
+}
+
+// Field (menu-closed) hotbar pointer: a tap uses the slot; a drag OFF the bar
+// throws that item onto the ground (server-validated, first-touch FFA). Resolved
+// on RELEASE so a press-then-drag is told apart from a plain tap. Because the
+// click latch fires on mousedown (over the bar it would otherwise swing), this
+// also swallows the click the moment a press lands on a hotbar box — so the
+// caller (Game) doesn't double-handle it. Mirrors the menu's updateHotbarDrag.
+let fieldDrag: { box: number; id: string | null; x: number; y: number } | null = null;
+const FIELD_DRAG_MIN = 6; // px the pointer must travel before a press counts as a drag
+export function updateFieldHotbarDrag(): void {
+  const press = consumePointerPress();
+  if (press && !fieldDrag) {
+    const box = hotbarBoxAt(press.x, press.y);
+    if (box >= 0) {
+      fieldDrag = { box, id: hotbar[box], x: press.x, y: press.y };
+      consumePointerClick(); // this press is a hotbar interaction, not a swing
+    }
+  }
+  // While a bar drag is in progress, keep eating the held click so it can't leak
+  // into an attack swing on later frames.
+  if (fieldDrag) consumePointerClick();
+  const rel = consumePointerRelease();
+  if (rel && fieldDrag) {
+    const { box, id, x, y } = fieldDrag;
+    fieldDrag = null;
+    // A real drag (moved past the dead-zone) released OFF the bar → toss the item
+    // to that spot. A near-stationary release is a tap → use the slot (a sloppy
+    // click that drifts a pixel off the box still reads as "use", not "throw").
+    const moved = Math.hypot(rel.x - x, rel.y - y) >= FIELD_DRAG_MIN;
+    if (moved && hotbarBoxAt(rel.x, rel.y) < 0) {
+      if (id) dropThing(id, rel.x, rel.y); // dropThing rejects PSI / equipped weapons
+    } else {
+      triggerHotbarSlot(box);
+    }
+  }
+  if (fieldDrag && !isPointerDown()) fieldDrag = null; // never get stuck dragging
 }
 
 /** Open a clerk's shop (called from Game.tryTalk for a shop-clerk NPC). */
@@ -1367,7 +1437,11 @@ export function renderMenu(ctx: CanvasRenderingContext2D): void {
  *  slots are always visible during play, not only while the menu is open.
  *  Game.ts calls this when the menu is CLOSED (renderMenu handles it otherwise). */
 export function renderHotbarOverlay(ctx: CanvasRenderingContext2D): void {
-  renderHotbar(ctx, buildView());
+  const view = buildView();
+  renderHotbar(ctx, view);
+  // A field drag-to-drop in progress: draw the grabbed item glyph trailing the
+  // cursor (the same ghost the menu uses) so the toss target reads clearly.
+  if (fieldDrag && fieldDrag.id) renderDragGhost(ctx, { ...view, drag: { id: fieldDrag.id } });
 }
 
 /** Draw the always-on "$N" money window when the player enables "Show $ in

@@ -169,10 +169,46 @@ it matters), built so it still maps cleanly onto the long-term SNES/ESP32 port.
         lag of other players. NPC interp LEFT at 100ms: NPCs broadcast at 10Hz (100ms
         packets), so it already brackets only ~1 packet; lowering would force constant
         coasting, and it must stay in sync with server `NPC_INTERP_MS` (lag-comp rewind).
-  - [ ] (later) Raise NPC broadcast rate (currently 10Hz) for smoother enemies +
-        tighter lag-comp; only worth it after the binary/delta headroom is confirmed
-        in prod. Keep client NPC interp and server `NPC_INTERP_MS` in lockstep.
-- [ ] **Phase 3+** — gateway split, WebTransport, sharding (§5.5, §7).
+  - [x] Raised NPC broadcast rate 10→**30Hz** (`BROADCAST_HZ`) for smoother enemies +
+        tighter lag-comp (binary/delta headroom made it affordable). Smoothness now comes
+        from the playout clock + adaptive buffer (§5.6 sim-cost pass), not raw rate; client
+        NPC interp + server delay stay in lockstep. Re-evaluate downward only if a packed
+        prod box slips (the rate-adaptive buffer absorbs slip either way).
+- [x] **Sim-cost optimization pass — load-test driven (2026-06-26).** Profiled the
+      tick under bot load with new tooling, then removed the algorithmic cliffs that
+      were invisible at ~100 players but fatal at 1000. Tooling:
+  - [x] `server/simProfile.js` — per-phase ms/s tick profiler (`PROFILE_SIM=1`,
+        zero-cost when off), wired into both sim loops (`npcSim` tick + `gameHost._simPlayers`).
+  - [x] `server/sim_microbench.js` — **socket-free** harness driving `npcSim` directly
+        with N scattered synthetic players. Scales to 1000+ instantly (the real
+        `loadtest.js` socket path is gated by localhost connection limits ~94/run);
+        isolates pure server sim cost (no Vite, no in-process bot AI).
+  - [x] **Rate-adaptive interp buffer** (`RemoteInterp.ts` + `Network.ts`): the render
+        delay now tracks the **live** server Hz (`getServerHz` from the pong) instead
+        of a hardcoded 30Hz. When the sim slips (e.g. 18Hz) the buffer auto-widens so
+        two snapshots still bracket the cursor — killed the coast spike (80/s → 0) the
+        old fixed floor caused. Supersedes the static "150→100ms" trim below.
+  - [x] **AI time-slice** (`AI_STRIDE=2`): non-combat townsfolk run their AI every 2nd
+        tick (id-phase-spread; step ×stride so velocity is unchanged). Enemies, cars,
+        and engaged townsfolk (`_aiBusy`) stay full-rate. NOTE: measured net-neutral on
+        the movement-COLLISION cost (tryStep sub-steps with distance), so it lowers
+        decision-rate, not collision — keep it modest.
+  - [x] **Killed O(actors×players) / O(players²) scans** (fine at 100, fatal at 1000):
+    - per-actor "is a player within ACTIVE_RADIUS" → O(1) coarse occupancy grid
+      (`activeCells` / `anyPlayerNear`).
+    - NPC resync re-flag (nested actors×players) → same coarse grid.
+    - `warps` cleanup (`players.some` inside a loop) → a player-id `Set`.
+    - ground-drop pickup (`players.find` over all) → `nearPlayers` grid.
+    - defend-on-sight foe scan gated by a coarse foe-occupancy grid (`foeCells` /
+      `anyFoeNear`) so townsfolk far from any enemy skip the scan + raycasts.
+  - **Measured ceiling — 1000 dispersed players, pure `npcSim`, socket-free:**
+    ~870 ms/s ≈ **0.9 core**, now dominated by `ai.move` (~720 ms/s) = the
+    collision-checked NPC movement, which is proportional to distance traveled and
+    therefore **not** reducible by stride. With `gameHost.playerMove` (~860 ms/s
+    extrapolated) + AOI broadcast on top, **1000 dispersed players is ~2.5+ cores.**
+    Conclusion: the cliffs are gone and the per-core ceiling is raised, but **1000 in
+    one process is impossible — it's a sharding problem (Phase 5/6), not a tuning one.**
+- [ ] **Phase 3+** — gateway split, transport (WebRTC landed §5.6), sharding (§5.5, §7).
 
 ---
 
@@ -563,6 +599,44 @@ monolingual (Node) until a measurement forces a specific seam.
 
 ---
 
+## 5.6 ⟪landed⟫ WebRTC DataChannel — the unreliable transport that actually shipped
+
+§5 plans **WebTransport/QUIC** for the unreliable position firehose. What landed first is
+**WebRTC** (`server/rtc.js`, "Stage D"), because it has the unreliable-datagram semantics
+we need **and ships in every current browser today** (Node WebTransport is still
+experimental — §5.5). It is the same idea, different protocol:
+
+- **Unordered/unreliable DataChannel** for the position firehose — a lost packet skips one
+  snapshot (the delta/seq path already tolerates gaps) instead of TCP head-of-line-blocking
+  the stream (the "freeze then teleport"). Exactly the §5 goal.
+- **WebSocket stays** the signaling + reliable-control + **fallback** channel. The client is
+  the offerer/creates the channel; the server answers (`onDataChannel`). `node-datachannel`
+  native addon; degrades to no-op (pure WS) if it can't load.
+- Opt-in: `RTC_ENABLED` (server) + `?rtc` (client), off by default until verified live.
+- `gameHost` already prefers it when open: `BINARY_WIRE && entry._rtc.isOpen()` → send the
+  binary firehose over the DataChannel, else WS.
+
+**This does NOT replace the §5 plan — it implements its unreliable channel.** WebTransport
+can still supersede WebRTC later (cleaner, no STUN/ICE) once Node's support matures; the
+encoder/delta machinery is transport-agnostic, so it's a swap at the edge.
+
+#### Sharding implication (important — affects the gateway design, §6/§7)
+
+A WebRTC connection has an **expensive ICE/DTLS handshake (~hundreds of ms)**. If each
+sim shard were its own RTC endpoint, a player crossing a door would **renegotiate RTC every
+handoff** = stutter. Therefore:
+
+- The client holds **one long-lived RTC connection to a gateway**, never directly to a sim
+  worker. Room/zone handoff is **gateway-internal** (the gateway re-points which shard backend
+  it proxies, over a trusted fast internal link) → **the client's RTC connection never
+  renegotiates on a room crossing.**
+- Bonus: server-side WebRTC does **DTLS encryption per packet** — real CPU at thousands of
+  peers. Concentrating RTC at transport-only **gateways** keeps that cost **off the sim
+  shards** (workers talk plain binary over the internal backbone). Another reason the gateway
+  is the right home for the transport (§6), and the language seam (§5.5).
+
+---
+
 ## 6. Pillar 3 — Edge / gateway tier
 
 Split "terminate the socket" from "simulate the game."
@@ -612,6 +686,35 @@ The world is **door-stitched** today, and doors already fade. So shard sim on
 - Each zone = one worker. State tier makes workers stateless/restartable.
 - Con: a single huge _outdoor_ zone (Onett) can still exceed one core. So:
   **zone-shard first; only cell-split the zones that outgrow a core.**
+
+#### ⟪decided 2026-06-26⟫ The shard primitive = the Room registry
+
+The partition, the ownership resolver, and the handoff trigger sharding needs **already
+exist** as the Room system (`src/engine/Rooms.ts` + the `'rooms'` DB doc, see
+[ROOM_SYSTEM.md](ROOM_SYSTEM.md)):
+
+| Sharding needs   | Room system already provides                                   |
+| ---------------- | -------------------------------------------------------------- |
+| World partition  | ~505 rooms, stable ids, `regions[]` rects tiling the whole map |
+| Ownership lookup | `roomAt()` / `setActiveRoomFromPoint()` — runs every frame     |
+| Handoff trigger  | `room:enter` / `room:exit` on the EventBus — already firing    |
+
+**Granularity decision: shard at the _walkable-connected region_, not the bgm sub-rect.**
+The registry holds two kinds of room:
+
+- **Door-entered interiors** (`type: shop/house/hotel/dungeon/…`) — crossing is a warp =
+  **discrete handoff** (leave shard A, join shard B, zero overlap). Each is its own shard.
+- **`type: overworld` bgm zones** — these are music sub-rects of _continuous_ streets, so
+  adjacent ones are walkably seamless. **Do NOT shard per bgm-rect** (that reintroduces
+  seamless seams inside a town). **Group walkably-contiguous overworld rooms into one
+  shard** (Onett's streets = one shard) so every shard boundary is a door = discrete
+  handoff. Connectivity comes from the collision flood-fill (`computeRoomBounds` already
+  finds connected walkable regions) + the door graph.
+
+Net: rooms keep owning **identity + music**; the **shard** owns a connected walkable
+component, and its door-reachable interiors are separate shards. **Every shard boundary
+is a door** → Phase 5 needs no seamless ghosting at all; §7.3/§7.6 (seamless cell-split)
+is deferred to Phase 6, only for a single town that outgrows one core (§7.7).
 
 This is v2's best idea and the single biggest reason it beats v1: it gets you to
 multi-worker scale while _deferring_ the hardest distributed-systems problem

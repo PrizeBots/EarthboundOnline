@@ -574,13 +574,31 @@ consume gear and rejecting unaffordable buys) — 17 checks.
 `GameHost` relays join/move/chat/equip **and runs `server/npcSim.js`**:
 server-authoritative NPC
 wander AI (mirrors Collision.ts math, and stops a wander leg that would overlap
-a player so collision is mutual) so all clients see identical NPC state. Wire:
+a player so collision is mutual) so all clients see identical NPC state.
+**Scaling:** every per-tick collision/targeting query (`hitsActor`, `hitsPlayer`,
+`playerBlocked`, `nearestFoeTo`, the walk-push/plow loops) goes through two
+broad-phase grids rebuilt once per tick — `actorGrid`/`nearActors` (NPCs+cars)
+and `playerGrid`/`nearPlayers` (players, editors excluded) — so the sim stays
+~O(entities) instead of O(entities²). Without this the event loop stalls under a
+crowd (e.g. a 400-bot fleet) and the tick rate slips, which clients see as a
+_server_ slip (the reported `server: NN Hz` in `?netdebug`), not network lag.
+Cold callers that run OFF the tick (e.g. the exported door-landing resolver
+`findPlayerLanding`) rebuild the grids first, since the per-tick grids are stale
+there. Wire:
 `move` carries `pose` (whitelisted to walk/climb/attack/hurt); `equip` sets the
 player's held item id (string ≤ 24 chars, stored on the player record so late
 joiners see it; clients ignore unknown ids); `use_item` consumes a Goods slot
 the player owns (validated against the server-side `GOODS` registry) and applies
 its effect (Cookie → +10 HP, capped), replying with an `inventory` list to the
-owner and a `heal`-tagged `player_hp` to everyone; players also carry `money`
+owner and a `heal`-tagged `player_hp` to everyone; `drop_item {itemId,x,y}` throws
+one owned Goods slot onto the ground, aimed at a world point (drag a hotbar slot or
+a bag row out into the game area; the item tweens from the player to the landing) —
+the server re-checks ownership, removes it BEFORE spawning (no dupe), and **clamps
+the target** to `THROW_MAX_DIST` of the player's _tracked_ position and pulls it
+clear of walls (`throwLanding`), so a forged spot can't fling loot across the map
+or into solid geometry. It lands as a first-touch ground drop anyone can pick up
+via the normal `tryPickup` path (refused while down/dying; equipped gear lives
+outside the bag so it can't leak out); players also carry `money`
 (start $1000), shipped in `welcome`; `attack` requests a melee swing,
 resolved server-side from the player's _tracked_ position (not client coords)
 against enemy hurtboxes. `npc_update: [[id, x, y, dir, frame], ...]` carries
@@ -728,7 +746,7 @@ loads from `overrides/combat_juice.json` and is dialed in real time by the dev
 **Netcode — server-authoritative movement + client prediction.** The **client is
 "dumb": it sends INPUTS, never positions**, and the **server owns every position**.
 Each moving frame the client emits `{type:'input', seq, dx, dy, run}` (`Network.sendInput`;
-`run` = hold-Shift sprint, `RUN_MULT=1.5×` walk, fueled by stamina) and PREDICTS locally
+`run` = hold-Shift sprint, `RUN_MULT=1.4×` walk, fueled by stamina) and PREDICTS locally
 (`Player.applyInput` — the movement step, an exact mirror of the server's
 `gameHost._stepPlayer`). The server's 30Hz sim (`_simPlayers`, `SIM_TICK_MS=33`;
 NPCs broadcast at 30Hz too — 60Hz overloaded the prod box and slipped the sim tick,

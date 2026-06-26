@@ -13,7 +13,7 @@
     },
     "284": {
       "hp": 32,
-      "level": 2,
+      "level": 12,
       "xp": 12,
       "damage": 7,
       "attackCooldownMs": 700,
@@ -39,6 +39,11 @@
       "giveUpRange": 200,
       "wanderRadius": 100,
       "combat": "nervous"
+    },
+    "419": {
+      "hp": 500,
+      "level": 12,
+      "xp": 200
     }
   }
 }

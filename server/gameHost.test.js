@@ -368,6 +368,70 @@ check('buy is rejected when unaffordable (no money/inventory change)', () => {
   assert.strictEqual(p.inventory.length, invLen, 'inventory should be untouched');
 });
 
+// ===================== 2a2. Drop item to the ground =====================
+
+check('drop_item removes ONE from the bag and spawns a ground drop', () => {
+  const p = host.players.get(aliceId);
+  p.hp = p.hp > 0 ? p.hp : 10; // ensure alive
+  p.downed = false;
+  p.dying = false;
+  p.inventory.push(COOKIE);
+  const invLen = p.inventory.length;
+  const dropsBefore = host.npcSim.dropsSnapshot().length;
+  alice.clear();
+  alice.recv({ type: 'drop_item', itemId: COOKIE });
+  assert.strictEqual(p.inventory.length, invLen - 1, 'exactly one item should leave the bag');
+  const drops = host.npcSim.dropsSnapshot();
+  assert.strictEqual(drops.length, dropsBefore + 1, 'a ground drop should appear');
+  assert(
+    drops.some((d) => d.kind === 'item' && String(d.item) === COOKIE),
+    'the dropped cookie should be on the ground'
+  );
+  assert(alice.last('inventory'), 'client should get a fresh inventory');
+});
+
+check('drop_item for an unowned item is ignored (no phantom drop)', () => {
+  const p = host.players.get(aliceId);
+  // Strip every cookie so the player owns none.
+  p.inventory = p.inventory.filter((id) => id !== COOKIE);
+  const invLen = p.inventory.length;
+  const dropsBefore = host.npcSim.dropsSnapshot().length;
+  alice.recv({ type: 'drop_item', itemId: COOKIE });
+  assert.strictEqual(p.inventory.length, invLen, 'inventory must be untouched');
+  assert.strictEqual(
+    host.npcSim.dropsSnapshot().length,
+    dropsBefore,
+    'no drop should spawn for an item you do not own'
+  );
+});
+
+check('drop_item clamps a forged far-away target to throw range (no map-wide fling)', () => {
+  const p = host.players.get(aliceId);
+  p.hp = p.hp > 0 ? p.hp : 10;
+  p.downed = false;
+  p.dying = false;
+  p.inventory.push(COOKIE);
+  const dropsBefore = host.npcSim.dropsSnapshot().length;
+  alice.recv({ type: 'drop_item', itemId: COOKIE, x: p.x + 99999, y: p.y + 99999 });
+  const drops = host.npcSim.dropsSnapshot();
+  assert.strictEqual(drops.length, dropsBefore + 1, 'a drop should still spawn');
+  const d = drops[drops.length - 1];
+  const dist = Math.hypot(d.x - p.x, d.y - p.y);
+  assert(dist <= 160, `landing should be clamped near the player, got ${Math.round(dist)}px`);
+});
+
+check('drop_item is refused while downed (no inventory fiddling when KO)', () => {
+  const p = host.players.get(aliceId);
+  p.inventory.push(COOKIE);
+  p.downed = true;
+  const invLen = p.inventory.length;
+  const dropsBefore = host.npcSim.dropsSnapshot().length;
+  alice.recv({ type: 'drop_item', itemId: COOKIE });
+  assert.strictEqual(p.inventory.length, invLen, 'inventory must be untouched while downed');
+  assert.strictEqual(host.npcSim.dropsSnapshot().length, dropsBefore, 'no drop while downed');
+  p.downed = false; // restore for later tests
+});
+
 // ===================== 2b. Proximity gating (anti-cheat) =====================
 // Buy/sell/ATM are only honored when the player is actually AT the shop/ATM, so a
 // forged message from across the map can't transact.
