@@ -177,6 +177,7 @@ export class EditorShell {
     // (close overlay + exit the shell), not just back to the shell.
     setSpriteEditorShellExit(() => this.exit());
     this.context.canvas.addEventListener('mousedown', this.onMouseDown);
+    this.context.canvas.addEventListener('contextmenu', this.onContextMenu);
     this.context.canvas.addEventListener('wheel', this.onWheel, { passive: false });
     window.addEventListener('mousemove', this.onMouseMove);
     window.addEventListener('mouseup', this.onMouseUp);
@@ -289,6 +290,7 @@ export class EditorShell {
     window.removeEventListener('keydown', this.onKeyDown, true);
     window.removeEventListener('keyup', this.onKeyUp, true);
     this.context.canvas.removeEventListener('mousedown', this.onMouseDown);
+    this.context.canvas.removeEventListener('contextmenu', this.onContextMenu);
     this.context.canvas.removeEventListener('wheel', this.onWheel);
     window.removeEventListener('mousemove', this.onMouseMove);
     window.removeEventListener('mouseup', this.onMouseUp);
@@ -844,6 +846,11 @@ export class EditorShell {
     this.clampCamera(cam.x + before.x - after.x, cam.y + before.y - after.y);
     this.hover = this.toWorld(e.clientX, e.clientY);
     this.updateReadout();
+  };
+
+  private onContextMenu = (e: MouseEvent) => {
+    const p = this.toWorld(e.clientX, e.clientY);
+    if (this.activeTool?.onRightClick?.(p)) e.preventDefault();
   };
 
   private onMouseDown = (e: MouseEvent) => {

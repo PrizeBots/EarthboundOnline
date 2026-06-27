@@ -118,10 +118,12 @@ const { BotFleet } = require('./botManager');
 // uint32 wire field wraps after ~49 days of uptime — harmless (the offset re-syncs).
 const { performance: perfHooks } = require('perf_hooks');
 const srvNow = () => Math.round(perfHooks.now());
-// WebRTC unreliable DataChannel for the firehose (Stage D). OFF by default — the
-// WS path is unchanged until a client opts in with `?rtc` AND the server runs with
-// RTC_ENABLED=1. Falls back to WS per-frame whenever a peer's channel isn't open.
-const RTC_ENABLED = process.env.RTC_ENABLED === '1';
+// WebRTC unreliable DataChannel for the firehose (Stage D). Auto-ON in dev
+// (NODE_ENV !== 'production') so we dogfood it every session; OFF in prod because
+// Render has no inbound UDP (clients would just fall back to WS) — re-enable with
+// RTC_ENABLED=1 once the firehose terminates on a UDP-capable host (the gateway
+// tier). Falls back to WS per-frame whenever a peer's channel isn't open.
+const RTC_ENABLED = process.env.RTC_ENABLED === '1' || process.env.NODE_ENV !== 'production';
 const rtc = require('./rtc');
 // Binary + delta wire format for the position firehose (§5). ON by default now;
 // set BINARY_WIRE=0 to fall back to JSON. Independent of AOI.
@@ -2032,7 +2034,15 @@ class GameHost {
     // interval stretches past SIM_TICK_MS — the client-visible signal that a laggy
     // experience is the SERVER slipping, not the network (so no client tuning helps).
     const rawDt = this._lastSimAt ? now - this._lastSimAt : SIM_TICK_MS;
+    // Mean tick interval (→ srvHz) AND its jitter (mean abs deviation → srvJit). The
+    // jitter is how IRREGULARLY we tick; the client folds it into its interp buffer so
+    // a slipped/bursty tick doesn't underrun (coast). Deviation measured vs the prior
+    // mean, before updating it.
+    const prevMean = this._simIntervalEma || rawDt;
     this._simIntervalEma = this._simIntervalEma ? this._simIntervalEma * 0.9 + rawDt * 0.1 : rawDt;
+    const tickDev = Math.abs(rawDt - prevMean);
+    this._simJitterEma =
+      this._simJitterEma != null ? this._simJitterEma * 0.9 + tickDev * 0.1 : tickDev;
     // Time-based step budget. Real time — not a fixed per-tick count — decides how
     // many 60Hz movement steps this tick may apply. setInterval(SIM_TICK_MS) drifts
     // late under GC / a busy prod CPU; with a hard 2-steps cap the server then
@@ -2675,7 +2685,8 @@ class GameHost {
           // `srvHz` is the effective sim rate (nominal ~30) — a low value means the
           // box is CPU-bound, distinguishing a server stall from a network problem.
           const srvHz = Math.round(1000 / (this._simIntervalEma || SIM_TICK_MS));
-          ws.send(JSON.stringify({ type: 'pong', t: msg.t, srv: srvNow(), srvHz }));
+          const srvJit = Math.round(this._simJitterEma || 0); // tick-interval jitter (ms)
+          ws.send(JSON.stringify({ type: 'pong', t: msg.t, srv: srvNow(), srvHz, srvJit }));
         } catch {
           /* socket already gone */
         }

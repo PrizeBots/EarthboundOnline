@@ -620,6 +620,31 @@ experimental — §5.5). It is the same idea, different protocol:
 can still supersede WebRTC later (cleaner, no STUN/ICE) once Node's support matures; the
 encoder/delta machinery is transport-agnostic, so it's a swap at the edge.
 
+> ✅ **Verified end-to-end (2026-06-27)** — `node server/rtc_smoke.js`: a headless
+> `node-datachannel` client plays the browser's offerer role (same protocol as
+> `Network.ts setupRtc()`), completes offer/answer + ICE over the WS, opens the unreliable
+> `'firehose'` channel, and **receives the binary firehose over the DataChannel** (193
+> frames / ~32 KB in a 9 s run). PASS. The head-of-line resilience win itself only shows on a
+> **lossy link** (real WAN / a netem emulator), not on loopback — that's the remaining
+> prod-side measurement.
+
+#### ⟪decided⟫ Hosting: WebRTC needs a UDP host — **not Render**; dev defaults ON, prod stays WS
+
+WebRTC's DataChannel is **UDP**, and **Render web services expose only HTTP/TCP — no inbound
+UDP**. So a browser can't open a DataChannel to a Render-hosted server; it just falls back to
+WS. There's no Render setting to fix this — it's a platform limit. Consequences, now wired in:
+
+- **Dev (localhost) auto-enables WebRTC** so we dogfood it every session: client on when
+  `location.hostname` is localhost (`?nortc` opts out), server on when `NODE_ENV !== 'production'`.
+  `?rtc` still forces it anywhere; `RTC_ENABLED=1` still forces the server.
+- **Prod (Render) stays on WS** — `RTC_ENABLED` is left off there because UDP can't land anyway.
+  Enabling it would only cost failed-handshake churn.
+- **To get WebRTC in prod**, the firehose must terminate on a **UDP-capable host** — the
+  **gateway tier** (§6) on Fly.io / a VM / bare metal, never a Render web service. Render can
+  keep serving HTTP + WS + static; the gateway owns UDP. (Matches §12 "Render is fine through
+  ~Phase 3.") **STUN** suffices for a public-IP server; **TURN** (self-host coturn / managed) is
+  tail-coverage for UDP-restricted clients + a relay-bandwidth cost — add at scale, not now.
+
 #### Sharding implication (important — affects the gateway design, §6/§7)
 
 A WebRTC connection has an **expensive ICE/DTLS handshake (~hundreds of ms)**. If each
@@ -791,6 +816,40 @@ product decision**).
 > handoff races, rebalancing). Build it **last**, only once a single sim process
 > is measured to be the bottleneck. Premature sharding kills projects.
 
+### 7.8 ⟪decided⟫ Authoring → shard topology sync (one source of truth)
+
+The shard partition is **authored content**, not config: each sector belongs to exactly
+one room (the Room Manager, §7.2), and rooms persist to the DB `'rooms'` world doc. With
+**room = shard ownership unit**, the map `sector → roomId` IS the shard topology — so
+**creating/editing a room is editing the shard map.** The discipline that keeps shards
+synced with edits (rather than drifting from a stale copy):
+
+1. **Single source of truth = the `'rooms'` doc.** The shard coordinator derives
+   `sector → roomId → owning-worker` from the **same** doc the editor writes. Today the
+   sector→room index lives **client-side** (`src/engine/Rooms.ts`); sharding needs a small
+   **server-side parity loader** that reads the doc identically (mirrors how the server
+   already loads `npcs.json` etc.). No second representation ⇒ nothing to diverge.
+2. **Change propagation via a `topologyVersion`.** Bump a version on every save.
+   - **Dev:** hot-reload the doc (like the other override watchers) → the router rebuilds
+     its partition immediately.
+   - **Prod:** the DB updates on save, but **running shard workers** adopt it on a reload
+     signal (version bump pushed over the control-plane bus) or next deploy — "saved but
+     pending until reload," same model as today's override docs. The coordinator gates the
+     swap so all workers flip to the same version atomically.
+3. **Empty applies freely; occupied needs handoff.** Reassigning a sector that's currently
+   **unoccupied** is a pure map swap. Reassigning one with **live players/actors** is a
+   **controlled re-partition** — the §7.3–7.4 handoff (drain → checkpoint → reassign under
+   the authority lease), never an instant yank mid-tick. So an edit to a populated region
+   lands on the next coordinated reload/migration, not the same frame.
+4. **Topology ≠ placement.** The `'rooms'` doc defines the **partition** (which sectors are
+   one unit). Which worker **process** hosts which rooms is a **runtime** decision the
+   coordinator makes by load (one worker hosts many small rooms; a packed town may split
+   across workers — §7.7). Authoring drives the partition; the coordinator drives placement.
+   The editor never needs to know about processes.
+
+Net: build the router so its topology = the `'rooms'` doc + a `topologyVersion` reload hook,
+and your room edits stay authoritative over the shard map by construction.
+
 ---
 
 ## 8. Pillar 5 — State & persistence tier
@@ -899,6 +958,24 @@ when the socket layer first becomes a separate, recyclable process — disconnec
 blips start the moment you split gateways, so resume must land _with_ the split,
 not after. Authority leases + tick-degrade land in Phase 5 because that's the
 first time more than one worker exists.
+
+⟪decided⟫ **WebRTC vs sharding — different axes; the gateway is the hinge.** WebRTC
+(§5.6) is _transport_; sharding is _where the sim runs_ — neither blocks the other,
+so don't sequence them against each other. Two rules set the real order:
+
+- **WebRTC can ship now, independent of sharding.** It's already built (`rtc.js`, off
+  by default). On the current single server it's a pure WAN-latency win (kills the TCP
+  head-of-line freeze). Verify + enable it whenever; it needs no partitioning.
+- **The gateway (Phase 3) is the prerequisite for sharding, and WebRTC rides it.** A
+  WebRTC connection has an expensive ICE/DTLS handshake, so a client must hold **one**
+  RTC connection to a **gateway**, never one per shard — otherwise every room handoff
+  renegotiates RTC (stutter). The gateway proxies to whichever shard owns the player, so
+  handoff is gateway-internal and the client's connection never re-handshakes.
+
+⇒ Effective sequence: **WebRTC (verify, cheap) → gateway (Phase 3) → sharding (Phase 5).**
+The anti-pattern is jumping straight to sharding with a direct-to-shard WebRTC endpoint.
+Independently, the **room/sector topology authoring** (the `'rooms'` doc, §7.2/§7.8) is
+transport-agnostic content prep — it proceeds in parallel through all of the above.
 
 ---
 

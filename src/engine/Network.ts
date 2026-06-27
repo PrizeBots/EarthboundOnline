@@ -16,6 +16,7 @@ import {
   getCoastEvents,
   setJitterSource,
   setRateSource,
+  setServerJitterSource,
 } from './RemoteInterp';
 
 // Client-side delta baselines, mirrors of the server's per-socket _npcBase /
@@ -359,6 +360,7 @@ let lastPongAt = 0;
 let rttMs = 0;
 let jitterMs = 0;
 let serverHz = 0; // effective server sim rate from the pong (nominal ~30; low = CPU-bound)
+let serverJitterMs = 0; // server tick-interval jitter from the pong (high = bursty/slipping)
 const rttSamples: number[] = [];
 
 // --- Server clock sync (jitter-immune interpolation) ---
@@ -416,10 +418,18 @@ export function getServerHz(): number {
   return serverHz;
 }
 
-// Feed the live jitter + server-rate readouts into the interpolators' adaptive
-// delay (one-way: RemoteInterp never imports Network, so no cycle).
+/** Live server tick-interval JITTER (ms) from the pong — how irregularly the server
+ *  ticks. RemoteInterp widens the buffer by this so a slipped/bursty tick doesn't
+ *  underrun (the load-coast fix), independent of network jitter. */
+export function getServerJitterMs(): number {
+  return serverJitterMs;
+}
+
+// Feed the live jitter + server-rate + server-jitter readouts into the
+// interpolators' adaptive delay (one-way: RemoteInterp never imports Network).
 setJitterSource(getJitterMs);
 setRateSource(getServerHz);
+setServerJitterSource(getServerJitterMs);
 
 function startHeartbeat() {
   stopHeartbeat();
@@ -459,10 +469,11 @@ function stopHeartbeat() {
 
 // Record one round-trip sample (from a 'pong') into the RTT + jitter readout, and
 // fold the server timestamp `srv` into the client↔server clock-offset estimate.
-function recordPong(sentAt: number, srv?: number, srvHz?: number) {
+function recordPong(sentAt: number, srv?: number, srvHz?: number, srvJit?: number) {
   const recvAt = performance.now();
   lastPongAt = recvAt;
   if (typeof srvHz === 'number') serverHz = srvHz;
+  if (typeof srvJit === 'number') serverJitterMs = srvJit;
   if (typeof sentAt !== 'number') return;
   rttMs = recvAt - sentAt;
   rttSamples.push(rttMs);
@@ -516,7 +527,15 @@ function handleBinaryFrame(buf: ArrayBuffer): void {
 // unreliable/unordered channel for the firehose; a lost packet becomes one skipped
 // snapshot instead of a TCP head-of-line stall. Signaling rides the existing WS.
 // If anything fails (no answer, blocked UDP), the firehose just stays on the WS.
-const RTC_ENABLED = typeof location !== 'undefined' && /[?&]rtc\b/i.test(location.search);
+// Dev (localhost) ALWAYS uses WebRTC so we dogfood the path every session; `?nortc`
+// opts out for an A/B compare, and `?rtc` forces it on anywhere (e.g. a deployed
+// UDP-capable host). On Render (no inbound UDP) a non-localhost client just falls
+// back to WS, so we don't auto-enable there — prod waits for the gateway tier.
+const RTC_ENABLED =
+  typeof location !== 'undefined' &&
+  (/[?&]rtc\b/i.test(location.search) ||
+    (/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname) &&
+      !/[?&]nortc\b/i.test(location.search)));
 const RTC_ICE = 'stun:stun.l.google.com:19302';
 let rtcPc: RTCPeerConnection | null = null;
 let rtcDc: RTCDataChannel | null = null;
@@ -677,7 +696,7 @@ function openSocket() {
     const msg = JSON.parse(ev.data);
     switch (msg.type) {
       case 'pong':
-        recordPong(msg.t, msg.srv, msg.srvHz);
+        recordPong(msg.t, msg.srv, msg.srvHz, msg.srvJit);
         break;
       case 'bot_stats':
         // Dev-only bot-fleet readout for the ?netdebug BOTS tab (getBotStats()).

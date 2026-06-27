@@ -36,8 +36,8 @@ const BUBBLE_INNER_W = 88; // wrap width inside a speech bubble
 const INPUT_MARGIN = 8; // gap from screen edges for the input box
 
 const BUBBLE_LIFETIME = 5000; // ms a bubble stays before vanishing
-const BUBBLE_FADE = 1200; // ms of fade-out at the end of life
-const BUBBLE_RISE = 14; // px the bubble floats up over its life
+const BUBBLE_HOLD = 2500; // ms held fully visible & still (readable beat)
+const BUBBLE_RISE = 20; // px the bubble floats up while fading away
 const BUBBLE_GAP = 4; // px between sprite head and bubble bottom
 const CURSOR_BLINK = 500; // ms per caret on/off phase
 
@@ -206,11 +206,13 @@ function anchorBubble(bubble: Bubble, worldX: number, worldY: number, spriteGrou
 function drawBubble(ctx: CanvasRenderingContext2D, bubble: Bubble, camera: Camera): void {
   if (bubble.x === undefined || bubble.y === undefined) return; // not anchored yet
   const age = now() - bubble.born;
-  const rise = (age / BUBBLE_LIFETIME) * BUBBLE_RISE;
-  const alpha =
-    age > BUBBLE_LIFETIME - BUBBLE_FADE
-      ? Math.max(0, 1 - (age - (BUBBLE_LIFETIME - BUBBLE_FADE)) / BUBBLE_FADE)
-      : 1;
+  // Hold the bubble fully visible & still for a readable beat, then float it up
+  // AND fade it out together over the rest of its life — one smooth motion.
+  const floatDur = BUBBLE_LIFETIME - BUBBLE_HOLD;
+  const p = Math.min(1, Math.max(0, (age - BUBBLE_HOLD) / floatDur)); // 0→1 during float
+  const ease = 1 - (1 - p) ** 3; // ease-out: quick lift, gentle settle
+  const rise = ease * BUBBLE_RISE;
+  const alpha = 1 - p; // fades linearly as it rises
   if (alpha <= 0) return;
 
   const spriteH = bubble.spriteH ?? DEFAULT_SPRITE_H;

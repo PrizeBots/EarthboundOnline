@@ -67,9 +67,20 @@ let rateFn: () => number = () => 0;
 export function setRateSource(fn: () => number): void {
   rateFn = fn;
 }
-/** Build a delay() that tracks the live packet rate AND jitter, clamped to
- *  [floor, ceil]. `nominalIntervalMs` is the fallback spacing before the first
- *  rate sample arrives. Used by both the player and NPC interpolators. */
+// Live SERVER tick-interval jitter (ms) — how IRREGULARLY the server ticks, not how
+// fast. Sizing the buffer to the average rate (rateFn) + network jitter still
+// underruns when the server tick SPIKES (a stalled tick arrives ~2× late: GC, a
+// busy/weak box, load). That irregular gap is invisible to network jitter, so we
+// fold the server's own tick jitter in to widen for slip spikes — the load-coast fix.
+const SERVER_JITTER_K = 2;
+let serverJitterFn: () => number = () => 0;
+/** Wire the live server tick-jitter readout (Network.getServerJitterMs). */
+export function setServerJitterSource(fn: () => number): void {
+  serverJitterFn = fn;
+}
+/** Build a delay() that tracks the live packet rate, network jitter, AND server
+ *  tick jitter, clamped to [floor, ceil]. `nominalIntervalMs` is the fallback
+ *  spacing before the first rate sample arrives. Used by player + NPC interpolators. */
 export function adaptiveDelay(
   nominalIntervalMs: number,
   floorMs: number,
@@ -78,7 +89,8 @@ export function adaptiveDelay(
   return () => {
     const hz = rateFn();
     const interval = hz > 0 ? 1000 / hz : nominalIntervalMs;
-    return Math.max(floorMs, Math.min(ceilMs, interval + JITTER_K * jitterFn()));
+    const spread = JITTER_K * jitterFn() + SERVER_JITTER_K * serverJitterFn();
+    return Math.max(floorMs, Math.min(ceilMs, interval + spread));
   };
 }
 

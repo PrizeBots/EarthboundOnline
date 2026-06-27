@@ -87,6 +87,8 @@ export interface EditorTool {
   onMouseDown?(p: WorldPoint): boolean;
   onMouseMove?(p: WorldPoint, dragging: boolean): void;
   onMouseUp?(p: WorldPoint): void;
+  /** Right-click on the map; return true to consume (suppresses the browser menu). */
+  onRightClick?(p: WorldPoint): boolean;
   /** Lowercased key while the shell is active; return true to consume. */
   onKey?(key: string): boolean;
 }
