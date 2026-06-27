@@ -1,7 +1,17 @@
 import { EditorTool, EditorShellApi, WorldPoint } from '../types';
 import { Camera } from '../../engine/Camera';
-import { TILE_SIZE } from '../../types';
-import { RoomDef, RoomRect, RoomType, setRegionRooms, listRegionRooms } from '../../engine/Rooms';
+import { MAP_WIDTH_SECTORS, MAP_HEIGHT_SECTORS } from '../../types';
+import {
+  RoomDef,
+  RoomType,
+  SectorCoord,
+  setRegionRooms,
+  listRegionRooms,
+  sectorOfPoint,
+  sectorRect,
+  SECTOR_W_PX,
+  SECTOR_H_PX,
+} from '../../engine/Rooms';
 import { previewSong, stopMusic, setMusicMuted, setSfxMuted } from '../../engine/MusicManager';
 import { getSongName, songLabel, listSongs } from '../../engine/SongNames';
 import { createSpritePicker, SpritePicker } from '../../engine/SpritePicker';
@@ -31,7 +41,6 @@ const ROOM_TYPES: RoomType[] = [
   'other',
 ];
 
-const MIN_DRAG = TILE_SIZE; // reject accidental click/micro-drags
 const BGM_NONE = '-1'; // sentinel in the song picker = inherit sector musicId
 
 interface RoomsDoc {
@@ -39,9 +48,7 @@ interface RoomsDoc {
   rooms?: RoomDef[];
 }
 
-function snapTo(v: number, step: number): number {
-  return Math.round(v / step) * step;
-}
+const secKey = (c: number, r: number): string => c + ',' + r;
 
 class RoomManagerTool implements EditorTool {
   id = 'rooms';
@@ -52,28 +59,20 @@ class RoomManagerTool implements EditorTool {
   private shell: EditorShellApi | null = null;
   private rooms: RoomDef[] = [];
   private sel: RoomDef | null = null;
-  private selRegion = 0; // index into sel.regions of the rect being edited
-  private snap = true;
-
-  // Drawing a new rect (after "New room" / "New region"): anchor + corner in px.
-  private placing = false;
-  private placingMode: 'room' | 'region' = 'room';
-  private drawing = false;
-  private ax = 0;
-  private ay = 0;
   private hover: WorldPoint = { x: 0, y: 0 };
 
-  // Moving the active region: pointer + region origin at drag start.
-  private moving = false;
-  private mx = 0;
-  private my = 0;
-  private ox = 0;
-  private oy = 0;
+  // Sector → owning room, rebuilt on every edit. Every sector belongs to exactly
+  // one room (the partition invariant), so this is the authority for steal/erase.
+  private owner = new Map<string, RoomDef>();
 
-  // Resizing the active region by a corner handle (opposite corner = anchor).
-  private resizing = false;
-  private anchorX = 0;
-  private anchorY = 0;
+  // Paint gesture: a drag ADDS swept sectors to the active room; a plain click
+  // TOGGLES the one sector. Sectors owned by another room are queued in `stolen`
+  // and moved on a single confirm at the end of the gesture (steal-with-confirm).
+  private painting = false;
+  private dragMoved = false;
+  private downSec: SectorCoord | null = null;
+  private lastKey = '';
+  private stolen = new Map<string, RoomDef>(); // sectorKey → previous owner (pending confirm)
 
   private tick = 0;
 
@@ -101,7 +100,7 @@ class RoomManagerTool implements EditorTool {
     setSfxMuted(true);
     this.panel?.remove();
     this.panel = null;
-    this.placing = this.drawing = this.moving = this.resizing = false;
+    this.painting = false;
     this.sel = null;
   }
 
@@ -114,22 +113,40 @@ class RoomManagerTool implements EditorTool {
       this.rooms = listRegionRooms().map((r) => this.normalize(r));
       this.shell?.toast(`Couldn't load rooms doc: ${e}`, true);
     }
-    setRegionRooms(this.rooms); // engine consumes the working set live
+    this.pushLive(); // engine consumes the working set live + rebuild ownership
     this.refreshList();
     this.rebuildForm();
   }
 
-  /** Guarantee a regions[] exists (migrate a stray single rect into it). */
+  /** Guarantee a sectors[] exists. Legacy rect/region rooms are migrated to the
+   *  sectors they cover, so the whole library becomes editable as the sector
+   *  partition (regions[] is then re-derived from sectors by Rooms.ts). */
   private normalize(r: RoomDef): RoomDef {
-    const regions = r.regions && r.regions.length ? r.regions : r.rect ? [r.rect] : [];
-    return { ...r, regions };
+    const sectors = r.sectors && r.sectors.length ? r.sectors : this.deriveSectors(r);
+    return { ...r, sectors };
+  }
+
+  /** The set of whole sectors that an old rect-based room's geometry covers. */
+  private deriveSectors(r: RoomDef): SectorCoord[] {
+    const rects = r.regions && r.regions.length ? r.regions : r.rect ? [r.rect] : [];
+    const out = new Map<string, SectorCoord>();
+    for (const rc of rects) {
+      const c0 = Math.floor(rc.x / SECTOR_W_PX);
+      const c1 = Math.floor((rc.x + rc.w - 1) / SECTOR_W_PX);
+      const r0 = Math.floor(rc.y / SECTOR_H_PX);
+      const r1 = Math.floor((rc.y + rc.h - 1) / SECTOR_H_PX);
+      for (let c = Math.max(0, c0); c <= c1; c++) {
+        for (let row = Math.max(0, r0); row <= r1; row++) out.set(secKey(c, row), [c, row]);
+      }
+    }
+    return [...out.values()];
   }
 
   // --- input -----------------------------------------------------------------
 
   onKey(key: string): boolean {
     if (key === 'n') {
-      this.startPlacing('room');
+      this.newRoom();
       return true;
     }
     if ((key === 'delete' || key === 'backspace') && this.sel) {
@@ -139,202 +156,145 @@ class RoomManagerTool implements EditorTool {
     return false;
   }
 
+  // A map gesture assigns sectors to the active room. We defer the actual edit to
+  // mouse-up so a plain CLICK toggles one sector while a DRAG paints many.
   onMouseDown(p: WorldPoint): boolean {
-    if (this.placing) {
-      this.ax = p.x;
-      this.ay = p.y;
-      this.drawing = true;
-      return true;
-    }
-
-    const grab = this.handleRadius();
-    // Grab a corner handle on the selected room's regions to resize.
-    if (this.sel) {
-      const ri = this.regionCornerOf(this.sel, p, grab);
-      if (ri) {
-        this.selRegion = ri.region;
-        this.resizing = true;
-        const [ax, ay] = this.oppositeCorner(this.sel.regions![ri.region], ri.corner);
-        this.anchorX = ax;
-        this.anchorY = ay;
-        return true;
-      }
-    }
-
-    // Otherwise pick a room body to select + move that region.
-    const hit = this.pickAt(p);
-    if (hit) {
-      this.sel = hit.room;
-      this.selRegion = hit.region;
-      const rc = hit.room.regions![hit.region];
-      this.moving = true;
-      this.mx = p.x;
-      this.my = p.y;
-      this.ox = rc.x;
-      this.oy = rc.y;
-      this.refreshList();
-      this.rebuildForm();
-      return true;
-    }
-    return false; // let the shell pan
+    const sec = this.sectorAt(p);
+    if (!sec) return false; // off-map → let the shell pan
+    this.painting = true;
+    this.dragMoved = false;
+    this.downSec = sec;
+    this.lastKey = secKey(sec[0], sec[1]);
+    this.stolen = new Map();
+    return true;
   }
 
   onMouseMove(p: WorldPoint, dragging: boolean): void {
     this.hover = p;
-    if (this.drawing) return;
-    const rc = this.activeRegion();
-    if (this.resizing && dragging && rc) {
-      const r = this.normRect(this.anchorX, this.anchorY, p.x, p.y, false);
-      rc.x = r.x;
-      rc.y = r.y;
-      rc.w = r.w;
-      rc.h = r.h;
-      this.pushLive();
-      this.syncForm();
-      return;
+    if (!this.painting || !dragging) return;
+    const sec = this.sectorAt(p);
+    if (!sec) return;
+    if (!this.dragMoved) {
+      this.dragMoved = true;
+      if (this.downSec) this.paintAdd(this.downSec); // include the anchor sector
     }
-    if (this.moving && dragging && rc) {
-      rc.x = this.ox + (p.x - this.mx);
-      rc.y = this.oy + (p.y - this.my);
-      this.pushLive();
-      this.syncForm();
-    }
+    const k = secKey(sec[0], sec[1]);
+    if (k === this.lastKey) return;
+    this.lastKey = k;
+    this.paintAdd(sec);
   }
 
-  onMouseUp(p: WorldPoint): void {
-    if (this.drawing) {
-      this.drawing = false;
-      this.placing = false;
-      const rect = this.normRect(this.ax, this.ay, p.x, p.y);
-      if (rect.w >= MIN_DRAG && rect.h >= MIN_DRAG) {
-        if (this.placingMode === 'region' && this.sel) {
-          this.sel.regions!.push(rect);
-          this.selRegion = this.sel.regions!.length - 1;
-        } else {
-          const room: RoomDef = {
-            id: this.nextId(),
-            label: this.nextLabel(),
-            type: 'other',
-            bgm: null,
-            regions: [rect],
-          };
-          this.rooms.push(room);
-          this.sel = room;
-          this.selRegion = 0;
+  onMouseUp(): void {
+    if (!this.painting) return;
+    this.painting = false;
+    if (!this.dragMoved && this.downSec) {
+      this.clickSector(this.downSec); // plain click → toggle one sector
+    } else {
+      this.finalizeSteals(); // drag → commit live adds + confirm any steals once
+    }
+    this.downSec = null;
+    this.lastKey = '';
+  }
+
+  /** The in-bounds sector (col,row) under a world point, or null off the map. */
+  private sectorAt(p: WorldPoint): SectorCoord | null {
+    const [c, r] = sectorOfPoint(p.x, p.y);
+    if (c < 0 || r < 0 || c >= MAP_WIDTH_SECTORS || r >= MAP_HEIGHT_SECTORS) return null;
+    return [c, r];
+  }
+
+  // --- sector membership (the one-sector-one-room partition) -----------------
+
+  private addSector(room: RoomDef, [c, r]: SectorCoord): void {
+    (room.sectors ??= []).push([c, r]);
+    this.owner.set(secKey(c, r), room);
+  }
+
+  private removeSector(room: RoomDef, [c, r]: SectorCoord): void {
+    const k = secKey(c, r);
+    room.sectors = (room.sectors ?? []).filter(([a, b]) => a !== c || b !== r);
+    if (this.owner.get(k) === room) this.owner.delete(k);
+  }
+
+  private stealSector(sec: SectorCoord, from: RoomDef): void {
+    this.removeSector(from, sec);
+    if (this.sel) this.addSector(this.sel, sec);
+  }
+
+  /** Drag paint: add-only. Unowned sectors land live; sectors owned by another
+   *  room are queued in `stolen` for a single confirm at the end of the gesture. */
+  private paintAdd(sec: SectorCoord): void {
+    if (!this.sel) return;
+    const k = secKey(sec[0], sec[1]);
+    const own = this.owner.get(k);
+    if (own === this.sel) return; // already mine
+    if (own) {
+      this.stolen.set(k, own);
+      return;
+    }
+    this.addSector(this.sel, sec);
+  }
+
+  /** Plain click: toggle one sector against the active room (steal-with-confirm). */
+  private clickSector(sec: SectorCoord): void {
+    const k = secKey(sec[0], sec[1]);
+    const own = this.owner.get(k) ?? null;
+    if (!this.sel) {
+      if (own) this.selectRoom(own);
+      else this.shell?.toast('Pick or create a room first (N), then click sectors', true);
+      return;
+    }
+    if (own === this.sel) {
+      this.removeSector(this.sel, sec);
+    } else if (own) {
+      if (!confirm(`Move this sector from "${own.label}" into "${this.sel.label}"?`)) return;
+      this.stealSector(sec, own);
+    } else {
+      this.addSector(this.sel, sec);
+    }
+    this.afterEdit();
+  }
+
+  /** End of a drag: confirm any queued steals once, then commit. */
+  private finalizeSteals(): void {
+    if (this.stolen.size && this.sel) {
+      const names = [...new Set([...this.stolen.values()].map((r) => r.label))].join(', ');
+      if (confirm(`Move ${this.stolen.size} sector(s) from ${names} into "${this.sel.label}"?`)) {
+        for (const [k, own] of this.stolen) {
+          const [c, r] = k.split(',').map(Number);
+          this.stealSector([c, r], own);
         }
-        this.pushLive();
-        this.refreshList();
-        this.rebuildForm();
-      } else {
-        this.shell?.toast('Too small — drag a box', true);
       }
-      return;
     }
-    if ((this.moving || this.resizing) && this.activeRegion()) {
-      this.snapRegion(this.activeRegion()!);
-      this.pushLive();
-      this.rebuildForm();
-    }
-    this.moving = false;
-    this.resizing = false;
+    this.stolen = new Map();
+    this.afterEdit();
   }
 
-  private activeRegion(): RoomRect | null {
-    return this.sel?.regions?.[this.selRegion] ?? null;
-  }
-
-  private snapRegion(rc: RoomRect): void {
-    if (!this.snap) return;
-    const x2 = snapTo(rc.x + rc.w, TILE_SIZE);
-    const y2 = snapTo(rc.y + rc.h, TILE_SIZE);
-    rc.x = snapTo(rc.x, TILE_SIZE);
-    rc.y = snapTo(rc.y, TILE_SIZE);
-    rc.w = Math.max(TILE_SIZE, x2 - rc.x);
-    rc.h = Math.max(TILE_SIZE, y2 - rc.y);
+  /** Commit an edit: rebuild ownership, live-push to the engine, refresh UI. */
+  private afterEdit(): void {
+    this.pushLive();
+    this.refreshList();
+    this.rebuildForm();
   }
 
   /** Push the working set into the engine + mark dirty (auto-save on the shell). */
   private pushLive(): void {
-    setRegionRooms(this.rooms);
+    setRegionRooms(this.rooms); // re-derives each room's regions[] from its sectors
+    this.rebuildOwners();
     this.shell?.markDirty('rooms');
   }
 
-  // --- corner-handle hit testing --------------------------------------------
-
-  private handleRadius(): number {
-    const zoom = this.shell?.context.camera.zoom ?? 1;
-    return 8 / zoom;
-  }
-
-  private corners(rc: RoomRect): [number, number][] {
-    return [
-      [rc.x, rc.y],
-      [rc.x + rc.w, rc.y],
-      [rc.x, rc.y + rc.h],
-      [rc.x + rc.w, rc.y + rc.h],
-    ];
-  }
-
-  private cornerOf(rc: RoomRect, p: WorldPoint, r: number): number {
-    const cs = this.corners(rc);
-    for (let c = 0; c < 4; c++) {
-      if (Math.abs(p.x - cs[c][0]) <= r && Math.abs(p.y - cs[c][1]) <= r) return c;
-    }
-    return -1;
-  }
-
-  /** A corner of any region of `room` near `p`. */
-  private regionCornerOf(
-    room: RoomDef,
-    p: WorldPoint,
-    r: number
-  ): { region: number; corner: number } | null {
-    const regions = room.regions ?? [];
-    for (let i = regions.length - 1; i >= 0; i--) {
-      const c = this.cornerOf(regions[i], p, r);
-      if (c >= 0) return { region: i, corner: c };
-    }
-    return null;
-  }
-
-  private oppositeCorner(rc: RoomRect, corner: number): [number, number] {
-    return this.corners(rc)[3 - corner];
-  }
-
-  private normRect(x0: number, y0: number, x1: number, y1: number, snap = this.snap): RoomRect {
-    let x = Math.min(x0, x1),
-      y = Math.min(y0, y1);
-    let w = Math.abs(x1 - x0),
-      h = Math.abs(y1 - y0);
-    if (snap) {
-      const x2 = snapTo(x + w, TILE_SIZE),
-        y2 = snapTo(y + h, TILE_SIZE);
-      x = snapTo(x, TILE_SIZE);
-      y = snapTo(y, TILE_SIZE);
-      w = Math.max(TILE_SIZE, x2 - x);
-      h = Math.max(TILE_SIZE, y2 - y);
-    }
-    return { x, y, w, h };
-  }
-
-  /** Topmost room+region containing `p` (most-specific/smallest region wins). */
-  private pickAt(p: WorldPoint): { room: RoomDef; region: number } | null {
-    let best: { room: RoomDef; region: number } | null = null;
-    let bestArea = Infinity;
+  private rebuildOwners(): void {
+    this.owner = new Map();
     for (const room of this.rooms) {
-      const regions = room.regions ?? [];
-      for (let i = 0; i < regions.length; i++) {
-        const rc = regions[i];
-        if (p.x >= rc.x && p.x < rc.x + rc.w && p.y >= rc.y && p.y < rc.y + rc.h) {
-          const a = rc.w * rc.h;
-          if (a < bestArea) {
-            bestArea = a;
-            best = { room, region: i };
-          }
-        }
-      }
+      for (const [c, r] of room.sectors ?? []) this.owner.set(secKey(c, r), room);
     }
-    return best;
+  }
+
+  private selectRoom(room: RoomDef): void {
+    this.sel = room;
+    this.refreshList();
+    this.rebuildForm();
   }
 
   private nextId(): string {
@@ -348,35 +308,25 @@ class RoomManagerTool implements EditorTool {
     return `Room ${this.rooms.length + 1}`;
   }
 
-  private startPlacing(mode: 'room' | 'region'): void {
-    if (mode === 'region' && !this.sel) {
-      this.shell?.toast('Select a room first to add a region', true);
-      return;
-    }
-    this.placing = true;
-    this.placingMode = mode;
-    this.shell?.toast(
-      mode === 'region'
-        ? 'Drag a box to add a region to this room'
-        : 'Drag a box to make a new room'
-    );
+  private newRoom(): void {
+    const room: RoomDef = {
+      id: this.nextId(),
+      label: this.nextLabel(),
+      type: 'other',
+      bgm: null,
+      sectors: [],
+    };
+    this.rooms.push(room);
+    this.selectRoom(room);
+    this.shell?.toast('Click or drag sectors to assign them to this room');
   }
 
   private deleteSelected(): void {
     if (!this.sel) return;
-    const regions = this.sel.regions ?? [];
-    // If the room has multiple regions, delete just the active one; otherwise the room.
-    if (regions.length > 1) {
-      regions.splice(this.selRegion, 1);
-      this.selRegion = 0;
-    } else {
-      const i = this.rooms.indexOf(this.sel);
-      if (i >= 0) this.rooms.splice(i, 1);
-      this.sel = null;
-    }
-    this.pushLive();
-    this.refreshList();
-    this.rebuildForm();
+    const i = this.rooms.indexOf(this.sel);
+    if (i >= 0) this.rooms.splice(i, 1);
+    this.sel = null;
+    this.afterEdit();
   }
 
   // --- overlay ---------------------------------------------------------------
@@ -393,44 +343,41 @@ class RoomManagerTool implements EditorTool {
     this.tick++;
     const dash = 5 * lw;
     const off = (this.tick * 0.4 * lw) % (dash * 2);
-    const fancyBorders = zoom >= 0.3;
     const showLabels = zoom >= 0.5;
     if (showLabels) {
       ctx.font = `${fontPx}px monospace`;
       ctx.textAlign = 'left';
     }
 
+    // Each room is its set of sectors — fill + outline every owned sector.
     for (let i = 0; i < this.rooms.length; i++) {
       const room = this.rooms[i];
       const on = room === this.sel;
       const hue = (i * 47) % 360;
-      const regions = room.regions ?? [];
-      for (const rc of regions) {
+      let labelDrawn = false;
+      for (const [c, r] of room.sectors ?? []) {
+        const rc = sectorRect(c, r);
         const sx = rc.x - camX,
           sy = rc.y - camY;
         if (sx + rc.w < 0 || sx > vw || sy + rc.h < 0 || sy > vh) continue;
 
-        ctx.fillStyle = `hsla(${hue},70%,55%,${on ? 0.26 : 0.1})`;
+        ctx.fillStyle = `hsla(${hue},70%,55%,${on ? 0.3 : 0.12})`;
         ctx.fillRect(sx, sy, rc.w, rc.h);
 
-        if (fancyBorders || on) {
-          ctx.setLineDash([]);
-          ctx.lineWidth = lw * (on ? 3 : 2);
-          ctx.strokeStyle = 'rgba(0,0,0,0.55)';
-          ctx.strokeRect(sx, sy, rc.w, rc.h);
+        ctx.lineWidth = lw * (on ? 2 : 1);
+        if (on) {
           ctx.setLineDash([dash, dash]);
           ctx.lineDashOffset = -off;
-          ctx.lineWidth = lw * (on ? 2 : 1);
-          ctx.strokeStyle = on ? '#ffffff' : `hsla(${hue},90%,72%,1)`;
-          ctx.strokeRect(sx, sy, rc.w, rc.h);
-          ctx.setLineDash([]);
+          ctx.strokeStyle = '#ffffff';
         } else {
-          ctx.lineWidth = lw;
-          ctx.strokeStyle = `hsla(${hue},90%,72%,1)`;
-          ctx.strokeRect(sx, sy, rc.w, rc.h);
+          ctx.setLineDash([]);
+          ctx.strokeStyle = `hsla(${hue},90%,72%,0.9)`;
         }
+        ctx.strokeRect(sx, sy, rc.w, rc.h);
+        ctx.setLineDash([]);
 
-        if (showLabels) {
+        if (showLabels && !labelDrawn) {
+          labelDrawn = true;
           ctx.fillStyle = on ? '#fff' : `hsla(${hue},85%,82%,1)`;
           const tag = room.type && room.type !== 'other' ? `[${room.type}] ` : '';
           ctx.fillText(`${tag}${room.label}`, sx + 3 * lw, sy + fontPx + lw);
@@ -440,26 +387,13 @@ class RoomManagerTool implements EditorTool {
     ctx.setLineDash([]);
     ctx.lineDashOffset = 0;
 
-    // Corner handles on the active region of the selected room.
-    const rc = this.activeRegion();
-    if (rc) {
-      const h = this.handleRadius();
-      ctx.fillStyle = '#fff';
-      ctx.strokeStyle = '#101418';
-      ctx.lineWidth = lw;
-      for (const [cx, cy] of this.corners(rc)) {
-        ctx.fillRect(cx - camX - h, cy - camY - h, h * 2, h * 2);
-        ctx.strokeRect(cx - camX - h, cy - camY - h, h * 2, h * 2);
-      }
-    }
-
-    ctx.lineWidth = lw;
-    if (this.drawing) {
-      const r = this.normRect(this.ax, this.ay, this.hover.x, this.hover.y);
-      ctx.strokeStyle = 'rgba(120,220,255,0.95)';
-      ctx.setLineDash([5 * lw, 4 * lw]);
-      ctx.strokeRect(r.x - camX, r.y - camY, r.w, r.h);
-      ctx.setLineDash([]);
+    // Hover: outline the sector under the cursor (where a click/drag would assign).
+    const sec = this.sectorAt(this.hover);
+    if (sec) {
+      const rc = sectorRect(sec[0], sec[1]);
+      ctx.lineWidth = lw * 1.5;
+      ctx.strokeStyle = this.sel ? 'rgba(120,220,255,0.95)' : 'rgba(255,255,255,0.6)';
+      ctx.strokeRect(rc.x - camX, rc.y - camY, rc.w, rc.h);
     }
   }
 
@@ -487,30 +421,12 @@ class RoomManagerTool implements EditorTool {
     actions.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
     this.mkBtn(
       '+ New room (N)',
-      () => this.startPlacing('room'),
+      () => this.newRoom(),
       actions,
       false,
-      'Draw a box to create a new room (shortcut: N).'
-    );
-    this.mkBtn(
-      '+ Region',
-      () => this.startPlacing('region'),
-      actions,
-      false,
-      'Draw another rect to add to the selected room (a room can span several regions).'
+      'Create an empty room, then click/drag sectors to assign them to it (shortcut: N).'
     );
     this.panel.appendChild(actions);
-
-    const snapRow = document.createElement('label');
-    snapRow.style.cssText = 'display:flex;align-items:center;gap:6px;color:#9fb8cc;font-size:11px;';
-    snapRow.title = 'On = snap new/edited region rects to the 32px tile grid.';
-    const snapCb = document.createElement('input');
-    snapCb.type = 'checkbox';
-    snapCb.checked = this.snap;
-    snapCb.title = 'On = snap new/edited region rects to the 32px tile grid.';
-    snapCb.onchange = () => (this.snap = snapCb.checked);
-    snapRow.append(snapCb, document.createTextNode('snap to tile grid (32px)'));
-    this.panel.appendChild(snapRow);
 
     this.listEl = document.createElement('div');
     this.listEl.style.cssText =
@@ -524,7 +440,7 @@ class RoomManagerTool implements EditorTool {
 
     const hint = document.createElement('div');
     hint.textContent =
-      'drag center to move · corner to resize · Del removes region/room · edits auto-save';
+      'click/drag sectors to assign · click an owned sector to remove · Del deletes room · auto-saves';
     hint.style.cssText = 'color:#667;font-size:10px;';
     this.panel.appendChild(hint);
 
@@ -560,9 +476,12 @@ class RoomManagerTool implements EditorTool {
       row.appendChild(label);
       row.onclick = () => {
         this.sel = room;
-        this.selRegion = 0;
-        const rc = room.regions?.[0];
-        if (rc) this.shell?.goTo(rc.x + rc.w / 2, rc.y + rc.h / 2);
+        const s = room.sectors?.[0];
+        if (s)
+          this.shell?.goTo(
+            s[0] * SECTOR_W_PX + SECTOR_W_PX / 2,
+            s[1] * SECTOR_H_PX + SECTOR_H_PX / 2
+          );
         this.refreshList();
         this.rebuildForm();
       };
@@ -576,7 +495,7 @@ class RoomManagerTool implements EditorTool {
     this.bgmPicker = null;
     if (!this.sel) {
       const e = document.createElement('div');
-      e.textContent = 'Select or draw a room.';
+      e.textContent = 'Select a room, or press N to create one.';
       e.style.cssText = 'color:#667;';
       this.formEl.appendChild(e);
       return;
@@ -669,55 +588,23 @@ class RoomManagerTool implements EditorTool {
     // Type-conditional props.
     this.buildTypeFields(form, room);
 
-    // Active region geometry.
-    const rc = this.activeRegion();
-    if (rc) {
-      const regCount = room.regions?.length ?? 1;
-      const regLabel = this.mkRow(
-        form,
-        'region',
-        "Which of this room's region rects is being edited (current / total)."
-      );
-      const span = document.createElement('span');
-      span.textContent = `${this.selRegion + 1} / ${regCount}`;
-      span.style.cssText = 'color:#9fb8cc;';
-      regLabel.appendChild(span);
-      this.numField(
-        form,
-        'x',
-        () => rc.x,
-        (n) => (rc.x = Math.round(n)),
-        'Left edge of this region in world pixels.'
-      );
-      this.numField(
-        form,
-        'y',
-        () => rc.y,
-        (n) => (rc.y = Math.round(n)),
-        'Top edge of this region in world pixels.'
-      );
-      this.numField(
-        form,
-        'w',
-        () => rc.w,
-        (n) => (rc.w = Math.max(TILE_SIZE, Math.round(n))),
-        'Width in pixels (min one tile = 32px).'
-      );
-      this.numField(
-        form,
-        'h',
-        () => rc.h,
-        (n) => (rc.h = Math.max(TILE_SIZE, Math.round(n))),
-        'Height in pixels (min one tile = 32px).'
-      );
-    }
+    // Sector membership readout (geometry IS the selected sectors — paint on map).
+    const secRow = this.mkRow(
+      form,
+      'sectors',
+      'How many map sectors make up this room. Click/drag sectors on the map to add; click an owned sector to remove.'
+    );
+    const secSpan = document.createElement('span');
+    secSpan.textContent = `${room.sectors?.length ?? 0} sector(s)`;
+    secSpan.style.cssText = 'color:#9fb8cc;';
+    secRow.appendChild(secSpan);
 
     this.mkBtn(
-      'Delete',
+      'Delete room',
       () => this.deleteSelected(),
       form,
       false,
-      'Delete the active region, or the whole room if it has only one region.'
+      'Delete this room (frees all its sectors).'
     );
   }
 
@@ -796,28 +683,6 @@ class RoomManagerTool implements EditorTool {
 
   // --- small DOM helpers -----------------------------------------------------
 
-  private numField(
-    form: HTMLElement,
-    label: string,
-    get: () => number,
-    set: (n: number) => void,
-    tip?: string
-  ): void {
-    const i = this.mkInput(
-      form,
-      label,
-      (v) => {
-        const n = parseFloat(v);
-        if (Number.isNaN(n)) return;
-        set(n);
-        this.pushLive();
-      },
-      64,
-      tip
-    );
-    i.value = String(get());
-  }
-
   /** A numeric field whose value may be undefined (clears on blank). */
   private numFieldOpt(
     form: HTMLElement,
@@ -845,27 +710,6 @@ class RoomManagerTool implements EditorTool {
     );
     const cur = get();
     i.value = cur == null ? '' : String(cur);
-  }
-
-  private syncForm(): void {
-    // Keep the region x/y/w/h fields in step while dragging/resizing.
-    const rc = this.activeRegion();
-    if (!rc || !this.formEl) return;
-    const inputs = this.formEl.querySelectorAll('input');
-    // name(0), town(1), then type-conditional inputs are variable — so instead of
-    // index math, refresh the whole form on drag end; live just rebuild lightly.
-    // Cheap path: find the x/y/w/h inputs by their preceding label text.
-    const rows = this.formEl.querySelectorAll('div');
-    rows.forEach((row) => {
-      const lbl = row.querySelector('span')?.textContent;
-      const inp = row.querySelector('input') as HTMLInputElement | null;
-      if (!inp) return;
-      if (lbl === 'x') inp.value = String(Math.round(rc.x));
-      else if (lbl === 'y') inp.value = String(Math.round(rc.y));
-      else if (lbl === 'w') inp.value = String(Math.round(rc.w));
-      else if (lbl === 'h') inp.value = String(Math.round(rc.h));
-    });
-    void inputs;
   }
 
   private async save(): Promise<void> {

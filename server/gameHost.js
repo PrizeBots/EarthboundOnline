@@ -263,6 +263,12 @@ const FUMBLE_CHANCE = 0.3;
 // escape it (pkLockMs is persisted).
 const PK_LOCK_MS = 5 * 60 * 1000;
 
+// Screen-wide PSI ('screen' shape: Rockin'/Starstorm/Flash) reaches every enemy in
+// the caster's view — half the logical screen (256×224 at zoom 1), padded a touch so
+// enemies at the very edge still count. KEEP near SCREEN_WIDTH/HEIGHT in src/types.ts.
+const PSI_SCREEN_HALF_W = 140;
+const PSI_SCREEN_HALF_H = 124;
+
 // PSI abilities (server-authoritative). `pp` = cost; `heal` restores the caster's
 // HP; `damage` strikes the nearest enemy within `range` px (offense PSI); `anim`
 // is the PsiAnim catalog id whose authored frames play on cast. Heal/damage
@@ -278,9 +284,14 @@ const PK_LOCK_MS = 5 * 60 * 1000;
 // move's id matches the ROM PSI catalog id AND its psi_anim.json animation key.
 // Heal/cure/revive are PARTY-target; Healing γ/Ω also REVIVE a downed ally
 // (γ = partial HP, Ω = full HP) — canon (item help text, data_56). Offense
-// targeting depends on `shape`: 'radius' (default; `multi` = every enemy in it),
-// 'line' (Fire — a forward beam, `length`×`±width`), or 'bolts' (Thunder — zap
-// `bolts` random enemies in `range`). assist buffs/Magnet/Teleport effects
+// targeting depends on `shape`:
+//   'radius' (default; `multi` = every enemy in it) — assist status moves,
+//   'line'  (Fire cone + Ice's single straight bolt) — aimed traveling projectiles
+//           that damage ON CONTACT (spread 0 → one pellet),
+//   'bolts' (Thunder) — `bolts` lightning strikes that FALL from above onto random
+//           enemies in `range`, each a downward projectile (damage on the strike),
+//   'screen' (Rockin'/Starstorm/Flash) — bursts every enemy in the caster's view.
+// assist buffs/Magnet/Teleport effects
 // aren't wired yet — they just play their animation + spend PP.
 const GREEK = { alpha: 'α', beta: 'β', gamma: 'γ', omega: 'Ω', sigma: 'Σ' };
 const PSI_FAMILY_SPECS = [
@@ -291,7 +302,9 @@ const PSI_FAMILY_SPECS = [
     target: 'enemy',
     tiers: ['alpha', 'beta', 'gamma', 'omega'],
     pp: [10, 14, 40, 98],
-    effect: (i) => ({ damage: [20, 45, 100, 220][i], range: 260, multi: true }),
+    // Screen-wide psychic burst: every enemy in the caster's view takes the hit at
+    // once (the FX bursts on each, so damage + visual coincide). See shape 'screen'.
+    effect: (i) => ({ damage: [20, 45, 100, 220][i], shape: 'screen' }),
   },
   {
     stem: 'psi_fire',
@@ -316,7 +329,16 @@ const PSI_FAMILY_SPECS = [
     target: 'enemy',
     tiers: ['alpha', 'beta', 'gamma', 'omega'],
     pp: [4, 9, 18, 28],
-    effect: (i) => ({ damage: [12, 28, 58, 110][i], range: 240 }),
+    // Single aimed bolt: same traveling-projectile path as Fire but with NO spread
+    // (one pellet), so it flies straight to the cursor and damages on contact (a
+    // wall stops it). Longer reach per tier.
+    effect: (i) => ({
+      damage: [12, 28, 58, 110][i],
+      shape: 'line',
+      length: [200, 240, 280, 320][i],
+      width: 6,
+      spread: 0,
+    }),
   },
   {
     stem: 'psi_thunder',
@@ -338,10 +360,10 @@ const PSI_FAMILY_SPECS = [
     target: 'enemy',
     tiers: ['alpha', 'beta', 'gamma', 'omega'],
     pp: [8, 16, 24, 32],
+    // Group move: bursts every enemy in view, each with a chance of the status.
     effect: (i) => ({
       damage: [10, 22, 40, 70][i],
-      range: 240,
-      multi: true,
+      shape: 'screen',
       inflict: [{ type: 'paralysis', chance: [40, 50, 60, 70][i] }],
     }),
   },
@@ -351,7 +373,8 @@ const PSI_FAMILY_SPECS = [
     target: 'enemy',
     tiers: ['alpha', 'omega'],
     pp: [24, 42],
-    effect: (i) => ({ damage: [30, 60][i], range: 360, multi: true }),
+    // Screen-wide starfall — hits every enemy in view (see shape 'screen').
+    effect: (i) => ({ damage: [30, 60][i], shape: 'screen' }),
   },
   // ---- Recover ----
   {
@@ -1751,6 +1774,7 @@ class GameHost {
       y: Number.isFinite(save.y) ? save.y : this.SPAWN.y,
       direction: Number.isInteger(save.direction) ? save.direction : this.SPAWN.dir || 0,
       characterId: character.id,
+      accountId: session.accountId,
       alloc,
       unspentPoints:
         Number.isInteger(save.unspentPoints) && save.unspentPoints >= 0 ? save.unspentPoints : 0,
@@ -2740,19 +2764,23 @@ class GameHost {
           init = this._anonInit(playerId, msg);
         }
 
-        // Evict any LIVE session already bound to this character. A reconnecting
-        // client gets a brand-new playerId (nextId++), so without this the prior
-        // session lingers until the idle sweep (IDLE_TIMEOUT_MS) — and a flaky /
-        // backgrounded tab that drops + rejoins repeatedly piles up frozen zombie
-        // copies of the same character (no input → interp coasts → freezes →
-        // "dead-looking"). The fresh join just loaded the authoritative state, so
-        // the new session supersedes the old. Anonymous players (no characterId)
-        // have no stable identity to dedupe and are left alone.
+        // Evict any LIVE session belonging to this ACCOUNT. One account = one body
+        // in the world: a reconnecting client gets a brand-new playerId (nextId++),
+        // so without this the prior session lingers until the idle sweep
+        // (IDLE_TIMEOUT_MS). This dedupes on accountId — not just characterId — so
+        // SWITCHING characters (e.g. barney → a new char from the same account)
+        // also tears down the old body instead of leaving a frozen, uncontrollable
+        // zombie standing next to you. A flaky / backgrounded tab that drops +
+        // rejoins likewise can't pile up copies. The fresh join just loaded the
+        // authoritative state, so the new session supersedes the old. Falls back to
+        // a characterId match when accountId is absent (older Store mocks / tests).
+        // Anonymous players (no characterId) have no stable identity and are left alone.
         if (init.characterId != null) {
           for (const [oldId, handle] of [...this.saves]) {
-            if (oldId !== playerId && handle.characterId === init.characterId) {
-              this._evictSession(oldId);
-            }
+            if (oldId === playerId) continue;
+            const sameAccount = init.accountId != null && handle.accountId === init.accountId;
+            const sameChar = handle.characterId === init.characterId;
+            if (sameAccount || sameChar) this._evictSession(oldId);
           }
         }
 
@@ -2840,6 +2868,7 @@ class GameHost {
         if (init.characterId != null) {
           this.saves.set(playerId, {
             characterId: init.characterId,
+            accountId: init.accountId ?? null,
             alloc: this.points.get(playerId).alloc,
             unspentPoints: init.unspentPoints || 0,
           });
@@ -3907,20 +3936,24 @@ class GameHost {
         if (def.damage || def.inflict) {
           // Server picks the target(s) — it owns enemy positions. Damage +
           // knockback + the PSI's status inflict (each element-scaled by the
-          // enemy's resist) resolve in the sim. Targeting depends on def.shape:
-          //   'line'  (Fire)   — a forward CONE (shotgun): every enemy in a
-          //                      length-deep wedge that fans out per `spread`. The
-          //                      anim sprays a FAN of projectiles (`beams`) across
-          //                      the cone so it reads as a shotgun, not one shot.
-          //   'bolts' (Thunder)— `bolts` RANDOM live enemies in range, each its
-          //                      own strike. `hits` carries every struck spot so
-          //                      the client drops a bolt FX on each.
-          //   else (radius)    — nearest enemy in range, or every one if `multi`.
-          // Direction: a directional cast (Fire's line) carries the player's
-          // mouse-aim vector — normalize it and fire the cone along it, exactly like
-          // a melee/ranged swing. Also adopt the snapped facing so the cast points
-          // (and reads to other clients) toward the cursor. Falls back to the 8-way
-          // facing for keyboard/no-aim casts. Radius/bolts ignore direction.
+          // enemy's resist) resolve in the sim. ALL the visually-traveling shapes
+          // (line/bolts) fire SERVER projectiles that damage ON CONTACT, so the
+          // number lands as the bolt reaches the enemy (never before). Targeting
+          // depends on def.shape:
+          //   'line'  (Fire/Ice)— a forward CONE of piercing projectiles that fans
+          //                      out per `spread` (spread 0 → ONE straight bolt = Ice).
+          //   'screen'(Rockin'/ — every enemy in the caster's VIEW takes the hit at
+          //   Starstorm/Flash)   once; `hits` carries each struck spot so the client
+          //                      bursts the FX ON each (instant, visual = damage).
+          //   'bolts' (Thunder)— `bolts` RANDOM enemies in range, each struck by a
+          //                      lightning projectile that FALLS from above onto it.
+          //   else (radius)    — nearest enemy in range, or every one if `multi`
+          //                      (assist status moves: Hypnosis/Paralysis/Brainshock).
+          // Direction: a directional cast (line) carries the player's mouse-aim
+          // vector — normalize it and fire along it, exactly like a melee/ranged
+          // swing. Also adopt the snapped facing so the cast points (and reads to
+          // other clients) toward the cursor. Falls back to the 8-way facing for
+          // keyboard/no-aim casts. screen/bolts/radius ignore direction.
           let v = PSI_DIR[entry.direction] || [0, 1];
           if (Number.isFinite(msg.aimx) && Number.isFinite(msg.aimy)) {
             const m = Math.hypot(msg.aimx, msg.aimy);
@@ -3951,12 +3984,15 @@ class GameHost {
               `psi:${def.anim || psiId}`
             );
             projVisual = true;
-          } else if (def.shape === 'bolts') {
-            const struck = this.npcSim.psiStrikeBolts(
+          } else if (def.shape === 'screen') {
+            // Screen-wide burst (Rockin'/Starstorm/Flash): hit every enemy in view
+            // now; `hits` carries each struck spot so the client bursts the cast FX
+            // ON each enemy (delivery 'target' = no travel, so visual == damage).
+            const struck = this.npcSim.psiStrikeScreen(
               entry.x,
               entry.y,
-              def.range || 520,
-              def.bolts || 1,
+              PSI_SCREEN_HALF_W,
+              PSI_SCREEN_HALF_H,
               def.damage || 0,
               playerId,
               def.inflict
@@ -3966,9 +4002,27 @@ class GameHost {
               tx = struck[0].x;
               ty = struck[0].y;
             } else {
-              tx = Math.round(entry.x + v[0] * 96);
-              ty = Math.round(entry.y + v[1] * 96);
+              tx = Math.round(entry.x);
+              ty = Math.round(entry.y);
             }
+          } else if (def.shape === 'bolts') {
+            // Thunder: lightning that FALLS from above onto `bolts` random enemies,
+            // each a downward projectile that damages on contact (the strike). The
+            // projectiles broadcast themselves, so we skip the psi_cast fan.
+            this.npcSim.psiStrikeBoltsFalling(
+              entry.x,
+              entry.y,
+              def.range || 520,
+              def.bolts || 1,
+              def.damage || 0,
+              playerId,
+              def.inflict,
+              entry.pk,
+              entry.level || 1,
+              def.projSpeed || 0,
+              `psi:${def.anim || psiId}`
+            );
+            projVisual = true;
           } else {
             const strike = def.multi ? this.npcSim.psiStrikeAll : this.npcSim.psiStrike;
             const hit = strike.call(

@@ -916,16 +916,24 @@ presentation — `displayHp` never touches the simulation (death stays server-au
 PARTY-target: the client enters a **target picker** (rings on valid targets, `Z`=
 self, click an ally, `Esc`) and sends `use_psi` with a `targetId`; the server routes
 heal/cure/revive to that target (or self) and validates range (`PSI_HEAL_RANGE`).
-Offense PSI auto-targets (no manual aim) but its FOOTPRINT depends on the move's
-`shape`: **radius** (default) hits the nearest enemy, or every enemy in `range`
-when `multi` (Rockin'/Starstorm/Flash); **line** (PSI Fire) sprays a forward CONE
-in the caster's facing direction — a shotgun narrow at the muzzle (`±width`) that
-FANS OUT with distance (allowed side-offset = `width + spread*along`) out to
-`length` ahead; both `length` and `spread` climb steeply per tier (`psiStrikeLine`),
-and the cast carries a `beams[]` fan of projectile endpoints so the client sprays a
-shotgun of FX; **bolts** (PSI Thunder) zaps `bolts` RANDOM live enemies within
-`range`, more bolts per tier (`psiStrikeBolts`, the `psi_cast` carries a `hits[]`
-so the client drops a strike FX on each). Every shape is ROOM-SCOPED: a candidate is skipped if a wall
+Offense PSI's FOOTPRINT depends on the move's `shape`. **Principle: any shape whose
+visual TRAVELS fires real server projectiles that damage ON CONTACT** — the HP drop
+lands as the bolt reaches the enemy, never at cast time (a wall stops the bolt where
+it hits). The shapes:
+**line** (PSI Fire + Ice) is AIMED at the cursor (`aimx/aimy`) and fires a fan of
+piercing projectiles (`psiStrikeCone`, one shared hit-set so each enemy is struck
+once): Fire's cone widens per tier (`spread`), Ice is the same path with `spread:0`
+= ONE straight bolt. The projectiles broadcast themselves (`projectile`/`proj_end`,
+sprite `psi:<anim>`), so the `psi_cast` flipbook fan is skipped (`projVisual`).
+**bolts** (PSI Thunder) calls lightning DOWN: it picks `bolts` RANDOM live enemies in
+`range` (more per tier) and spawns a downward projectile `PSI_BOLT_DROP` px above each
+that falls and strikes on contact (`psiStrikeBoltsFalling`, also `projVisual`).
+**screen** (Rockin'/Starstorm/Flash) bursts EVERY enemy in the caster's view — a
+`PSI_SCREEN_HALF_W×PSI_SCREEN_HALF_H` box around the caster (`psiStrikeScreen`);
+damage is instant and the `psi_cast` carries a `hits[]` so the client bursts the FX
+ON each struck enemy (those anims are `delivery:'target'`, no travel, so visual ==
+damage). **radius** (default) is now only the assist status moves (Hypnosis/Paralysis/
+Brainshock): the nearest enemy, or every one in `range` when `multi`. Every shape is ROOM-SCOPED: a candidate is skipped if a wall
 (`wallBetween`) OR a door seam (`doorBetween`) sits between caster and enemy — the
 same barrier melee/enemy-sensing use — so no PSI ever reaches into the next room
 (the client's room crop would hide the attacker anyway). Healing γ/Ω revive (γ half

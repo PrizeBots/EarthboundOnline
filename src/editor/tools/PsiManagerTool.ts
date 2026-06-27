@@ -206,7 +206,7 @@ class PsiManagerTool implements EditorTool {
   }
 
   /** Set the offense targeting shape; matching the base value reverts (clears). */
-  private setShape(id: string, val: 'radius' | 'line' | 'bolts'): void {
+  private setShape(id: string, val: 'radius' | 'line' | 'screen' | 'bolts'): void {
     const ov = this.ovOf(id);
     const baseVal = psiBase(id)?.shape ?? 'radius';
     if (val === baseVal) delete ov.shape;
@@ -531,6 +531,7 @@ class PsiManagerTool implements EditorTool {
         [
           { value: 'radius', label: 'Radius (circle)' },
           { value: 'line', label: 'Line (forward beam)' },
+          { value: 'screen', label: 'Screen (all in view)' },
           { value: 'bolts', label: 'Bolts (random)' },
         ],
         base.shape ?? 'radius',
@@ -538,7 +539,7 @@ class PsiManagerTool implements EditorTool {
           this.setShape(id, v);
           this.refreshStats(); // swap in the fields for the new shape
         },
-        'Targeting shape: radius (circle around caster), line (forward beam), or bolts (random strikes).'
+        'Targeting shape: radius (circle), line (forward beam), screen (every enemy in view), or bolts (random strikes).'
       );
       if (shape === 'line') {
         this.mkNumRow(
@@ -599,6 +600,12 @@ class PsiManagerTool implements EditorTool {
         );
         const note = document.createElement('div');
         note.textContent = 'Strikes that many RANDOM enemies within range.';
+        note.style.cssText = 'color:#667;font-size:10px;margin-left:62px;';
+        this.statsEl.appendChild(note);
+      } else if (shape === 'screen') {
+        const note = document.createElement('div');
+        note.textContent =
+          'Hits every enemy in the caster’s screen view (reach is fixed to the viewport).';
         note.style.cssText = 'color:#667;font-size:10px;margin-left:62px;';
         this.statsEl.appendChild(note);
       } else {

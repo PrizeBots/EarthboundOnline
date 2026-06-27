@@ -389,6 +389,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       handleAttack: () => {},
       psiStrike: () => null,
       psiStrikeAll: () => null,
+      psiStrikeScreen: () => [],
+      psiStrikeBoltsFalling: () => {},
       spawnMoneyDrop: () => {},
       spawnCashFountain: () => [],
       noteRespawn: () => {},
@@ -3757,6 +3759,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   const PROJ_KNOCK_BEHIND = 20; // knockback source sits this far behind the shot
   const PROJ_MUZZLE_RISE = 10; // shot flies at chest height (feet - this); see the muzzle in handleAttack
   const PSI_CONE_SPEED = 4; // px/tick for a directional-PSI cone pellet (slow, readable fire)
+  const PSI_BOLT_SPEED = 10; // px/tick a Thunder bolt falls (fast — lightning, minimal drift)
+  const PSI_BOLT_DROP = 140; // px above the target a Thunder bolt spawns (matches client FX)
   let projectiles = [];
   let projSeq = 0;
 
@@ -4640,14 +4644,48 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     },
 
     /**
-     * Random-strike offense PSI (e.g. PSI Thunder): from the live enemies within
-     * `range` px of (x,y) in the SAME room (no wall/door seam between), pick up to `count` AT RANDOM
-     * and strike each for the full damage + status inflict. Stronger tiers pass a
-     * higher `count` (more bolts). Returns the array of struck {x,y} (empty if no
-     * enemy is in range) so the caller can drop a bolt FX on each.
+     * Screen-wide offense PSI (Rockin'/Starstorm/Flash): strike EVERY live enemy
+     * within the caster's view — a `halfW`×`halfH` rectangle around (x,y) — in the
+     * SAME room (no wall/door seam between). Each takes the full damage + status
+     * inflict, element-scaled by its resist. Damage is INSTANT (the caller bursts
+     * the cast FX on each struck spot, so visual and damage coincide). Returns the
+     * array of struck {x,y} (empty if none in view).
      */
-    psiStrikeBolts(x, y, range, count, dmg, killerPlayerId, inflict) {
+    psiStrikeScreen(x, y, halfW, halfH, dmg, killerPlayerId, inflict) {
       const now = Date.now();
+      const struck = [];
+      for (const n of enemies) {
+        if (n.dead) continue;
+        if (Math.abs(n.x - x) > halfW || Math.abs(n.y - y) > halfH) continue;
+        if (wallBetween(x, y, n.x, n.y) || doorBetween(x, y, n.x, n.y)) continue;
+        applyDamage(n, dmg || 0, now, killerPlayerId, { x, y, inflict: inflict || [] });
+        struck.push({ x: Math.round(n.x), y: Math.round(n.y) });
+      }
+      return struck;
+    },
+
+    /**
+     * Random-strike offense PSI (PSI Thunder): from the live enemies within `range`
+     * px of (x,y) in the SAME room (no wall/door seam between), pick up to `count`
+     * AT RANDOM and call DOWN a lightning bolt on each — a downward projectile that
+     * spawns PSI_BOLT_DROP px above the enemy and damages on CONTACT (so the strike
+     * lands as the bolt reaches it, not at cast). Stronger tiers pass a higher
+     * `count` (more bolts). `sprite` ('psi:<animId>') draws the PSI flipbook on each
+     * bolt. Flat damage (no dodge/crit), like the other offense PSI.
+     */
+    psiStrikeBoltsFalling(
+      x,
+      y,
+      range,
+      count,
+      dmg,
+      playerId,
+      inflict,
+      attackerPk,
+      attackerLevel,
+      speed,
+      sprite
+    ) {
       const cands = [];
       for (const n of enemies) {
         if (n.dead) continue;
@@ -4663,12 +4701,28 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         cands[i] = cands[j];
         cands[j] = t;
       }
-      const struck = [];
+      const attacker = { isEnemy: false, pk: !!attackerPk };
+      const attackerMass = massOf({ level: attackerLevel || 1 });
+      const spd = speed > 0 ? speed : PSI_BOLT_SPEED;
       for (const n of cands.slice(0, Math.max(0, count))) {
-        applyDamage(n, dmg || 0, now, killerPlayerId, { x, y, inflict: inflict || [] });
-        struck.push({ x: Math.round(n.x), y: Math.round(n.y) });
+        spawnProjectile({
+          x: n.x,
+          y: n.y - PSI_BOLT_DROP, // spawn high above, fall straight down onto the enemy
+          vx: 0,
+          vy: 1,
+          speed: spd,
+          maxDist: PSI_BOLT_DROP + 24, // a little past the foot so it reaches the body
+          base: dmg || 0,
+          critChance: 0,
+          attacker,
+          attackerId: playerId,
+          attackerMass,
+          inflict: inflict || [],
+          pierce: false, // one bolt, one enemy
+          flat: true,
+          sprite,
+        });
       }
-      return struck;
     },
 
     /**

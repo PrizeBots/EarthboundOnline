@@ -42,10 +42,12 @@ export interface PsiMove {
   range?: number; // px reach for offense/ailment (radius / bolts candidate pool)
   multi?: boolean; // ROM row/all — hit EVERY enemy in range (radius shape)
   // Offense targeting SHAPE (default 'radius' = circle around the caster):
-  //   'line'  — a beam in the facing direction (Fire): hits everything in a
-  //             forward rectangle `length` long and `±width` wide.
-  //   'bolts' — strike `bolts` RANDOM live enemies within `range` (Thunder).
-  shape?: 'radius' | 'line' | 'bolts';
+  //   'line'   — aimed traveling projectile(s): Fire's cone, or Ice's single
+  //              straight bolt (spread 0). Damage lands ON CONTACT.
+  //   'screen' — every enemy in the caster's VIEW at once (Rockin'/Starstorm/Flash).
+  //   'bolts'  — `bolts` RANDOM enemies within `range`, each hit by a lightning
+  //              bolt that falls from above (Thunder).
+  shape?: 'radius' | 'line' | 'screen' | 'bolts';
   length?: number; // line shape: forward reach px
   width?: number; // line shape: half-width px AT THE MUZZLE (narrow start)
   spread?: number; // line shape: half-width GAINED per px forward — the cone fans
@@ -100,9 +102,10 @@ export function tierLabel(t: PsiTier): string {
 // public/overrides/psi_anim.json, so no art is needed per tier.
 const PSI_FAMILY_SPECS: PsiFamilySpec[] = [
   // ---- Offense ----------------------------------------------------------------
-  // Targeting differs by `shape` (see PsiMove): Rockin'/Starstorm/Flash hit a
-  // RADIUS (multi = every enemy in it); Fire shoots a forward LINE that lengthens
-  // and widens per tier; Thunder strikes random enemies (more BOLTS per tier).
+  // Targeting differs by `shape` (see PsiMove): Rockin'/Starstorm/Flash burst every
+  // enemy in the SCREEN at once; Fire shoots a forward cone and Ice a single straight
+  // bolt (both aimed, damage on contact); Thunder calls bolts down from above on
+  // random enemies (more per tier).
   {
     stem: 'psi',
     family: "PSI Rockin'",
@@ -110,7 +113,7 @@ const PSI_FAMILY_SPECS: PsiFamilySpec[] = [
     target: 'enemy',
     tiers: ['alpha', 'beta', 'gamma', 'omega'],
     pp: [10, 14, 40, 98],
-    effect: (_t, i) => ({ damage: [20, 45, 100, 220][i], range: 260, multi: true }),
+    effect: (_t, i) => ({ damage: [20, 45, 100, 220][i], shape: 'screen' }),
   },
   {
     stem: 'psi_fire',
@@ -137,7 +140,15 @@ const PSI_FAMILY_SPECS: PsiFamilySpec[] = [
     target: 'enemy',
     tiers: ['alpha', 'beta', 'gamma', 'omega'],
     pp: [4, 9, 18, 28],
-    effect: (_t, i) => ({ damage: [12, 28, 58, 110][i], range: 240 }),
+    // Single aimed bolt — Fire's path with NO spread (one pellet), straight to the
+    // cursor, damage on contact (a wall stops it). Longer reach per tier.
+    effect: (_t, i) => ({
+      damage: [12, 28, 58, 110][i],
+      shape: 'line',
+      length: [200, 240, 280, 320][i],
+      width: 6,
+      spread: 0,
+    }),
   },
   {
     stem: 'psi_thunder',
@@ -161,10 +172,10 @@ const PSI_FAMILY_SPECS: PsiFamilySpec[] = [
     target: 'enemy',
     tiers: ['alpha', 'beta', 'gamma', 'omega'],
     pp: [8, 16, 24, 32],
+    // Group move: bursts every enemy in view, each with a chance of the status.
     effect: (_t, i) => ({
       damage: [10, 22, 40, 70][i],
-      range: 240,
-      multi: true,
+      shape: 'screen',
       inflict: [{ type: 'paralysis', chance: [40, 50, 60, 70][i] }],
     }),
   },
@@ -175,7 +186,8 @@ const PSI_FAMILY_SPECS: PsiFamilySpec[] = [
     target: 'enemy',
     tiers: ['alpha', 'omega'],
     pp: [24, 42],
-    effect: (_t, i) => ({ damage: [30, 60][i], range: 360, multi: true }),
+    // Screen-wide starfall — hits every enemy in view (see shape 'screen').
+    effect: (_t, i) => ({ damage: [30, 60][i], shape: 'screen' }),
   },
   // ---- Recover (party-target heal/cure/revive; Magnet drains, not yet wired) ----
   {

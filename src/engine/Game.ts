@@ -1025,11 +1025,11 @@ export class Game {
             // one per pellet, so the cast reads as a shotgun blast.
             for (const b of beams) spawnPsiFx(id, x, y, b.tx, b.ty);
           } else if (hits && hits.length) {
-            // `hits` (Thunder bolts) — strike EACH enemy with its own bolt that
-            // falls from above onto it (projectile-delivery anims need travel to
-            // read; a zero-length cast would flash and vanish).
-            const DROP = 140; // px above the enemy each bolt starts
-            for (const h of hits) spawnPsiFx(id, h.x, h.y - DROP, h.x, h.y);
+            // `hits` (screen-AOE: Rockin'/Starstorm/Flash) — burst the cast FX ON
+            // each struck enemy so every hit shows where it landed. These anims are
+            // delivery:'target', so the flipbook plays AT the spot (no travel) and
+            // the burst coincides with the (instant) server damage.
+            for (const h of hits) spawnPsiFx(id, h.x, h.y, h.x, h.y);
           } else {
             spawnPsiFx(id, x, y, tx, ty);
           }

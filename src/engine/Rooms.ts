@@ -27,9 +27,30 @@
 
 import { emitGameEvent } from './EventBus';
 import { loadWorldDoc } from './Auth';
+import { SECTOR_TILES_X, SECTOR_TILES_Y, TILE_SIZE } from '../types';
 
 /** Stable id of the implicit overworld "room". */
 export const WORLD_ROOM_ID = 'world';
+
+/** One sector in world pixels (EB's native 8×4-tile grid cell). A room is a set
+ *  of these — sectors partition the map, each belongs to exactly one room. */
+export const SECTOR_W_PX = SECTOR_TILES_X * TILE_SIZE; // 256
+export const SECTOR_H_PX = SECTOR_TILES_Y * TILE_SIZE; // 128
+
+/** A sector grid coordinate (column, row). */
+export type SectorCoord = [number, number];
+
+/** Sector (col,row) → its world-pixel rect. */
+export function sectorRect(col: number, row: number): RoomRect {
+  return { x: col * SECTOR_W_PX, y: row * SECTOR_H_PX, w: SECTOR_W_PX, h: SECTOR_H_PX };
+}
+
+/** The sector (col,row) a world point falls in. */
+export function sectorOfPoint(worldX: number, worldY: number): SectorCoord {
+  return [Math.floor(worldX / SECTOR_W_PX), Math.floor(worldY / SECTOR_H_PX)];
+}
+
+const sectorKey = (col: number, row: number): string => col + ',' + row;
 
 /** The typed vocabulary for room behavior. Band rooms born in RoomBuilder use
  *  'custom' today; migrate → 'other'. Kept as a loose `string` on RoomDef so
@@ -65,8 +86,15 @@ export interface RoomDef {
   /** Custom-room footprint in the (extended) plane. Present on custom rooms. */
   rect?: RoomRect;
   /** Region room footprint — one or more rects (L-shaped rooms = multiple).
-   *  Present on region rooms; takes precedence over `rect` when both exist. */
+   *  Present on region rooms; takes precedence over `rect` when both exist.
+   *  For sector rooms this is DERIVED from `sectors` (one rect per sector) so
+   *  rect-based consumers (camera crop, music hysteresis) keep working. */
   regions?: RoomRect[];
+  /** Sector-room membership — the EB sectors (col,row) this room owns. The source
+   *  of truth for region rooms authored in the Room Manager: sectors partition the
+   *  map (each sector belongs to exactly ONE room), so `roomAt` is an O(1) sector
+   *  lookup. `regions` is derived from this. Absent on legacy rect-only rooms. */
+  sectors?: SectorCoord[];
   /** Per-room BGM (SPC song number). null/absent ⇒ inherit the sector's musicId. */
   bgm?: number | null;
   /** Arrival point inside the room (the entrance door's destination). */
@@ -96,6 +124,32 @@ function allRooms(): RoomDef[] {
   return [...customRooms, ...regionRooms];
 }
 
+// Sector (col,row key) → owning region-room id. Region rooms partition the map by
+// sector (each sector ∈ exactly one room), so this is the O(1) roomAt fast path.
+// Built from region rooms' sectors[]; also derives their regions[] (one rect per
+// sector) so rect-based consumers (camera crop, music hysteresis) stay unchanged.
+let sectorIndex = new Map<string, string>();
+let regionById = new Map<string, RoomDef>();
+
+function rebuildSectorIndex(): void {
+  sectorIndex = new Map();
+  regionById = new Map();
+  for (const r of regionRooms) {
+    regionById.set(r.id, r);
+    if (r.sectors && r.sectors.length) {
+      // Derive regions[] from sectors so camera/music keep reading rects.
+      r.regions = r.sectors.map(([c, rw]) => sectorRect(c, rw));
+      for (const [c, rw] of r.sectors) sectorIndex.set(sectorKey(c, rw), r.id);
+    }
+  }
+}
+
+/** The region-room id owning a sector (col,row), or null if unclaimed. Used by the
+ *  Room Manager to enforce one-sector-one-room (steal-with-confirm). */
+export function roomIdForSector(col: number, row: number): string | null {
+  return sectorIndex.get(sectorKey(col, row)) ?? null;
+}
+
 /**
  * Populate the CUSTOM-room slice (the interiors band MapManager builds from
  * overrides/rooms.json). Called after the map loads; empty ⇒ overworld-only.
@@ -113,6 +167,7 @@ export function setRoomList(list: RoomDef[]): void {
  */
 export function setRegionRooms(list: RoomDef[]): void {
   regionRooms = list;
+  rebuildSectorIndex();
   console.log(`Rooms: ${customRooms.length} custom + ${regionRooms.length} region room(s)`);
 }
 
@@ -171,9 +226,18 @@ function containingArea(r: RoomDef, x: number, y: number): number {
  * the one with the smallest containing rect — wins, deterministically.
  */
 export function roomAt(worldX: number, worldY: number): RoomDef | null {
+  // Fast path: sector rooms partition the map 1:1 — one O(1) lookup, no overlap.
+  if (sectorIndex.size) {
+    const [c, rw] = sectorOfPoint(worldX, worldY);
+    const id = sectorIndex.get(sectorKey(c, rw));
+    if (id) return regionById.get(id) ?? null;
+  }
+  // Fallback: legacy rect rooms (custom band rooms; region rooms without sectors).
+  // Sector rooms are index-only — skip them here so the two paths never disagree.
   let winner: RoomDef | null = null;
   let winnerArea = Infinity;
   for (const r of allRooms()) {
+    if (r.sectors && r.sectors.length) continue;
     const a = containingArea(r, worldX, worldY);
     if (a < winnerArea) {
       winnerArea = a;
