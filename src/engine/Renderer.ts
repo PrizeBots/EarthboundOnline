@@ -532,20 +532,22 @@ export class Renderer {
     this.canvas.height = SCREEN_HEIGHT * res;
     this.canvas.style.width = `${SCREEN_WIDTH * this.scale}px`;
     this.canvas.style.height = `${SCREEN_HEIGHT * this.scale}px`;
-    // Portrait control band: pin the canvas flush ABOVE the band so the controls sit
-    // directly under the game (no dead gap). The body flex-centers the canvas, so we
-    // pick top/bottom margins that sum to the whole viewport: marginBottom = band,
-    // marginTop = the rest. Centering (canvas+margins) then lands the canvas bottom
-    // exactly at the band's top edge, pushing all the letterbox slack to the top.
+    // Portrait control band: a bottom margin equal to the band shifts the canvas up
+    // to sit CENTERED in the area above the band (the position that looked right).
+    // We then publish --tc-lift = a quarter of the remaining top slack, which the
+    // touch overlay uses to raise the controls so they sit centered in the empty
+    // space below the canvas instead of glued to the screen's bottom edge.
     if (this.controlBand) {
       const vh = window.visualViewport?.height ?? window.innerHeight;
       const cssH = SCREEN_HEIGHT * this.scale;
-      const topMargin = Math.max(0, vh - this.controlBand - cssH);
-      this.canvas.style.marginTop = `${topMargin}px`;
+      const lift = Math.max(0, (vh - this.controlBand - cssH) / 4);
+      this.canvas.style.marginTop = '';
       this.canvas.style.marginBottom = `${this.controlBand}px`;
+      document.documentElement.style.setProperty('--tc-lift', `${lift}px`);
     } else {
       this.canvas.style.marginTop = '';
       this.canvas.style.marginBottom = '';
+      document.documentElement.style.setProperty('--tc-lift', '0px');
     }
     this.ctx.imageSmoothingEnabled = false;
     // The canvas just moved/resized — re-anchor the corner mute button to it.

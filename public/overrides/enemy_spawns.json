@@ -1523,6 +1523,43 @@
       "respawnDelayMs": 9000,
       "enabled": true,
       "level": 99
+    },
+    {
+      "name": "spawner-111",
+      "sprite": 291,
+      "x": 3155,
+      "y": 7202,
+      "wanderRadius": 150,
+      "poolSize": 6,
+      "maxActive": 3,
+      "spawnIntervalMs": 35000,
+      "respawnDelayMs": 35000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-112",
+      "sprite": 291,
+      "x": 2982,
+      "y": 7022,
+      "wanderRadius": 150,
+      "detectRange": 150,
+      "poolSize": 6,
+      "maxActive": 3,
+      "spawnIntervalMs": 35000,
+      "respawnDelayMs": 35000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-113",
+      "sprite": 291,
+      "x": 3232,
+      "y": 7048,
+      "wanderRadius": 150,
+      "poolSize": 6,
+      "maxActive": 3,
+      "spawnIntervalMs": 35000,
+      "respawnDelayMs": 35000,
+      "enabled": true
     }
   ]
 }

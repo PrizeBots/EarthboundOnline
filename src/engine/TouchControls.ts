@@ -78,6 +78,9 @@ const STYLE = `
   -webkit-user-select: none; -webkit-touch-callout: none;
   font-family: 'Trebuchet MS', system-ui, sans-serif;
   display: none;
+  /* Portrait: Renderer sets --tc-lift to raise the whole control layer off the
+     bottom edge so it sits centered under the canvas. 0 in landscape/desktop. */
+  transform: translateY(calc(-1 * var(--tc-lift, 0px)));
 }
 #touch-controls.visible { display: block; }
 #touch-controls .tc-btn, #touch-controls .tc-stick-base {
