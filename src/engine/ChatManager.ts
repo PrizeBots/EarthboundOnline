@@ -36,8 +36,8 @@ const BUBBLE_INNER_W = 88; // wrap width inside a speech bubble
 const INPUT_MARGIN = 8; // gap from screen edges for the input box
 
 const BUBBLE_LIFETIME = 5000; // ms a bubble stays before vanishing
-const BUBBLE_HOLD = 2500; // ms held fully visible & still (readable beat)
-const BUBBLE_RISE = 20; // px the bubble floats up while fading away
+const BUBBLE_HOLD = 2200; // ms held fully visible & still (readable beat)
+const BUBBLE_RISE = 56; // px the bubble floats up while dissolving away
 const BUBBLE_GAP = 4; // px between sprite head and bubble bottom
 const CURSOR_BLINK = 500; // ms per caret on/off phase
 
@@ -210,9 +210,8 @@ function drawBubble(ctx: CanvasRenderingContext2D, bubble: Bubble, camera: Camer
   // AND fade it out together over the rest of its life — one smooth motion.
   const floatDur = BUBBLE_LIFETIME - BUBBLE_HOLD;
   const p = Math.min(1, Math.max(0, (age - BUBBLE_HOLD) / floatDur)); // 0→1 during float
-  const ease = 1 - (1 - p) ** 3; // ease-out: quick lift, gentle settle
-  const rise = ease * BUBBLE_RISE;
-  const alpha = 1 - p; // fades linearly as it rises
+  const rise = p * BUBBLE_RISE; // steady drift — keeps floating the whole way up
+  const alpha = 1 - p * p; // dissolves a touch faster early, gone by the top
   if (alpha <= 0) return;
 
   const spriteH = bubble.spriteH ?? DEFAULT_SPRITE_H;

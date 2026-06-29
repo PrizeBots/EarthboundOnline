@@ -26,6 +26,11 @@
       image-rendering: crisp-edges;
       touch-action: none;
     }
+    /* Touch + portrait: Renderer reserves a control band at the bottom (canvas
+       margin-bottom) and centers the shrunk canvas in the space above it, so the
+       game and the A/B/X/Y controls never overlap on any aspect ratio. Landscape
+       keeps the centered layout (controls hug the left/right edges over the
+       letterbox, clear of the action). */
     /* Keep DOM form controls (ROM picker, account login) fully editable/selectable
        despite the body-level user-select:none above. */
     input, textarea, select {

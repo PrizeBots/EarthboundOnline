@@ -416,8 +416,18 @@ check('drop_item clamps a forged far-away target to throw range (no map-wide fli
   const drops = host.npcSim.dropsSnapshot();
   assert.strictEqual(drops.length, dropsBefore + 1, 'a drop should still spawn');
   const d = drops[drops.length - 1];
-  const dist = Math.hypot(d.x - p.x, d.y - p.y);
-  assert(dist <= 160, `landing should be clamped near the player, got ${Math.round(dist)}px`);
+  // Aim is clamped to throw range (no map-wide horizontal fling). If the clamped
+  // spot is solid, the item may slide straight DOWN to a reachable tile, so allow
+  // a bounded vertical settle on top of the clamp — but x stays clamped and the
+  // total never approaches the forged 99999px.
+  assert(
+    Math.abs(d.x - p.x) <= 160,
+    `x should be clamped near the player, got ${Math.round(d.x - p.x)}px`
+  );
+  assert(
+    d.y - p.y <= 160 + 256,
+    `y stays within throw clamp + settle slide, got ${Math.round(d.y - p.y)}px`
+  );
 });
 
 check('drop_item is refused while downed (no inventory fiddling when KO)', () => {

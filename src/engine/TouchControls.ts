@@ -6,18 +6,19 @@
 // driven by a physical keyboard or a thumb. The only mobile-specific wiring is the
 // touch→pointer bridge in Input.ts (canvas taps) for on-canvas UI.
 //
-// Layout (thumb-reachable, viewport corners — independent of the letterboxed
-// canvas so it stays comfortable on any aspect ratio):
-//   • Joystick — bottom-left,  8-way → Arrow keys (also moves the menu cursor)
-//   • B button — bottom-right         → field: Run (Shift, held)  |  UI: Cancel (KeyQ)
-//   • A button — bottom-right, primary → UI ONLY: Accept (KeyZ)
-//   • Talk     — above B, tap          → KeyE (talk/check), field only
-//   • Menu     — top-right, tap        → KeyQ (open the menu), field only
+// Layout — an SNES-style A/B/X/Y face-button diamond, bottom-right, with the
+// joystick bottom-left (thumb-reachable, anchored to the viewport corners so it
+// stays comfortable on any aspect ratio). Each face button maps to the SAME key
+// its PC binding uses:
+//   • Joystick — bottom-left, 8-way   → Arrow keys (also moves the menu cursor)
+//   • Y (left)   → field: Attack (KeyF, auto-repeats while held)   | hidden in UI
+//   • B (bottom) → field: Run (Shift, held)        | UI: Cancel (KeyQ)
+//   • X (top)    → field: open Menu (KeyQ)          | hidden in UI
+//   • A (right)  → field: Talk/Check (KeyE)         | UI: Accept (KeyZ)
 //
-// COMBAT IS TAP-DRIVEN (no attack button): a tap on the world swings toward it, and
-// an offense-PSI hotbar tap then taps a target to aim — the mobile mirror of PC's
-// click-to-aim + number-key cast. So A is purely the menu/dialogue Accept; in the
-// field it's hidden (you tap to attack). B keeps its SNES B-role: Run, then Cancel.
+// World-tap-to-attack still works alongside Y (a tap on the world swings toward it,
+// and an offense-PSI hotbar tap then taps a target to aim) — Y just attacks along
+// the current facing without needing to aim.
 //
 // SNES note: a real controller has none of this — these are a browser-only input
 // surface, so they live entirely client-side and synthesize the same button codes.
@@ -49,10 +50,10 @@ type TouchContext = {
 let ctx: TouchContext = { playing: false, menuOpen: false, dialogueOpen: false, downed: false };
 
 let root: HTMLDivElement | null = null;
-let aBtn: HTMLDivElement | null = null; // attack (field) / accept (UI)
+let aBtn: HTMLDivElement | null = null; // talk/check (field) / accept (UI)
 let bBtn: HTMLDivElement | null = null; // run (field) / cancel (UI)
-let talkBtn: HTMLDivElement | null = null; // talk/check (field only)
-let menuBtn: HTMLDivElement | null = null; // open menu (field only)
+let xBtn: HTMLDivElement | null = null; // open menu (field only)
+let yBtn: HTMLDivElement | null = null; // attack (field only)
 let mounted = false;
 // Last-seen gamepad presence, so we re-apply visibility the frame a pad appears
 // or disconnects (setTouchContext otherwise only reacts to game-state changes).
@@ -103,37 +104,39 @@ const STYLE = `
   left: 28%; top: 28%; pointer-events: none;
   transition: transform .03s linear;
 }
-/* A — attack (field) / accept (UI). Bottom-right, primary face button. */
+/* A/B/X/Y face buttons — a SNES diamond anchored to the bottom-right corner.
+   All four share one size so the diamond stays symmetric; each is positioned by
+   its center via right/bottom offsets (right/bottom = element edge → +half-size to
+   reach the center). Diamond center sits ~12vmin in / 24vmin up from the corner;
+   horizontal arm = 13vmin, vertical arm = 12vmin. */
+#touch-controls .tc-face {
+  width: 15vmin; height: 15vmin;
+  max-width: 84px; max-height: 84px; min-width: 60px; min-height: 60px;
+  font-size: 5.4vmin;
+}
+/* Y — left arm: Attack. */
+#touch-controls .tc-y {
+  right: calc(env(safe-area-inset-right) + 30.5vmin);
+  bottom: calc(env(safe-area-inset-bottom) + 16.5vmin);
+  background: rgba(90,180,110,.24); border-color: rgba(150,230,170,.6);
+}
+/* A — right arm: Talk (field) / Accept (UI). Primary, warm. */
 #touch-controls .tc-a {
-  right: calc(env(safe-area-inset-right) + 6vmin);
-  bottom: calc(env(safe-area-inset-bottom) + 7vmin);
-  width: 22vmin; height: 22vmin; max-width: 120px; max-height: 120px;
-  min-width: 80px; min-height: 80px; font-size: 6vmin;
-  background: rgba(220,60,60,.24); border-color: rgba(255,120,120,.55);
+  right: calc(env(safe-area-inset-right) + 4.5vmin);
+  bottom: calc(env(safe-area-inset-bottom) + 16.5vmin);
+  background: rgba(220,60,60,.24); border-color: rgba(255,120,120,.6);
 }
-/* B — run (field) / cancel (UI). Left of A, slightly raised (pad diagonal). The
-   right offset clears A even when both hit their min-size on a small phone. */
+/* X — top arm: open Menu. */
+#touch-controls .tc-x {
+  right: calc(env(safe-area-inset-right) + 17.5vmin);
+  bottom: calc(env(safe-area-inset-bottom) + 28.5vmin);
+  background: rgba(90,160,255,.22); border-color: rgba(140,190,255,.6);
+}
+/* B — bottom arm: Run (field) / Cancel (UI). */
 #touch-controls .tc-b {
-  right: calc(env(safe-area-inset-right) + 33vmin);
-  bottom: calc(env(safe-area-inset-bottom) + 11vmin);
-  width: 18vmin; height: 18vmin; max-width: 100px; max-height: 100px;
-  min-width: 66px; min-height: 66px; font-size: 5vmin;
-  background: rgba(90,180,110,.24); border-color: rgba(150,230,170,.55);
-}
-/* Talk / Check — field only, above the A·B cluster (cleared from A's top edge). */
-#touch-controls .tc-talk {
-  right: calc(env(safe-area-inset-right) + 12vmin);
-  bottom: calc(env(safe-area-inset-bottom) + 33vmin);
-  width: 14vmin; height: 14vmin; max-width: 80px; max-height: 80px;
-  min-width: 54px; min-height: 54px; font-size: 3.4vmin;
-  background: rgba(90,160,255,.22); border-color: rgba(140,190,255,.5);
-}
-/* Menu — top-right */
-#touch-controls .tc-menu {
-  right: calc(env(safe-area-inset-right) + 4vmin);
-  top: calc(env(safe-area-inset-top) + 4vmin);
-  width: 12vmin; height: 12vmin; max-width: 60px; max-height: 60px;
-  min-width: 44px; min-height: 44px; font-size: 4.5vmin;
+  right: calc(env(safe-area-inset-right) + 17.5vmin);
+  bottom: calc(env(safe-area-inset-bottom) + 4.5vmin);
+  background: rgba(245,200,70,.22); border-color: rgba(255,225,130,.6);
 }
 `;
 
@@ -165,8 +168,59 @@ function wireTap(el: HTMLDivElement, onPress: () => void): void {
   el.addEventListener('pointercancel', up);
 }
 
+// --- Held attack (Y) --------------------------------------------------------
+// Y fires the same KeyF the keyboard/click attack uses, but RE-PRESSES it every
+// animation frame while held so holding Y swings continuously (gated by the swing
+// cooldown in Game — a mid-swing press just no-ops). pressVirtualKey injects a
+// one-frame tap that releaseVirtualTaps() clears each game frame, so we must keep
+// re-issuing it; setVirtualKey wouldn't repeat (isAttackPressed consumes KeyF).
+let attackHeld = false;
+let attackRaf = 0;
+function attackTick(): void {
+  if (!attackHeld) return;
+  pressVirtualKey('KeyF');
+  attackRaf = requestAnimationFrame(attackTick);
+}
+function startAttack(): void {
+  if (attackHeld) return;
+  attackHeld = true;
+  attackTick();
+}
+function stopAttack(): void {
+  attackHeld = false;
+  if (attackRaf) cancelAnimationFrame(attackRaf);
+  attackRaf = 0;
+  setVirtualKey('KeyF', false);
+}
+
+/** Wire a hold-to-repeat button (Y / attack): pressed visual + start/stop the
+ *  per-frame KeyF re-press while the finger rests. */
+function wireHold(el: HTMLDivElement, onDown: () => void, onUp: () => void): void {
+  let id: number | null = null;
+  el.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    id = e.pointerId;
+    el.setPointerCapture?.(e.pointerId);
+    el.classList.add('pressed');
+    onDown();
+  });
+  const up = (e: PointerEvent) => {
+    if (id !== e.pointerId) return;
+    id = null;
+    el.classList.remove('pressed');
+    onUp();
+    try {
+      el.releasePointerCapture?.(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+  };
+  el.addEventListener('pointerup', up);
+  el.addEventListener('pointercancel', up);
+}
+
 /** True while a menu or dialogue owns the screen — the face buttons switch from
- *  their field roles (attack / run) to their UI roles (accept / cancel). */
+ *  their field roles (talk / run) to their UI roles (accept / cancel). */
 function inUI(): boolean {
   return ctx.menuOpen || ctx.dialogueOpen;
 }
@@ -283,22 +337,21 @@ export function mountTouchControls(): void {
   root.appendChild(base);
   wireStick(base, knob);
 
-  // A — accept (KeyZ). UI-only: shown in a menu/dialogue (advance/confirm). In the
-  // field combat is tap-driven, so there's no attack button to wire here.
-  aBtn = makeButton('tc-a', 'A');
-  wireTap(aBtn, () => pressVirtualKey('KeyZ'));
+  // Y — attack (KeyF), field only. Holds → swing continuously (auto-repeat).
+  yBtn = makeButton('tc-face tc-y', 'Y');
+  wireHold(yBtn, startAttack, stopAttack);
+
+  // A — talk/check (KeyE) in the field, accept (KeyZ) in a menu/dialogue.
+  aBtn = makeButton('tc-face tc-a', 'A');
+  wireDual(aBtn, 'KeyE', 'KeyZ');
+
+  // X — open the menu (KeyQ), field only; inside a menu, B cancels/closes.
+  xBtn = makeButton('tc-face tc-x', 'X');
+  wireTap(xBtn, () => pressVirtualKey('KeyQ'));
 
   // B — run (held Shift) in the field, cancel/back (KeyQ) in a menu/dialogue.
-  bBtn = makeButton('tc-b', 'B');
+  bBtn = makeButton('tc-face tc-b', 'B');
   wireDual(bBtn, 'ShiftLeft', 'KeyQ');
-
-  // Talk / Check (tap → KeyE) — field only; advancing dialogue uses A (accept).
-  talkBtn = makeButton('tc-talk', '✦');
-  wireTap(talkBtn, () => pressVirtualKey('KeyE'));
-
-  // Menu (tap → KeyQ opens it) — field only; inside a menu, B cancels/closes.
-  menuBtn = makeButton('tc-menu', '☰');
-  wireTap(menuBtn, () => pressVirtualKey('KeyQ'));
 
   applyContext();
 }
@@ -310,17 +363,17 @@ function applyContext(): void {
   // with thumb controls they'll never use. Pads only surface after the first
   // button press, so the overlay shows until then, then disappears.
   root.classList.toggle('visible', ctx.playing && !gamepadConnected());
-  // The A·B face buttons are always present while playing — they just change role
-  // (attack/run → accept/cancel) via wireDual + the labels below. Talk and Menu are
-  // field-only: meaningless in a menu/dialogue (A accepts, B cancels there), so we
-  // hide them to keep the UI clean. Downed shows only A·B (hold to give up).
+  // Role/visibility of the diamond:
+  //   • Y (attack) + X (menu) are field-only — meaningless in a menu/dialogue and
+  //     while downed, so they hide to keep the cluster clean.
+  //   • A (talk→accept) shows in the field and in UI; hidden only while downed.
+  //   • B (run→cancel) is ALWAYS present while playing — in the field its held-run
+  //     also serves as the "HOLD TO GIVE UP" button when downed.
   const ui = ctx.menuOpen || ctx.dialogueOpen;
   const fieldOnly = ctx.playing && !ui && !ctx.downed;
-  // A is the menu/dialogue Accept only — hidden in the field (tap-to-attack). B is
-  // always present (Run in the field, Cancel in UI). Talk + Menu are field-only.
-  if (aBtn) aBtn.style.display = ui ? 'flex' : 'none';
-  if (talkBtn) talkBtn.style.display = fieldOnly ? 'flex' : 'none';
-  if (menuBtn) menuBtn.style.display = fieldOnly ? 'flex' : 'none';
+  if (yBtn) yBtn.style.display = fieldOnly ? 'flex' : 'none';
+  if (xBtn) xBtn.style.display = fieldOnly ? 'flex' : 'none';
+  if (aBtn) aBtn.style.display = ctx.playing && !ctx.downed ? 'flex' : 'none';
 }
 
 /** Push the current game state in once per frame. Toggles overlay visibility,
@@ -342,7 +395,7 @@ export function setTouchContext(next: TouchContext): void {
     // face-button field key, so the player can't slide into the next screen still
     // walking, running, or swinging.
     if (heldArrows.size) clearArrows();
-    setVirtualKey('KeyF', false);
+    stopAttack(); // ends the Y auto-repeat + releases KeyF
     setVirtualKey('ShiftLeft', false);
   }
   if (changed) applyContext();

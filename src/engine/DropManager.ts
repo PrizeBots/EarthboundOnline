@@ -22,10 +22,13 @@ export interface GroundDrop {
   amount?: number; // money drops: cash value
   sprite?: string; // money drops: item id to render as (death cash → c001); else a coin
   // Ejection: present only while a fresh drop is still flying out of the corpse.
-  // The drop arcs from (fromX,fromY) to (x,y) over ejectMs, then rests.
+  // The drop arcs from (fromX,fromY) to its contact point over ejectMs, then rests.
   fromX?: number;
   fromY?: number;
   ejectMs?: number;
+  // Wall landing: the item first contacted a wall at this Y, then fell straight
+  // down to the resting `y`. Present only while the fall is still animating.
+  fallFromY?: number;
 }
 
 // Stored drop carries a client birth time so we can animate the eject arc.
@@ -33,6 +36,7 @@ type LiveDrop = GroundDrop & { bornAt: number };
 
 const ITEM_SIZE = 16; // px the held-item icon is drawn at on the ground
 const EJECT_HEIGHT = 18; // px peak hop height of the ejection arc
+const FALL_PX_PER_MS = 0.18; // speed a wall-landed drop falls to the ground (mirrored: npcSim.js)
 
 const drops = new Map<string, LiveDrop>();
 
@@ -41,9 +45,13 @@ export function setDrops(list: GroundDrop[]): void {
   drops.clear();
   for (const d of list) if (d && d.id) drops.set(d.id, { ...d, bornAt: 0 });
 }
-/** A new drop appeared — eject-animate it if the server sent flight info. */
+/** A new drop appeared — animate it if the server sent eject and/or fall info. */
 export function addDrop(d: GroundDrop): void {
-  if (d && d.id) drops.set(d.id, { ...d, bornAt: d.fromX != null ? performance.now() : 0 });
+  if (d && d.id)
+    drops.set(d.id, {
+      ...d,
+      bornAt: d.fromX != null || d.fallFromY != null ? performance.now() : 0,
+    });
 }
 /** A drop was claimed/removed. */
 export function removeDrop(id: string): void {
@@ -61,17 +69,34 @@ export function clearDrops(): void {
 export function renderDrops(ctx: CanvasRenderingContext2D, camX: number, camY: number): void {
   const now = performance.now();
   for (const d of drops.values()) {
-    // Resolve the current ground position + hop height. While ejecting, the drop
-    // lerps from origin to landing and arcs up (sin) then back down; once landed
-    // (t>=1, or no flight info) it rests at (x,y) with no hop.
+    // Resolve the current ground anchor (where the shadow sits) + hop height above
+    // it. Two optional phases play back-to-back from bornAt:
+    //   1. eject  — arc from (fromX,fromY) up to the contact point (x, contactY)
+    //   2. fall   — drop straight down from contactY to the resting y (wall landing)
+    // contactY is fallFromY when the item hit a wall, else just the resting y. Once
+    // both phases finish (or there's no anim info) it rests at (x,y) with no hop.
     let gx = d.x;
-    let gy = d.y;
-    let hop = 0;
-    if (d.bornAt && d.fromX != null && d.fromY != null && d.ejectMs) {
-      const t = Math.min(1, (now - d.bornAt) / d.ejectMs);
-      gx = d.fromX + (d.x - d.fromX) * t;
-      gy = d.fromY + (d.y - d.fromY) * t;
-      hop = Math.sin(t * Math.PI) * EJECT_HEIGHT;
+    let gy = d.y; // ground anchor the shadow tracks
+    let hop = 0; // icon height above that anchor
+    if (d.bornAt) {
+      const t0 = now - d.bornAt;
+      const ejectMs = d.fromX != null && d.fromY != null ? d.ejectMs || 0 : 0;
+      const contactY = d.fallFromY != null ? d.fallFromY : d.y;
+      const fallDist = d.y - contactY; // >= 0
+      const fallMs = fallDist > 0 ? fallDist / FALL_PX_PER_MS : 0;
+      if (ejectMs > 0 && t0 < ejectMs) {
+        // Phase 1: arc out to the contact point.
+        const t = t0 / ejectMs;
+        gx = d.fromX! + (d.x - d.fromX!) * t;
+        gy = d.fromY! + (contactY - d.fromY!) * t; // shadow rides the arc
+        hop = Math.sin(t * Math.PI) * EJECT_HEIGHT;
+      } else if (fallDist > 0 && t0 < ejectMs + fallMs) {
+        // Phase 2: shadow snaps to the real landing; icon falls straight down to it.
+        const tf = (t0 - ejectMs) / fallMs; // 0 → contact, 1 → resting
+        gx = d.x;
+        gy = d.y;
+        hop = fallDist * (1 - tf);
+      }
     }
     const sx = Math.round(gx - camX);
     const groundY = Math.round(gy - camY);

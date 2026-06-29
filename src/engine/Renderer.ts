@@ -468,6 +468,9 @@ export class Renderer {
   private ctx: CanvasRenderingContext2D;
   // Integer CSS upscale factor (256x224 -> on-screen size).
   private scale = 1;
+  // Portrait-only reserved height (px) at the bottom for touch controls; the canvas
+  // shrinks to fit above it and is centered there via a bottom margin. 0 otherwise.
+  private controlBand = 0;
   // True only while the editor zoom is active — the backbuffer renders at full
   // display resolution so zoom-out stays crisp.
   private highRes = false;
@@ -493,7 +496,19 @@ export class Renderer {
   private resizeToFit() {
     const vw = window.visualViewport?.width ?? window.innerWidth;
     const vh = window.visualViewport?.height ?? window.innerHeight;
-    const fit = Math.min(vw / SCREEN_WIDTH, vh / SCREEN_HEIGHT);
+    // Touch + portrait: reserve a band at the bottom for the on-screen controls
+    // (joystick + A/B/X/Y), then fit the canvas into the space ABOVE it and center
+    // it there (applyBackbuffer sets the margin). This keeps the game and the
+    // controls from overlapping on any portrait aspect ratio. Landscape and desktop
+    // use the full height (band = 0). The band tracks the control cluster's height
+    // (~46vmin = 0.46·vw in portrait) with a vh cap so it never eats the whole
+    // screen on a near-square display. 0.46·vw sits just above the control cluster's
+    // tallest point (the X button at ~43.5vmin) so only a tiny gap shows between the
+    // game and the buttons.
+    const portrait = vh > vw;
+    this.controlBand = isTouchDevice() && portrait ? Math.min(vw * 0.46, vh * 0.5) : 0;
+    const availH = vh - this.controlBand;
+    const fit = Math.min(vw / SCREEN_WIDTH, availH / SCREEN_HEIGHT);
     // Desktop keeps integer scaling for pixel-perfect art. On phones/tablets a
     // floored scale bottoms out at 1× on a narrow screen — a 256×224 postage
     // stamp — so we fill the screen with the exact fractional fit instead. The
@@ -517,6 +532,21 @@ export class Renderer {
     this.canvas.height = SCREEN_HEIGHT * res;
     this.canvas.style.width = `${SCREEN_WIDTH * this.scale}px`;
     this.canvas.style.height = `${SCREEN_HEIGHT * this.scale}px`;
+    // Portrait control band: pin the canvas flush ABOVE the band so the controls sit
+    // directly under the game (no dead gap). The body flex-centers the canvas, so we
+    // pick top/bottom margins that sum to the whole viewport: marginBottom = band,
+    // marginTop = the rest. Centering (canvas+margins) then lands the canvas bottom
+    // exactly at the band's top edge, pushing all the letterbox slack to the top.
+    if (this.controlBand) {
+      const vh = window.visualViewport?.height ?? window.innerHeight;
+      const cssH = SCREEN_HEIGHT * this.scale;
+      const topMargin = Math.max(0, vh - this.controlBand - cssH);
+      this.canvas.style.marginTop = `${topMargin}px`;
+      this.canvas.style.marginBottom = `${this.controlBand}px`;
+    } else {
+      this.canvas.style.marginTop = '';
+      this.canvas.style.marginBottom = '';
+    }
     this.ctx.imageSmoothingEnabled = false;
     // The canvas just moved/resized — re-anchor the corner mute button to it.
     // This is the ONLY place the canvas's CSS size is set, and it runs on the

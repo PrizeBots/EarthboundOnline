@@ -230,6 +230,11 @@ const RETURN_GIVEUP_MS = 8000; // can't path back in this long -> snap to spawn 
 // on contact. Once it commits to a door it heads there at its normal pace even
 // after the player's warp record expires.
 const DOOR_TRIGGER_REACH = 12; // px from the doorway feet-anchor that warps a chaser through
+// A PANICKING entity gets a much wider doorway grab. A fleer shoved against the
+// frame is stopped by the wall flanking the opening (or pressed in at an angle),
+// so its feet anchor never gets within the tight chaser reach — it just grinds on
+// the door. A fleer touching the doorway WANTS to escape, so any contact counts.
+const FLEE_DOOR_REACH = 28; // px (≈ door foot-anchor offset + a body half-width)
 const DOOR_GIVEUP_MS = 6000; // can't reach the doorway in this long -> give up and regroup
 
 // --- NPC self-defense (townsfolk fight back) ---
@@ -1091,6 +1096,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   const EJECT_MIN = 14;
   const EJECT_MAX = 40;
   const EJECT_MS = 450; // flight time; pickup is locked until now + EJECT_MS
+  const FALL_PX_PER_MS = 0.18; // speed a wall-landed drop falls to the ground (mirrored: DropManager.ts)
   // Player-aimed toss: cap how far a player can throw a dropped item from their
   // own position. Covers ~the visible on-screen area (256x224, player ~centered)
   // so a forged drop_item can't fling loot across the map. Anti-cheat clamp.
@@ -1109,11 +1115,12 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     return { x: ox, y: oy };
   }
 
-  // A player tossed an item toward (tx,ty). Clamp the target to THROW_MAX_DIST of
-  // the player, then walk from the (clamped) target back toward the player and
-  // return the first spot that clears walls — so it never lands inside solid
-  // geometry and a long throw at a wall just lands short. Falls back to the
-  // player's own tile. Returns the validated landing.
+  // A player tossed an item toward (tx,ty). Clamp only the DISTANCE to
+  // THROW_MAX_DIST of the player (anti-cheat: can't fling loot across the map) —
+  // otherwise the item lands exactly where aimed, walls included. If that spot is
+  // solid, spawnDrop's settleLanding slides it down to the nearest reachable tile,
+  // so a throw at a building just drops the loot at its base instead of being
+  // refused.
   function throwLanding(px, py, tx, ty) {
     let dx = tx - px;
     let dy = ty - py;
@@ -1123,16 +1130,24 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       dx *= k;
       dy *= k;
     }
-    const cx = px + dx;
-    const cy = py + dy;
-    const steps = 6;
-    for (let i = 0; i <= steps; i++) {
-      const t = 1 - i / steps; // 1 → (clamped) target, 0 → player
-      const x = px + (cx - px) * t;
-      const y = py + (cy - py) * t;
-      if (!blocked(x - 4, y - 4, 8, 8)) return { x, y };
+    return { x: px + dx, y: py + dy };
+  }
+
+  // An item is allowed to land anywhere the player/corpse aimed — walls included.
+  // If that spot is solid (building, furniture, map edge), it FALLS straight DOWN
+  // until it reaches the first reachable tile, so loot never comes to rest where no
+  // one can grab it and the drop reads as physically falling to the ground. Returns
+  // the resting spot; the caller diffs Y against the contact spot to drive the fall
+  // animation. Tests the same 8x8 foot box the landing pickers use. Caps the slide
+  // so a deep wall just keeps the contact spot.
+  const SETTLE_STEP = MINITILE; // px per downward probe
+  const SETTLE_MAX = 256; // px to search down before giving up
+  function settleLanding(x, y) {
+    if (!blocked(x - 4, y - 4, 8, 8)) return { x, y };
+    for (let dy = SETTLE_STEP; dy <= SETTLE_MAX; dy += SETTLE_STEP) {
+      if (!blocked(x - 4, y + dy - 4, 8, 8)) return { x, y: y + dy };
     }
-    return { x: px, y: py };
+    return { x, y };
   }
 
   // Wire shape for a drop. Items carry their id (client renders the held sprite);
@@ -1152,11 +1167,15 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             ...(d.sprite ? { sprite: d.sprite } : {}),
           }
         : { id: d.id, kind: 'item', x: d.x, y: d.y, item: d.item, name: d.name || '' };
-    if (d.fromX != null && d.pickableAt && Date.now() < d.pickableAt) {
+    const animating = d.pickableAt && Date.now() < d.pickableAt;
+    if (d.fromX != null && animating) {
       base.fromX = d.fromX;
       base.fromY = d.fromY;
       base.ejectMs = EJECT_MS;
     }
+    // Wall landing: tell the client the contact height so it animates the fall
+    // (arc/snap to fallFromY, then drop straight down to the resting y).
+    if (d.fallFromY != null && animating) base.fallFromY = d.fallFromY;
     return base;
   }
 
@@ -1164,11 +1183,20 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // corpse spot) to make it eject — it arcs out from there and can't be claimed
   // until it lands (now + EJECT_MS). `data` = {item,name} or {amount}.
   function spawnDrop(kind, landX, landY, data, origin) {
-    const d = { id: `d${nextDropId++}`, kind, x: Math.round(landX), y: Math.round(landY), ...data };
+    // Land where aimed; if that's a wall, settleLanding gives the spot it falls to.
+    const settled = settleLanding(landX, landY);
+    const restY = Math.round(settled.y);
+    const contactY = Math.round(landY);
+    const fell = restY > contactY; // it landed on a wall and dropped down
+    const fallMs = fell ? (restY - contactY) / FALL_PX_PER_MS : 0;
+    const d = { id: `d${nextDropId++}`, kind, x: Math.round(settled.x), y: restY, ...data };
+    if (fell) d.fallFromY = contactY; // first-contact height the client falls from
     if (origin) {
       d.fromX = Math.round(origin.x);
       d.fromY = Math.round(origin.y);
-      d.pickableAt = Date.now() + EJECT_MS;
+      d.pickableAt = Date.now() + EJECT_MS + fallMs; // locked through the arc AND the fall
+    } else if (fell) {
+      d.pickableAt = Date.now() + fallMs; // no eject, but still unclaimable mid-fall
     }
     groundDrops.push(d);
     if (broadcastCb) broadcastCb({ type: 'drop_spawn', drop: dropWire(d) });
@@ -2882,7 +2910,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   function fleeThroughDoor(n, players) {
     if (!doorTriggers.length) return false;
     let best = null;
-    let bestD = DOOR_TRIGGER_REACH;
+    let bestD = FLEE_DOOR_REACH; // generous: a panicked body touching the frame escapes
     for (const t of doorTriggers) {
       const d = Math.hypot(n.x - t.x, n.y - t.y);
       if (d <= bestD) {
@@ -4525,10 +4553,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     /** A player threw a bag item onto the ground, aimed at (tx,ty). It tweens
      *  from the player (px,py) to the validated landing — arcing out and locked
      *  from pickup until it lands (EJECT_MS) — so the thrower can't instantly
-     *  re-grab it and it reads as a toss. The target is clamped to THROW_MAX_DIST
-     *  and pulled clear of walls server-side (throwLanding), so a forged spot
-     *  can't fling loot across the map or into solid geometry. The grant on
-     *  pickup still flows through the host's tryPickup (first-touch FFA). */
+     *  re-grab it and it reads as a toss. The target distance is clamped to
+     *  THROW_MAX_DIST (anti-cheat: no map-wide fling), but it lands exactly where
+     *  aimed — walls included; spawnDrop then makes a wall landing fall to the
+     *  ground. The grant on pickup still flows through the host's tryPickup. */
     spawnPlayerDrop(px, py, tx, ty, item, name) {
       if (!item) return null;
       const land = throwLanding(px, py, tx, ty);
