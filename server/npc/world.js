@@ -193,6 +193,13 @@ function createWorld(assetsDir, deps) {
         if (arr >= COMPOSITE_BASE) {
           // Custom-room composite cell: collision is per-source-minitile.
           byte = compositeByte(arr, idx);
+        } else if (arr === 0 && ty >= baseHTiles) {
+          // Custom-room band: arrangement 0 is our "empty/unpainted cell"
+          // sentinel. The ROM marks arrangement 0 (the solid black map-edge
+          // border) fully solid, but in the band that's empty room space — so
+          // it's walkable empty, NOT a wall. (Per-cell overrides still win.)
+          // KEEP IN SYNC with Collision.ts effectiveRow.
+          byte = 0;
         } else {
           const cols = collisionByDrawTs.get(tilesetMapping[sector.tilesetId] ?? 0);
           if (!cols) return true;

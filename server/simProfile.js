@@ -3,7 +3,8 @@
  *
  * Gated by the PROFILE_SIM=1 env var: when off, every call is a cheap no-op so
  * it's safe to leave wired into the hot loops permanently. When on, it sums
- * wall-time per named phase and every DUMP_MS prints an averaged ms/sec
+ * wall-time per named phase and every DUMP_MS (default 60s, see PROFILE_SIM_MS)
+ * prints an averaged ms/sec
  * breakdown plus the live actor/player counts — so a bot ramp (1 → 25 → 50 →
  * 100) shows which phase's cost grows with N (linear = per-entity work;
  * super-linear = an O(N^2) hotspot).
@@ -15,9 +16,9 @@
  *   ...work...;  prof.lap('grids');
  *   ...work...;  prof.lap('ai');
  *   prof.setContext(players, actors, hz);
- *   prof.frame();                  // call once per driving tick; dumps every 2s
+ *   prof.frame();                  // call once per driving tick; dumps every DUMP_MS
  *
- * Output (every 2s):
+ * Output (every DUMP_MS, default 60s):
  *   [simProfile] 96 players, 1364 actors | npcTick 41.2Hz
  *     ai          312.4 ms/s  (52%)   <- biggest = the bottleneck
  *     npcBroadcast 118.7 ms/s (20%)
@@ -32,7 +33,9 @@ const ON = process.env.PROFILE_SIM === '1';
 // phase name -> accumulated ms since the last dump
 const acc = new Map();
 let lastDumpAt = 0;
-const DUMP_MS = 2000;
+// Dump interval (ms). Override with PROFILE_SIM_MS=<ms>; defaults to 60s so the
+// breakdown stays useful without spamming the dev console.
+const DUMP_MS = Number(process.env.PROFILE_SIM_MS) || 60000;
 
 // Lap cursor. The sim callbacks are synchronous and never interleave (one event
 // loop, no await), so a single shared cursor is safe across both loops.

@@ -181,9 +181,9 @@ class RoomBuilderTool implements EditorTool {
   // seeing the walls + front you've laid down. The active collision tool always
   // force-shows its own layer regardless of these toggles.
   private layerVis: { walls: boolean; front: boolean; back: boolean; pri: boolean } = {
-    walls: true,
-    front: true,
-    back: true,
+    walls: false,
+    front: false,
+    back: false,
     pri: false,
   };
   private layerBtns: Partial<Record<'walls' | 'front' | 'back' | 'pri', HTMLButtonElement>> = {};
@@ -251,6 +251,16 @@ class RoomBuilderTool implements EditorTool {
     if (key === 'escape' && this.painting) {
       this.setPainting(false);
       this.shell?.toast('Paint off');
+      return true;
+    }
+    if (key === 'escape' && this.selecting) {
+      this.selecting = false;
+      this.pendingBlank = false;
+      this.sampleMini = false;
+      this.sel = null;
+      this.dragStart = null;
+      this.updateStatus();
+      this.shell?.toast('Cancelled');
       return true;
     }
     return false;
@@ -365,6 +375,10 @@ class RoomBuilderTool implements EditorTool {
       const u = this.selUnit;
       this.dragStart = { tx: Math.floor(p.x / u), ty: Math.floor(p.y / u) };
       this.sel = { tx: this.dragStart.tx, ty: this.dragStart.ty, w: 1, h: 1 };
+      // New-room mode selects whole sectors — snap from the first click so even a
+      // plain click (no drag) reads as "1 sector", matching the Room Manager feel.
+      if (this.pendingBlank) this.snapSelToSectors();
+      this.updateStatus();
       return true;
     }
     // Idle: grab a corner handle of the selected room to resize, else select the
@@ -407,14 +421,18 @@ class RoomBuilderTool implements EditorTool {
       w: Math.abs(tx - this.dragStart.tx) + 1,
       h: Math.abs(ty - this.dragStart.ty) + 1,
     };
-    if (this.pendingBlank) {
-      const x0 = Math.floor(this.sel.tx / SECTOR_TILES_X) * SECTOR_TILES_X;
-      const y0 = Math.floor(this.sel.ty / SECTOR_TILES_Y) * SECTOR_TILES_Y;
-      const x1 = Math.ceil((this.sel.tx + this.sel.w) / SECTOR_TILES_X) * SECTOR_TILES_X;
-      const y1 = Math.ceil((this.sel.ty + this.sel.h) / SECTOR_TILES_Y) * SECTOR_TILES_Y;
-      this.sel = { tx: x0, ty: y0, w: x1 - x0, h: y1 - y0 };
-    }
+    if (this.pendingBlank) this.snapSelToSectors();
     this.updateStatus();
+  }
+
+  /** Grow the current marquee out to whole sectors (new-room footprint = N sectors). */
+  private snapSelToSectors(): void {
+    if (!this.sel) return;
+    const x0 = Math.floor(this.sel.tx / SECTOR_TILES_X) * SECTOR_TILES_X;
+    const y0 = Math.floor(this.sel.ty / SECTOR_TILES_Y) * SECTOR_TILES_Y;
+    const x1 = Math.ceil((this.sel.tx + this.sel.w) / SECTOR_TILES_X) * SECTOR_TILES_X;
+    const y1 = Math.ceil((this.sel.ty + this.sel.h) / SECTOR_TILES_Y) * SECTOR_TILES_Y;
+    this.sel = { tx: x0, ty: y0, w: x1 - x0, h: y1 - y0 };
   }
 
   onMouseUp(): void {
@@ -1009,12 +1027,14 @@ class RoomBuilderTool implements EditorTool {
       ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
       ctx.fillStyle = this.pendingBlank ? '#d4ffcb' : '#bfe3ff';
       ctx.font = '11px monospace';
-      const unitLabel = u === MINITILE_SIZE ? ' minis' : '';
-      ctx.fillText(
-        `${this.pendingBlank ? 'new room ' : ''}${this.sel.w}x${this.sel.h}${unitLabel}`,
-        x + 3,
-        y - 4
-      );
+      let label: string;
+      if (this.pendingBlank) {
+        const secs = (this.sel.w / SECTOR_TILES_X) * (this.sel.h / SECTOR_TILES_Y);
+        label = `new room — ${secs} sector${secs === 1 ? '' : 's'}`;
+      } else {
+        label = `${this.sel.w}x${this.sel.h}${u === MINITILE_SIZE ? ' minis' : ''}`;
+      }
+      ctx.fillText(label, x + 3, y - 4);
     }
 
     // Minitile paint ghost (8px granularity).
@@ -1344,7 +1364,7 @@ class RoomBuilderTool implements EditorTool {
     this.sel = null;
     this.dragStart = null;
     this.updateStatus();
-    this.shell!.toast('Drag a box on the map to size the new room');
+    this.shell!.toast('Click a sector to make the room — drag for more. Esc to cancel.');
   }
 
   private startSample(mini: boolean): void {
@@ -1403,8 +1423,9 @@ class RoomBuilderTool implements EditorTool {
     this.refreshList();
     this.updateStatus();
     this.shell!.goTo(room.bandX * 32 + room.spawnDX, bandY * 32 + room.spawnDY);
+    const secs = (a.w / SECTOR_TILES_X) * (a.h / SECTOR_TILES_Y);
     this.shell!.toast(
-      `Blank ${a.w}x${a.h} room — pick a brush and paint (double-click its name to rename)`
+      `New ${secs}-sector room in the interiors band — pick a brush and paint (double-click its name to rename)`
     );
     if (this.brush) this.setPainting(true);
   }
@@ -1527,6 +1548,24 @@ class RoomBuilderTool implements EditorTool {
     this.statusEl.style.cssText = 'color:#9fb8cc;font-size:11px;line-height:1.4;min-height:16px;';
     this.panel.appendChild(this.statusEl);
 
+    // ── LAYERS: persistent show/hide for each painted layer, independent of the
+    // active tool — so you can see walls + front overlaid while painting tiles.
+    // Sits above TOOL; all off by default so a fresh room reads clean. ──
+    this.panel.appendChild(this.mkSection('LAYERS — show/hide overlays'));
+    const layerRow = document.createElement('div');
+    layerRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;';
+    const mkLayer = (label: string, key: 'walls' | 'front' | 'back' | 'pri', tip: string) => {
+      const b = this.mkBtn(label, () => this.toggleLayer(key), layerRow);
+      b.dataset.layer = key;
+      b.title = tip;
+      this.layerBtns[key] = b;
+    };
+    mkLayer('🧱 Walls', 'walls', 'Show/hide the wall (collision) overlay — red.');
+    mkLayer('🌳 Front', 'front', 'Show/hide the front (hide-behind) overlay — light blue.');
+    mkLayer('🔻 Back', 'back', 'Show/hide the background (always-on-top) overlay — red / orange.');
+    mkLayer('▦ Priority', 'pri', 'Show/hide native ROM priority bits — blue / purple.');
+    this.panel.appendChild(layerRow);
+
     // ── TOOL: the single "what does clicking do?" selector ──
     this.panel.appendChild(this.mkSection('TOOL — what clicking does'));
     const toolRow = document.createElement('div');
@@ -1546,23 +1585,6 @@ class RoomBuilderTool implements EditorTool {
     this.toolHelp = document.createElement('div');
     this.toolHelp.style.cssText = 'color:#7fa8c0;font-size:10px;line-height:1.4;min-height:26px;';
     this.panel.appendChild(this.toolHelp);
-
-    // ── LAYERS: persistent show/hide for each painted layer, independent of the
-    // active tool — so you can see walls + front overlaid while painting tiles ──
-    this.panel.appendChild(this.mkSection('LAYERS — show/hide overlays'));
-    const layerRow = document.createElement('div');
-    layerRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;';
-    const mkLayer = (label: string, key: 'walls' | 'front' | 'back' | 'pri', tip: string) => {
-      const b = this.mkBtn(label, () => this.toggleLayer(key), layerRow);
-      b.dataset.layer = key;
-      b.title = tip;
-      this.layerBtns[key] = b;
-    };
-    mkLayer('🧱 Walls', 'walls', 'Show/hide the wall (collision) overlay — red.');
-    mkLayer('🌳 Front', 'front', 'Show/hide the front (hide-behind) overlay — light blue.');
-    mkLayer('🔻 Back', 'back', 'Show/hide the background (always-on-top) overlay — red / orange.');
-    mkLayer('▦ Priority', 'pri', 'Show/hide native ROM priority bits — blue / purple.');
-    this.panel.appendChild(layerRow);
 
     // Collision controls (Walls/Front) — shown only in those tools.
     this.colControls = document.createElement('div');
@@ -1757,7 +1779,8 @@ class RoomBuilderTool implements EditorTool {
     const roomRow = document.createElement('div');
     roomRow.style.cssText = 'display:flex;gap:6px;';
     this.mkBtn('+ New Room', () => this.startBlankRoom(), roomRow, true).title =
-      'Drag a box on the map to size a new blank custom room (sector-aligned).';
+      'Click a sector to create a new room (drag across sectors for a bigger one). ' +
+      'The room is built in the interiors band below the map.';
     this.mkBtn('Copy area', () => void this.copySelection(), roomRow).title =
       'Copy the sampled map region into a new custom room.';
     this.panel.appendChild(roomRow);
@@ -2120,9 +2143,13 @@ class RoomBuilderTool implements EditorTool {
       return;
     }
     if (this.pendingBlank) {
-      this.statusEl.textContent = this.sel
-        ? `New room ${this.sel.w}x${this.sel.h} — release to create`
-        : 'Drag a box to size the new room…';
+      if (this.sel) {
+        const secs = (this.sel.w / SECTOR_TILES_X) * (this.sel.h / SECTOR_TILES_Y);
+        this.statusEl.textContent = `New room — ${secs} sector${secs === 1 ? '' : 's'}, release to create`;
+      } else {
+        this.statusEl.textContent =
+          'Click a sector to create the room (drag for more) — Esc to cancel';
+      }
     } else if (this.selecting) {
       this.statusEl.textContent = this.sel
         ? `Selected ${this.sel.w}x${this.sel.h} — Sample→Stamp or Copy→Room`

@@ -1,7 +1,7 @@
 import { Camera } from './Camera';
 import { Player } from './Player';
 import { NPC } from './NPC';
-import { getTileAt, getSectorForTile } from './MapManager';
+import { getTileAt, getSectorForTile, getOverworldHeightTiles } from './MapManager';
 import { colBoxFor, carColBoxFor, hasEntityCol } from './NPCManager';
 import { drawTile, drawForegroundTile, hasForegroundTile } from './TilesetManager';
 import { isComposite, drawComposite, drawCompositeFg } from './CompositeTiles';
@@ -633,11 +633,16 @@ export class Renderer {
 
     // Pass 1: Draw all tiles as background
     if (showBg) {
+      // Custom-room band (below the overworld): arrangement 0 is empty/void, not
+      // a real tile. Leave those cells black instead of drawing the tileset's
+      // tile-0 graphic (which reads as a stray wall under unpainted room space).
+      const bandRow = getOverworldHeightTiles();
       for (let row = startRow; row <= endRow; row++) {
         for (let col = startCol; col <= endCol; col++) {
           const sector = getSectorForTile(col, row);
           if (!sector) continue;
           const arrangementId = getTileAt(col, row);
+          if (arrangementId === 0 && row >= bandRow) continue;
           const screenX = col * TILE_SIZE - camX;
           const screenY = row * TILE_SIZE - camY;
           if (isComposite(arrangementId)) {

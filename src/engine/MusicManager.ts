@@ -102,6 +102,17 @@ function areaForPoint(x: number, y: number): number {
 // Cached SPC file data
 const spcCache = new Map<number, Uint8Array>();
 const spcLoading = new Set<number>();
+// Songs whose SPC file 404s or is malformed (not every ROM song was extracted —
+// there are gaps in eb-NNN.spc). Without this, updateMusic re-requests the same
+// missing song every frame and spams the console. Recorded on first failure and
+// skipped thereafter (cleared on initMusic so a freshly-extracted file is retried).
+const spcUnavailable = new Set<number>();
+// The song a playSPCSong() call is currently fetching. updateMusic runs every
+// frame but the SPC fetch + currentSongNumber update is async (~100ms), so
+// without this guard every frame during the fetch re-issues the same song —
+// loadSPC returns null (already in flight) and logs a false "failed to load".
+// Set before the await, cleared when it settles.
+let loadingSong = -1;
 
 // Custom audio tracks (MP3/OGG for ESP32-side music on hardware)
 const customAudioCache = new Map<string, HTMLAudioElement>();
@@ -131,6 +142,7 @@ export async function loadMusicMap(): Promise<void> {
  */
 export function initMusic(): void {
   if (initialized) return;
+  spcUnavailable.clear(); // retry any songs whose file may have been extracted since
 
   // Check if asm.js engine is loaded
   if (typeof _my_init !== 'function') {
@@ -201,17 +213,22 @@ async function loadSPC(songNumber: number): Promise<Uint8Array | null> {
   try {
     const filename = `eb-${String(songNumber).padStart(3, '0')}.spc`;
     const resp = await fetch(`/assets/music/spc/${filename}`);
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      spcUnavailable.add(songNumber);
+      return null;
+    }
     const buffer = new Uint8Array(await resp.arrayBuffer());
     // SPC files start with "SNES-SPC700"
     const header = String.fromCharCode(...buffer.slice(0, 15));
     if (!header.startsWith('SNES-SPC')) {
       console.error(`SPC ${filename}: invalid header "${header}", got ${buffer.length} bytes`);
+      spcUnavailable.add(songNumber);
       return null;
     }
     spcCache.set(songNumber, buffer);
     return buffer;
   } catch {
+    spcUnavailable.add(songNumber);
     return null;
   } finally {
     spcLoading.delete(songNumber);
@@ -233,7 +250,13 @@ async function playSPCSong(songNumber: number): Promise<void> {
 
   const spc = await loadSPC(songNumber);
   if (!spc) {
-    console.warn(`playSPCSong(${songNumber}): SPC failed to load`);
+    // null means EITHER a genuine 404/bad-file (recorded in spcUnavailable) OR a
+    // fetch already in flight for this song (a per-frame caller raced ahead).
+    // Only the former is a real failure worth a warning — staying quiet on the
+    // in-flight race kills the false-positive spam from every-frame callers.
+    if (spcUnavailable.has(songNumber)) {
+      console.warn(`playSPCSong(${songNumber}): SPC failed to load`);
+    }
     return;
   }
 
@@ -607,8 +630,16 @@ export function updateMusic(playerX: number, playerY: number): void {
     console.log(`Music: song ${songNumber} (${source})`);
     lastLoggedSong = songNumber;
   }
-  if (songNumber > 0 && songNumber !== currentSongNumber) {
-    playSPCSong(songNumber);
+  if (
+    songNumber > 0 &&
+    songNumber !== currentSongNumber &&
+    songNumber !== loadingSong &&
+    !spcUnavailable.has(songNumber)
+  ) {
+    loadingSong = songNumber;
+    void playSPCSong(songNumber).finally(() => {
+      if (loadingSong === songNumber) loadingSong = -1;
+    });
   }
 }
 

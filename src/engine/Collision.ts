@@ -4,6 +4,7 @@ import {
   getSectorForTile,
   getTileAt,
   getDrawTilesetId,
+  getOverworldHeightTiles,
   isIndoorTile,
   isRoomCroppableTile,
 } from './MapManager';
@@ -146,11 +147,18 @@ function effectiveRow(tileX: number, tileY: number): number[] | null {
   // skipped); per-cell overrides may still apply on top of an all-zero base.
   // Composite cells carry no ROM arrangement — their collision is assembled from
   // each source minitile's own collision byte.
+  // Custom-room band: arrangement 0 is our "empty/unpainted cell" sentinel, but
+  // the ROM marks arrangement 0 (the black map-edge border tile) fully solid.
+  // In the band that means empty room space, so it's walkable empty — NOT a wall.
+  // (Per-cell collision overrides still apply on top, so the painter can author
+  // walls there explicitly.) Mirrored in server/npcSim.js + the py room checker.
   const base = isComposite(arr)
     ? compositeRow(arr)
-    : arr < collisions.length
-      ? collisions[arr]
-      : ZERO_ROW;
+    : arr === 0 && tileY >= getOverworldHeightTiles()
+      ? ZERO_ROW
+      : arr < collisions.length
+        ? collisions[arr]
+        : ZERO_ROW;
   const ov = cellOverrides.get(tileY * MAP_WIDTH_TILES + tileX);
   if (!ov || ov.size === 0) return base as number[];
   const row = [...base];
