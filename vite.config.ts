@@ -303,6 +303,21 @@ function gameServerPlugin() {
       });
 
       wss.on('connection', (ws: any) => host.handleConnection(ws));
+
+      // Tear down on dev-server restart/shutdown. Vite restarts the server
+      // IN-PROCESS on config/dep changes, re-running configureServer — without
+      // this, each reload leaks the old GameHost (its sim's 60Hz tick + watchers
+      // keep the event loop alive forever), stacking loops until the server
+      // crawls (2Hz, multi-second RTT). httpServer 'close' fires on every restart.
+      server.httpServer.on('close', () => {
+        try {
+          host.stop();
+          wss.close();
+        } catch (e) {
+          console.warn('[game-server] teardown error:', e);
+        }
+      });
+
       console.log('Game WebSocket server attached to Vite');
     },
   };

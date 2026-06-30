@@ -1090,6 +1090,11 @@ class GameHost {
     this._giftsWatchPath = null;
     this._shopsWatchPath = null;
     this._spawnWatchPath = null;
+    // The sim owns its OWN 60Hz tick + ~10 fs.watchFile watchers (which keep the
+    // Node event loop alive forever). Without this, stopping the host left the sim
+    // running — on an in-process dev-server restart that stacks a fresh tick loop
+    // + watcher set every reload, starving the loop (2Hz, huge RTT) over a session.
+    if (this.npcSim && this.npcSim.stop) this.npcSim.stop();
   }
 
   // Project an inventory (array of ids) to the wire shape the client renders:
