@@ -1,5 +1,5 @@
 /**
- * NEW CHARACTER flow (START_SCREEN.md phase 5). Mounts into the Start Screen
+ * NEW CHARACTER flow (accounts; see ARCHITECTURE.md persistence). Mounts into the Start Screen
  * panel: name field → pick 1 of 3 random roster sprites → recolor 3 color groups
  * → allocate the 5 stats on the pentagon radar → Create. On success it calls
  * `onCreated(character)`; the host then spawns into the game (join-by-token).

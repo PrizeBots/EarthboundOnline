@@ -4,7 +4,7 @@
  * server/store/index.js.
  *
  * This is the SQLite-now half of the "SQLite now -> Supabase/Postgres at launch"
- * plan (see START_SCREEN.md). Everything here is deliberately portable:
+ * plan (see ARCHITECTURE.md persistence). Everything here is deliberately portable:
  *   - standard SQL (no SQLite-only syntax in the schema except AUTOINCREMENT)
  *   - the volatile gameplay state lives in ONE `save` JSON column, which maps to
  *     a Postgres `jsonb` column 1:1 when SupabaseStore is written.

@@ -14,6 +14,7 @@ import {
 } from '../../engine/Rooms';
 import { previewSong, stopMusic, setMusicMuted, setSfxMuted } from '../../engine/MusicManager';
 import { getSongName, songLabel, listSongs } from '../../engine/SongNames';
+import { mkTextInput } from '../ui';
 import { createSpritePicker, SpritePicker } from '../../engine/SpritePicker';
 import { loadWorldDoc, saveWorldDoc } from '../../engine/Auth';
 import { registerSaveHandler } from '../registry';
@@ -760,13 +761,8 @@ class RoomManagerTool implements EditorTool {
     width = 64,
     tip?: string
   ): HTMLInputElement {
-    const r = this.mkRow(parent, label, tip);
-    const i = document.createElement('input');
-    i.style.cssText =
-      `width:${width}px;font:11px monospace;background:#0c1014;color:#cde;` +
-      'border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
-    if (tip) i.title = tip;
-    i.onchange = () => onChange(i.value);
+    const r = this.mkRow(parent, label, tip); // bespoke 52px/flex:none label row
+    const i = mkTextInput({ width, tip, onChange });
     r.appendChild(i);
     return i;
   }

@@ -2,7 +2,7 @@
  * SupabaseStore — the launch/production persistence backend (Supabase Postgres).
  *
  * The Postgres half of the "SQLite now -> Supabase/Postgres at launch" plan
- * (START_SCREEN.md). It implements the SAME `Store` contract as SqliteStore
+ * (see SUPABASE_SETUP.md). It implements the SAME `Store` contract as SqliteStore
  * (documented in server/store/index.js), so everything above it (auth API,
  * character API, GameHost save read/write) is unchanged — `createStore()` picks
  * this backend whenever a Postgres connection string is present in the env.

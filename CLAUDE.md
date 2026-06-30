@@ -114,7 +114,7 @@ rather than waiting. Use the Supabase API as needed for any direct prod-DB read/
   (2) **tile-graphic** (escalator/conveyor/waterfall STEPS — swaps minitile graphics)
   via `tools/tile_anim.py`. Both consumed by `build_atlases.py`; combos with both
   merge. Tile-graphic currently baked for the escalator draw tilesets 12+13
-  (`ESCALATOR_DRAW_TS`); water/waterfalls are TODO2.md.
+  (`ESCALATOR_DRAW_TS`); water/waterfalls are in TODO.md.
 
 ## Music
 

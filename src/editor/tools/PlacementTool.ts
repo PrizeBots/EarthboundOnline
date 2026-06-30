@@ -32,6 +32,7 @@ import { Direction } from '../../types';
 import { saveOverride } from '../saveOverride';
 import { registerSaveHandler } from '../EditorHub';
 import { EditorShellApi, EditorTool, WorldPoint } from '../types';
+import { mkButton, mkRow as uiRow, mkTextInput, mkSelect as uiSelect } from '../ui';
 import { dialogueTool } from './DialogueTool';
 import { trafficEditorTool } from './TrafficEditorTool';
 import { entityManagerTool } from './EntityManagerTool';
@@ -1302,6 +1303,9 @@ class PlacementTool implements EditorTool {
     this.rebuildForm();
   }
 
+  // Thin wrappers over the shared editor UI kit (src/editor/ui.ts) — kept so the
+  // tool's many call sites stay unchanged while the duplicated DOM/CSS lives in
+  // one place. `accent` = the primary (gold) variant this tool uses.
   private mkBtn(
     label: string,
     fn: () => void,
@@ -1309,30 +1313,11 @@ class PlacementTool implements EditorTool {
     accent = false,
     tip?: string
   ): HTMLButtonElement {
-    const b = document.createElement('button');
-    b.textContent = label;
-    b.style.cssText =
-      'font:11px monospace;padding:2px 7px;cursor:pointer;border-radius:3px;' +
-      (accent
-        ? 'background:#3d2f14;color:#e8a33d;border:1px solid #e8a33d;'
-        : 'background:#1d2530;color:#cde;border:1px solid #3a4a5a;');
-    if (tip) b.title = tip;
-    b.onclick = fn;
-    parent.appendChild(b);
-    return b;
+    return mkButton(label, fn, { parent, variant: accent ? 'gold' : 'default', tip });
   }
 
   private mkRow(parent: HTMLElement, label: string, tip?: string): HTMLDivElement {
-    const r = document.createElement('div');
-    r.style.cssText = 'display:flex;align-items:center;gap:6px;';
-    const l = document.createElement('span');
-    l.textContent = label;
-    l.style.cssText =
-      'width:46px;color:#9fb8cc;' + (tip ? 'cursor:help;border-bottom:1px dotted #4a5a6a;' : '');
-    if (tip) l.title = tip;
-    r.appendChild(l);
-    parent.appendChild(r);
-    return r;
+    return uiRow(parent, label, { tip });
   }
 
   private mkInput(
@@ -1343,14 +1328,8 @@ class PlacementTool implements EditorTool {
     width = 64,
     tip?: string
   ): HTMLInputElement {
-    const r = this.mkRow(parent, label, tip);
-    const i = document.createElement('input');
-    i.style.cssText =
-      `width:${width}px;font:11px monospace;background:#0c1014;color:#cde;` +
-      'border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
-    if (tip) i.title = tip;
-    i.onchange = () => onChange(i.value);
-    r.appendChild(i);
+    const i = mkTextInput({ width, tip, onChange });
+    this.mkRow(parent, label, tip).appendChild(i);
     this.fields.set(name, i);
     return i;
   }
@@ -1363,19 +1342,11 @@ class PlacementTool implements EditorTool {
     onChange: (v: string) => void,
     tip?: string
   ): HTMLSelectElement {
-    const r = this.mkRow(parent, label, tip);
-    const s = document.createElement('select');
-    s.style.cssText =
-      'font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;';
-    if (tip) s.title = tip;
-    for (const [value, text] of options) {
-      const o = document.createElement('option');
-      o.value = value;
-      o.textContent = text;
-      s.appendChild(o);
-    }
-    s.onchange = () => onChange(s.value);
-    r.appendChild(s);
+    const s = uiSelect(
+      options.map(([value, label]) => ({ value, label })),
+      { tip, onChange }
+    );
+    this.mkRow(parent, label, tip).appendChild(s);
     this.fields.set(name, s);
     return s;
   }

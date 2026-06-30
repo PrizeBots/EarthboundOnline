@@ -1,5 +1,6 @@
 import { EditorTool, EditorShellApi, WorldPoint } from '../types';
 import { Camera } from '../../engine/Camera';
+import { mkButton } from '../ui';
 import { drawWindow } from '../../engine/WindowRenderer';
 import { drawText } from '../../engine/TextRenderer';
 import { wrapText } from '../../engine/ChatManager';
@@ -632,6 +633,8 @@ class DialogueTool implements EditorTool {
 
   // --- helper ---------------------------------------------------------------------------
 
+  // Thin wrapper over the shared editor UI kit (src/editor/ui.ts). `accent` =
+  // the primary (gold) highlight variant; this tool's buttons use 2px 9px pad.
   private mkBtn(
     label: string,
     fn: () => void,
@@ -639,16 +642,7 @@ class DialogueTool implements EditorTool {
     accent = false,
     tip?: string
   ): void {
-    const b = document.createElement('button');
-    b.textContent = label;
-    if (tip) b.title = tip;
-    b.style.cssText =
-      'font:11px monospace;padding:2px 9px;cursor:pointer;border-radius:3px;' +
-      (accent
-        ? 'background:#143046;color:#6db3e8;border:1px solid #6db3e8;'
-        : 'background:#1d2530;color:#cde;border:1px solid #3a4a5a;');
-    b.onclick = fn;
-    parent.appendChild(b);
+    mkButton(label, fn, { parent, variant: accent ? 'gold' : 'default', tip, pad: '2px 9px' });
   }
 }
 

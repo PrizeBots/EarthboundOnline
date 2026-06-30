@@ -151,7 +151,7 @@ Canon: Jeff **fixes broken items overnight** into gear, gated by level/IQ —
   (Knowledge-locked to equip), best bombs ≈ Rockin' Ω burst.
 
 **Inputs already exist** — _Broken spray can_ etc. drop from enemies (`enemies.json`), so
-crafting plugs into the loot economy (`LOOT_AND_BANKING.md`). **Net-new:** the rest/inn
+crafting plugs into the loot economy (ARCHITECTURE.md "Loot"). **Net-new:** the rest/inn
 trigger, the recipe table (broken→fixed + knowledge req + success%), gadget-bomb items,
 and an equip-Knowledge gate for signature weapons.
 

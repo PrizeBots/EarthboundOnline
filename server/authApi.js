@@ -1,5 +1,5 @@
 /**
- * Auth + character HTTP API (START_SCREEN.md, Phase 2).
+ * Auth + character HTTP API (accounts; see ARCHITECTURE.md persistence).
  *
  * An Express *app* (not a bare Router) exposing the account/session/character
  * endpoints the TITLE/AUTH overlay calls. We return a full app on purpose: an

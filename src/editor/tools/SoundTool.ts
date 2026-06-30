@@ -1,6 +1,7 @@
 import { EditorTool, EditorShellApi, WorldPoint } from '../types';
 import { Camera } from '../../engine/Camera';
 import { SECTOR_TILES_X, SECTOR_TILES_Y, TILE_SIZE } from '../../types';
+import { mkButton, mkRow as uiRow, mkTextInput } from '../ui';
 import {
   MusicArea,
   setMusicAreas,
@@ -938,6 +939,8 @@ class SoundTool implements EditorTool {
 
   // --- small DOM helpers -----------------------------------------------------
 
+  // Thin wrappers over the shared editor UI kit (src/editor/ui.ts). `accent` =
+  // the primary (gold) highlight variant.
   private mkBtn(
     label: string,
     fn: () => void,
@@ -945,30 +948,11 @@ class SoundTool implements EditorTool {
     accent = false,
     tip?: string
   ): HTMLButtonElement {
-    const b = document.createElement('button');
-    b.textContent = label;
-    b.style.cssText =
-      'font:11px monospace;padding:2px 7px;cursor:pointer;border-radius:3px;' +
-      (accent
-        ? 'background:#123338;color:#5ad0e8;border:1px solid #5ad0e8;'
-        : 'background:#1d2530;color:#cde;border:1px solid #3a4a5a;');
-    if (tip) b.title = tip;
-    b.onclick = fn;
-    parent.appendChild(b);
-    return b;
+    return mkButton(label, fn, { parent, variant: accent ? 'gold' : 'default', tip });
   }
 
   private mkRow(parent: HTMLElement, label: string, tip?: string): HTMLDivElement {
-    const r = document.createElement('div');
-    r.style.cssText = 'display:flex;align-items:center;gap:6px;';
-    const l = document.createElement('span');
-    l.textContent = label;
-    l.style.cssText =
-      'width:46px;color:#9fb8cc;' + (tip ? 'cursor:help;border-bottom:1px dotted #4a5a6a;' : '');
-    if (tip) l.title = tip;
-    r.appendChild(l);
-    parent.appendChild(r);
-    return r;
+    return uiRow(parent, label, { tip });
   }
 
   private mkInput(
@@ -988,12 +972,7 @@ class SoundTool implements EditorTool {
     width = 64,
     tip?: string
   ): HTMLInputElement {
-    const i = document.createElement('input');
-    i.style.cssText =
-      `width:${width}px;font:11px monospace;background:#0c1014;color:#cde;` +
-      'border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
-    if (tip) i.title = tip;
-    i.onchange = () => onChange(i.value);
+    const i = mkTextInput({ width, tip, onChange });
     parent.appendChild(i);
     return i;
   }

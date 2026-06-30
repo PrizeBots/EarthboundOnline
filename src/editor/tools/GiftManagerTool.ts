@@ -1,4 +1,5 @@
 import { EditorTool, EditorShellApi, WorldPoint } from '../types';
+import { mkButton } from '../ui';
 import { saveOverride, loadOverride } from '../saveOverride';
 import { registerSaveHandler } from '../registry';
 import {
@@ -399,20 +400,14 @@ class GiftManagerTool implements EditorTool {
     this.detailEl.appendChild(this.picker.el);
   }
 
+  // Thin wrapper over the shared editor UI kit (src/editor/ui.ts).
   private mkBtn(
     label: string,
     fn: () => void,
     parent: HTMLElement,
     tip?: string
   ): HTMLButtonElement {
-    const b = document.createElement('button');
-    b.textContent = label;
-    if (tip) b.title = tip;
-    b.style.cssText =
-      'font:11px monospace;padding:2px 7px;cursor:pointer;border-radius:3px;background:#1d2530;color:#cde;border:1px solid #3a4a5a;';
-    b.onclick = fn;
-    parent.appendChild(b);
-    return b;
+    return mkButton(label, fn, { parent, tip });
   }
 }
 

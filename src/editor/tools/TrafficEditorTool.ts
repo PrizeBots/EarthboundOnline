@@ -8,6 +8,7 @@ import { saveOverride, loadOverride } from '../saveOverride';
 import { registerSaveHandler } from '../registry';
 import { dialogueTool } from './DialogueTool';
 import { EntityPropsForm, VEHICLE_PROP_FIELDS } from '../components/EntityPropsForm';
+import { mkButton, mkRow as uiRow, mkTextInput } from '../ui';
 
 // Traffic Editor (EDITOR_TOOLS.md). Place vehicles and draw each one's waypoint
 // route; the server drives the car along it (server/npcSim.js), facing its
@@ -824,6 +825,8 @@ class TrafficEditorTool implements EditorTool {
 
   // --- small DOM helpers ---------------------------------------------------------------
 
+  // Thin wrappers over the shared editor UI kit (src/editor/ui.ts). `accent` =
+  // the additive (green) variant this tool uses for + New / Add waypoint.
   private mkBtn(
     label: string,
     fn: () => void,
@@ -831,30 +834,11 @@ class TrafficEditorTool implements EditorTool {
     accent = false,
     tip?: string
   ): HTMLButtonElement {
-    const b = document.createElement('button');
-    b.textContent = label;
-    b.style.cssText =
-      'font:11px monospace;padding:2px 7px;cursor:pointer;border-radius:3px;' +
-      (accent
-        ? 'background:#143d22;color:#6ad08a;border:1px solid #6ad08a;'
-        : 'background:#1d2530;color:#cde;border:1px solid #3a4a5a;');
-    if (tip) b.title = tip;
-    b.onclick = fn;
-    parent.appendChild(b);
-    return b;
+    return mkButton(label, fn, { parent, variant: accent ? 'green' : 'default', tip });
   }
 
   private mkRow(parent: HTMLElement, label: string, tip?: string): HTMLDivElement {
-    const r = document.createElement('div');
-    r.style.cssText = 'display:flex;align-items:center;gap:6px;';
-    const l = document.createElement('span');
-    l.textContent = label;
-    l.style.cssText =
-      'width:46px;color:#9fb8cc;' + (tip ? 'cursor:help;border-bottom:1px dotted #4a5a6a;' : '');
-    if (tip) l.title = tip;
-    r.appendChild(l);
-    parent.appendChild(r);
-    return r;
+    return uiRow(parent, label, { tip });
   }
 
   /** Push a vehicle's inherited defaults + its inline overrides into the form. */
@@ -875,14 +859,8 @@ class TrafficEditorTool implements EditorTool {
     width = 64,
     tip?: string
   ): HTMLInputElement {
-    const r = this.mkRow(parent, label, tip);
-    const i = document.createElement('input');
-    i.style.cssText =
-      `width:${width}px;font:11px monospace;background:#0c1014;color:#cde;` +
-      'border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
-    if (tip) i.title = tip;
-    i.onchange = () => onChange(i.value);
-    r.appendChild(i);
+    const i = mkTextInput({ width, tip, onChange });
+    this.mkRow(parent, label, tip).appendChild(i);
     this.fields.set(name, i);
     return i;
   }

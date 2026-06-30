@@ -252,6 +252,33 @@ export function roomIdAt(worldX: number, worldY: number): string {
   return roomAt(worldX, worldY)?.id ?? WORLD_ROOM_ID;
 }
 
+/**
+ * The outdoor camera bound for a world point: the bounding box (world px) of the
+ * room at this point. Returns null when the point is on no room — those areas
+ * scroll freely. The camera clamps to this so neighboring stitched chunks don't
+ * bleed in at a room's edge. The room IS the clamp unit (BGM is a room property),
+ * so contiguous areas must be ONE room (region rooms are merged per-BGM) for the
+ * camera to glide instead of jumping between fragments. The clamp only bites on
+ * an axis when the room is bigger than the view there (Camera.follow), so tiny
+ * rooms fall back to free scroll rather than locking the camera.
+ */
+export function roomRectAt(worldX: number, worldY: number): RoomRect | null {
+  const here = roomAt(worldX, worldY);
+  if (!here) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const rc of rectsOf(here)) {
+    if (rc.x < minX) minX = rc.x;
+    if (rc.y < minY) minY = rc.y;
+    if (rc.x + rc.w > maxX) maxX = rc.x + rc.w;
+    if (rc.y + rc.h > maxY) maxY = rc.y + rc.h;
+  }
+  if (minX === Infinity) return null;
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
 export function getRoom(id: string): RoomDef | null {
   if (id === WORLD_ROOM_ID) return null;
   return allRooms().find((r) => r.id === id) ?? null;

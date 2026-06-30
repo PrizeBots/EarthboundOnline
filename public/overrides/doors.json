@@ -1183,6 +1183,60 @@
       "sfx": "door-open",
       "worldX": 8144,
       "worldY": 9968
+    },
+    "7888,10180": {
+      "destX": 4488,
+      "destY": 9432,
+      "destDir": 2,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 7880,
+      "worldY": 10176
+    },
+    "7896,10188": {
+      "destX": 4488,
+      "destY": 9432,
+      "destDir": 2,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 7888,
+      "worldY": 10184
+    },
+    "7904,10196": {
+      "destX": 4488,
+      "destY": 9432,
+      "destDir": 2,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 7896,
+      "worldY": 10192
+    },
+    "7912,10204": {
+      "destX": 4488,
+      "destY": 9432,
+      "destDir": 2,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 7904,
+      "worldY": 10200
+    },
+    "7920,10212": {
+      "destX": 4488,
+      "destY": 9432,
+      "destDir": 2,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 7912,
+      "worldY": 10208
+    },
+    "7928,10220": {
+      "destX": 4488,
+      "destY": 9432,
+      "destDir": 2,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 7920,
+      "worldY": 10216
     }
   },
   "additions": [

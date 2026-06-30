@@ -72,12 +72,22 @@ runs identically in dev (via `vite.config.ts`) and in the standalone deploy
 
 ## Documentation
 
+**Core / reference**
+
 - **[CLAUDE.md](CLAUDE.md)** — project rules: ROM policy, dev ports, conventions
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — the technical map (engine, servers, pipeline)
-- **[EDITOR_TOOLS.md](EDITOR_TOOLS.md)** — the dev authoring layer
-- **[TODO.md](TODO.md)** — roadmap (phases 1–4, pre-launch, backlog)
-- **[bugs.md](bugs.md)** — solved bugs and the reasoning behind tricky fixes
+- **[EDITOR_TOOLS.md](EDITOR_TOOLS.md)** — the dev authoring layer (per-tool checklist)
 - **[tools/README.md](tools/README.md)** — extraction/verification script map
+- **[bugs.md](bugs.md)** — solved bugs and the reasoning behind tricky fixes
+- **[CREDITS.md](CREDITS.md)** — tools/libraries we build on
+- **[SUPABASE_SETUP.md](SUPABASE_SETUP.md)** — operator guide for the prod database
+
+**Roadmap + active design**
+
+- **[TODO.md](TODO.md)** — the single roadmap (active up top, shipped archive below)
+- **[ABILITIES.md](ABILITIES.md)** — 5-stat build parity + combat power design
+- **[ROOM_SYSTEM.md](ROOM_SYSTEM.md)** — room registry refactor (Phases 0–3 done)
+- **[NETWORK_REMODEL.md](NETWORK_REMODEL.md)** — netcode scaling plan (AOI + binary landed)
 
 ## Status
 

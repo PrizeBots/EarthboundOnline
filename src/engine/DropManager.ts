@@ -5,7 +5,7 @@
  * player died (money), decides who claims one (first-touch), and tells us to add
  * or remove them. We just mirror that set and paint it. Pickup is NOT client-side
  * — walking onto a drop is detected server-side; we only render until the server
- * says it's gone. See server/npcSim.js (drop_spawn / drop_remove) + LOOT_AND_BANKING.md.
+ * says it's gone. See server/npcSim.js (drop_spawn / drop_remove) + ARCHITECTURE.md "Loot".
  *
  * Drawn in WORLD space (the Renderer calls renderDrops after the tile pass), so
  * drops sit on the ground beneath sprites and share the camera transform.

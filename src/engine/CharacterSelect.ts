@@ -18,7 +18,7 @@ const SCALE = 2;
 const SOUTH_ROW = 1;
 const SOUTH_COL = 0;
 
-// Dev toggle to the real TITLE/AUTH start screen (START_SCREEN.md). Char select
+// Dev toggle to the real TITLE/AUTH start screen (accounts; see ARCHITECTURE.md). Char select
 // stays the boot screen in dev; this button opens the account overlay on top.
 const ACCT_BTN = { x: SCREEN_WIDTH - 62, y: 2, w: 60, h: 11, label: 'ACCOUNTS' };
 

@@ -24,7 +24,7 @@ import { pollGamepads, mountGamepadDebug, consumeGamepadNav } from './Gamepad';
 import { hotbarBoxAt, setFavoriteThing, setPsiDev } from './menu/layout';
 import { loadMapData, getSector, getDrawTilesetId } from './MapManager';
 import { loadDoors, getDoorAt, getStairAt, DoorData } from './DoorManager';
-import { setActiveRoomFromPoint, loadRegionRooms } from './Rooms';
+import { setActiveRoomFromPoint, loadRegionRooms, roomRectAt } from './Rooms';
 import {
   loadNPCs,
   getNearbyNPCs,
@@ -418,7 +418,7 @@ export class Game {
     //   __eb.flags.set/clear/has/list/reset
     if (import.meta.env.DEV) installFlagConsole();
 
-    // TITLE/AUTH account overlay (START_SCREEN.md). Built hidden; opened from the
+    // TITLE/AUTH account overlay (accounts; see ARCHITECTURE.md). Built hidden; opened from the
     // ACCOUNTS button on character select. Char select stays the dev boot screen.
     // The slot list spawns a chosen/created character into the game via playCharacter.
     initStartScreen();
@@ -1231,8 +1231,6 @@ export class Game {
   private static readonly COL_W = 14;
   private static readonly COL_H = 8;
   private static readonly COL_OY = -8;
-  private static readonly PRED_PUSH_STEP = 1.4;
-  private static readonly PRED_PUSH_MAX_LEAD = 12;
   private static readonly PRED_HIT_KB = 10;
   private static readonly PRED_HIT_MAX_LEAD = 26;
   private static readonly ATTACK_REACH = 14;
@@ -1256,39 +1254,9 @@ export class Game {
     return Math.max(0.15, Math.min(2, (2 * a) / (a + v)));
   }
 
-  /** Predict the local player plowing LIGHTER remote players aside (mirrors the
-   *  server's pushPlayers). Instant, then the player_push stream reconciles. */
-  private predictPushRemotePlayers(moving: boolean): void {
-    if (!moving) return;
-    const W = Game.COL_W;
-    const H = Game.COL_H;
-    const fx = this.player.x - W / 2;
-    const fy = this.player.y + Game.COL_OY;
-    const mine = this.player.level;
-    for (const [, rp] of this.remotePlayers) {
-      if (rp.downed || (rp.hp !== undefined && rp.hp <= 0)) continue;
-      if (mine <= (rp.level ?? 1)) continue; // only plow strictly-lighter players
-      const rx = rp.x - W / 2;
-      const ry = rp.y + Game.COL_OY;
-      if (!(fx < rx + W && fx + W > rx && fy < ry + H && fy + H > ry)) continue;
-      let dx = rp.x - this.player.x;
-      let dy = rp.y - this.player.y;
-      const d = Math.hypot(dx, dy);
-      if (d < 0.001) {
-        const v = Game.DIR_VEC[this.player.direction] ?? Game.DIR_VEC[0];
-        dx = v[0];
-        dy = v[1];
-      } else {
-        dx /= d;
-        dy /= d;
-      }
-      const tx = rx + (rp.predOffX ?? 0) + dx * Game.PRED_PUSH_STEP;
-      const ty = ry + (rp.predOffY ?? 0) + dy * Game.PRED_PUSH_STEP;
-      if (!checkPlayerCollision(tx, ty, W, H)) {
-        injectPredOffset(rp, dx, dy, Game.PRED_PUSH_STEP, Game.PRED_PUSH_MAX_LEAD);
-      }
-    }
-  }
+  // Player↔player walk-push prediction was removed with the server feature: player
+  // bodies are non-solid to each other, so there is nothing to plow or reconcile.
+  // PvP combat knockback still predicts via predictPvpKnockback below.
 
   /** Predict the local player's swing knocking back remote players (PvP). Mirrors
    *  the server hitbox + canHurt gate (you may hit a player if you OR they are PK). */
@@ -1467,6 +1435,13 @@ export class Game {
    */
   private updateRoomBounds(worldX: number, worldY: number) {
     this.camera.roomBounds = computeRoomBounds(worldX, worldY);
+    // Outdoors (no interior crop), clamp the camera to the current room so
+    // neighboring stitched chunks don't bleed in. null off any room = free
+    // scroll. Ignored while roomBounds is set (interior crop wins).
+    const rr = this.camera.roomBounds ? null : roomRectAt(worldX, worldY);
+    this.camera.scrollClamp = rr
+      ? { minX: rr.x, minY: rr.y, maxX: rr.x + rr.w, maxY: rr.y + rr.h }
+      : null;
     // Seal the room for movement: packed interiors share walkable strips
     // with their neighbors, so the player may only leave through a door.
     setActiveRoom(this.camera.roomBounds);
@@ -2010,7 +1985,6 @@ export class Game {
     // instead of a network round-trip later (the server still authoritatively
     // shoves them; this just hides the latency and reconciles).
     predictPlayerPush(this.player.x, this.player.y, this.player.level, this.player.moving);
-    this.predictPushRemotePlayers(this.player.moving);
     // NPC simulation is server-authoritative; getNearbyNPCs (in render) still
     // triggers lazy sprite-sheet loads as NPCs come into range.
     this.camera.follow(this.player.x, this.player.y);

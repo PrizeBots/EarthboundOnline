@@ -2,7 +2,7 @@
  * Store — the persistence seam for accounts, sessions, and character saves.
  *
  * This is the swap point in the "SQLite now -> Supabase/Postgres at launch" plan
- * (START_SCREEN.md). Everything above the store (auth API, character API, the
+ * (see ARCHITECTURE.md persistence + SUPABASE_SETUP.md). Everything above the store (auth API, character API, the
  * game server's save read/write) depends ONLY on the contract below, never on
  * better-sqlite3. To move to Supabase at launch: write a SupabaseStore with the
  * same methods and change the one line in `createStore`. Nothing else changes.

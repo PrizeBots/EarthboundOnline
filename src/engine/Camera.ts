@@ -26,10 +26,24 @@ export interface RoomBounds {
   cells: Set<number>;
 }
 
+/** A pure camera-scroll boundary in world pixels. Unlike RoomBounds it does NOT
+ *  mask or seal — it only limits how far follow() may scroll. Used outdoors to
+ *  keep the camera inside the current town so neighboring stitched chunks (e.g.
+ *  the water/bridge below a town) don't bleed into view. */
+export interface ScrollClamp {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
 export class Camera {
   x = 0;
   y = 0;
   roomBounds: RoomBounds | null = null;
+  /** Outdoor town camera bound (null = scroll freely to the map edges). Only
+   *  consulted when roomBounds is null — interior crop takes precedence. */
+  scrollClamp: ScrollClamp | null = null;
   /**
    * View scale: 1 = native SNES view (always, during gameplay). The dev
    * editor zooms OUT by lowering this (<1 renders more world into the same
@@ -60,20 +74,44 @@ export class Camera {
         // Room fits on screen — center it
         this.x = this.roomBounds.minX + (roomW - this.viewW) / 2;
       } else {
-        this.x = Math.max(this.roomBounds.minX, Math.min(this.x, this.roomBounds.maxX - this.viewW));
+        this.x = Math.max(
+          this.roomBounds.minX,
+          Math.min(this.x, this.roomBounds.maxX - this.viewW)
+        );
       }
 
       if (roomH <= this.viewH) {
         this.y = this.roomBounds.minY + (roomH - this.viewH) / 2;
       } else {
-        this.y = Math.max(this.roomBounds.minY, Math.min(this.y, this.roomBounds.maxY - this.viewH));
+        this.y = Math.max(
+          this.roomBounds.minY,
+          Math.min(this.y, this.roomBounds.maxY - this.viewH)
+        );
       }
     } else {
-      // Clamp to map bounds
-      const maxX = MAP_WIDTH_TILES * TILE_SIZE - this.viewW;
-      const maxY = MAP_HEIGHT_TILES * TILE_SIZE - this.viewH;
-      this.x = Math.max(0, Math.min(this.x, maxX));
-      this.y = Math.max(0, Math.min(this.y, maxY));
+      // Clamp to map bounds, then tighten to the outdoor room bound (no mask/
+      // seal) PER AXIS — but only where the room is bigger than the view. A room
+      // shorter/narrower than the screen can't hide its neighbors anyway, so we
+      // leave that axis free-scrolling instead of locking the camera onto it.
+      const mapMaxX = MAP_WIDTH_TILES * TILE_SIZE - this.viewW;
+      const mapMaxY = MAP_HEIGHT_TILES * TILE_SIZE - this.viewH;
+      let loX = 0,
+        hiX = mapMaxX,
+        loY = 0,
+        hiY = mapMaxY;
+      const c = this.scrollClamp;
+      if (c) {
+        if (c.maxX - c.minX > this.viewW) {
+          loX = c.minX;
+          hiX = c.maxX - this.viewW;
+        }
+        if (c.maxY - c.minY > this.viewH) {
+          loY = c.minY;
+          hiY = c.maxY - this.viewH;
+        }
+      }
+      this.x = Math.max(loX, Math.min(this.x, hiX));
+      this.y = Math.max(loY, Math.min(this.y, hiY));
     }
   }
 

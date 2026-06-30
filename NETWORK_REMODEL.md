@@ -313,7 +313,8 @@ NPCs) — an O(N) burst per join.
 
 - Local player: client-authoritative + predicted; server reconciles via `pos` +
   `seq` ack.
-- Remotes/NPCs: snapshot interpolation, render **150 ms** in the past, **coast on
+- Remotes/NPCs: snapshot interpolation on a server-time playout clock, rendering
+  in the past by an **adaptive** delay (~40–100 ms, was a fixed 150 ms), **coast on
   underrun** (`RemoteInterp.ts`), `predOff` predict-then-reconcile.
 
 ### Capacity reality check
@@ -555,8 +556,9 @@ just "delta-from-nothing." Cheap because it's per-cell and rare.
 ### Keep
 
 - The input→`seq`→`pos`-ack reconcile loop (already prediction-correct).
-- 150 ms interpolation + coast (`RemoteInterp.ts`) — unchanged over the new
-  transport; tune the buffer against real RTT/jitter (measured via `getNetStats`).
+- Adaptive interpolation (~40–100 ms, rate-adaptive) + coast (`RemoteInterp.ts`) —
+  unchanged over the new transport; the buffer already tracks real RTT/jitter +
+  live server Hz (measured via `getNetStats`).
 
 ---
 

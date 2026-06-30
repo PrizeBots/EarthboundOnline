@@ -20,6 +20,7 @@ import { regionAt, regionLabel, regionOrder } from '../../engine/Regions';
 import { entityManagerTool } from './EntityManagerTool';
 import { saveOverride, loadOverride } from '../saveOverride';
 import { registerSaveHandler } from '../registry';
+import { mkButton, mkRow as uiRow, mkTextInput } from '../ui';
 
 // Enemy Spawner editor (EDITOR_TOOLS.md §Backlog). Place/configure the enemy
 // spawners in enemy_spawns.json visually: assign the enemy sprite, where it
@@ -1060,35 +1061,20 @@ class EnemySpawnerTool implements EditorTool {
 
   // --- small DOM helpers ---------------------------------------------------------------
 
+  // Thin wrappers over the shared editor UI kit (src/editor/ui.ts) — kept so the
+  // tool's many call sites stay unchanged while the duplicated DOM/CSS lives in
+  // one place. `accent` = the destructive (red) variant this tool uses on Delete.
   private mkBtn(
     label: string,
     fn: () => void,
     parent: HTMLElement,
     accent = false
   ): HTMLButtonElement {
-    const b = document.createElement('button');
-    b.textContent = label;
-    b.style.cssText =
-      'font:11px monospace;padding:2px 7px;cursor:pointer;border-radius:3px;' +
-      (accent
-        ? 'background:#3d1414;color:#e85050;border:1px solid #e85050;'
-        : 'background:#1d2530;color:#cde;border:1px solid #3a4a5a;');
-    b.onclick = fn;
-    parent.appendChild(b);
-    return b;
+    return mkButton(label, fn, { parent, variant: accent ? 'red' : 'default' });
   }
 
   private mkRow(parent: HTMLElement, label: string, tip?: string): HTMLDivElement {
-    const r = document.createElement('div');
-    r.style.cssText = 'display:flex;align-items:center;gap:6px;';
-    const l = document.createElement('span');
-    l.textContent = label;
-    l.style.cssText =
-      'width:46px;color:#9fb8cc;' + (tip ? 'cursor:help;border-bottom:1px dotted #4a5a6a;' : '');
-    if (tip) l.title = tip;
-    r.appendChild(l);
-    parent.appendChild(r);
-    return r;
+    return uiRow(parent, label, { tip });
   }
 
   private mkInput(
@@ -1099,14 +1085,8 @@ class EnemySpawnerTool implements EditorTool {
     width = 64,
     tip?: string
   ): HTMLInputElement {
-    const r = this.mkRow(parent, label, tip);
-    const i = document.createElement('input');
-    i.style.cssText =
-      `width:${width}px;font:11px monospace;background:#0c1014;color:#cde;` +
-      'border:1px solid #3a4a5a;border-radius:3px;padding:2px 5px;';
-    if (tip) i.title = tip;
-    i.onchange = () => onChange(i.value);
-    r.appendChild(i);
+    const i = mkTextInput({ width, tip, onChange });
+    this.mkRow(parent, label, tip).appendChild(i);
     this.fields.set(name, i);
     return i;
   }

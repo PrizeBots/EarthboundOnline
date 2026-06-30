@@ -1,5 +1,5 @@
 /**
- * Start Screen — the real title/account overlay (START_SCREEN.md, phase 4).
+ * Start Screen — the real title/account overlay (accounts; see ARCHITECTURE.md persistence).
  *
  * A DOM overlay drawn OVER the pixel canvas (password fields on a canvas are
  * painful). In dev the canvas character-select stays the boot screen; an

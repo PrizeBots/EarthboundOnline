@@ -1583,11 +1583,11 @@
     {
       "name": "spawner-110",
       "sprite": 419,
-      "x": 1051,
-      "y": 1849,
-      "poolSize": 7,
-      "maxActive": 4,
-      "spawnIntervalMs": 3500,
+      "x": 1027,
+      "y": 1895,
+      "poolSize": 4,
+      "maxActive": 1,
+      "spawnIntervalMs": 45000,
       "respawnDelayMs": 9000,
       "enabled": true,
       "level": 99
@@ -1623,8 +1623,8 @@
       "x": 3232,
       "y": 7048,
       "wanderRadius": 150,
-      "poolSize": 7,
-      "maxActive": 4,
+      "poolSize": 6,
+      "maxActive": 3,
       "spawnIntervalMs": 35000,
       "respawnDelayMs": 35000,
       "enabled": true

@@ -709,14 +709,14 @@ walking into a lower-mass actor shove it aside — a small capped per-tick nudge
 (`PLOW_STEP`/`PLOW_STEP_MAX`), NOT a knockback impulse, so sustained contact slides
 the actor smoothly out of the way (the "plow through the level-2 townsfolk blocking
 the shop" case). Both share `slideApart`, which clamps the slide against walls so
-nothing is shoved through one. Equal/lighter players don't plow — the normal mutual
-block stands. **Player↔player** walk-push (`pushPlayers`) extends this to other
-players (clearing a low-level crowd off a doorway): players live on the host, not in
-`actors`, so the sim computes a wall-clamped landing spot (`knockbackPlayerSpot`, no
-damage) and hands it to the host via `onPlayerShoveCb` → `GameHost.shovePlayer` (the
-SAME path the vehicle plow uses; the client honors the `player_push` hint). It's
-gated on the heavier player actually MOVING this tick (`playerMoved`), so a resting
-player isn't a permanent repulsion aura — you push through people as you walk.
+nothing is shoved through one. This walk-push applies to **NPCs/actors only**.
+**Player↔player bodies are non-solid** — there is no traversal collision or walk-push
+between players (the old `pushPlayers` was removed): a gang of high-levels can't block
+a doorway or shove low-levels around, killing the classic MMO grief vector. The ONLY
+thing that moves another player is an actual HIT — combat knockback, broadcast as
+`player_push` and gated to PK (see Netcode). Vehicles still nudge a player via
+`onPlayerShoveCb` → `GameHost.shovePlayer` (a hit-like impulse, intentional). "Hold an
+area" territory control, if added, becomes a real objective system — not a body-block.
 
 The **juice trio** lives in `Juice.ts`, a
 module-level singleton (like `Emitter`) any hit-detector can poke: **hitstop**
@@ -778,8 +778,8 @@ an RTC→WS fallback clears the per-client baseline so the next WS frame re-keyf
 by `RTC_ENABLED=1` (server) + `?rtc` (client); off → unchanged WS path. Server-authoritative REACTIONS to your actions (a
 walk-push, a melee knockback) are **predicted then reconciled** via a `predOff`
 displacement (`applyPredOffset`/`injectPredOffset`, decayed by `PRED_DECAY`) — injectors
-(`predictPlayerPush`/`predictMeleeKnockback`/`Game.predictPushRemotePlayers`/
-`predictPvpKnockback`) mirror the server math so it lands where the result will;
+(`predictPlayerPush`/`predictMeleeKnockback`/`predictPvpKnockback`) mirror the server
+math so it lands where the result will;
 movement-only (flash/hitstop/damage numbers stay server-confirmed). REMAINING: the
 server `move` handler is not yet GATED (walking is server-driven for honest clients but
 not yet _enforced_ — pending a playtest before locking `move` to editor/warp-shielded);
