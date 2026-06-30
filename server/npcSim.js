@@ -40,6 +40,7 @@ const {
   resolveMelee,
 } = require('./npc/combatMath');
 const { createWorld } = require('./npc/world'); // map tiles/sectors/collision/doors/stairs
+const { createLoaders } = require('./npc/loaders'); // enemy/entity config + catalog merge
 
 // --- Map constants (mirror src/types.ts) ---
 const MINITILE = 8;
@@ -279,7 +280,6 @@ const ENEMY_SPEED = 0.6; // roamers move a touch faster than ambling townsfolk
 // Chase speed scales with the spawner's wander speed by this ratio, so the
 // per-spawner `speed` field controls both (chase stays proportionally faster).
 const CHASE_RATIO = ENEMY_CHASE_SPEED / ENEMY_SPEED;
-const ENEMY_FILE = 'map/enemy_spawns.json';
 
 // Geometry (rand, aabb, hyp), the PK damage model (canHurt) and melee resolution
 // (resolveMelee) → npc/combatMath.js. resolveMelee is re-exported below for
@@ -357,68 +357,11 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     exitDoorToward,
   } = world;
 
-  // --- Enemy config (our own content — see public/assets/map/enemy_spawns.json) ---
-  // The Enemy Spawner editor writes the WHOLE file to the overrides layer; it
-  // wins over the committed default. KEEP IN SYNC with NPCManager.loadNPCs —
-  // both build the same pool (disabled spawners skipped) so wire ids align.
-  const ENEMY_OV_PATH = path.join(assetsDir, '..', 'overrides', 'enemy_spawns.json');
-  function loadEnemyCfg() {
-    try {
-      return JSON.parse(fs.readFileSync(ENEMY_OV_PATH, 'utf8'));
-    } catch {
-      /* no override authored — fall back to the committed default */
-    }
-    try {
-      return readJSON(ENEMY_FILE);
-    } catch {
-      return null; // no enemies if neither file is present
-    }
-  }
-
-  // The UNIVERSAL entity master table (per sprite-group stats for EVERY kind —
-  // person/prop/enemy/car), authored in the Entity Manager. It used to live
-  // inside enemy_spawns.json under `entities`, but that file is really the
-  // ENEMY-SPAWNER config (spawners + enemy classification); the entity table is
-  // its own concern, so it now lives in overrides/entities.json. Back-compat:
-  // fall back to enemy_spawns.json `entities` for saves made before the split.
-  // KEEP IN SYNC with src/engine/NPCManager.ts (loadNPCs reads the same pair).
-  const ENTITIES_OV_PATH = path.join(assetsDir, '..', 'overrides', 'entities.json');
-  function loadEntities() {
-    try {
-      const d = JSON.parse(fs.readFileSync(ENTITIES_OV_PATH, 'utf8'));
-      if (d && d.entities) return d.entities;
-    } catch {
-      /* no entities.json yet — fall through to the legacy location */
-    }
-    const cfg = loadEnemyCfg();
-    return (cfg && cfg.entities) || {};
-  }
-  // ROM-derived enemy catalog (tools/extract_enemies.py -> assets/map/enemies.json):
-  // the DEFAULTS layer of per-entity stats, keyed by sprite id. Merged UNDER the
-  // authored enemy_spawns.json `entities`. Rarely changes (re-extracted from ROM),
-  // so it's loaded once, not file-watched. KEEP merge order IN SYNC with
-  // src/engine/NPCManager.ts: DEFAULT < catalog (ROM) < entities (authored).
-  const ENEMY_CAT_PATH = path.join(assetsDir, 'map', 'enemies.json');
-  function loadEnemyCatalog() {
-    try {
-      return JSON.parse(fs.readFileSync(ENEMY_CAT_PATH, 'utf8'));
-    } catch {
-      return null; // no catalog extracted — runtime falls back to authored/defaults
-    }
-  }
-  const enemyCatalog = loadEnemyCatalog();
-
-  // Effective per-entity stats = catalog (ROM defaults) overlaid by the authored
-  // entity table. Rebuilt whenever entities.json changes (reloadEntities).
-  function buildEntityDefs(entities) {
-    const cat = (enemyCatalog && enemyCatalog.bySprite) || {};
-    const file = entities || {};
-    const out = {};
-    for (const k of new Set([...Object.keys(cat), ...Object.keys(file)])) {
-      out[k] = Object.assign({}, cat[k], file[k]);
-    }
-    return out;
-  }
+  // Enemy/entity config loaders + ROM-catalog merge → npc/loaders.js. npcSim
+  // owns the override-file WATCH (reloadEnemies/reloadEntities rebuild the live
+  // pools below), so loaders just hands back the load fns + the paths to watch.
+  const loaders = createLoaders(assetsDir);
+  const { loadEnemyCfg, loadEntities, buildEntityDefs } = loaders;
 
   // `let` so the file watch can swap them in live.
   let enemyCfg = loadEnemyCfg();
@@ -1338,8 +1281,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // BOTH the extracted base and the editor overrides.
   fs.watchFile(path.join(assetsDir, NPCS_FILE), { interval: 2000 }, reloadPlacements);
   fs.watchFile(OVERRIDES_PATH, { interval: 2000 }, reloadPlacements);
-  fs.watchFile(ENEMY_OV_PATH, { interval: 2000 }, reloadEnemies);
-  fs.watchFile(ENTITIES_OV_PATH, { interval: 2000 }, reloadEntities);
+  fs.watchFile(loaders.enemyOvPath, { interval: 2000 }, reloadEnemies);
+  fs.watchFile(loaders.entitiesOvPath, { interval: 2000 }, reloadEntities);
   fs.watchFile(CAR_OV_PATH, { interval: 2000 }, reloadTraffic);
   fs.watchFile(world.roomsOvPath, { interval: 2000 }, reloadRooms);
   // Map-tile override edits re-stamp the band the same way (it's applied inside
@@ -4443,8 +4386,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       if (sendInterval) clearInterval(sendInterval);
       fs.unwatchFile(path.join(assetsDir, NPCS_FILE), reloadPlacements);
       fs.unwatchFile(OVERRIDES_PATH, reloadPlacements);
-      fs.unwatchFile(ENEMY_OV_PATH, reloadEnemies);
-      fs.unwatchFile(ENTITIES_OV_PATH, reloadEntities);
+      fs.unwatchFile(loaders.enemyOvPath, reloadEnemies);
+      fs.unwatchFile(loaders.entitiesOvPath, reloadEntities);
       fs.unwatchFile(CAR_OV_PATH, reloadTraffic);
       fs.unwatchFile(world.roomsOvPath, reloadRooms);
       world.stop(); // unwatch the collision + door files world owns
