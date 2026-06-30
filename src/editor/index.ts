@@ -14,6 +14,7 @@ import { combatTool } from './tools/CombatTool';
 import { roomBuilderTool } from './tools/RoomBuilderTool';
 import { roomManagerTool } from './tools/RoomManagerTool';
 import { eventManagerTool } from './tools/EventManagerTool';
+import { worldDoctorTool } from './tools/WorldDoctorTool';
 import { registerEditorTool, registerSaveHandler } from './registry';
 import { saveOverride } from './saveOverride';
 import { getNameOverrides } from '../engine/SpriteNames';
@@ -51,6 +52,7 @@ export function initEditorTools(context: EditorContext): EditorHooks {
   registerEditorTool(roomBuilderTool);
   registerEditorTool(roomManagerTool);
   registerEditorTool(eventManagerTool);
+  registerEditorTool(worldDoctorTool);
   for (const t of PLANNED) registerEditorTool({ ...t, status: 'wip' });
 
   // Sprite Editor (engine/SpriteEditor.ts): a self-contained overlay that owns
