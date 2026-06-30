@@ -14,23 +14,11 @@ import {
   PSI_CATEGORY_LABEL,
 } from '../../engine/PsiTuning';
 import { loadPsiAnims, getPsiAnim, hasPsiAnim, PSI_W, PSI_H } from '../../engine/PsiAnim';
+import { buildInflictEditor as buildInflictEditorUI } from '../components/InflictEditor';
+import { mkButton } from '../ui';
 
-// Status ids selectable in the inflict editor — KEEP IN SYNC with server/status.js
-// STATUS (mirrors ItemManagerTool's list; the same wire-stable strings).
-const STATUS_OPTIONS: { value: string; label: string }[] = [
-  { value: 'paralysis', label: 'Paralysis (numb)' },
-  { value: 'diamond', label: 'Diamondized' },
-  { value: 'sleep', label: 'Asleep' },
-  { value: 'strange', label: 'Feeling strange' },
-  { value: 'possessed', label: 'Possessed' },
-  { value: 'noPsi', label: "Can't concentrate" },
-  { value: 'crying', label: 'Crying' },
-  { value: 'poison', label: 'Poisoned' },
-  { value: 'nauseous', label: 'Nauseous' },
-  { value: 'sunstroke', label: 'Sunstroke' },
-  { value: 'cold', label: 'Cold' },
-  { value: 'homesick', label: 'Homesick' },
-];
+// The status-inflict editor + its STATUS_OPTIONS live in
+// ../components/InflictEditor (shared with the Item Manager).
 
 // Category tile/accent colors for the gallery (PSI's theme is purple).
 const CATEGORY_COLOR: Record<PsiCategory, string> = {
@@ -660,102 +648,18 @@ class PsiManagerTool implements EditorTool {
   }
 
   /** The status-inflict list editor (rows of {status, chance%}). Empty reverts to
-   *  the move's base inflicts. Seeded from the effective list so you edit current. */
+   *  the move's base inflicts. Seeded from the effective list. Shared w/ Item Mgr. */
   private buildInflictEditor(id: string): void {
-    const wrap = document.createElement('div');
-    wrap.style.cssText =
-      'display:flex;flex-direction:column;gap:4px;border-top:1px solid #2a3540;padding-top:6px;';
-    const head = document.createElement('div');
-    head.textContent = 'STATUS INFLICTS (on hit)';
-    head.style.cssText = 'color:#9fb8cc;font-size:11px;';
-    wrap.appendChild(head);
-
-    const eff = effectivePsi(id, this.overrides);
-    const list = (this.overrides[id]?.inflict ?? eff?.inflict ?? []).map((e) => ({ ...e }));
-    const rowsEl = document.createElement('div');
-    rowsEl.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
-    wrap.appendChild(rowsEl);
-
-    const commit = () => this.setInflict(id, list);
-
-    const renderRows = () => {
-      rowsEl.innerHTML = '';
-      list.forEach((entry, idx) => {
-        const r = document.createElement('div');
-        r.style.cssText = 'display:flex;align-items:center;gap:4px;';
-        const sel = document.createElement('select');
-        sel.title = 'Status ailment this move may inflict on hit.';
-        sel.style.cssText =
-          'flex:1;min-width:0;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
-        for (const o of STATUS_OPTIONS) {
-          const opt = document.createElement('option');
-          opt.value = o.value;
-          opt.textContent = o.label;
-          if (o.value === entry.type) opt.selected = true;
-          sel.appendChild(opt);
-        }
-        sel.onchange = () => {
-          entry.type = sel.value;
-          commit();
-        };
-        r.appendChild(sel);
-        const pct = document.createElement('input');
-        pct.type = 'number';
-        pct.value = String(entry.chance);
-        pct.title = 'Proc chance % (1–100), scaled by the target’s resistance.';
-        pct.style.cssText =
-          'width:48px;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
-        pct.onchange = () => {
-          let n = parseInt(pct.value, 10);
-          if (Number.isNaN(n)) n = 0;
-          n = Math.max(1, Math.min(100, n));
-          entry.chance = n;
-          pct.value = String(n);
-          commit();
-        };
-        r.appendChild(pct);
-        const pctLbl = document.createElement('span');
-        pctLbl.textContent = '%';
-        pctLbl.style.cssText = 'color:#9fb8cc;';
-        r.appendChild(pctLbl);
-        const del = document.createElement('button');
-        del.textContent = '🗑';
-        del.title = 'Remove this status inflict.';
-        del.style.cssText =
-          'font:11px monospace;padding:1px 6px;cursor:pointer;border-radius:3px;background:#1d2530;color:#cde;border:1px solid #3a4a5a;';
-        del.onclick = () => {
-          list.splice(idx, 1);
-          commit();
-          renderRows();
-        };
-        r.appendChild(del);
-        rowsEl.appendChild(r);
-      });
-      if (!list.length) {
-        const none = document.createElement('div');
-        none.textContent = 'none → no status proc';
-        none.style.cssText = 'color:#667;font-size:10px;';
-        rowsEl.appendChild(none);
-      }
-    };
-    renderRows();
-
-    this.mkBtn(
-      '+ Add status',
-      () => {
-        list.push({ type: 'paralysis', chance: 50 });
-        commit();
-        renderRows();
-      },
-      wrap,
-      false,
-      'Add another status this move can inflict on hit.'
+    const seed = this.overrides[id]?.inflict ?? effectivePsi(id, this.overrides)?.inflict ?? [];
+    this.statsEl!.appendChild(
+      buildInflictEditorUI({
+        entries: seed,
+        onCommit: (list) => this.setInflict(id, list),
+        emptyText: 'none → no status proc',
+        addChance: 50,
+        noun: 'move',
+      })
     );
-    const hint = document.createElement('div');
-    hint.textContent = 'Chance is scaled by the target’s resistance to that status.';
-    hint.style.cssText = 'color:#667;font-size:10px;line-height:1.4;';
-    wrap.appendChild(hint);
-    this.statsEl!.appendChild(wrap);
   }
 
   // --- small DOM helpers (mirror ItemManagerTool) --------------------------------------
@@ -898,17 +802,12 @@ class PsiManagerTool implements EditorTool {
     accent = false,
     tip?: string
   ): HTMLButtonElement {
-    const b = document.createElement('button');
-    b.textContent = label;
-    if (tip) b.title = tip;
-    b.style.cssText =
-      'font:11px monospace;padding:4px 8px;cursor:pointer;border-radius:3px;' +
-      (accent
-        ? `background:#2a1a38;color:${this.accent};border:1px solid ${this.accent};`
-        : 'background:#1d2530;color:#cde;border:1px solid #3a4a5a;');
-    b.onclick = fn;
-    parent.appendChild(b);
-    return b;
+    return mkButton(label, fn, {
+      parent,
+      variant: accent ? 'gold' : 'default',
+      tip,
+      pad: '4px 8px',
+    });
   }
 }
 

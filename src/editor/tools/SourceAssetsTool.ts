@@ -1,4 +1,5 @@
 import { EditorTool, EditorShellApi } from '../types';
+import { mkButton } from '../ui';
 import { FolderDesktop, FolderDesktopStore, FolderDesktopFolder } from '../FolderDesktop';
 import { loadJSON, loadImage } from '../../engine/AssetLoader';
 import { addCustomSprite, customSpritesDoc } from '../../engine/CustomSprites';
@@ -301,14 +302,8 @@ class SourceAssetsTool implements EditorTool {
     parent: HTMLElement,
     tip?: string
   ): HTMLButtonElement {
-    const b = document.createElement('button');
-    b.textContent = label;
-    if (tip) b.title = tip;
-    b.style.cssText =
-      'font:11px monospace;padding:4px 8px;cursor:pointer;border-radius:3px;text-align:left;' +
-      'background:#11302b;color:#4ec9b0;border:1px solid #2f6f63;';
-    b.onclick = fn;
-    parent.appendChild(b);
+    const b = mkButton(label, fn, { parent, variant: 'green', tip, pad: '4px 8px' });
+    b.style.textAlign = 'left';
     return b;
   }
 

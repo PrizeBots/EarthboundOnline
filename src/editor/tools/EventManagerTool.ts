@@ -1,6 +1,7 @@
 import { EditorTool, EditorShellApi, WorldPoint } from '../types';
 import { Camera } from '../../engine/Camera';
 import { Direction } from '../../types';
+import { mkButton } from '../ui';
 import { saveOverride, loadOverride } from '../saveOverride';
 import { registerSaveHandler } from '../registry';
 import { getNearbyNPCs } from '../../engine/NPCManager';
@@ -782,14 +783,8 @@ class EventManagerTool implements EditorTool {
   }
 
   private mkBtn(label: string, onClick: () => void, host: HTMLElement, tip?: string): void {
-    const b = document.createElement('button');
-    b.textContent = label;
-    if (tip) b.title = tip;
-    b.style.cssText =
-      `background:${ACCENT}22;color:${ACCENT};border:1px solid ${ACCENT};border-radius:3px;` +
-      'font:11px monospace;padding:3px 7px;cursor:pointer;white-space:nowrap;';
-    b.onclick = onClick;
-    host.appendChild(b);
+    const b = mkButton(label, onClick, { parent: host, variant: 'gold', tip, pad: '3px 7px' });
+    b.style.whiteSpace = 'nowrap';
   }
 }
 

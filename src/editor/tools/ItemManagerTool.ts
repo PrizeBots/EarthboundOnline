@@ -38,24 +38,15 @@ import { FolderDesktop, FolderDesktopStore } from '../FolderDesktop';
 import { openSpriteEditor } from '../../engine/spriteEditor';
 import { registerSaveHandler } from '../registry';
 import { saveOverride, loadOverride } from '../saveOverride';
+import { mkButton } from '../ui';
+import {
+  buildInflictEditor as buildInflictEditorUI,
+  STATUS_OPTIONS,
+} from '../components/InflictEditor';
 import { formatMoney } from '../../engine/Wallet';
 
-// Status ids selectable in the inflict editor — KEEP IN SYNC with server/status.js
-// STATUS (the wire-stable strings the inflict model + status engine use).
-const STATUS_OPTIONS: { value: string; label: string }[] = [
-  { value: 'paralysis', label: 'Paralysis (numb)' },
-  { value: 'diamond', label: 'Diamondized' },
-  { value: 'sleep', label: 'Asleep' },
-  { value: 'strange', label: 'Feeling strange' },
-  { value: 'possessed', label: 'Possessed' },
-  { value: 'noPsi', label: "Can't concentrate" },
-  { value: 'crying', label: 'Crying' },
-  { value: 'poison', label: 'Poisoned' },
-  { value: 'nauseous', label: 'Nauseous' },
-  { value: 'sunstroke', label: 'Sunstroke' },
-  { value: 'cold', label: 'Cold' },
-  { value: 'homesick', label: 'Homesick' },
-];
+// STATUS_OPTIONS (the selectable status ids) + the inflict-list editor now live
+// in ../components/InflictEditor (shared with the PSI Manager).
 
 /** Stats a consumable buff may boost — KEEP IN SYNC with server/buffs.js
  *  BUFF_STATS (only the combat-affecting ones are offered here). */
@@ -777,102 +768,18 @@ class ItemManagerTool implements EditorTool {
     this.statsEl!.appendChild(wrap);
   }
 
-  /** The status-inflict list editor for a weapon: rows of {status, chance%} plus
-   *  add/remove. No rows → the weapon uses the baseline paralysis proc. */
+  /** The status-inflict list editor for a weapon (rows of {status, chance%}).
+   *  No rows → the baseline paralysis proc. Shared with the PSI Manager. */
   private buildInflictEditor(id: string, ov: ItemOverride): void {
-    const wrap = document.createElement('div');
-    wrap.style.cssText =
-      'display:flex;flex-direction:column;gap:4px;border-top:1px solid #2a3540;padding-top:6px;';
-    const head = document.createElement('div');
-    head.textContent = 'STATUS INFLICTS (on hit)';
-    head.style.cssText = 'color:#9fb8cc;font-size:11px;';
-    wrap.appendChild(head);
-
-    const list = (ov.inflict ?? []).map((e) => ({ ...e }));
-    const rowsEl = document.createElement('div');
-    rowsEl.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
-    wrap.appendChild(rowsEl);
-
-    const commit = () => this.setInflict(id, list);
-
-    const renderRows = () => {
-      rowsEl.innerHTML = '';
-      list.forEach((entry, idx) => {
-        const r = document.createElement('div');
-        r.style.cssText = 'display:flex;align-items:center;gap:4px;';
-        const sel = document.createElement('select');
-        sel.title = 'Status ailment this weapon may inflict on hit.';
-        sel.style.cssText =
-          'flex:1;min-width:0;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
-        for (const o of STATUS_OPTIONS) {
-          const opt = document.createElement('option');
-          opt.value = o.value;
-          opt.textContent = o.label;
-          if (o.value === entry.type) opt.selected = true;
-          sel.appendChild(opt);
-        }
-        sel.onchange = () => {
-          entry.type = sel.value;
-          commit();
-        };
-        r.appendChild(sel);
-        const pct = document.createElement('input');
-        pct.type = 'number';
-        pct.value = String(entry.chance);
-        pct.title = 'Proc chance % (1–100), scaled by the target’s resistance.';
-        pct.style.cssText =
-          'width:48px;font:11px monospace;background:#0c1014;color:#cde;border:1px solid #3a4a5a;border-radius:3px;padding:2px 4px;';
-        pct.onchange = () => {
-          let n = parseInt(pct.value, 10);
-          if (Number.isNaN(n)) n = 0;
-          n = Math.max(1, Math.min(100, n));
-          entry.chance = n;
-          pct.value = String(n);
-          commit();
-        };
-        r.appendChild(pct);
-        const pctLbl = document.createElement('span');
-        pctLbl.textContent = '%';
-        pctLbl.style.cssText = 'color:#9fb8cc;';
-        r.appendChild(pctLbl);
-        const del = document.createElement('button');
-        del.textContent = '🗑';
-        del.title = 'Remove this status inflict.';
-        del.style.cssText =
-          'font:11px monospace;padding:1px 6px;cursor:pointer;border-radius:3px;background:#1d2530;color:#cde;border:1px solid #3a4a5a;';
-        del.onclick = () => {
-          list.splice(idx, 1);
-          commit();
-          renderRows();
-        };
-        r.appendChild(del);
-        rowsEl.appendChild(r);
-      });
-      if (!list.length) {
-        const none = document.createElement('div');
-        none.textContent = 'none → baseline paralysis (12%)';
-        none.style.cssText = 'color:#667;font-size:10px;';
-        rowsEl.appendChild(none);
-      }
-    };
-    renderRows();
-
-    this.mkBtn(
-      '+ Add status',
-      () => {
-        list.push({ type: 'paralysis', chance: 10 });
-        commit();
-        renderRows();
-      },
-      wrap,
-      false,
-      'Add another status the weapon can inflict on hit.'
+    this.statsEl!.appendChild(
+      buildInflictEditorUI({
+        entries: ov.inflict ?? [],
+        onCommit: (list) => this.setInflict(id, list),
+        emptyText: 'none → baseline paralysis (12%)',
+        addChance: 10,
+        noun: 'weapon',
+      })
     );
-    const hint = document.createElement('div');
-    hint.textContent = 'Chance is scaled by the target’s resistance to that status.';
-    hint.style.cssText = 'color:#667;font-size:10px;line-height:1.4;';
-    wrap.appendChild(hint);
-    this.statsEl!.appendChild(wrap);
   }
 
   /** Checkboxes for the statuses a consumable cures on use (none = cures nothing).
@@ -1051,6 +958,8 @@ class ItemManagerTool implements EditorTool {
     this.statsEl!.appendChild(wrap);
   }
 
+  // Thin wrapper over the shared editor UI kit (src/editor/ui.ts). `accent` =
+  // the primary (gold) variant; this tool's buttons use 4px 8px pad.
   private mkBtn(
     label: string,
     fn: () => void,
@@ -1058,17 +967,12 @@ class ItemManagerTool implements EditorTool {
     accent = false,
     tip?: string
   ): HTMLButtonElement {
-    const b = document.createElement('button');
-    b.textContent = label;
-    if (tip) b.title = tip;
-    b.style.cssText =
-      'font:11px monospace;padding:4px 8px;cursor:pointer;border-radius:3px;' +
-      (accent
-        ? 'background:#3a2e10;color:#d8a23a;border:1px solid #d8a23a;'
-        : 'background:#1d2530;color:#cde;border:1px solid #3a4a5a;');
-    b.onclick = fn;
-    parent.appendChild(b);
-    return b;
+    return mkButton(label, fn, {
+      parent,
+      variant: accent ? 'gold' : 'default',
+      tip,
+      pad: '4px 8px',
+    });
   }
 }
 

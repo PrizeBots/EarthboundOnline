@@ -1,4 +1,5 @@
 import { EditorTool, EditorShellApi } from '../types';
+import { mkButton } from '../ui';
 import {
   listSpriteGroupIds,
   loadSpriteGroup,
@@ -1290,17 +1291,12 @@ class EntityManagerTool implements EditorTool {
     accent = false,
     tip?: string
   ): HTMLButtonElement {
-    const b = document.createElement('button');
-    b.textContent = label;
-    if (tip) b.title = tip;
-    b.style.cssText =
-      'font:11px monospace;padding:2px 7px;cursor:pointer;border-radius:3px;' +
-      (accent
-        ? 'background:#2c1a3d;color:#b06de8;border:1px solid #b06de8;'
-        : 'background:#1d2530;color:#cde;border:1px solid #3a4a5a;');
-    b.onclick = fn;
-    parent.appendChild(b);
-    return b;
+    return mkButton(label, fn, {
+      parent,
+      variant: accent ? 'gold' : 'default',
+      tip,
+      pad: '2px 7px',
+    });
   }
 }
 

@@ -1,5 +1,6 @@
 import { EditorTool, EditorShellApi, WorldPoint } from '../types';
 import { Camera } from '../../engine/Camera';
+import { mkButton } from '../ui';
 import {
   getTileAt,
   getSectorForTile,
@@ -2422,16 +2423,7 @@ class RoomBuilderTool implements EditorTool {
     parent: HTMLElement,
     accent = false
   ): HTMLButtonElement {
-    const b = document.createElement('button');
-    b.textContent = label;
-    b.style.cssText =
-      'font:11px monospace;padding:4px 9px;cursor:pointer;border-radius:3px;' +
-      (accent
-        ? 'background:#10303d;color:#4db6e8;border:1px solid #4db6e8;'
-        : 'background:#1d2530;color:#cde;border:1px solid #3a4a5a;');
-    b.onclick = fn;
-    parent.appendChild(b);
-    return b;
+    return mkButton(label, fn, { parent, variant: accent ? 'gold' : 'default', pad: '4px 9px' });
   }
 
   private mkMini(label: string, fn: () => void, parent: HTMLElement): HTMLButtonElement {

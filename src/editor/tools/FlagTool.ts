@@ -1,4 +1,5 @@
 import { EditorTool, EditorShellApi } from '../types';
+import { mkButton } from '../ui';
 import { saveOverride, loadOverride } from '../saveOverride';
 import { registerSaveHandler } from '../registry';
 import { flagDefs, setFlagRegistry, FlagDef } from '../../engine/FlagRegistry';
@@ -807,16 +808,7 @@ class FlagTool implements EditorTool {
     accent = false,
     tip?: string
   ): void {
-    const b = document.createElement('button');
-    b.textContent = label;
-    if (tip) b.title = tip;
-    b.style.cssText =
-      'font:11px monospace;padding:3px 9px;cursor:pointer;border-radius:3px;' +
-      (accent
-        ? 'background:#2a1f33;color:#e2b6f5;border:1px solid #c678dd;'
-        : 'background:#1d2530;color:#cde;border:1px solid #3a4a5a;');
-    b.onclick = fn;
-    parent.appendChild(b);
+    mkButton(label, fn, { parent, variant: accent ? 'gold' : 'default', tip, pad: '3px 9px' });
   }
 }
 
