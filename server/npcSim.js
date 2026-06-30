@@ -24,6 +24,22 @@ const path = require('path');
 const status = require('./status'); // EB status-condition engine (catalog + timer/DoT math)
 const { loadShops } = require('./shops'); // item catalog (heal + equip data) so NPCs can USE loot
 const prof = require('./simProfile'); // per-phase tick profiler (PROFILE_SIM=1; no-op when off)
+// Pure combat math + the tuning constants it owns (single source of truth — the
+// tick code below also reads e.g. KB_MAX). See server/npc/combatMath.js.
+const {
+  KB_MAX,
+  knockDist,
+  massOf,
+  massKnockScale,
+  outLevels,
+  poseCode,
+  rand,
+  aabb,
+  hyp,
+  canHurt,
+  resolveMelee,
+} = require('./npc/combatMath');
+const { createWorld } = require('./npc/world'); // map tiles/sectors/collision/doors/stairs
 
 // --- Map constants (mirror src/types.ts) ---
 const MINITILE = 8;
@@ -87,7 +103,6 @@ const HURT_W = 14; // enemy hurtbox, anchored on the feet (center-bottom)
 const HURT_H = 18;
 const HURT_OY = -18;
 const ATTACK_DAMAGE = 6;
-const CRIT_MULT = 2; // a crit (SMAAAASH!) deals double damage
 const ATTACK_COOLDOWN_MS = 250; // baseline min time between a player's resolved attacks (bare-handed)
 const ATTACK_COOLDOWN_FLOOR_MS = 120; // fastest a weapon can push the cooldown — anti-machinegun clamp
 const HURT_MS = 300; // how long a struck enemy shows its flinch pose
@@ -104,9 +119,7 @@ const HURT_MS = 300; // how long a struck enemy shows its flinch pose
 // over with chip damage. Now 1 dmg ≈ 2px (imperceptible) and it scales from
 // there. (Per-entity knockback overrides — a "heavy" boss, a "light" gnat — are
 // a future Entity Manager field; this is the global default.)
-const KB_MIN = 0; // px — no minimum; a 0-damage (fully-blocked) hit doesn't shove
-const KB_MAX = 44; // px — cap so a big/crit hit can't fling across the room
-const KB_PER_DMG = 2; // px of knockback per point of damage dealt
+// KB_MIN/KB_MAX/KB_PER_DMG + knockDist() → npc/combatMath.js (KB_MAX imported above).
 const KB_STEP = 4; // px — collision sampling step while sliding the knockback (< MINITILE)
 // Spread a knockback's travel over this many sim ticks (~100ms @60Hz) instead of
 // teleporting the whole distance in ONE tick. A one-tick jump lands in a single
@@ -127,38 +140,9 @@ const KB_SLIDE_TICKS = 6;
 const PLAYER_PARALYSIS_CHANCE = 12; // % a player's landed hit paralyzes its target (per-weapon: TODO)
 const ENEMY_PARALYZE_CHANCE = 8; // % an enemy's landed hit paralyzes the player it struck (per-entity: TODO)
 
-// Knockback distance for a hit that dealt `dmg` damage: linear in damage
-// (KB_PER_DMG px each), clamped to [KB_MIN, KB_MAX]. e.g. 1→2px, 7→14px,
-// 14 (crit)→28px, capped at 44.
-function knockDist(dmg) {
-  return Math.max(KB_MIN, Math.min(KB_MAX, dmg * KB_PER_DMG));
-}
-
-// --- Mass / weight class (level-driven push + knockback resistance) ---
-// Every actor AND player carries a `mass` derived from its level: heavier things
-// shove lighter ones aside on contact (walk-push) and resist being knocked back.
-// EQUAL mass reproduces the old behavior exactly (50/50 separation, full
-// knockback), so a fair same-level fight is unchanged — only a level GAP creates
-// asymmetry. A per-entity `mass` override (Entity Manager field: TODO) wins over
-// the curve, so a level-2 boss can still be authored heavy / a big gnat light.
-const MASS_PER_LEVEL = 1; // mass = 1 + level*this; level 2 → 3, level 12 → 13
-function massOf(a) {
-  if (a && typeof a.mass === 'number' && a.mass > 0) return a.mass;
-  const lvl = a && typeof a.level === 'number' ? a.level : 1;
-  return 1 + Math.max(0, lvl) * MASS_PER_LEVEL;
-}
-// Knockback scale from the attacker/victim mass ratio. A hit from something your
-// own weight shoves you the full (damage-proportional) distance; a much heavier
-// attacker flings a lighter victim toward the cap, a much lighter attacker barely
-// budges a heavy victim. Equal mass → 1 (UNCHANGED), so this never detunes a fair
-// fight — only a lopsided one. Returns 1 when either mass is missing (vehicle /
-// legacy / test callers) so their tuned knockback is untouched.
-const KB_MASS_FLOOR = 0.15; // a featherweight attacker still nudges a heavy victim a little
-const KB_MASS_CEIL = 2.0; // cap the bonus a heavyweight gets vs a gnat (final dist still ≤ KB_MAX)
-function massKnockScale(attMass, vicMass) {
-  if (!(attMass > 0) || !(vicMass > 0)) return 1;
-  return Math.max(KB_MASS_FLOOR, Math.min(KB_MASS_CEIL, (2 * attMass) / (attMass + vicMass)));
-}
+// knockDist(), mass/weight-class (massOf, massKnockScale + MASS_PER_LEVEL,
+// KB_MASS_FLOOR/CEIL) → npc/combatMath.js. Level-driven mass: heavier actors
+// shove lighter ones + resist knockback; equal mass = unchanged behavior.
 
 // --- Enemy aggression (Heavy) ---
 // Enemies have a level (set from the spawner / a default) and so do players, so
@@ -169,11 +153,8 @@ function massKnockScale(attMass, vicMass) {
 // XP/loot, no fight). Otherwise aggro is unconditional: it chases and hits the
 // nearest living player it can see. `outLevels(player, enemy)` is the gate.
 const DEFAULT_ENEMY_LEVEL = 4;
-const FLEE_LEVEL_RATIO = 2; // player.level >= ratio * enemy.level → enemy flees
 const FLEE_TOUCH_RADIUS = 18; // px between feet — a scarer this close auto-wins
-function outLevels(player, n) {
-  return player && player.level != null && player.level >= FLEE_LEVEL_RATIO * (n.level || 1);
-}
+// FLEE_LEVEL_RATIO + outLevels(player, enemy) → npc/combatMath.js
 const DETECT_RANGE = 220; // px — default aggro radius; per-SPAWNER `detectRange` (Enemy Spawner tool) overrides it
 // Once an enemy has LOCKED ON it does not give up at the detect radius — it
 // pursues relentlessly (no home-distance leash) until the target gets this far
@@ -292,12 +273,7 @@ const VEHICLE_KB_VARIANCE = 0.9; // ±rad (~50°) random spread so a pack scatte
 const VEHICLE_FRIENDLY_KB = 6; // px gentle shove that clears a friendly from the lane
 const VEHICLE_HP = 80; // default max HP if the Entity Manager set none
 
-// Pose -> wire code, indexing POSES in src/types.ts: walk,climb,attack,hurt.
-// Broadcast in npc_update rows so every client sees the same animation pose.
-const POSE_CODE = { walk: 0, climb: 1, attack: 2, hurt: 3 };
-function poseCode(n) {
-  return POSE_CODE[n.pose] || 0;
-}
+// POSE_CODE + poseCode() (pose → wire code, indexing POSES in src/types.ts) → npc/combatMath.js
 const STATIC_RESPAWN_MS = 12000; // ROM-placed enemies revive at home after this
 const ENEMY_SPEED = 0.6; // roamers move a touch faster than ambling townsfolk
 // Chase speed scales with the spawner's wander speed by this ratio, so the
@@ -305,46 +281,10 @@ const ENEMY_SPEED = 0.6; // roamers move a touch faster than ambling townsfolk
 const CHASE_RATIO = ENEMY_CHASE_SPEED / ENEMY_SPEED;
 const ENEMY_FILE = 'map/enemy_spawns.json';
 
-function rand(min, max) {
-  return min + Math.floor(Math.random() * (max - min + 1));
-}
-
-function aabb(ax, ay, aw, ah, bx, by, bw, bh) {
-  return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
-}
-
-// --- PK (player-kill) damage model — the single source of truth for "can A
-// hurt B". Every combatant carries a `pk` flag: enemies are always pk:true,
-// townsfolk NPCs pk:false, players pk:false for now (a per-player toggle is
-// backlogged; see TODO). `isEnemy` distinguishes the AI mobs from people.
-//
-// Rules (attacker -> who it can damage):
-//   - Enemies hurt every non-enemy (NPCs, players, PK players) but NEVER each
-//     other.
-//   - PK players hurt EVERYTHING, including other PKers and enemies.
-//   - Non-PK players and NPCs hurt only PKers (PK players + enemies), so two
-//     non-PKers can't friendly-fire each other.
-// Pass plain {isEnemy, pk} shapes — players live on the host, not in npcSim, so
-// the host builds an attacker shape from its own player record.
-function canHurt(attacker, target) {
-  if (!attacker || !target || attacker === target) return false;
-  if (attacker.isEnemy) return !target.isEnemy; // enemies hurt all non-enemies
-  if (attacker.pk) return true; // PK players hurt everything
-  return !!target.pk; // others hurt only PKers
-}
-
-/**
- * Resolve one landed melee swing's outcome, independent of geometry (the caller
- * already confirmed the hitbox connects). Order matters: DODGE is rolled FIRST
- * (a dodge beats a would-be crit), then CRIT. `critChance`/`dodgeChance` are
- * percentages (0..100); `rng()` returns [0, 1). Pure + injectable-rng so combat
- * is deterministically testable (see combat.test.js).
- */
-function resolveMelee(critChance, dodgeChance, base, rng) {
-  if (rng() * 100 < dodgeChance) return { miss: true, crit: false, dmg: 0 };
-  if (rng() * 100 < critChance) return { miss: false, crit: true, dmg: base * CRIT_MULT };
-  return { miss: false, crit: false, dmg: base };
-}
+// Geometry (rand, aabb, hyp), the PK damage model (canHurt) and melee resolution
+// (resolveMelee) → npc/combatMath.js. resolveMelee is re-exported below for
+// combat.test.js. canHurt: enemies hurt all non-enemies, PK players hurt all,
+// others hurt only PKers.
 
 function createNpcSim(assetsDir, rngFn = Math.random) {
   // Injectable RNG: production uses Math.random; tests pass a fixed function so
@@ -368,21 +308,20 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   }
   const goodFor = (item) => GOODS[String(item)] || null;
 
-  // Core world data (ROM-derived). In production these live on a mounted disk,
-  // never in git (ROM-distribution policy; see ARCHITECTURE.md "Production data").
-  // If they're absent — a code-only deploy before the data disk is attached —
-  // DON'T crash the whole server: run as a RELAY-ONLY sim so multiplayer
+  // World subsystem (map tiles/sectors/collision/doors/stairs) → npc/world.js.
+  // Returns null when the ROM-derived map data is absent (code-only deploy before
+  // the data disk is mounted) — fall back to a RELAY-ONLY sim so multiplayer
   // (join/move/chat) still works, just with no NPC/enemy/collision simulation.
-  let sectors, tiles, tilesetMapping;
-  try {
-    sectors = readJSON('map/sectors.json');
-    tiles = readJSON('map/tiles.json');
-    tilesetMapping = readJSON('map/tileset_mapping.json');
-  } catch (e) {
-    console.warn(
-      `[npcSim] world data missing (${e.code || e.message}) — running RELAY-ONLY ` +
-        '(no NPCs/enemies/collision). Attach the assets disk to enable the world.'
-    );
+  const world = createWorld(assetsDir, {
+    MINITILE,
+    TILE,
+    MAP_W_TILES,
+    MAP_W_SECTORS,
+    SEC_TX,
+    SEC_TY,
+    COL_OY,
+  });
+  if (!world) {
     return {
       start() {},
       stop() {},
@@ -406,391 +345,17 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       stairAt: () => false,
     };
   }
-  // The ROM overworld is the base; the Room Manager's custom rooms are stamped
-  // into a BAND below it (bandY >= base height) — exactly like the client's
-  // MapManager.buildCustomRoomBand. The server MUST mirror this or every enemy/
-  // NPC placed in a custom room sits below the server's world, reads as
-  // out-of-bounds solid (blocked), and freezes — it can neither sense players
-  // (canSense) nor wander. Player movement is client-side, so the player walks
-  // there fine while the server thinks it's void. KEEP IN SYNC with MapManager.
-  const baseTiles = tiles; // never mutated — the band is re-stamped over a copy
-  const baseSectors = sectors;
-  const baseHTiles = Math.round(baseTiles.length / MAP_W_TILES);
-  const baseHSectors = Math.round(baseSectors.length / MAP_W_SECTORS);
-  // Map height is data-driven (grows with the stamped band). Width fixed at 256.
-  let mapHTiles = baseHTiles;
-  const DEFAULT_BAND_SECTOR = {
-    tilesetId: 0,
-    paletteId: 0,
-    musicId: 0,
-    indoor: false,
-    dungeon: false,
-  };
-  // Composite-tile registry (id >= COMPOSITE_BASE → 16 packed minitile refs).
-  // Custom rooms can author sub-tile detail; each composite cell's collision is
-  // assembled from its source minitiles' own bytes. KEEP IN SYNC with
-  // CompositeTiles.ts / CustomTiles.ts (the ref packing + base offsets).
-  const COMPOSITE_BASE = 1_000_000;
-  const CUSTOM_REF_BASE = 100_000_000;
-  const composites = new Map();
-  const unpackRef = (n) => {
-    const mi = n % 16;
-    let r = (n - mi) / 16;
-    const arr = r % 1024;
-    r = (r - arr) / 1024;
-    const pal = r % 16;
-    const ts = (r - pal) / 16;
-    return { ts, pal, arr, mi };
-  };
-  const ROOMS_OV_PATH = path.join(assetsDir, '..', 'overrides', 'rooms.json');
-  // Per-map-cell tile override (Room Builder "Edit map" → overrides/map_tiles.json).
-  // Mirrors the client (MapManager.buildCustomRoomBand): replaces the arrangement
-  // at specific cells of ANY room. Applied LAST in buildRoomBand so it wins over
-  // the ROM base + band; blocked() reads tiles[] so collision follows for free.
-  const MAP_TILES_OV_PATH = path.join(assetsDir, '..', 'overrides', 'map_tiles.json');
-  // Re-stamp the custom-room band over a fresh copy of the ROM base (idempotent —
-  // never double-stamps). Grows tiles/sectors to fit the lowest room, writes each
-  // room's arrangement cells + sector style, and registers its composites.
-  function buildRoomBand() {
-    tiles = baseTiles.slice();
-    sectors = baseSectors.slice();
-    composites.clear();
-    let doc = null;
-    try {
-      doc = JSON.parse(fs.readFileSync(ROOMS_OV_PATH, 'utf8'));
-    } catch {
-      doc = null; // no rooms authored — overworld only
-    }
-    const custom = (doc && doc.rooms) || [];
-    let hSectors = baseHSectors;
-    for (const r of custom) hSectors = Math.max(hSectors, Math.ceil((r.bandY + r.h) / SEC_TY));
-    const hTiles = hSectors * SEC_TY;
-    for (let i = tiles.length; i < hTiles * MAP_W_TILES; i++) tiles.push(0);
-    for (let i = sectors.length; i < hSectors * MAP_W_SECTORS; i++)
-      sectors.push({ ...DEFAULT_BAND_SECTOR });
-    for (const r of custom) {
-      for (let ly = 0; ly < r.h; ly++) {
-        for (let lx = 0; lx < r.w; lx++) {
-          tiles[(r.bandY + ly) * MAP_W_TILES + (r.bandX + lx)] =
-            (r.tiles && r.tiles[ly * r.w + lx]) || 0;
-        }
-      }
-      const s0x = Math.floor(r.bandX / SEC_TX);
-      const s1x = Math.floor((r.bandX + r.w - 1) / SEC_TX);
-      const s0y = Math.floor(r.bandY / SEC_TY);
-      const s1y = Math.floor((r.bandY + r.h - 1) / SEC_TY);
-      for (let sy = s0y; sy <= s1y; sy++) {
-        for (let sx = s0x; sx <= s1x; sx++) sectors[sy * MAP_W_SECTORS + sx] = { ...r.sector };
-      }
-      for (const [id, refs] of Object.entries(r.composites || {})) composites.set(Number(id), refs);
-    }
-    // Per-map-cell tile override, applied last (wins over base + band).
-    let mapOv = null;
-    try {
-      mapOv = JSON.parse(fs.readFileSync(MAP_TILES_OV_PATH, 'utf8'));
-    } catch {
-      mapOv = null;
-    }
-    if (mapOv && mapOv.cells) {
-      for (const [k, arr] of Object.entries(mapOv.cells)) {
-        const [tx, ty] = k.split(',').map(Number);
-        const i = ty * MAP_W_TILES + tx;
-        if (i >= 0 && i < tiles.length) tiles[i] = arr;
-      }
-    }
-    if (mapOv && mapOv.composites) {
-      for (const [id, refs] of Object.entries(mapOv.composites)) composites.set(Number(id), refs);
-    }
-    mapHTiles = hTiles;
-  }
-  buildRoomBand();
-  // Collision byte of one minitile (idx 0-15) of a composite cell — assembled
-  // from its source minitile's own tileset collision (mirrors Collision.ts
-  // compositeRow). Empty/custom refs default to walkable (0).
-  function compositeByte(arr, idx) {
-    const refs = composites.get(arr);
-    if (!refs) return 0;
-    const n = refs[idx] ?? -1;
-    if (n < 0 || n >= CUSTOM_REF_BASE) return 0;
-    const ref = unpackRef(n);
-    const c = collisionByDrawTs.get(tilesetMapping[ref.ts] ?? 0);
-    if (c && ref.arr < c.length) return c[ref.arr][ref.mi] ?? 0;
-    return 0;
-  }
-  const collisionByDrawTs = new Map();
-  // Per-map-tile collision overrides (overrides/collision.json `cells`):
-  // tileY*MAP_W_TILES+tileX -> { minitileIdx: byte }. Applied on top of the
-  // arrangement byte in blocked(). KEEP IN SYNC with Collision.ts.
-  const cellOv = new Map();
-
-  // Collision = extracted base + editor overrides (public/overrides/
-  // collision.json, per-arrangement "drawTs:arr" -> {minitileIdx: byte}).
-  // KEEP IN SYNC with Collision.ts applyOverridesTo and the py room checker.
-  // Re-run on override change so painted walls bind NPC wander too.
-  const COLLISION_OV_PATH = path.join(assetsDir, '..', 'overrides', 'collision.json');
-  function loadCollisionWithOverrides() {
-    for (const drawTs of new Set(tilesetMapping)) {
-      try {
-        collisionByDrawTs.set(drawTs, readJSON(`tilesets/${drawTs}/collisions.json`));
-      } catch {
-        // No collision data extracted for this tileset — treated as solid.
-      }
-    }
-    cellOv.clear();
-    let ov = null;
-    try {
-      ov = JSON.parse(fs.readFileSync(COLLISION_OV_PATH, 'utf8'));
-    } catch {
-      return; // nothing authored yet
-    }
-    for (const [key, cells] of Object.entries((ov && ov.edits) || {})) {
-      const [ts, arr] = key.split(':').map(Number);
-      const data = collisionByDrawTs.get(ts);
-      if (!data || arr >= data.length) continue;
-      for (const [idx, byte] of Object.entries(cells)) data[arr][Number(idx)] = byte;
-    }
-    // Per-map-tile overrides win over the arrangement byte for that one cell.
-    for (const [tk, idxMap] of Object.entries((ov && ov.cells) || {})) {
-      const [tx, ty] = tk.split(',').map(Number);
-      cellOv.set(ty * MAP_W_TILES + tx, idxMap);
-    }
-    console.log('[npcSim] applied collision overrides');
-  }
-  loadCollisionWithOverrides();
-  fs.watchFile(COLLISION_OV_PATH, { interval: 2000 }, loadCollisionWithOverrides);
-
-  function sectorForTile(tx, ty) {
-    const sx = Math.floor(tx / SEC_TX);
-    const sy = Math.floor(ty / SEC_TY);
-    if (sx < 0 || sx >= MAP_W_SECTORS) return null;
-    return sectors[sy * MAP_W_SECTORS + sx] || null;
-  }
-
-  // Mirror of Collision.ts checkCollision
-  function blocked(x, y, w, h) {
-    if (x < 0 || y < 0) return true;
-    if (x + w >= MAP_W_TILES * TILE || y + h >= mapHTiles * TILE) return true;
-    const x0 = Math.floor(x / MINITILE);
-    const y0 = Math.floor(y / MINITILE);
-    const x1 = Math.floor((x + w - 1) / MINITILE);
-    const y1 = Math.floor((y + h - 1) / MINITILE);
-    for (let my = y0; my <= y1; my++) {
-      for (let mx = x0; mx <= x1; mx++) {
-        const tx = Math.floor(mx / 4);
-        const ty = Math.floor(my / 4);
-        const sector = sectorForTile(tx, ty);
-        if (!sector) return true;
-        const arr = tiles[ty * MAP_W_TILES + tx] ?? 0;
-        const idx = (my % 4) * 4 + (mx % 4);
-        let byte;
-        if (arr >= COMPOSITE_BASE) {
-          // Custom-room composite cell: collision is per-source-minitile.
-          byte = compositeByte(arr, idx);
-        } else {
-          const cols = collisionByDrawTs.get(tilesetMapping[sector.tilesetId] ?? 0);
-          if (!cols) return true;
-          byte = arr < cols.length ? cols[arr][idx] : 0;
-        }
-        const ov = cellOv.get(ty * MAP_W_TILES + tx);
-        if (ov && ov[idx] !== undefined) byte = ov[idx]; // per-cell override wins
-        if ((byte & 0x80) !== 0) return true;
-      }
-    }
-    return false;
-  }
-
-  // True if a solid wall sits on the straight line between two actors' foot
-  // positions. Melee can't reach through walls — this gates every swing
-  // (player→enemy in handleAttack, enemy→player/NPC in tickEnemy, NPC→enemy in
-  // tickNpcCombat). Samples the collision grid at sub-minitile steps so even a
-  // one-tile-thick wall between the bodies blocks the hit. Endpoints are skipped:
-  // an actor pressed flush against a wall must still be hittable from the open side.
-  function wallBetween(x0, y0, x1, y1) {
-    const dx = x1 - x0;
-    const dy = y1 - y0;
-    const dist = Math.hypot(dx, dy);
-    if (dist < MINITILE) return false; // adjacent — no wall can fit between them
-    const steps = Math.ceil(dist / 4); // 4px < MINITILE(8): no wall slips through
-    for (let i = 1; i < steps; i++) {
-      const t = i / steps;
-      const px = x0 + dx * t;
-      const py = y0 + dy * t + COL_OY; // sample at foot-box height, where walls block
-      if (blocked(px, py, 1, 1)) return true;
-    }
-    return false;
-  }
-
-  // --- Door triggers (mirror src/engine/DoorManager.ts loadDoors) ---
-  // So enemies/NPCs chase players THROUGH doors the way players use them: walk to
-  // the doorway and warp on contact, never teleport across a room. We only need
-  // each ACTIVE door's trigger position here — the warp destination comes from
-  // the chased player's observed landing spot. KEEP IN SYNC with DoorManager:
-  // trigger anchoring, flag gating, the zone-door skip, and the overrides layer.
-  const DOOR_GRID_COLS = 32;
-  const DOOR_AREA_PX = 256;
-  const DOORS_FILE = 'map/doors.json';
-  const DOORS_OV_PATH = path.join(assetsDir, '..', 'overrides', 'doors.json');
-  // getDoorAt tests the player's MIDSECTION (feet - 12) against the anchor, so a
-  // body's feet trigger a door at worldY + 12.
-  const DOOR_FOOT_OFFSET = 12;
-  let WORLD_SET_FLAGS = new Set();
-  try {
-    const wf = JSON.parse(
-      fs.readFileSync(path.join(assetsDir, '..', '..', 'src', 'world_flags.json'), 'utf8')
-    );
-    WORLD_SET_FLAGS = new Set((wf.setFlags || []).map((f) => parseInt(f, 16)));
-  } catch {
-    /* no flag file — every flag-gated door is treated as usable */
-  }
-  // EB doors carry an event-flag condition: plain flag = usable while SET, the
-  // 0x8000 bit = usable while UNSET (mirror of DoorManager.isDoorActive).
-  function isDoorActive(flag) {
-    if (!flag) return true;
-    const needSet = (flag & 0x8000) === 0;
-    return needSet === WORLD_SET_FLAGS.has(flag & 0x7fff);
-  }
-  let doorTriggers = []; // [{x, y}] feet positions that warp a body through
-  let stairTriggers = []; // [{x, y}] escalator/stairway trigger centers (ride gate)
-
-  function loadDoorTriggers() {
-    let raw;
-    try {
-      raw = readJSON(DOORS_FILE);
-    } catch {
-      doorTriggers = [];
-      return;
-    }
-    let ov = null;
-    try {
-      ov = JSON.parse(fs.readFileSync(DOORS_OV_PATH, 'utf8'));
-    } catch {
-      /* none authored */
-    }
-    const edits = (ov && ov.edits) || {};
-    const additions = (ov && ov.additions) || [];
-    const out = [];
-    const stairs = [];
-    raw.forEach((area, idx) => {
-      const originX = (idx % DOOR_GRID_COLS) * DOOR_AREA_PX;
-      const originY = Math.floor(idx / DOOR_GRID_COLS) * DOOR_AREA_PX;
-      for (const d of area) {
-        // Escalator/stairway trigger (incl. NOWHERE far-landing): record its
-        // center so we can validate a player really is on an escalator before
-        // honoring their client-driven ride warp (mirror DoorManager stair load).
-        if (d.type === 'stair') {
-          stairs.push({
-            x: originX + d.x * MINITILE + MINITILE / 2,
-            y: originY + d.y * MINITILE + MINITILE / 2,
-          });
-          continue;
-        }
-        if (d.type !== 'door') continue;
-        if (!isDoorActive(d.flag || 0)) continue;
-        const baseX = originX + d.x * MINITILE + MINITILE;
-        const baseY = originY + d.y * MINITILE + 4;
-        const destPx = (d.destX || 0) * MINITILE;
-        const destPy = (d.destY || 0) * MINITILE;
-        // style=0 short-range zone doors warp onto themselves unless an override
-        // links them somewhere real — skip the unlinked ones (DoorManager does).
-        const zone =
-          (d.style || 0) === 0 &&
-          Math.abs(destPx - (baseX - MINITILE)) + Math.abs(destPy - (baseY - 4)) < 128;
-        const o = edits[`${baseX},${baseY}`];
-        if (o === null) continue; // override-disabled door
-        if (zone && !o) continue; // zone door with no authored link
-        const wx = o && o.worldX != null ? o.worldX : baseX;
-        const wy = o && o.worldY != null ? o.worldY : baseY;
-        // Keep the DESTINATION too (override wins, mirroring DoorManager). Lets a
-        // regrouping enemy that got lured into a building walk out the door under
-        // its own power — see exitDoorToward — instead of waiting to retrace a
-        // chase path it may not have (warpStack).
-        const destX = o ? o.destX : destPx;
-        const destY = o ? o.destY : destPy;
-        out.push({ x: wx, y: wy + DOOR_FOOT_OFFSET, destX, destY });
-      }
-    });
-    for (const a of additions)
-      out.push({ x: a.worldX, y: a.worldY + DOOR_FOOT_OFFSET, destX: a.destX, destY: a.destY });
-    doorTriggers = out;
-    stairTriggers = stairs;
-    console.log(`[npcSim] loaded ${out.length} door triggers, ${stairs.length} stair triggers`);
-  }
-  loadDoorTriggers();
-  fs.watchFile(path.join(assetsDir, DOORS_FILE), { interval: 2000 }, loadDoorTriggers);
-  fs.watchFile(DOORS_OV_PATH, { interval: 2000 }, loadDoorTriggers);
-
-  // Nearest door trigger to (x,y) within DOOR_MATCH_RADIUS, or null. A warping
-  // player's last pre-warp position sits on the trigger it stepped through, so
-  // this tells a chaser which doorway to walk to and warp through.
-  const DOOR_MATCH_RADIUS = 28;
-  function resolveDoor(x, y) {
-    let best = null;
-    let bestD = DOOR_MATCH_RADIUS;
-    for (const t of doorTriggers) {
-      const d = Math.hypot(t.x - x, t.y - y);
-      if (d <= bestD) {
-        bestD = d;
-        best = t;
-      }
-    }
-    return best;
-  }
-
-  // True if a DOORWAY sits between (x0,y0) and (x1,y1) — i.e. they're on opposite
-  // sides of a room boundary whose gap has no solid wall (so wallBetween misses
-  // it). Combat treats this like a wall: an enemy must come THROUGH the door
-  // (where it's visible in your room) rather than reach across the seam — which
-  // the client's room crop hides, reading as an "invisible attacker". Sampled on
-  // the segment INTERIOR so merely standing on a door doesn't count; the radius
-  // is tight so a same-room fight beside a door still lands.
-  const DOOR_BARRIER_R = 16;
-  function doorBetween(x0, y0, x1, y1) {
-    if (!doorTriggers.length) return false;
-    for (const t of [0.35, 0.5, 0.65]) {
-      const sx = x0 + (x1 - x0) * t;
-      const sy = y0 + (y1 - y0) * t;
-      for (const d of doorTriggers) {
-        if (Math.abs(d.x - sx) <= DOOR_BARRIER_R && Math.abs(d.y - sy) <= DOOR_BARRIER_R) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  // True if (x,y) sits in an interior (indoor/dungeon) sector — the same flag
-  // buildNpcs stamps an actor's `indoor` from. Used to tell when an enemy is
-  // currently standing inside a room, vs out in the door-stitched overworld.
-  function sectorIndoorAt(x, y) {
-    const s = sectorForTile(Math.floor(x / TILE), Math.floor(y / TILE));
-    return !!(s && s.indoor);
-  }
-
-  // Pick the door an enemy `n` should walk out of to head home: a real door
-  // whose far side lands CLOSER to home than the enemy stands now (so we never
-  // pick the door we came in through), preferring exits that empty into the
-  // outdoors and, among those, the nearest doorway to actually walk to. Null if
-  // nothing leads homeward (caller then just walks home / times out). The door's
-  // stored destination (loadDoorTriggers) is what makes this possible without a
-  // recorded chase path.
-  function exitDoorToward(n) {
-    const homeD = Math.hypot(n.x - n.homeX, n.y - n.homeY);
-    let best = null;
-    let bestScore = Infinity;
-    for (const t of doorTriggers) {
-      if (t.destX == null) continue;
-      const destHomeD = Math.hypot(t.destX - n.homeX, t.destY - n.homeY);
-      if (destHomeD >= homeD) continue; // doesn't take us nearer home — skip
-      const indoorDest = sectorIndoorAt(t.destX, t.destY) ? 1 : 0;
-      // Outdoor-landing doors first; then the nearest doorway we can walk to.
-      const score = indoorDest * 1e6 + Math.hypot(n.x - t.x, n.y - t.y);
-      if (score < bestScore) {
-        bestScore = score;
-        best = t;
-      }
-    }
-    return best;
-  }
+  // Destructure the collision/door API into locals so the many call sites below
+  // (blocked(...), wallBetween(...), resolveDoor(...), etc.) stay byte-identical.
+  const {
+    blocked,
+    wallBetween,
+    sectorForTile,
+    sectorIndoorAt,
+    resolveDoor,
+    doorBetween,
+    exitDoorToward,
+  } = world;
 
   // --- Enemy config (our own content — see public/assets/map/enemy_spawns.json) ---
   // The Enemy Spawner editor writes the WHOLE file to the overrides layer; it
@@ -1124,7 +689,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   function throwLanding(px, py, tx, ty) {
     let dx = tx - px;
     let dy = ty - py;
-    const dist = Math.hypot(dx, dy);
+    const dist = hyp(dx, dy);
     if (dist > THROW_MAX_DIST) {
       const k = THROW_MAX_DIST / dist;
       dx *= k;
@@ -1394,6 +959,26 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         armorBonus: 0, // incoming damage soaked by equipped armor (min 1 still lands)
         itemId: null, // held weapon sprite id (set on equip; cleared on death)
         equipDirty: false, // itemId changed → re-broadcast via npc_equip (mirror hpDirty)
+        // --- Transient runtime fields, declared here purely for hidden-class
+        // stability (monomorphism). These used to be assigned lazily in the tick
+        // loop / combat path, so an actor's V8 shape diverged the first time it
+        // took a hit or entered combat — splitting actors across shapes and making
+        // every per-tick field access on the actor arrays polymorphic. Initializing
+        // them up front keeps ALL actors on one hidden class from birth. Values
+        // chosen to be behavior-identical to the old "absent" state at each guard.
+        pose: 'walk', // transient anim pose; 'walk' ≡ absent (POSE_CODE.walk === 0)
+        poseUntil: 0, // ms a transient pose ends (only read while pose is attack/hurt)
+        _aiBusy: false, // townsperson in active combat → full-rate AI (no time-slice)
+        _aiPhase: -1, // AI_STRIDE phase; -1 = unset, computed lazily on first awake tick
+        statusDirty: false, // status set changed → re-broadcast pips
+        _sentMoving: false, // last broadcast had this actor moving (drives the rest frame)
+        _hist: null, // lag-comp position ring; lazily becomes [] in recordHist
+        _kbTicks: 0, // knockback slide length in ticks (0 = not being shoved)
+        _kbTick: 0, // current tick within the knockback slide
+        _kbStartX: 0,
+        _kbStartY: 0,
+        _kbDestX: 0,
+        _kbDestY: 0,
       },
       fields
     );
@@ -1743,9 +1328,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // re-derive against the new map. Without this, an enemy placed in a freshly
   // authored room would stay frozen until the server restarts.
   function reloadRooms() {
-    buildRoomBand();
-    reloadPlacements();
-    console.log(`[npcSim] reloaded custom-room band (map now ${mapHTiles} tiles tall)`);
+    world.reloadRooms(); // re-stamp the band (collision/sectors/height) inside world
+    reloadPlacements(); // then re-derive each actor's indoor/in-bounds against it
+    console.log(`[npcSim] reloaded custom-room band (map now ${world.mapHTiles()} tiles tall)`);
   }
 
   // fs.watchFile (polling) over fs.watch: reliable on Windows and across
@@ -1756,10 +1341,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   fs.watchFile(ENEMY_OV_PATH, { interval: 2000 }, reloadEnemies);
   fs.watchFile(ENTITIES_OV_PATH, { interval: 2000 }, reloadEntities);
   fs.watchFile(CAR_OV_PATH, { interval: 2000 }, reloadTraffic);
-  fs.watchFile(ROOMS_OV_PATH, { interval: 2000 }, reloadRooms);
+  fs.watchFile(world.roomsOvPath, { interval: 2000 }, reloadRooms);
   // Map-tile override edits re-stamp the band the same way (it's applied inside
   // buildRoomBand), so enemies/collision pick up moved/covered furniture.
-  fs.watchFile(MAP_TILES_OV_PATH, { interval: 2000 }, reloadRooms);
+  fs.watchFile(world.mapTilesOvPath, { interval: 2000 }, reloadRooms);
 
   function stepAnimation(n) {
     if (++n.animTimer >= 8) {
@@ -1897,7 +1482,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     let tgt = wps[c.wpIndex];
     let dx = tgt[0] - c.x;
     let dy = tgt[1] - c.y;
-    let dist = Math.hypot(dx, dy);
+    let dist = hyp(dx, dy);
     // Skip any waypoints we're already sitting on (e.g. coincident points).
     let guard = 0;
     while (dist < 0.5 && guard++ < wps.length) {
@@ -1905,7 +1490,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       tgt = wps[c.wpIndex];
       dx = tgt[0] - c.x;
       dy = tgt[1] - c.y;
-      dist = Math.hypot(dx, dy);
+      dist = hyp(dx, dy);
     }
     if (dist < 0.5) return;
     const ux = dx / dist;
@@ -1923,7 +1508,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     c.dirty = true;
     stepAnimation(c); // cycle the 2 drive frames while actually moving
     plow(c, travelX, travelY, players, now);
-    if (Math.hypot(tgt[0] - c.x, tgt[1] - c.y) < 0.5) c.wpIndex = nextWp(c);
+    if (hyp(tgt[0] - c.x, tgt[1] - c.y) < 0.5) c.wpIndex = nextWp(c);
   }
 
   // The combat personality for a townsperson: the Entity Manager assignment for
@@ -1944,7 +1529,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   function fleeFrom(n, fx, fy, speed, players, leash) {
     const dx = n.x - fx;
     const dy = n.y - fy;
-    const len = Math.hypot(dx, dy) || 1;
+    const len = hyp(dx, dy) || 1;
     const moved = moveToward(
       n,
       n.x + (dx / len) * 40,
@@ -1964,7 +1549,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   function strafe(n, fx, fy, players, leash) {
     const dx = n.x - fx;
     const dy = n.y - fy;
-    const len = Math.hypot(dx, dy) || 1;
+    const len = hyp(dx, dy) || 1;
     const side = n.id & 1 ? 1 : -1;
     return moveToward(
       n,
@@ -2153,7 +1738,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     // No threat, but a fight may have carried us off our home spot: walk back
     // before resuming the leashed wander (the wander itself can't path beyond
     // `wr`, so it would otherwise stay stranded out in the street).
-    if (Math.hypot(n.x - n.homeX, n.y - n.homeY) > wr) {
+    if (hyp(n.x - n.homeX, n.y - n.homeY) > wr) {
       n.dir = faceDir(n.homeX - n.x, n.homeY - n.y);
       if (moveToward(n, n.homeX, n.homeY, SPEED, ppos, Infinity)) return;
       // Wedged on the way home — fall through to the normal AI and try again.
@@ -2222,10 +1807,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   function vehicleKnockDir(travelX, travelY, carX, carY, vx, vy) {
     let ax = vx - carX;
     let ay = vy - carY;
-    const al = Math.hypot(ax, ay) || 1;
+    const al = hyp(ax, ay) || 1;
     ax /= al;
     ay /= al;
-    const tl = Math.hypot(travelX, travelY);
+    const tl = hyp(travelX, travelY);
     const tx = tl > 0.01 ? travelX / tl : ax; // parked → just shove away
     const ty = tl > 0.01 ? travelY / tl : ay;
     let px = -ty; // perpendicular to travel…
@@ -2236,7 +1821,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     }
     let dx = tx * 0.5 + px * 0.95 + ax * 0.3;
     let dy = ty * 0.5 + py * 0.95 + ay * 0.3;
-    const dl = Math.hypot(dx, dy) || 1;
+    const dl = hyp(dx, dy) || 1;
     dx /= dl;
     dy /= dl;
     const ang = (rng() * 2 - 1) * VEHICLE_KB_VARIANCE; // random spread
@@ -2342,17 +1927,22 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     // general player loop below owns that case.
     const reten = n.aggressor;
     if (reten && !reten.dead && reten.hp > 0 && now < n.aggroUntil && canHurt(n, reten)) {
-      const rd = Math.hypot(reten.x - n.x, reten.y - n.y);
+      const rd = hyp(reten.x - n.x, reten.y - n.y);
       if (rd <= (n.attackRange || ATTACK_RANGE) && canSense(n, reten.x, reten.y))
         return { target: reten, dist: rd, isPlayer: false };
     }
 
     let target = null;
     let best = range;
-    for (const p of players) {
-      if (p.editor) continue; // editor avatar is untargetable (out of the fight)
+    // Broad-phase via the per-tick playerGrid (rebuildPlayerGrid): only players
+    // bucketed within `range` of this enemy, not every player in the world. The
+    // `d <= best` test below still filters precisely — nearPlayers yields a
+    // superset of the neighbourhood. Was O(awake-enemies × all-players); see the
+    // activeCells/playerGrid notes. (the grid already excludes editor avatars.)
+    for (const p of nearPlayers(n.x, n.y, range)) {
+      if (p.editor) continue; // belt-and-suspenders: grid already skips editors
       if (p.hp !== undefined && p.hp <= 0) continue;
-      const d = Math.hypot(p.x - n.x, p.y - n.y);
+      const d = hyp(p.x - n.x, p.y - n.y);
       if (d <= best && canSense(n, p.x, p.y)) {
         best = d;
         target = p;
@@ -2366,7 +1956,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     // marginally closer bystander as long as it's alive and still in detect range.
     const a = n.aggressor;
     if (a && !a.dead && a.hp > 0 && now < n.aggroUntil && canHurt(n, a)) {
-      const d = Math.hypot(a.x - n.x, a.y - n.y);
+      const d = hyp(a.x - n.x, a.y - n.y);
       if (d <= range && canSense(n, a.x, a.y)) return { target: a, dist: d, isPlayer: false };
     }
 
@@ -2374,7 +1964,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     best = range;
     for (const o of nearActors(n.x, n.y, range)) {
       if (o.kind !== 'person' || o.dead || o.hp <= 0 || !canHurt(n, o)) continue;
-      const d = Math.hypot(o.x - n.x, o.y - n.y);
+      const d = hyp(o.x - n.x, o.y - n.y);
       if (d <= best && canSense(n, o.x, o.y)) {
         best = d;
         target = o;
@@ -2393,7 +1983,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     let isPlayer = false;
     for (const e of nearActors(n.x, n.y, range)) {
       if (!e.isEnemy || e.dead || e.hp <= 0 || !canHurt(n, e)) continue;
-      const d = Math.hypot(e.x - n.x, e.y - n.y);
+      const d = hyp(e.x - n.x, e.y - n.y);
       if (d <= best && canSense(n, e.x, e.y)) {
         best = d;
         found = e;
@@ -2405,7 +1995,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         if (p.editor) continue; // parked editor avatar is out of the fight
         if (p.hp !== undefined && p.hp <= 0) continue;
         if (!canHurt(n, { isEnemy: false, pk: p.pk })) continue; // only PKers
-        const d = Math.hypot(p.x - n.x, p.y - n.y);
+        const d = hyp(p.x - n.x, p.y - n.y);
         if (d <= best && canSense(n, p.x, p.y)) {
           best = d;
           found = p;
@@ -2473,7 +2063,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       const nx = n.x + ux * step;
       const ny = n.y + uy * step;
       if (!footFree(n, nx, ny, players)) break;
-      if (Math.hypot(nx - n.homeX, ny - n.homeY) > leash) break;
+      if (hyp(nx - n.homeX, ny - n.homeY) > leash) break;
       n.x = nx;
       n.y = ny;
       moved = true;
@@ -2500,7 +2090,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // (never actors). If the direct push hits a wall, try the two perpendiculars so
   // the pile still drains in a corner instead of jamming. Returns whether it moved.
   function slideApart(n, sx, sy, step) {
-    const len = Math.hypot(sx, sy);
+    const len = hyp(sx, sy);
     if (len < 0.001 || step <= 0) return false;
     const ux = (sx / len) * step;
     const uy = (sy / len) * step;
@@ -2675,7 +2265,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         dx = Math.cos(ang);
         dy = Math.sin(ang);
       }
-      const d = Math.hypot(dx, dy) || 1;
+      const d = hyp(dx, dy) || 1;
       sx += dx / d;
       sy += dy / d;
       // Inverse-mass: `n` yields in proportion to how heavy `o` is relative to it.
@@ -2721,7 +2311,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         dx = Math.cos(ang);
         dy = Math.sin(ang);
       }
-      const d = Math.hypot(dx, dy) || 1;
+      const d = hyp(dx, dy) || 1;
       sx += dx / d;
       sy += dy / d;
       shareSum += mP / (mN + mP); // heavier player → bigger share → actor moves more
@@ -2732,42 +2322,13 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     slideApart(n, sx, sy, Math.min(PLOW_STEP_MAX, PLOW_STEP * 2 * share));
   }
 
-  // Player↔player walk-push: a HEAVIER (higher-level) player walking into a
-  // lighter one shoves them aside — the "low-level peons can't block the door to
-  // a higher-level player" case. Players live on the HOST, not in `actors`, so we
-  // can't move them directly: the sim computes a wall-clamped landing spot
-  // (`knockbackPlayerSpot`, no damage) and hands it to the host via onPlayerShoveCb
-  // (→ GameHost.shovePlayer), the SAME path the vehicle plow uses. Gated on the
-  // heavier player actually MOVING this tick (playerMoved) so a resting chad isn't
-  // a permanent repulsion field — you push through people as you walk, not while
-  // standing. Equal/lighter players don't shove: peers still mutually block.
-  const PLAYER_MOVE_EPS = 0.1; // px — below this a player counts as standing still
-  function pushPlayers(players, playerMoved) {
-    if (!onPlayerShoveCb || players.length < 2) return;
-    for (const a of players) {
-      if (a.editor || (a.hp !== undefined && a.hp <= 0)) continue;
-      if (!playerMoved.has(a.id)) continue; // only a MOVING player plows
-      const mA = massOf(a);
-      const ax = a.x - COL_W / 2;
-      const ay = a.y + COL_OY;
-      for (const b of nearPlayers(a.x, a.y, COL_BROAD)) {
-        if (b === a || b.editor || (b.hp !== undefined && b.hp <= 0)) continue;
-        if (massOf(b) >= mA) continue; // a only plows strictly lighter players
-        const bx = b.x - COL_W / 2;
-        const by = b.y + COL_OY;
-        if (!aabb(ax, ay, COL_W, COL_H, bx, by, COL_W, COL_H)) continue;
-        const mB = massOf(b);
-        const share = mA / (mA + mB); // > 0.5; bigger gap → bigger shove
-        const step = Math.min(PLOW_STEP_MAX, PLOW_STEP * 2 * share);
-        const spot = knockbackPlayerSpot(b.x, b.y, a.x, a.y, 0, { dist: step });
-        if (spot) {
-          onPlayerShoveCb(b.id, spot);
-          b.x = spot.x; // keep the local snapshot in sync so a chain of pushes this
-          b.y = spot.y; // tick resolves against the moved position, not the stale one
-        }
-      }
-    }
-  }
+  // Player↔player walk-push was removed by design: player bodies are non-solid to
+  // each other (no traversal collision, no shoving) so a gang of high-level players
+  // can't block a doorway or shove low-levels around — the classic MMO grief vector.
+  // Only an actual HIT moves another player (combat knockback via player_push, gated
+  // to PK). Territory control, if we want "hold an area," becomes a real objective
+  // system later — never an engine-collision quirk. Vehicles still nudge players via
+  // onPlayerShoveCb (a hit-like impulse), which is intentional and stays.
 
   // Steer one tick toward (tx,ty) at `speed`, using the same separation +
   // angled-routing as the chase: straight first, then widening left/right
@@ -2776,13 +2337,13 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   function moveToward(n, tx, ty, speed, players, leash) {
     const dx = tx - n.x;
     const dy = ty - n.y;
-    const len = Math.hypot(dx, dy) || 1;
+    const len = hyp(dx, dy) || 1;
     let ux = dx / len;
     let uy = dy / len;
     const [sepX, sepY] = separation(n);
     ux += sepX * SEP_WEIGHT;
     uy += sepY * SEP_WEIGHT;
-    const ml = Math.hypot(ux, uy) || 1;
+    const ml = hyp(ux, uy) || 1;
     ux /= ml;
     uy /= ml;
     for (const a of STEER_ANGLES) {
@@ -2826,7 +2387,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     const stack = n.warpStack;
     if (stack.length) {
       const top = stack[stack.length - 1];
-      if (Math.hypot(n.x - top.inX, n.y - top.inY) <= RETURN_ARRIVE) {
+      if (hyp(n.x - top.inX, n.y - top.inY) <= RETURN_ARRIVE) {
         // Reached the inside of the door we came through — warp back out.
         const spot = findFreeNear(top.outX, top.outY, n, players) || { x: top.outX, y: top.outY };
         n.x = spot.x;
@@ -2847,7 +2408,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     if (!n.indoor && sectorIndoorAt(n.x, n.y)) {
       const door = exitDoorToward(n);
       if (door) {
-        if (Math.hypot(n.x - door.x, n.y - door.y) <= DOOR_TRIGGER_REACH) {
+        if (hyp(n.x - door.x, n.y - door.y) <= DOOR_TRIGGER_REACH) {
           const spot = findFreeNear(door.destX, door.destY, n, players) || {
             x: door.destX,
             y: door.destY,
@@ -2865,7 +2426,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       // No door leads homeward (shouldn't happen) — fall through; the
       // RETURN_GIVEUP_MS snap above is the backstop.
     }
-    if (Math.hypot(n.x - n.homeX, n.y - n.homeY) <= RETURN_ARRIVE) return false;
+    if (hyp(n.x - n.homeX, n.y - n.homeY) <= RETURN_ARRIVE) return false;
     n.dir = faceDir(n.homeX - n.x, n.homeY - n.y);
     moveToward(n, n.homeX, n.homeY, n.speed, players, Infinity);
     return true;
@@ -2882,7 +2443,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       return;
     }
     // Reached the doorway — warp through, just like the player did.
-    if (Math.hypot(n.x - d.triggerX, n.y - d.triggerY) <= DOOR_TRIGGER_REACH) {
+    if (hyp(n.x - d.triggerX, n.y - d.triggerY) <= DOOR_TRIGGER_REACH) {
       const spot = findFreeNear(d.destX, d.destY, n, players) || { x: d.destX, y: d.destY };
       n.warpStack.push({ outX: d.triggerX, outY: d.triggerY, inX: d.destX, inY: d.destY });
       n.x = spot.x;
@@ -2908,11 +2469,12 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // the flee step already carried it onto the trigger, so we warp on contact the
   // instant it arrives. Returns true if it warped. Call right after a flee move.
   function fleeThroughDoor(n, players) {
+    const doorTriggers = world.doorTriggers();
     if (!doorTriggers.length) return false;
     let best = null;
     let bestD = FLEE_DOOR_REACH; // generous: a panicked body touching the frame escapes
     for (const t of doorTriggers) {
-      const d = Math.hypot(n.x - t.x, n.y - t.y);
+      const d = hyp(n.x - t.x, n.y - t.y);
       if (d <= bestD) {
         bestD = d;
         best = t;
@@ -2947,7 +2509,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       // detectRange), so the broad-phase scan is bounded to that — no full-roster scan.
       for (const p of nearPlayers(n.x, n.y, n.detectRange || DETECT_RANGE)) {
         if (p.editor || (p.hp !== undefined && p.hp <= 0) || !outLevels(p, n)) continue;
-        const d = Math.hypot(p.x - n.x, p.y - n.y);
+        const d = hyp(p.x - n.x, p.y - n.y);
         if (d < scaryD) {
           scaryD = d;
           scary = p;
@@ -2999,7 +2561,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       const w = warps.get(n.targetId);
       const top = n.warpStack[n.warpStack.length - 1];
       const already = top && top.inX === (w && w.toX) && top.inY === (w && w.toY);
-      if (w && !already && Math.hypot(n.x - w.fromX, n.y - w.fromY) <= WARP_FOLLOW_RANGE) {
+      if (w && !already && hyp(n.x - w.fromX, n.y - w.fromY) <= WARP_FOLLOW_RANGE) {
         // Walk to the doorway and warp through on contact (tickDoorSeek) — NEVER
         // teleport across the room. `w.door` is always a real resolved door now
         // (the detector only records a warp when one sits at the crossing; a
@@ -3141,7 +2703,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         blocked(nx - COL_W / 2, ny + COL_OY, COL_W, COL_H) ||
         hitsPlayer(nx - COL_W / 2, ny + COL_OY, COL_W, COL_H) ||
         hitsActor(n, nx - COL_W / 2, ny + COL_OY, COL_W, COL_H) ||
-        Math.hypot(nx - n.homeX, ny - n.homeY) > wr;
+        hyp(nx - n.homeX, ny - n.homeY) > wr;
       if (!stop) {
         n.x = nx;
         n.y = ny;
@@ -3180,7 +2742,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         const ang = (a / 8) * Math.PI * 2 + (r / 16) * 0.4;
         const x = Math.round(sp.x + Math.cos(ang) * r);
         const y = Math.round(sp.y + Math.sin(ang) * r);
-        if (Math.hypot(x - sp.x, y - sp.y) > wr) continue;
+        if (hyp(x - sp.x, y - sp.y) > wr) continue;
         if (footFree(self, x, y, ppos)) return { x, y };
       }
     }
@@ -3196,10 +2758,19 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       );
       if (!playerNear) continue;
       if (now - (sp._lastSpawn || 0) < (sp.spawnIntervalMs || 3000)) continue;
-      const slots = pool.filter((n) => n.spawner === sp);
-      const active = slots.filter((n) => !n.dead).length;
-      if (active >= (sp.maxActive || slots.length)) continue;
-      const cand = slots.find((n) => n.dead && now >= n.respawnAt);
+      // Single pass over the pool (was two .filter() allocations + a .find() per
+      // spawner per tick): tally this spawner's total slots + live count, and grab
+      // the first dead slot whose respawn timer is up, all at once.
+      let slotCount = 0;
+      let active = 0;
+      let cand = null;
+      for (const n of pool) {
+        if (n.spawner !== sp) continue;
+        slotCount++;
+        if (!n.dead) active++;
+        else if (!cand && now >= n.respawnAt) cand = n;
+      }
+      if (active >= (sp.maxActive || slotCount)) continue;
       if (!cand) continue;
       // No spawning on a wall, a player, or another actor. If nothing nearby is
       // free, leave _lastSpawn untouched so the spawner keeps trying and pops the
@@ -3310,7 +2881,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     if (!o || o.dead) return;
     let ux = opts && opts.dir ? opts.dir.x : o.x - fromX;
     let uy = opts && opts.dir ? opts.dir.y : o.y - fromY;
-    const len = Math.hypot(ux, uy);
+    const len = hyp(ux, uy);
     if (len < 0.001) return; // co-located / no heading — no push
     ux /= len;
     uy /= len;
@@ -3375,7 +2946,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   function knockbackPlayerSpot(px, py, fromX, fromY, dmg, opts) {
     let ux = opts && opts.dir ? opts.dir.x : px - fromX;
     let uy = opts && opts.dir ? opts.dir.y : py - fromY;
-    const len = Math.hypot(ux, uy);
+    const len = hyp(ux, uy);
     if (len < 0.001) return null;
     ux /= len;
     uy /= len;
@@ -3448,7 +3019,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       if (broadcastCb) {
         let dx = atk ? target.x - atk.x : 0;
         let dy = atk ? target.y - atk.y : 0;
-        const len = Math.hypot(dx, dy);
+        const len = hyp(dx, dy);
         if (len > 0.001) {
           dx /= len;
           dy /= len;
@@ -3598,7 +3169,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     // to the 8-way facing for keyboard/touch/legacy callers with no aim vector.
     let v = DIR_VEC[dir] || DIR_VEC[0];
     if (Number.isFinite(aimx) && Number.isFinite(aimy)) {
-      const len = Math.hypot(aimx, aimy);
+      const len = hyp(aimx, aimy);
       if (len > 1e-3) v = [aimx / len, aimy / len];
     }
     // Ranged weapon: don't resolve a hitbox here — launch a projectile that flies
@@ -3809,7 +3380,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   }
 
   function spawnProjectile(o) {
-    const len = Math.hypot(o.vx, o.vy) || 1;
+    const len = hyp(o.vx, o.vy) || 1;
     const p = {
       id: ++projSeq,
       x: o.x,
@@ -3971,7 +3542,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       const steps = Math.max(1, Math.ceil(p.speed / PROJ_HALF));
       const sx = (p.vx * p.speed) / steps;
       const sy = (p.vy * p.speed) / steps;
-      const stepLen = Math.hypot(sx, sy);
+      const stepLen = hyp(sx, sy);
       let done = false;
       let connected = false;
       for (let s = 0; s < steps; s++) {
@@ -4074,16 +3645,11 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         // in one tick teleported (the client warps on a door and sends the new
         // coords). Recorded into recentWarps with an expiry; enemies chasing that
         // player follow it through for WARP_FOLLOW_MS, not just this one tick.
-        // `playerMoved` also captures NORMAL walking (0 < step ≤ WARP_DELTA) so the
-        // player↔player plow only shoves while the heavier player is actually
-        // moving into someone — not as a static repulsion aura (see pushPlayers).
-        const playerMoved = new Set();
         for (const p of players) {
           if (p.editor) continue; // parked editor avatar isn't warping; never chase it
           const prev = prevPlayerPos.get(p.id);
           const guarded = now < (respawnGuard.get(p.id) || 0); // mid respawn window
-          const stepDist = prev ? Math.hypot(p.x - prev.x, p.y - prev.y) : 0;
-          if (stepDist > PLAYER_MOVE_EPS && stepDist <= WARP_DELTA) playerMoved.add(p.id);
+          const stepDist = prev ? hyp(p.x - prev.x, p.y - prev.y) : 0;
           if (!guarded && prev && stepDist > WARP_DELTA) {
             // A one-tick jump bigger than WARP_DELTA is EITHER a door warp OR a
             // teleport (event warp, editor reposition, scripted move). Enemies may
@@ -4180,7 +3746,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             // tick. On its turn the step is scaled ×stride (folded into tickScale) so
             // velocity is preserved; sub-stepping keeps the bigger step tunnel-safe.
             const stride = n.kind === 'person' && !n._aiBusy ? AI_STRIDE : 1;
-            if (n._aiPhase === undefined) n._aiPhase = n.id % AI_STRIDE;
+            if (n._aiPhase < 0) n._aiPhase = n.id % AI_STRIDE; // -1 sentinel from baseActor
             const aiTurn = stride === 1 || (aiTickCount + n._aiPhase) % stride === 0;
             if (aiTurn) {
               const savedScale = tickScale;
@@ -4212,10 +3778,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         // Lag-comp: snapshot each enemy's post-move position so a player's swing
         // can be resolved against where the attacker saw it (histPosAt).
         for (const e of enemies) if (!e.dead) recordHist(e, now);
-        // Player↔player walk-push: heavier players shove lighter ones off the spot
-        // they're standing on (e.g. clearing a blocked doorway). Runs once per tick
-        // after actor movement, using this tick's movement set.
-        pushPlayers(players, playerMoved);
+        // (Player↔player walk-push removed — player bodies are non-solid to each other.)
         // Fly + resolve ranged-weapon shots after actors have moved this tick, so
         // a projectile collides against fresh enemy/player positions.
         stepProjectiles(now);
@@ -4434,7 +3997,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       let bestD = maxD == null ? Infinity : maxD;
       for (const n of enemies) {
         if (n.dead || n.hp <= 0) continue;
-        const d = Math.hypot(n.x - x, n.y - y);
+        const d = hyp(n.x - x, n.y - y);
         if (d <= bestD) {
           bestD = d;
           best = n;
@@ -4505,7 +4068,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
      *  authoritative position lags the visual a few px by ride start. */
     stairAt(x, y) {
       const R = 16;
-      for (const s of stairTriggers) {
+      for (const s of world.stairTriggers()) {
         if (Math.abs(s.x - x) <= R && Math.abs(s.y - y) <= R) return true;
       }
       return false;
@@ -4600,7 +4163,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       let bestD = range;
       for (const n of enemies) {
         if (n.dead) continue;
-        const d = Math.hypot(n.x - x, n.y - y);
+        const d = hyp(n.x - x, n.y - y);
         if (d <= bestD && !wallBetween(x, y, n.x, n.y) && !doorBetween(x, y, n.x, n.y)) {
           bestD = d;
           best = n;
@@ -4628,7 +4191,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       let nearD = Infinity;
       for (const n of enemies) {
         if (n.dead) continue;
-        const d = Math.hypot(n.x - x, n.y - y);
+        const d = hyp(n.x - x, n.y - y);
         if (d <= range && !wallBetween(x, y, n.x, n.y) && !doorBetween(x, y, n.x, n.y)) {
           applyDamage(n, dmg || 0, now, killerPlayerId, { x, y, inflict: inflict || [] });
           if (d < nearD) {
@@ -4651,7 +4214,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
      * Returns the array of struck {x,y} (empty if it hit nothing).
      */
     psiStrikeLine(x, y, ux, uy, length, halfWidth, spread, dmg, killerPlayerId, inflict) {
-      const mag = Math.hypot(ux, uy) || 1;
+      const mag = hyp(ux, uy) || 1;
       const fx = ux / mag;
       const fy = uy / mag; // forward unit
       const now = Date.now();
@@ -4717,7 +4280,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       const cands = [];
       for (const n of enemies) {
         if (n.dead) continue;
-        if (Math.hypot(n.x - x, n.y - y) > range) continue;
+        if (hyp(n.x - x, n.y - y) > range) continue;
         if (wallBetween(x, y, n.x, n.y) || doorBetween(x, y, n.x, n.y)) continue;
         cands.push(n);
       }
@@ -4779,7 +4342,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       speed,
       sprite
     ) {
-      const mag = Math.hypot(ux, uy) || 1;
+      const mag = hyp(ux, uy) || 1;
       const fx = ux / mag;
       const fy = uy / mag;
       const half = Math.atan(spread || 0); // cone half-angle (0 → a straight line)
@@ -4817,7 +4380,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
 
     /** World pixel bounds {w, h} — the host clamps player positions to these. */
     bounds() {
-      return { w: MAP_W_TILES * TILE, h: mapHTiles * TILE };
+      return { w: MAP_W_TILES * TILE, h: world.mapHTiles() * TILE };
     },
 
     /**
@@ -4883,10 +4446,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       fs.unwatchFile(ENEMY_OV_PATH, reloadEnemies);
       fs.unwatchFile(ENTITIES_OV_PATH, reloadEntities);
       fs.unwatchFile(CAR_OV_PATH, reloadTraffic);
-      fs.unwatchFile(ROOMS_OV_PATH, reloadRooms);
-      fs.unwatchFile(COLLISION_OV_PATH, loadCollisionWithOverrides);
-      fs.unwatchFile(path.join(assetsDir, DOORS_FILE), loadDoorTriggers);
-      fs.unwatchFile(DOORS_OV_PATH, loadDoorTriggers);
+      fs.unwatchFile(world.roomsOvPath, reloadRooms);
+      world.stop(); // unwatch the collision + door files world owns
     },
   };
 }
