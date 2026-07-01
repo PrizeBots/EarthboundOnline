@@ -309,7 +309,10 @@
           "damage": 12,
           "inflict": []
         }
-      ]
+      ],
+      "level": 36,
+      "xp": 250,
+      "damage": 25
     },
     "304": {
       "inflict": [

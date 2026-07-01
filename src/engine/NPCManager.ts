@@ -63,6 +63,11 @@ export interface RawNPC {
   /** Set by mergeNpcOverrides on editor edits/additions: their explicit `kind` is
    *  authoritative (not force-upgraded to enemy by the enemy-sprite heuristic). */
   _authored?: boolean;
+  /** Placement tool: the user deliberately holds an enemy-catalog sprite at a
+   *  non-enemy kind. Forces the override entry to persist even when `kind` equals
+   *  the base value, so the `_authored` tag lands and the enemy-sprite heuristic
+   *  stays suppressed. Untouched base enemies (sharks) never get this. */
+  kindLocked?: boolean;
 }
 
 /**
@@ -116,6 +121,13 @@ let npcText: Record<string, string[]> = {};
 // the editor saves npcs.json) can rebuild the static placements identically.
 let enemySpriteSet = new Set<number>();
 let enemyDefaultHp = 24;
+
+/** True if this sprite group is in the enemy catalog (enemy_spawns.json), i.e.
+ *  npcSim's enemy-sprite heuristic hostiles a bare placement of it. The Placement
+ *  tool uses this to know a person/prop kind on such a sprite must be PINNED. */
+export function isEnemySprite(sprite: number): boolean {
+  return enemySpriteSet.has(sprite);
+}
 
 // Spawner-pool enemies (our own enemy_spawns.json). They wander town-wide, so
 // they're tracked in a flat list rather than the home-keyed area buckets, and

@@ -129,6 +129,8 @@ const RawNpcSchema = z
     kind: z.string(),
     t: z.number().optional(),
     props: EntityPropsSchema.optional(),
+    // Pin: user holds an enemy-catalog sprite at a non-enemy kind (Placement tool).
+    kindLocked: z.boolean().optional(),
   })
   .catchall(z.unknown());
 

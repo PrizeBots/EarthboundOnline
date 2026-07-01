@@ -248,6 +248,10 @@ const NPC_RESPAWN_MS = 12000; // a downed townsperson revives at home after this
 //   pursuer    — COP: lock on and chase the bad guy down (no home leash),
 //                holding the chase out to giveUpRange before walking home
 // KEEP IN SYNC with src/engine/EntityStats.ts CombatPersonality.
+// ENEMIES honor the same set (tickEnemy → enemyManeuver), but ONLY when a
+// personality is explicitly authored (Entity Manager or per-instance placement).
+// An enemy with none stays 'brave' — the classic relentless close-in — and is
+// NEVER seeded a random one (a stray coward/kiter would silently nerf combat).
 // SEEDED set = what an UNASSIGNED townsperson randomly gets (a varied crowd).
 // 'pursuer' is deliberately excluded — a cop is opt-in per entity, never random.
 const COMBAT_PERSONALITIES = ['brave', 'skirmisher', 'coward', 'nervous'];
@@ -1779,6 +1783,49 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     }
   }
 
+  // Enemy movement by combat personality — mirrors tickNpcCombat's maneuvers on
+  // the hostile-AI path. tickEnemy already fired the in-range swing; this only
+  // shapes HOW the enemy moves around its target. Only an EXPLICITLY authored
+  // personality changes behavior — an enemy with none stays 'brave' (the classic
+  // relentless close-in), so existing enemies are unaffected. (Unlike townsfolk,
+  // enemies are NOT seeded a random personality — that would silently nerf combat.)
+  // Leash is Infinity like the normal chase; aggroTarget's give-up ends an
+  // over-extended pursuit.
+  function enemyManeuver(n, target, dist, inRange, players, now) {
+    const pers = n.combat && VALID_PERSONALITIES.includes(n.combat) ? n.combat : 'brave';
+    const ready = now - n.lastSwing >= n.attackCooldown;
+    const tx = target.x;
+    const ty = target.y;
+    switch (pers) {
+      case 'coward':
+        // Kite: keep away from the target. The cornered swing (when it can't
+        // escape and is in range) already fired in tickEnemy.
+        if (fleeFrom(n, tx, ty, n.chaseSpeed, players, Infinity))
+          n.dir = faceDir(n.x - tx, n.y - ty);
+        break;
+
+      case 'skirmisher':
+        // Hit-and-run: close when out of range; peel off between swings.
+        if (!inRange) moveToward(n, tx, ty, n.chaseSpeed, players, Infinity);
+        else if (!ready && !fleeFrom(n, tx, ty, n.chaseSpeed, players, Infinity))
+          strafe(n, tx, ty, players, Infinity);
+        break;
+
+      case 'nervous':
+        // Trade blows but fidget restlessly when not swinging.
+        if (!inRange) moveToward(n, tx, ty, n.chaseSpeed, players, Infinity);
+        else if (!ready) jitter(n, players, Infinity, now);
+        break;
+
+      case 'brave':
+      case 'pursuer':
+      default:
+        // Relentless close-in — the classic enemy behavior.
+        if (!inRange) moveToward(n, tx, ty, n.chaseSpeed, players, Infinity);
+        break;
+    }
+  }
+
   function tickNpc(n, ppos, now) {
     // Hold position while a swing or flinch is playing so its generated frames
     // show (movement would overwrite the frame via stepAnimation).
@@ -2692,7 +2739,8 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           return;
         }
       }
-      if (dist <= (n.attackRange || ATTACK_RANGE) && !reachBlocked) {
+      const inRange = dist <= (n.attackRange || ATTACK_RANGE) && !reachBlocked;
+      if (inRange) {
         if (now - n.lastSwing >= n.attackCooldown && n.pose !== 'hurt') {
           n.lastSwing = now;
           n.pose = 'attack';
@@ -2751,14 +2799,15 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             });
           }
         }
-        return;
       }
 
-      // Otherwise close in. moveToward fans out around walls/each other. A locked
-      // chase has NO home-distance leash — the enemy follows relentlessly wherever
-      // the target goes (give-up is purely the target-distance check in
-      // aggroTarget above); once it loses the target it paths back home.
-      moveToward(n, target.x, target.y, n.chaseSpeed, players, Infinity);
+      // Maneuver by combat personality (enemies honor the same set as townsfolk,
+      // but only when explicitly authored — default 'brave' = the classic close-in).
+      // The in-range swing already fired above; this only decides HOW the enemy
+      // moves. A locked chase has NO home-distance leash — the enemy follows
+      // relentlessly wherever the target goes (give-up is purely the target-distance
+      // check in aggroTarget above); once it loses the target it paths back home.
+      enemyManeuver(n, target, dist, inRange, players, now);
       return;
     }
 

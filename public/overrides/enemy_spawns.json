@@ -683,8 +683,8 @@
     {
       "name": "rom-starman-junior",
       "sprite": 303,
-      "x": 8004,
-      "y": 4972,
+      "x": 7921,
+      "y": 4968,
       "wanderRadius": 200,
       "detectRange": 220,
       "giveUpRange": 560,

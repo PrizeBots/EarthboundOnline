@@ -11,7 +11,7 @@
           "damage": 20,
           "inflict": [
             {
-              "type": "paralysis",
+              "type": "burn",
               "chance": 60
             }
           ]
@@ -309,7 +309,9 @@
           "damage": 12,
           "inflict": []
         }
-      ]
+      ],
+      "level": 36,
+      "xp": 250
     },
     "304": {
       "inflict": [

@@ -17,6 +17,7 @@ import {
   CarTraffic,
   liveNpcForKey,
   entityBaseline,
+  isEnemySprite,
 } from '../../engine/NPCManager';
 import { NPCKind } from '../../engine/NPC';
 import { giftForKey } from '../../engine/Gifts';
@@ -81,6 +82,9 @@ interface NpcEntry {
   t: number | null;
   /** Sparse per-instance property override (folded over sprite-group/kind). */
   props: EntityPropsOverride;
+  /** User deliberately holds an enemy-catalog sprite at a non-enemy kind — pins
+   *  the override so it persists past the diff-only save (see isNpcEdited). */
+  kindLocked?: boolean;
 }
 
 /** Normalize a placement's stored kind for the NPC tab (cars live in the
@@ -266,6 +270,7 @@ class PlacementTool implements EditorTool {
         kind: giftForKey(r.k) ? 'gift' : npcKind(v.kind),
         t: v.t ?? null,
         props: { ...(v.props ?? {}) },
+        kindLocked: v.kindLocked,
       });
     }
     for (const a of npcOv?.additions ?? []) {
@@ -367,6 +372,7 @@ class PlacementTool implements EditorTool {
     const r: Omit<RawNPC, 'k'> = { x: e.x, y: e.y, sprite: e.sprite, dir: e.dir, kind: e.kind };
     if (e.t !== null) r.t = e.t;
     if (Object.keys(e.props).length) r.props = { ...e.props };
+    if (e.kindLocked) r.kindLocked = true;
     return r;
   }
 
@@ -1545,7 +1551,14 @@ class PlacementTool implements EditorTool {
         (v) => {
           const kind: NPCKind =
             v === 'person' ? 'person' : v === 'enemy' ? 'enemy' : v === 'gift' ? 'gift' : 'prop';
-          sel((e) => this.mutate('kind', e, { kind }, 'npcs'))();
+          sel((e) => {
+            // Enemy-catalog sprites default to hostile via npcSim's enemy-sprite
+            // heuristic; holding one as a non-enemy kind must be PINNED so it
+            // survives the diff-only save (see isNpcEdited). Choosing 'enemy'
+            // (heuristic already agrees) unpins.
+            const kindLocked = isEnemySprite(e.sprite) && kind !== 'enemy';
+            this.mutate('kind', e, { kind, kindLocked }, 'npcs');
+          })();
         },
         'What this placement IS: person (townsfolk AI), prop (static object), enemy (hostile, combat stats), or gift (item-container).'
       );
@@ -1558,7 +1571,7 @@ class PlacementTool implements EditorTool {
         'combat',
         COMBAT_PERSONALITY_OPTIONS.map((o) => [o.value, o.label] as [string, string]),
         (v) => this.setCombat((v || '') as CombatPersonality | ''),
-        'How this townsperson reacts to a fight (flee / defend / pursue…). Blank = inherit the entity default (else a seeded random pick).'
+        'How this NPC maneuvers in a fight (brave / skirmisher / coward / nervous / pursuer). Works for people AND enemies. Blank = inherit the entity default (townsfolk then seed a random pick; enemies stay brave).'
       );
     }
     this.mkInput(
@@ -1928,9 +1941,12 @@ class PlacementTool implements EditorTool {
       if (dir != null) setVal('dir', String(dir));
       if (e) setVal('kind', e.kind); // the kind field only exists for NPCs
       if (e) setVal('combat', e.props.combat ?? ''); // '' = inherit/seeded
-      // Combat personality only affects townsfolk — hide the row otherwise.
+      // Combat personality drives townsfolk AND enemy maneuvering (npcSim
+      // enemyManeuver) — show it for both; hide for props/gifts/cars.
       const combatRow = this.fields.get('combat')?.parentElement;
-      if (combatRow) combatRow.style.display = !veh && e?.kind === 'person' ? '' : 'none';
+      if (combatRow)
+        combatRow.style.display =
+          !veh && (e?.kind === 'person' || e?.kind === 'enemy') ? '' : 'none';
       if (veh || e) setVal('t', t === null ? '' : String(t));
 
       if (veh) {
@@ -2011,6 +2027,11 @@ class PlacementTool implements EditorTool {
     const b = this.npcBase.get(e.k);
     if (!b) return false;
     return (
+      // A pinned enemy-sprite-as-non-enemy must persist even when kind == base,
+      // so the override entry exists and npcSim's _authored tag suppresses the
+      // enemy-sprite heuristic. Without this the diff-only save drops it and the
+      // NPC re-hostiles (the person→prop→person round-trip bug).
+      !!e.kindLocked ||
       e.x !== b.x ||
       e.y !== b.y ||
       e.sprite !== b.sprite ||

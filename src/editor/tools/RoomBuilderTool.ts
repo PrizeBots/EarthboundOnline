@@ -975,8 +975,10 @@ class RoomBuilderTool implements EditorTool {
   }
 
   /** Paint/erase ONE map cell into the tile override (with the brush's top-left at
-   *  tx,ty for a stamp). A painted arrangement is interpreted with the target
-   *  cell's own sector tileset/palette, so the brush must match it. */
+   *  tx,ty for a stamp). A cell whose sector MATCHES the brush stores a compact
+   *  ROM-arrangement index; a cell of a different style stores a self-describing
+   *  COMPOSITE (built under the brush's tileset/palette) so tilesets mix freely
+   *  without garbling — same as full-tile stamps into custom rooms. */
   private paintMapCell(tx: number, ty: number): void {
     const key = `${tx},${ty}`;
     if (key === this.lastPaintedKey) return;
@@ -993,25 +995,15 @@ class RoomBuilderTool implements EditorTool {
     } else {
       const foot = this.brushFoot();
       if (!foot) return;
-      if (foot.tilesetId !== sec.tilesetId || foot.paletteId !== sec.paletteId) {
-        if (!this.warnedStyle) {
-          this.shell!.toast(
-            `Cell is ts${sec.tilesetId}/pal${sec.paletteId}; brush is ts${foot.tilesetId}/pal${foot.paletteId}. Match the room's style (Tiles tab steppers / sample from this room).`,
-            true
-          );
-          this.warnedStyle = true;
-        }
-        return;
-      }
       for (let ly = 0; ly < foot.h; ly++) {
         for (let lx = 0; lx < foot.w; lx++) {
           const cx = tx + lx;
           const cy = ty + ly;
           const s = getSectorForTile(cx, cy);
-          // Only paint cells whose sector matches the brush — a stamp straddling
-          // two tilesets won't garble the neighbor.
-          if (!s || s.tilesetId !== foot.tilesetId || s.paletteId !== foot.paletteId) continue;
-          this.mapTilesOv.cells[`${cx},${cy}`] = foot.tiles[ly * foot.w + lx] ?? 0;
+          if (!s) continue; // off the map
+          const arr = foot.tiles[ly * foot.w + lx] ?? 0;
+          const matches = s.tilesetId === foot.tilesetId && s.paletteId === foot.paletteId;
+          this.mapTilesOv.cells[`${cx},${cy}`] = matches ? arr : this.mapMixCell(foot, arr);
           this.strokeDirty = true;
         }
       }
@@ -1019,6 +1011,25 @@ class RoomBuilderTool implements EditorTool {
     if (!this.strokeDirty) return;
     primeJSONCache('/overrides/map_tiles.json', this.mapTilesOv);
     void buildCustomRoomBand();
+  }
+
+  /** Build a map-override COMPOSITE from a full-tile stamp arrangement under the
+   *  STAMP's own tileset/palette, so it renders + collides inside a cell of a
+   *  different style. arr 0 stays empty; an already-composite arr keeps its refs.
+   *  Returns the cell id to store in the map override. */
+  private mapMixCell(foot: Footprint, arr: number): number {
+    if (arr === 0) return 0;
+    this.mapTilesOv.composites = this.mapTilesOv.composites ?? {};
+    const comp = new Array<number>(16);
+    if (isComposite(arr)) {
+      const src = this.lookupComposite(arr);
+      for (let mi = 0; mi < 16; mi++) comp[mi] = src?.[mi] ?? -1;
+    } else {
+      for (let mi = 0; mi < 16; mi++) comp[mi] = packRef(foot.tilesetId, foot.paletteId, arr, mi);
+    }
+    const id = this.nextCompositeId();
+    this.mapTilesOv.composites[String(id)] = comp;
+    return id;
   }
 
   private cloneMapOv(): MapTilesOverride {
@@ -1207,19 +1218,15 @@ class RoomBuilderTool implements EditorTool {
       const room = this.roomAt(ox, oy);
       const w = this.erasing ? 1 : (foot?.w ?? 1);
       const h = this.erasing ? 1 : (foot?.h ?? 1);
-      // Edit-map mode targets ANY cell; "ok" = the brush matches the cell's
-      // sector tileset/palette. Otherwise the target must be a custom room.
+      // Edit-map targets ANY on-map cell; a mismatched style becomes a composite,
+      // so "ok" just needs a sector under the cursor. Otherwise the target must be
+      // a custom room (also mixes freely now).
       const editSec = this.editMap ? getSectorForTile(ox, oy) : null;
       const ok = this.editMap
         ? this.erasing
           ? !!editSec
-          : !!foot &&
-            !!editSec &&
-            editSec.tilesetId === foot.tilesetId &&
-            editSec.paletteId === foot.paletteId
-        : // Any stamp now paints into any room (mismatched styles become
-          // composite cells), so a room + a brush is always paintable.
-          !!room && (this.erasing || !!foot);
+          : !!foot && !!editSec
+        : !!room && (this.erasing || !!foot);
       if (foot) {
         ctx.save();
         ctx.globalAlpha = 0.6;
@@ -1886,6 +1893,22 @@ class RoomBuilderTool implements EditorTool {
     this.eraseBtn.title = 'Eraser (paint empty)';
     brushBox.appendChild(top);
 
+    // Paint + Edit-map toggles sit up top (above the panes) so the stamp library
+    // below has all the remaining height to expand into.
+    this.paintBtn = this.mkBtn('Paint: off', () => this.setPainting(!this.painting), brushBox);
+    this.paintBtn.style.width = '100%';
+    this.paintBtn.title =
+      'Toggle paint mode — click/drag in a room to lay down the current brush (right-click/Esc stops).';
+
+    // Edit-map toggle: when ON, the brush/erase/stamp paints onto ANY room's
+    // tiles (overrides/map_tiles.json) instead of a custom band room — for
+    // rearranging baked furniture & redecorating existing rooms.
+    this.editMapBtn = this.mkBtn('Edit map: off', () => this.toggleEditMap(), brushBox);
+    this.editMapBtn.style.width = '100%';
+    this.editMapBtn.title =
+      'Paint/erase/stamp directly onto ANY room (saves to map_tiles.json). Match the room tileset.';
+    this.syncEditMapBtn();
+
     // Tiles pane: palette steppers + atlas grid
     this.tilesPane = document.createElement('div');
     this.tilesPane.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
@@ -1943,20 +1966,6 @@ class RoomBuilderTool implements EditorTool {
       'display:flex;flex-direction:column;gap:4px;max-height:220px;overflow:auto;padding:2px;';
     this.stampsPane.appendChild(this.libraryEl);
     brushBox.appendChild(this.stampsPane);
-
-    this.paintBtn = this.mkBtn('Paint: off', () => this.setPainting(!this.painting), brushBox);
-    this.paintBtn.style.width = '100%';
-    this.paintBtn.title =
-      'Toggle paint mode — click/drag in a room to lay down the current brush (right-click/Esc stops).';
-
-    // Edit-map toggle: when ON, the brush/erase/stamp paints onto ANY room's
-    // tiles (overrides/map_tiles.json) instead of a custom band room — for
-    // rearranging baked furniture & redecorating existing rooms.
-    this.editMapBtn = this.mkBtn('Edit map: off', () => this.toggleEditMap(), brushBox);
-    this.editMapBtn.style.width = '100%';
-    this.editMapBtn.title =
-      'Paint/erase/stamp directly onto ANY room (saves to map_tiles.json). Match the room tileset.';
-    this.syncEditMapBtn();
 
     // The brush section is its own draggable/resizable window (shown only for the
     // Paint tool — see syncTool). Everything else stays in the docked panel.

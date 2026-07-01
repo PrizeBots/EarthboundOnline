@@ -12,6 +12,16 @@ const GROUPS = 3;
 // Two opaque colors are "the same region" if within this RGB distance² of an
 // anchor. Anchors are the most-frequent colors that are far enough apart.
 const ANCHOR_MIN_DIST2 = 60 * 60;
+// Sprite outlines are near-black and are the most-frequent opaque color, so they
+// would grab an anchor slot and hand the player a useless "black" slider. Exclude
+// them from anchors AND from recoloring so the outline always stays black.
+const NEAR_BLACK_MAX = 56;
+function isNearBlack(r: number, g: number, b: number): boolean {
+  // All channels low = black or a dark-gray anti-aliased outline pixel. A
+  // saturated-but-dark color (dark navy, maroon) keeps at least one higher
+  // channel, so it survives and can still be a recolor group.
+  return r <= NEAR_BLACK_MAX && g <= NEAR_BLACK_MAX && b <= NEAR_BLACK_MAX;
+}
 
 export interface RecolorGroup {
   /** The anchor color (the group's representative RGB), for the slider swatch. */
@@ -52,6 +62,7 @@ export class Recolorer {
     const counts = new Map<number, number>();
     for (let i = 0; i < this.src.length; i += 4) {
       if (this.src[i + 3] < 128) continue; // transparent
+      if (isNearBlack(this.src[i], this.src[i + 1], this.src[i + 2])) continue; // outline
       const key = (this.src[i] << 16) | (this.src[i + 1] << 8) | this.src[i + 2];
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
@@ -72,6 +83,7 @@ export class Recolorer {
     const a = new Int8Array(this.width * this.height).fill(-1);
     for (let p = 0, i = 0; i < this.src.length; i += 4, p++) {
       if (this.src[i + 3] < 128) continue;
+      if (isNearBlack(this.src[i], this.src[i + 1], this.src[i + 2])) continue; // keep outline black
       const c: [number, number, number] = [this.src[i], this.src[i + 1], this.src[i + 2]];
       let best = -1;
       let bestD = Infinity;

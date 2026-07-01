@@ -1650,8 +1650,8 @@
       "y": 1238,
       "wanderRadius": 100,
       "detectRange": 100,
-      "poolSize": 7,
-      "maxActive": 4,
+      "poolSize": 8,
+      "maxActive": 5,
       "spawnIntervalMs": 60000,
       "respawnDelayMs": 60000,
       "enabled": true
