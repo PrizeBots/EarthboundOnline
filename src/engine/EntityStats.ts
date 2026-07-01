@@ -74,8 +74,45 @@ export interface EntityProps {
   combat?: CombatPersonality; // townsfolk threat behavior; absent = seeded default (npcSim)
 }
 
-/** Back-compat alias — `EntityStats` is the resolved (full) form of EntityProps. */
-export type EntityStats = EntityProps;
+/** A status the entity's melee hit may inflict (mirrors server/status.js inflict
+ *  spec + the per-source DoT overrides). */
+export interface EntityInflict {
+  type: string;
+  chance: number; // 1..100 proc odds
+  dotDmg?: number; // flat HP/tick (DoT statuses) — overrides the catalog default
+  dotMs?: number; // tick period ms
+  dotPct?: number; // fraction of max HP/tick (alt to dotDmg)
+}
+
+/** A ranged PSI ability the entity casts (mirrors npcSim sanitizeAbilities). The
+ *  `mode` selects the effect; only the fields for that mode are used. */
+export interface EntityAbility {
+  anim: string; // PSI flipbook id (e.g. 'psi_fire_alpha')
+  range: number; // px cast range
+  cooldownMs: number;
+  mode?: 'offense' | 'heal' | 'buff' | 'shield' | 'debuff' | 'magnet';
+  damage?: number; // offense: damage to the player
+  inflict?: EntityInflict[]; // offense: status procs (Hypnosis/Paralysis/Brainshock)
+  heal?: number; // heal: HP the caster restores
+  buffStat?: string; // buff: self stat raised (Offense up)
+  buffAmt?: number;
+  buffMs?: number;
+  shieldKind?: 'physical' | 'psi'; // shield: self block-N-hits shield
+  shieldHits?: number;
+  debuffStat?: string; // debuff: player stat lowered (Defense down)
+  debuffAmt?: number;
+  debuffMs?: number;
+  drainPp?: number; // magnet: PP drained from the player
+}
+
+/** `EntityStats` is the stored/resolved entity: the numeric EntityProps plus the
+ *  authored combat extras that aren't plain numeric fields — status inflicts
+ *  (melee) and PSI abilities (ranged casts). Kept OFF EntityProps so the numeric
+ *  stat-form machinery (FieldKey = keyof EntityProps) stays number-only. */
+export type EntityStats = EntityProps & {
+  inflict?: EntityInflict[];
+  abilities?: EntityAbility[];
+};
 
 /** A SPARSE override of the shared shape: any subset of fields (the rest inherit).
  *  Used for the per-instance layer (placement.props) and sprite-group entries. */

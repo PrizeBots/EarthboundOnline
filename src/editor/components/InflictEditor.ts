@@ -7,11 +7,20 @@
 
 import { mkButton, mkSelect, mkNumberInput } from '../ui';
 
-/** One status proc carried by a weapon / PSI move. */
+/** One status proc carried by a weapon / PSI move. For damage-over-time statuses
+ *  (poison/burn/…) the optional per-source overrides tune this source's bite:
+ *  `dotDmg` = flat HP per tick, `dotMs` = tick period. Omitted → catalog default. */
 export interface InflictEntry {
   type: string;
   chance: number;
+  dotDmg?: number;
+  dotMs?: number;
+  dotPct?: number;
 }
+
+/** Statuses that deal damage-over-time — only these expose the dmg/rate fields.
+ *  KEEP IN SYNC with the DoT statuses in server/status.js DEFS. */
+const DOT_TYPES = new Set(['poison', 'burn', 'nauseous', 'sunstroke', 'cold']);
 
 /** Status ids selectable in the inflict editor — KEEP IN SYNC with
  *  server/status.js STATUS (the wire-stable strings the inflict model uses). */
@@ -24,6 +33,7 @@ export const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: 'noPsi', label: "Can't concentrate" },
   { value: 'crying', label: 'Crying' },
   { value: 'poison', label: 'Poisoned' },
+  { value: 'burn', label: 'Burning' },
   { value: 'nauseous', label: 'Nauseous' },
   { value: 'sunstroke', label: 'Sunstroke' },
   { value: 'cold', label: 'Cold' },
@@ -77,7 +87,14 @@ export function buildInflictEditor(opts: InflictEditorOpts): HTMLDivElement {
         tip: `Status ailment this ${noun} may inflict on hit.`,
         onChange: (v) => {
           entry.type = v;
+          if (!DOT_TYPES.has(v)) {
+            // Non-DoT status: drop any stale DoT overrides.
+            delete entry.dotDmg;
+            delete entry.dotMs;
+            delete entry.dotPct;
+          }
           commit();
+          renderRows(); // show/hide the DoT dmg+rate fields for the new type
         },
       });
       r.appendChild(sel);
@@ -102,6 +119,46 @@ export function buildInflictEditor(opts: InflictEditorOpts): HTMLDivElement {
       pctLbl.textContent = '%';
       pctLbl.style.cssText = 'color:#9fb8cc;';
       r.appendChild(pctLbl);
+
+      // Per-source DoT tuning — only for damage-over-time statuses. Blank = use
+      // the status catalog default (server/status.js). `dmg` = HP per tick,
+      // `every` = tick period in ms.
+      if (DOT_TYPES.has(entry.type)) {
+        const dmg = mkNumberInput({
+          value: entry.dotDmg ?? undefined,
+          width: 44,
+          min: 1,
+          max: 9999,
+          placeholder: 'dmg',
+          tip: 'Flat HP drained per tick. Blank = status default (or % of max HP).',
+          onChange: (v) => {
+            if (v && v > 0) entry.dotDmg = v;
+            else delete entry.dotDmg;
+            commit();
+          },
+        });
+        r.appendChild(dmg);
+
+        const per = mkNumberInput({
+          value: entry.dotMs ?? undefined,
+          width: 56,
+          min: 100,
+          max: 60000,
+          placeholder: 'every ms',
+          tip: 'Tick period in ms — how often the DoT bites. Blank = status default.',
+          onChange: (v) => {
+            if (v && v > 0) entry.dotMs = v;
+            else delete entry.dotMs;
+            commit();
+          },
+        });
+        r.appendChild(per);
+
+        const perLbl = document.createElement('span');
+        perLbl.textContent = 'ms';
+        perLbl.style.cssText = 'color:#9fb8cc;';
+        r.appendChild(perLbl);
+      }
 
       mkButton(
         '🗑',

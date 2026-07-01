@@ -33,6 +33,7 @@ const {
 const status = require('./status'); // EB status-condition engine (shared with npcSim)
 const prof = require('./simProfile'); // per-phase tick profiler (PROFILE_SIM=1; no-op when off)
 const buffs = require('./buffs'); // temporary timed stat boosts (consumables / future PSI)
+const shields = require('./shields'); // block/reflect-N-hits Power/PSI shields
 
 const POSES = ['walk', 'climb', 'attack', 'hurt'];
 const MAX_SLOTS = 14; // EarthBound's Goods menu holds 14 items per character
@@ -440,6 +441,8 @@ const PSI_FAMILY_SPECS = [
     target: 'self',
     tiers: ['alpha', 'omega'],
     pp: [10, 30],
+    // Timed flat boost to the caster's attack (read by combat via buffs.buffBonus).
+    effect: (i) => ({ buff: { stat: 'offense', amount: [20, 45][i], durationMs: 30000 } }),
   },
   {
     stem: 'defense_down',
@@ -447,6 +450,14 @@ const PSI_FAMILY_SPECS = [
     target: 'enemy',
     tiers: ['alpha', 'omega'],
     pp: [6, 18],
+    // Cracks an enemy's guard: a timed vulnerability so YOUR hits land harder on
+    // it (enemy defense isn't in the melee formula, so we model the debuff as a
+    // damage-taken multiplier — the practical effect). α single, Ω every enemy in range.
+    effect: (i) => ({
+      debuff: { amount: [0.25, 0.5][i], durationMs: 20000 },
+      range: 240,
+      multi: i === 1,
+    }),
   },
   {
     stem: 'shield',
@@ -454,6 +465,15 @@ const PSI_FAMILY_SPECS = [
     target: 'self',
     tiers: ['alpha', 'beta', 'omega', 'sigma'],
     pp: [6, 10, 30, 18],
+    // Power Shield: soaks PHYSICAL hits. α/β block them; Ω/Σ reflect the blow
+    // back at the attacker. Higher tiers soak more hits. (Tier→mode tunable.)
+    effect: (i) => ({
+      shield: {
+        kind: 'physical',
+        mode: ['block', 'block', 'reflect', 'reflect'][i],
+        hits: [3, 6, 6, 12][i],
+      },
+    }),
   },
   {
     stem: 'psi_shield',
@@ -461,6 +481,14 @@ const PSI_FAMILY_SPECS = [
     target: 'self',
     tiers: ['alpha', 'beta', 'omega', 'sigma'],
     pp: [8, 14, 42, 24],
+    // Same as Shield but guards against PSI attacks instead of physical.
+    effect: (i) => ({
+      shield: {
+        kind: 'psi',
+        mode: ['block', 'block', 'reflect', 'reflect'][i],
+        hits: [3, 6, 6, 12][i],
+      },
+    }),
   },
   // ---- Other ----
   { stem: 'teleport', family: 'Teleport', target: 'self', tiers: ['alpha', 'beta'], pp: [2, 8] },
@@ -851,12 +879,28 @@ class GameHost {
       // victim's status set by damagePlayer; `knock` = the knockback landing spot.
       // `enemy` is the attacker NPC id — forwarded to the victim's client so it can
       // lunge that enemy into range for the hit (it renders ~interp+latency behind).
-      (playerId, dmg, enemy, knock, inflict) =>
-        this.damagePlayer(playerId, dmg, knock, inflict, enemy),
+      (playerId, dmg, enemy, knock, inflict, kind, effect) => {
+        // `enemy` is the attacker npc OBJECT — reduce to its id for the wire
+        // (client lunges that id into range) and for shield-reflect targeting.
+        const npcId = enemy && typeof enemy === 'object' ? enemy.id : enemy;
+        // A pure debuff/magnet cast (no damage, no status) skips the damage path.
+        if (dmg > 0 || (inflict && inflict.length)) {
+          this.damagePlayer(playerId, dmg, knock, inflict, npcId, {
+            kind: kind || 'physical', // enemy PSI casts pass 'psi' (PSI Shield guards them)
+            attacker: { npc: npcId },
+          });
+        }
+        // Enemy assist PSI on the player: Defense down (negative buff) / PSI Magnet (PP drain).
+        if (effect) this._applyEnemyPsiEffect(playerId, effect);
+      },
       (playerId, xp, _enemy, loot) => this.awardKill(playerId, xp, loot),
       // PvP: a player's swing landed on another player — apply it to the victim's
       // server-authoritative HP (same path as an enemy hit).
-      (targetId, dmg, _byId, knock, inflict) => this.damagePlayer(targetId, dmg, knock, inflict),
+      (targetId, dmg, _byId, knock, inflict) =>
+        this.damagePlayer(targetId, dmg, knock, inflict, null, {
+          kind: 'physical',
+          attacker: { player: _byId },
+        }),
       // Ground-drop claim: the sim found a player on a drop; we own inventory/cash
       // and decide if they can take it (bag room). Return true to consume it.
       (playerId, drop) => this.tryPickup(playerId, drop),
@@ -997,7 +1041,9 @@ class GameHost {
       if (!p.statuses || Object.keys(p.statuses).length === 0) continue;
       const r = status.tickStatuses(p, now);
       for (const d of r.dot) {
-        this.damagePlayer(id, Math.max(1, Math.floor(p.maxHp * d.pct)), null, null);
+        // Per-source flat `dmg` wins; else a fraction of the victim's max HP.
+        const amt = d.dmg > 0 ? d.dmg : Math.floor(p.maxHp * d.pct);
+        this.damagePlayer(id, Math.max(1, amt), null, null);
         if (p.hp <= 0) break; // death cleared everything + respawned
       }
       if (r.changed && p.hp > 0) this._broadcastPlayerStatus(p);
@@ -1033,7 +1079,12 @@ class GameHost {
       amount: b.amount,
       ms: Math.max(0, b.until - now),
     }));
-    p._ws.send(JSON.stringify({ type: 'player_buffs', buffs: list }));
+    const shieldList = shields.activeShields(p).map((s) => ({
+      kind: s.kind,
+      mode: s.mode,
+      hits: s.hits,
+    }));
+    p._ws.send(JSON.stringify({ type: 'player_buffs', buffs: list, shields: shieldList }));
   }
 
   // Tear down a superseded session (same character reconnected — see the join
@@ -2244,7 +2295,7 @@ class GameHost {
     this._publishPlayerEvent({ type: 'player_push', id: playerId, x: p.x, y: p.y });
   }
 
-  damagePlayer(playerId, dmg, knock, inflict, byNpc) {
+  damagePlayer(playerId, dmg, knock, inflict, byNpc, opts) {
     const p = this.players.get(playerId);
     if (!p || p.hp <= 0) return;
     if (p.editor) return; // out of the world in the dev editor — untargetable
@@ -2252,6 +2303,27 @@ class GameHost {
     // Shielded mid door-transition: the player is a frozen ghost at the doorway
     // and can't move or defend, so enemy swings whiff (see player.warping).
     if (p.warping && Date.now() < p.warpUntil) return;
+    // Power/PSI shields soak whole ATTACKS. Only a kinded hit (physical/psi) is
+    // eligible — DoT ticks carry no kind, so poison bleeds THROUGH a shield. A
+    // block nulls the blow; a reflect bounces the damage back at the attacker
+    // (the reflected hit carries no kind, so it can't ping-pong forever).
+    const kind = opts && opts.kind;
+    if (kind) {
+      const r = shields.absorbHit(p, kind);
+      if (r.absorbed) {
+        this.broadcastAll({
+          type: 'shield_block',
+          id: playerId,
+          x: Math.round(p.x),
+          y: Math.round(p.y),
+          kind,
+          reflect: r.reflect,
+        });
+        this._sendPlayerBuffs(p); // a shield charge was spent — refresh the HUD
+        if (r.reflect && opts.attacker) this._reflectDamage(opts.attacker, dmg);
+        return;
+      }
+    }
     p._combatAt = Date.now(); // taking a hit throttles PP regen (in combat)
     // Defense softens incoming hits (stat defense + equipped armor + any active
     // defense buff); always at least 1 so leveling/gear never makes a player
@@ -2310,6 +2382,50 @@ class GameHost {
     this._enterDying(playerId, p, eff);
   }
 
+  /** Apply an enemy assist-PSI effect to a player: Defense down (a timed NEGATIVE
+   *  defense buff, so incoming hits land harder) or PSI Magnet (drain PP). Pushes
+   *  fresh stats so the client HUD/status screen reflects it. */
+  _applyEnemyPsiEffect(playerId, effect) {
+    const p = this.players.get(playerId);
+    if (!p || p.hp <= 0 || p.editor) return;
+    const now = Date.now();
+    let changed = false;
+    if (effect.debuff && effect.debuff.amount > 0) {
+      buffs.applyBuff(
+        p,
+        effect.debuff.stat,
+        -Math.abs(effect.debuff.amount),
+        effect.debuff.ms,
+        now
+      );
+      this._sendPlayerBuffs(p);
+      changed = true;
+    }
+    if (effect.drainPp > 0) {
+      p.pp = Math.max(0, (p.pp || 0) - effect.drainPp);
+      p._combatAt = now; // throttle PP regen briefly
+      changed = true;
+    }
+    if (changed) {
+      this.broadcastAll({
+        type: 'player_stats',
+        id: playerId,
+        stats: statsPayload(p),
+        leveled: false,
+        gained: 0,
+      });
+    }
+  }
+
+  /** Bounce reflected shield damage back at the attacker. `attacker` is the tag a
+   *  hit carried ({npc:id} for an enemy, {player:id} for a PvP swing). The bounced
+   *  hit carries no kind, so it can't be re-shielded into an infinite ping-pong. */
+  _reflectDamage(attacker, dmg) {
+    if (!attacker || !(dmg > 0)) return;
+    if (attacker.npc != null) this.npcSim.hurtEnemyById(attacker.npc, dmg);
+    else if (attacker.player != null) this.damagePlayer(attacker.player, dmg, null, null);
+  }
+
   /** Begin the rolling-HP "Mortal Damage" window. The player keeps `hp` (stays
    *  conscious + able to act/heal); `hpReal` carries the true post-hit total (≤0)
    *  that a heal must lift back above 0 to survive. The visible roll + banner are
@@ -2354,6 +2470,8 @@ class GameHost {
    *  `player_hp` (heal) so clients pop the green number + settle/stop the bar.
    *  Returns the HP actually restored. */
   healPlayer(p, amount) {
+    // Diamondized: HP can't be restored until the solidify is CURED first (canon).
+    if (status.blocksHealing(p, Date.now())) return 0;
     if (p.dying) {
       const shown = Math.max(0, p.hpReal); // what the meter would read (clamped ≥0)
       p.hpReal = Math.min(p.maxHp, p.hpReal + amount);
@@ -2403,6 +2521,7 @@ class GameHost {
     p.frame = 0;
     status.clearAll(p);
     buffs.clearBuffs(p);
+    shields.clearShields(p);
     this._broadcastPlayerStatus(p);
     this._sendPlayerBuffs(p);
     // Carry the killing blow's direction + force so every client plays the same
@@ -2512,7 +2631,7 @@ class GameHost {
       // have no vuln table yet (EB resistance is gear-based, not level-based —
       // a TODO needing community item data), so this is 100% for now.
       const eff = inf.chance * (this._playerVuln(p, status.elementOf(inf.type)) / 100);
-      if (status.tryInflict(p, inf.type, eff, now, Math.random)) {
+      if (status.tryInflict(p, inf.type, eff, now, Math.random, inf)) {
         const def = status.defOf(inf.type) || {};
         this.broadcastAll({
           type: 'status_applied',
@@ -3945,9 +4064,46 @@ class GameHost {
           this.healPlayer(target, def.heal);
         }
         if (def.cures && !def.reviveFrac) {
-          // Healing PSI clears the target's status conditions (self or ally).
+          // Healing PSI clears the target's status conditions (self or ally) —
+          // this is the CURE for diamondize (which otherwise never wears off).
           status.clearAll(target);
           this._broadcastPlayerStatus(target);
+        }
+        // Self buffs/shields (Offense up, Power/PSI Shield): timed boosts on the
+        // caster. buffs feed the combat stat math; shields soak the next N hits.
+        if (def.buff) {
+          buffs.applyBuff(entry, def.buff.stat, def.buff.amount, def.buff.durationMs, now);
+          this._sendPlayerBuffs(entry);
+          this.broadcastAll({
+            type: 'player_stats',
+            id: playerId,
+            stats: statsPayload(entry),
+            leveled: false,
+            gained: 0,
+          });
+        }
+        if (def.shield) {
+          shields.applyShield(entry, def.shield.kind, def.shield.mode, def.shield.hits);
+          this._sendPlayerBuffs(entry);
+        }
+        // Enemy debuff (Defense down): crack a target's guard so hits land harder.
+        if (def.debuff) {
+          const hit = this.npcSim.psiDebuff(
+            entry.x,
+            entry.y,
+            def.range || 240,
+            !!def.multi,
+            def.debuff.amount,
+            def.debuff.durationMs
+          );
+          if (hit) {
+            tx = hit.x;
+            ty = hit.y;
+          } else {
+            const v = PSI_DIR[entry.direction] || [0, 1];
+            tx = Math.round(entry.x + v[0] * 96);
+            ty = Math.round(entry.y + v[1] * 96);
+          }
         }
         if (def.damage || def.inflict) {
           // Server picks the target(s) — it owns enemy positions. Damage +

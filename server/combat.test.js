@@ -188,6 +188,53 @@ check('handleAttack: a forced crit (crit=100) deals double damage', () => {
   assert.strictEqual(hpOf(e.id).hp, e.maxHp - 6, 'crit should deal 2x the 3 base');
 });
 
+// --- Enemy ability (PSI) spec sanitizer ---
+check('parseAbilities keeps + clamps authored enemy casts, drops empties', () => {
+  const out = sim._test.parseAbilities([
+    {
+      anim: 'psi_fire_alpha',
+      range: 240,
+      cooldownMs: 2600,
+      damage: 20,
+      inflict: [{ type: 'burn', chance: 35, dotDmg: 3, dotMs: 900 }],
+    },
+    {
+      anim: 'hypnosis_alpha',
+      range: 99999,
+      cooldownMs: 10,
+      damage: 0,
+      inflict: [{ type: 'sleep', chance: 70 }],
+    }, // range clamps, cd floors, 0-dmg OK (has inflict)
+    { damage: 0, inflict: [] }, // dropped: does nothing
+    { range: 100 }, // dropped: no damage, no inflict
+  ]);
+  assert.strictEqual(out.length, 2, 'two real abilities survive');
+  assert.strictEqual(out[0].damage, 20);
+  assert.strictEqual(out[0].inflict[0].type, 'burn');
+  assert.strictEqual(out[1].range, 600, 'range clamps to the cap');
+  assert.strictEqual(out[1].cooldownMs, 300, 'cooldown floors to the min');
+  assert.strictEqual(out[1].damage, 0, 'a pure-status cast (0 dmg) is allowed');
+});
+
+check('parseAbilities accepts all PSI modes (heal/shield/buff/debuff/magnet)', () => {
+  const out = sim._test.parseAbilities([
+    { anim: 'lifeup_alpha', mode: 'heal', heal: 80 },
+    { anim: 'shield_alpha', mode: 'shield', shieldKind: 'physical', shieldHits: 6 },
+    { anim: 'offense_up_alpha', mode: 'buff', buffStat: 'offense', buffAmt: 20 },
+    { anim: 'defense_down_alpha', mode: 'debuff', debuffStat: 'defense', debuffAmt: 15 },
+    { anim: 'psi_magnet_alpha', mode: 'magnet', drainPp: 10 },
+    { anim: 'x', mode: 'heal', heal: 0 }, // dropped: heal does nothing
+  ]);
+  assert.strictEqual(out.length, 5, 'the five real casts survive; empty heal dropped');
+  assert.strictEqual(out[0].mode, 'heal');
+  assert.strictEqual(out[0].heal, 80);
+  assert.strictEqual(out[1].shieldKind, 'physical');
+  assert.strictEqual(out[1].shieldHits, 6);
+  assert.strictEqual(out[2].buffAmt, 20);
+  assert.strictEqual(out[3].debuffAmt, 15);
+  assert.strictEqual(out[4].drainPp, 10);
+});
+
 // --- PvP melee (player-vs-player, PK-gated) ---
 // Drive handleAttack against a synthetic player roster supplied through start()'s
 // getPlayers. start() arms the tick timer, but its setInterval callback can't

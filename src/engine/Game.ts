@@ -964,7 +964,7 @@ export class Game {
             if (rp) rp.statuses = statuses;
           }
         },
-        onPlayerBuffs: (list) => {
+        onPlayerBuffs: (list, shieldList) => {
           // Owner-only: turn each remaining-ms into a local deadline for the HUD.
           const now = Date.now();
           this.player.buffs = list.map((b) => ({
@@ -972,6 +972,15 @@ export class Game {
             amount: b.amount,
             expiresAt: now + b.ms,
           }));
+          this.player.shields = shieldList.map((s) => ({
+            kind: s.kind,
+            mode: s.mode,
+            hits: s.hits,
+          }));
+        },
+        onShieldBlock: (_id, x, y, _kind, reflect) => {
+          // A shield ate a hit — float a tell over the guarded spot for everyone.
+          spawnNoticeText(x, y, reflect ? 'Reflected!' : 'Blocked!');
         },
         onPlayerDowned: (id, ms, dx, dy, force) => {
           const until = Date.now() + ms;

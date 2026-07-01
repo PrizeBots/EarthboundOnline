@@ -74,11 +74,10 @@ export interface EditorTool {
   description: string;
   status: 'ready' | 'wip';
   /**
-   * Self-contained launcher: a tool that runs as its own full-screen overlay
-   * (e.g. the Cast Sprite Editor) rather than inside the shell. When present,
-   * clicking its hub tile closes the hub and calls this instead of setTool().
+   * Called when the tool becomes active (its tab is selected). Mounts the tool's
+   * panel into the dock's panelHost. A tool that runs as its own overlay instead
+   * (e.g. the Sprite Editor) opens it here and tears it down in deactivate().
    */
-  launch?(): void;
   activate?(shell: EditorShellApi): void;
   deactivate?(): void;
   /** Per-frame overlay, drawn in screen space after the shell's grids. */

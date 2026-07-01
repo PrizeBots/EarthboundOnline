@@ -209,6 +209,7 @@ real players join:
 - [ ] **Drop `--no-stash` from `.husky/pre-commit`** once git is upgraded. Current git is 2.31.1 (2021); its lint-staged backup-stash is broken ("Needed a single revision"), so the hook runs `lint-staged --no-stash`. After upgrading to git ≥2.35 (run `winget install --id Git.Git -e` in a normal terminal, NOT inside Claude Code — the installer needs admin + to close Git Bash), remove `--no-stash` to regain the auto-backup safety net.
 - [ ] Add Zod schemas for the other hand-edited overrides (doors, collision, npcs, dialogue, item_sprites…) — only `enemy_spawns.json` is validated so far
 - [ ] `idb`/Dexie for IndexedDB asset caching — feature-driven; pick up when the client-side ROM-extraction Web Worker starts (see Pre-Launch section)
+- [ ] **Reuse UI components across the codebase — don't re-implement.** Standing rule: before building a panel/widget, check for an existing one. Known duplication to consolidate: **floating draggable/resizable windows** — `src/editor/FloatingPanel.ts` (new, viewport-`fixed`, exported/decoupled) vs the Sprite Editor's private `makeFloating` (`src/engine/spriteEditor/dom.ts`, `absolute` within `S.overlay`, own layout store). Migrate `makeFloating` onto `FloatingPanel` so there's ONE implementation. Also audit other repeated widgets (FolderDesktop galleries, `createSpritePicker`, mkBtn/mkRow helpers duplicated per tool) and hoist shared ones.
 
 ## Backlog: Hardware Track (out of scope for now)
 
@@ -241,6 +242,11 @@ Engine code should still be written to port cleanly (see CLAUDE.md Architecture)
 - [ ] PvP zones
 - [ ] Trading system
 - [ ] World events / boss encounters
+- [ ] **Contested Zones (town territory control)** — enemy-held city spots players
+      clear/capture; world-shared PvE; owner state is just a FLAG that doors/vendors/story/
+      spawns react to (loose coupling); decay loop back to enemy control = living map, not
+      one-time content. Full design in **CONTESTED_ZONES.md**. Leans on flag system + Event
+      Manager state machine + enemy spawners + loot/banking + room=shard. (Riffed 2026-06-30.)
 
 ---
 

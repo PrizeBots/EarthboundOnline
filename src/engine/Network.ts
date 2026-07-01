@@ -250,7 +250,10 @@ type NetworkCallback = {
    * buff HUD). Each entry's `ms` is REMAINING time (the client turns it into a
    * local deadline, so it stays correct across clock skew). Empty = no buffs.
    */
-  onPlayerBuffs?: (buffs: BuffPayload[]) => void;
+  onPlayerBuffs?: (buffs: BuffPayload[], shields: ShieldPayload[]) => void;
+  /** A shield soaked a hit on `id` at (x,y): `reflect` true if it bounced the
+   *  blow back, `kind` the guarded damage type. Drives the block/reflect FX. */
+  onShieldBlock?: (id: string, x: number, y: number, kind: string, reflect: boolean) => void;
   /** A lethal hit started the EB rolling-HP "Mortal Damage" death. The bar rolls
    *  from `fromHp` → 0 over `ms` while the player stays up and can heal to survive;
    *  `banner` flags windows long enough to announce MORTAL DAMAGE!; `dmg` is the
@@ -295,6 +298,12 @@ export interface BuffPayload {
   stat: string;
   amount: number;
   ms: number; // remaining duration in ms at send time
+}
+
+export interface ShieldPayload {
+  kind: string; // 'physical' | 'psi'
+  mode: string; // 'block' | 'reflect'
+  hits: number; // remaining charges
 }
 
 /** Progression block the server pushes (field names match StatusModal). */
@@ -904,7 +913,13 @@ function openSocket() {
         callbacks?.onPlayerPk?.(msg.id, !!msg.pk, msg.lockMs ?? 0);
         break;
       case 'player_buffs':
-        callbacks?.onPlayerBuffs?.(Array.isArray(msg.buffs) ? msg.buffs : []);
+        callbacks?.onPlayerBuffs?.(
+          Array.isArray(msg.buffs) ? msg.buffs : [],
+          Array.isArray(msg.shields) ? msg.shields : []
+        );
+        break;
+      case 'shield_block':
+        callbacks?.onShieldBlock?.(msg.id, msg.x ?? 0, msg.y ?? 0, msg.kind ?? '', !!msg.reflect);
         break;
       case 'player_downed':
         callbacks?.onPlayerDowned?.(

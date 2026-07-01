@@ -154,7 +154,22 @@ class RoomManagerTool implements EditorTool {
       this.deleteSelected();
       return true;
     }
+    if (key === 'escape' && this.sel) {
+      this.sel = null;
+      this.refreshList();
+      this.rebuildForm();
+      return true;
+    }
     return false;
+  }
+
+  /** Right-click deselects the current room (and suppresses the browser menu). */
+  onRightClick(): boolean {
+    if (!this.sel) return false;
+    this.sel = null;
+    this.refreshList();
+    this.rebuildForm();
+    return true;
   }
 
   // A map gesture assigns sectors to the active room. We defer the actual edit to

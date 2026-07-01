@@ -12,11 +12,7 @@ import { getSectorForTile } from '../engine/MapManager';
 import { getCollisionByteAt } from '../engine/Collision';
 import { isMusicMuted, setMusicMuted, setSfxMuted, stopAllSfx } from '../engine/MusicManager';
 import { setMuteButtonHidden } from '../engine/MuteButton';
-import {
-  isSpriteEditorOpen,
-  closeSpriteEditor,
-  setSpriteEditorShellExit,
-} from '../engine/spriteEditor';
+import { isSpriteEditorOpen, closeSpriteEditor } from '../engine/spriteEditor';
 import { getKeySet } from '../engine/Input';
 import {
   setDebugBoxes,
@@ -173,9 +169,6 @@ export class EditorShell {
 
     window.addEventListener('keydown', this.onKeyDown, true);
     window.addEventListener('keyup', this.onKeyUp, true);
-    // Let an open Sprite Editor overlay route F2 all the way back to the game
-    // (close overlay + exit the shell), not just back to the shell.
-    setSpriteEditorShellExit(() => this.exit());
     this.context.canvas.addEventListener('mousedown', this.onMouseDown);
     this.context.canvas.addEventListener('contextmenu', this.onContextMenu);
     this.context.canvas.addEventListener('wheel', this.onWheel, { passive: false });
@@ -279,6 +272,11 @@ export class EditorShell {
     setSfxMuted(this.mutedBeforeEditor);
     setMuteButtonHidden(false);
 
+    // Close the active tool (the Sprite Editor tool tears its overlay down in
+    // deactivate()); also close an overlay opened by a HANDOFF from another tool
+    // (Item/PSI/Entity/Room-builder), which isn't the active tool so setTool(null)
+    // wouldn't reach it.
+    if (isSpriteEditorOpen()) closeSpriteEditor();
     this.setTool(null);
     this.context.camera.zoom = 1; // gameplay always renders at native scale
     this.context.camera.roomBounds = this.savedRoomBounds;
@@ -286,7 +284,6 @@ export class EditorShell {
     getKeySet().clear();
     this.heldKeys.clear();
 
-    setSpriteEditorShellExit(null); // shell no longer owns F2-to-game
     window.removeEventListener('keydown', this.onKeyDown, true);
     window.removeEventListener('keyup', this.onKeyUp, true);
     this.context.canvas.removeEventListener('mousedown', this.onMouseDown);
@@ -323,22 +320,14 @@ export class EditorShell {
     if (tool) this.toast(`Tool: ${tool.name}`);
   }
 
-  /** Tab/launch click in the dock: WIP tools warn, self-contained tools launch,
-   *  shell tools toggle active (click the active tab again to deselect). */
+  /** Tab click in the dock: WIP tools warn; ready tools toggle active (click the
+   *  active tab again to deselect). The Sprite Editor is a normal tool too — its
+   *  activate()/deactivate() open and tear down its overlay (see editor/index.ts). */
   private selectTool(tool: EditorTool): void {
     if (tool.status !== 'ready') {
       this.toast(`${tool.name} is not built yet (see EDITOR_TOOLS.md)`, true);
       return;
     }
-    if (tool.launch) {
-      // Self-contained overlay (e.g. Sprite Editor). Clicking its tab while it's
-      // already open toggles it closed; otherwise launch it.
-      if (isSpriteEditorOpen()) closeSpriteEditor();
-      else tool.launch();
-      return;
-    }
-    // Switching to a normal shell tool closes the Sprite Editor first.
-    if (isSpriteEditorOpen()) closeSpriteEditor();
     this.setTool(this.activeTool === tool ? null : tool);
   }
 
@@ -745,7 +734,9 @@ export class EditorShell {
     // focused <input> (managers, search boxes). F2 is a function key, never a
     // text character, so it must exit even while `typing`; blur the field first
     // so the game doesn't keep receiving its keystrokes. Handle it BEFORE the
-    // sprite-editor bail below; close that overlay first, then exit the shell.
+    // sprite-editor bail below. This shell listener is registered first (in
+    // enter(), before any tool opens its overlay), so it always pre-empts the
+    // Sprite Editor's own F2 handler; exit() tears the overlay down for us.
     if (e.key === 'F2') {
       e.preventDefault();
       // Stop here: exit() flips active=false and drops our listener, so if this
@@ -754,7 +745,6 @@ export class EditorShell {
       // flicker instead of an exit.
       e.stopImmediatePropagation();
       if (typing) (document.activeElement as HTMLElement | null)?.blur();
-      if (isSpriteEditorOpen()) closeSpriteEditor();
       this.exit();
       return;
     }

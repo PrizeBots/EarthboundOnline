@@ -140,25 +140,29 @@ function compositeRow(id: number): number[] {
 function effectiveRow(tileX: number, tileY: number): number[] | null {
   const sector = getSectorForTile(tileX, tileY);
   if (!sector) return null; // off-map → caller treats as solid
-  const collisions = collisionData.get(getDrawTilesetId(sector.tilesetId));
-  if (!collisions) return null; // tileset not loaded → solid
   const arr = getTileAt(tileX, tileY);
-  // Arrangement beyond the collision table = no data = non-solid (historically
-  // skipped); per-cell overrides may still apply on top of an all-zero base.
-  // Composite cells carry no ROM arrangement — their collision is assembled from
-  // each source minitile's own collision byte.
   // Custom-room band: arrangement 0 is our "empty/unpainted cell" sentinel, but
   // the ROM marks arrangement 0 (the black map-edge border tile) fully solid.
-  // In the band that means empty room space, so it's walkable empty — NOT a wall.
-  // (Per-cell collision overrides still apply on top, so the painter can author
-  // walls there explicitly.) Mirrored in server/npcSim.js + the py room checker.
-  const base = isComposite(arr)
-    ? compositeRow(arr)
-    : arr === 0 && tileY >= getOverworldHeightTiles()
-      ? ZERO_ROW
-      : arr < collisions.length
-        ? collisions[arr]
-        : ZERO_ROW;
+  // In the band that means empty space, so it's walkable empty — NOT a wall.
+  // Handled BEFORE the tileset-load guard so a blank band sector (whose tileset
+  // collision may never be loaded) still returns a real, all-zero row: that lets
+  // the collision painter AUTHOR walls into the void (per-cell overrides below)
+  // to seal a sector's open edges so the player can't slip out.
+  // Mirrored in server/npc/world.js (blocked) — keep in sync.
+  let base: readonly number[];
+  if (isComposite(arr)) {
+    // Composite cells carry no ROM arrangement — collision is assembled from
+    // each source minitile's own collision byte.
+    base = compositeRow(arr);
+  } else if (arr === 0 && tileY >= getOverworldHeightTiles()) {
+    base = ZERO_ROW;
+  } else {
+    const collisions = collisionData.get(getDrawTilesetId(sector.tilesetId));
+    if (!collisions) return null; // tileset not loaded → solid
+    // Arrangement beyond the collision table = no data = non-solid (historically
+    // skipped); per-cell overrides may still apply on top of an all-zero base.
+    base = arr < collisions.length ? collisions[arr] : ZERO_ROW;
+  }
   const ov = cellOverrides.get(tileY * MAP_WIDTH_TILES + tileX);
   if (!ov || ov.size === 0) return base as number[];
   const row = [...base];
@@ -248,9 +252,13 @@ export function getEffectiveRowAt(tileX: number, tileY: number): number[] | null
 export function getArrangementByteAt(tileX: number, tileY: number, idx: number): number | null {
   const sector = getSectorForTile(tileX, tileY);
   if (!sector) return null;
+  const arr = getTileAt(tileX, tileY);
+  // Band void cell: its base is non-solid (0), same as effectiveRow. Without
+  // this the painter would read the ROM's solid 0x80 as the base and treat a
+  // Block paint as a no-op (clearing the override instead of authoring a wall).
+  if (arr === 0 && tileY >= getOverworldHeightTiles()) return 0;
   const data = collisionData.get(getDrawTilesetId(sector.tilesetId));
   if (!data) return null;
-  const arr = getTileAt(tileX, tileY);
   if (arr >= data.length) return 0;
   return data[arr][idx];
 }

@@ -12,7 +12,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test:server": "node server/gameHost.test.js && node server/botFleet.test.js && node server/combat.test.js && node server/loot_carry.test.js && node server/store.test.js && node server/authApi.test.js && node server/charStats.test.js && node server/persistence.test.js",
+    "test:server": "node server/status.test.js && node server/shields.test.js && node server/gameHost.test.js && node server/botFleet.test.js && node server/combat.test.js && node server/loot_carry.test.js && node server/store.test.js && node server/authApi.test.js && node server/charStats.test.js && node server/persistence.test.js",
     "test:unit": "vitest run",
     "smoke:net": "node server/smoke_aoi.js",
     "smoke:rtc": "node server/smoke_rtc.js",

@@ -293,31 +293,82 @@ const STATUS_PIP_COLOR: Record<string, string> = {
   noPsi: '#88aaff', // blue
   crying: '#7799ff', // soft blue
   poison: '#66ee66', // green
+  burn: '#ff5522', // fire red-orange
   nauseous: '#cccc66', // olive
   sunstroke: '#ff9933', // orange
   cold: '#aaddff', // light blue
   homesick: '#ffaacc', // pink
 };
 
-// A stunned (paralysis) entity gets a dizzy 😵 bobbing over its head — reads as
-// "stunned" instantly, far clearer than a colored pip. Drawn with the system emoji
-// font (color glyph), so it's not pixel-art, but it's a universal, art-free tell.
-const STUN_EMOJI_PX = 12;
-const STUN_EMOJI_DROP = 8; // px below the sprite top — sits on the head/face
-function drawStunEmoji(
+// An afflicted entity gets a bobbing emoji over its head per active status —
+// reads instantly, far clearer than a colored pip, and needs no art. Drawn with
+// the system emoji font (color glyph). KEEP IN SYNC with server/status.js STATUS.
+const STATUS_EMOJI: Record<string, string> = {
+  paralysis: '😵', // numb / stunned
+  sleep: '💤',
+  diamond: '💎', // solidified
+  strange: '💫', // feeling strange
+  possessed: '👻',
+  noPsi: '🚫', // can't concentrate
+  crying: '😢',
+  poison: '☠️',
+  burn: '🔥',
+  nauseous: '🤢',
+  sunstroke: '🥵',
+  cold: '🤧',
+  homesick: '🏠',
+};
+// Draw order (worst/most-important first) + how many to show before we fall back
+// to pips for the overflow, so a multi-status entity never turns into emoji soup.
+const STATUS_EMOJI_ORDER = [
+  'diamond',
+  'paralysis',
+  'sleep',
+  'burn',
+  'poison',
+  'sunstroke',
+  'cold',
+  'nauseous',
+  'strange',
+  'possessed',
+  'crying',
+  'noPsi',
+  'homesick',
+];
+const STATUS_EMOJI_MAX = 3; // more than this → the rest show as pips
+const STATUS_EMOJI_PX = 12;
+const STATUS_EMOJI_DROP = 8; // px below the sprite top — sits on the head/face
+
+/** Draw up to STATUS_EMOJI_MAX status emojis in a row over the head; returns the
+ *  set of status ids it drew (so pips can skip them). */
+function drawStatusEmojis(
   ctx: CanvasRenderingContext2D,
   centerX: number,
   feetY: number,
-  spriteGroupId: number
-): void {
+  spriteGroupId: number,
+  statuses: string[]
+): Set<string> {
+  const drawn = new Set<string>();
+  const shown = STATUS_EMOJI_ORDER.filter((s) => statuses.includes(s) && STATUS_EMOJI[s]).slice(
+    0,
+    STATUS_EMOJI_MAX
+  );
+  if (!shown.length) return drawn;
   const spriteH = getSpriteGroupMeta(spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
   const bob = Math.sin(performance.now() / 180); // gentle hover over the head
+  const y = feetY - spriteH + STATUS_EMOJI_DROP + bob;
+  const step = STATUS_EMOJI_PX; // horizontal spacing between glyphs
+  const startX = centerX - ((shown.length - 1) * step) / 2;
   ctx.save();
-  ctx.font = `${STUN_EMOJI_PX}px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",sans-serif`;
+  ctx.font = `${STATUS_EMOJI_PX}px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('😵', centerX, feetY - spriteH + STUN_EMOJI_DROP + bob); // on the head/face
+  shown.forEach((s, i) => {
+    ctx.fillText(STATUS_EMOJI[s], startX + i * step, y);
+    drawn.add(s);
+  });
   ctx.restore();
+  return drawn;
 }
 
 function drawStatusPips(
@@ -329,9 +380,10 @@ function drawStatusPips(
   statuses: string[] | undefined
 ): void {
   if (!statuses || statuses.length === 0) return;
-  // Stun (paralysis) shows as the 😵 over the head instead of a pip.
-  if (statuses.includes('paralysis')) drawStunEmoji(ctx, centerX, feetY, spriteGroupId);
-  const pips = statuses.filter((s) => s !== 'paralysis');
+  // Each active status shows as a bobbing emoji over the head; anything past the
+  // emoji cap (or an unmapped id) falls back to a compact color pip by the bar.
+  const shown = drawStatusEmojis(ctx, centerX, feetY, spriteGroupId, statuses);
+  const pips = statuses.filter((s) => !shown.has(s));
   if (pips.length === 0) return;
   const spriteH = getSpriteGroupMeta(spriteGroupId)?.height ?? DEFAULT_SPRITE_H;
   const capsule = BAR_H + 1;
@@ -368,28 +420,38 @@ const BUFF_META: Record<string, { label: string; color: string }> = {
 function drawBuffHud(
   ctx: CanvasRenderingContext2D,
   buffs: { stat: string; amount: number; expiresAt: number }[] | undefined,
+  shields: { kind: string; mode: string; hits: number }[] | undefined,
   now: number
 ): void {
-  if (!buffs || !buffs.length) return;
   let rowI = 0;
-  for (const b of buffs) {
-    const remain = b.expiresAt - now;
-    if (remain <= 0) continue; // expired locally; server resend will prune it
-    const meta = BUFF_META[b.stat] ?? { label: b.stat.slice(0, 3).toUpperCase(), color: '#dddddd' };
-    const sign = b.amount >= 0 ? '+' : '';
-    const text = `${meta.label} ${sign}${b.amount}  ${Math.ceil(remain / 1000)}s`;
+  const chip = (text: string, color: string) => {
     const tw = Math.ceil(measureText(text, 1) * 0.5);
     const y = 4 + rowI * 11;
     const w = tw + 9;
     ctx.fillStyle = '#0d1016d9'; // dark chip backing
     ctx.fillRect(3, y, w, 9);
-    ctx.fillStyle = meta.color; // colored stat bar on the left edge
+    ctx.fillStyle = color; // colored bar on the left edge
     ctx.fillRect(3, y, 2, 9);
     ctx.save();
     ctx.scale(0.5, 0.5); // draw the 16px font at 8px to match the nameplates
     drawText(ctx, text, 14, y * 2 + 1, 1, 1);
     ctx.restore();
     rowI++;
+  };
+  for (const b of buffs ?? []) {
+    const remain = b.expiresAt - now;
+    if (remain <= 0) continue; // expired locally; server resend will prune it
+    const meta = BUFF_META[b.stat] ?? { label: b.stat.slice(0, 3).toUpperCase(), color: '#dddddd' };
+    const sign = b.amount >= 0 ? '+' : '';
+    chip(`${meta.label} ${sign}${b.amount}  ${Math.ceil(remain / 1000)}s`, meta.color);
+  }
+  // Shield chips: guarded kind, block/reflect marker, remaining charges.
+  for (const s of shields ?? []) {
+    if (s.hits <= 0) continue;
+    const label = s.kind === 'psi' ? 'PSI-SH' : 'SHIELD';
+    const mark = s.mode === 'reflect' ? 'REFLECT' : 'BLOCK';
+    const color = s.kind === 'psi' ? '#7ad6ff' : '#9fbaff';
+    chip(`${label} ${mark} x${s.hits}`, color);
   }
 }
 
@@ -1195,7 +1257,7 @@ export class Renderer {
     this.ctx.restore(); // zoom scale
 
     // Local player's buff HUD — screen-space (logical coords), after the world.
-    drawBuffHud(this.ctx, player.buffs, now);
+    drawBuffHud(this.ctx, player.buffs, player.shields, now);
 
     // Downed: closing vignette + give-up prompt (owner only), over everything.
     if (player.downed) {

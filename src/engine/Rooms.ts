@@ -80,6 +80,11 @@ export interface RoomDef {
   /** Grouping key for the navigator: "onett", "twoson", … (interiors inherit
    *  the town of their entrance door). Null/absent ⇒ "(unsorted)". */
   town?: string | null;
+  /** Parent room id for the nested Places/Builder outline (e.g. a hotel's bedrooms
+   *  point at the hotel; the hotel points at its town room). Null/absent ⇒ a
+   *  top-level "main area" row, grouped by `town`. Set by drag-drop in the Places
+   *  column or the Room Builder tree; persisted to the room's home doc. */
+  parent?: string | null;
   /** Interior category (RoomType vocabulary): "shop" | "house" | … — the second
    *  navigator level and the key behaviors read. Loose string for back-compat. */
   type?: string | null;
@@ -321,6 +326,51 @@ export function listRegionRooms(): readonly RoomDef[] {
 /** The merged registry (custom + region). */
 export function listAllRooms(): readonly RoomDef[] {
   return allRooms();
+}
+
+/** One node in the nested room outline (Places column + Room Builder tree). */
+export interface RoomTreeNode {
+  room: RoomDef;
+  children: RoomTreeNode[];
+}
+
+/**
+ * The merged registry as a nested tree by `parent`. Roots are rooms with no
+ * parent (or a parent that doesn't resolve / would form a cycle — those degrade
+ * to roots so nothing is ever dropped). Children inherit no implicit order here;
+ * callers sort. This is the single shape the Places column and the Room Builder
+ * tree both render, so the two lists stay identical.
+ */
+export function roomTree(list?: readonly RoomDef[]): RoomTreeNode[] {
+  const rooms = list ?? allRooms();
+  const byId = new Map<string, RoomDef>();
+  for (const r of rooms) byId.set(r.id, r);
+
+  // A parent link is valid only if it resolves AND doesn't loop back to the child
+  // (walk ancestors; bail on cycle or missing link → treat the child as a root).
+  const validParent = (r: RoomDef): string | null => {
+    const start = r.parent;
+    if (!start || start === r.id || !byId.has(start)) return null;
+    let cur: string | null | undefined = start;
+    const seen = new Set<string>([r.id]);
+    while (cur) {
+      if (seen.has(cur)) return null; // cycle
+      seen.add(cur);
+      cur = byId.get(cur)?.parent ?? null;
+    }
+    return start;
+  };
+
+  const nodes = new Map<string, RoomTreeNode>();
+  for (const r of rooms) nodes.set(r.id, { room: r, children: [] });
+  const roots: RoomTreeNode[] = [];
+  for (const r of rooms) {
+    const node = nodes.get(r.id)!;
+    const pid = validParent(r);
+    if (pid) nodes.get(pid)!.children.push(node);
+    else roots.push(node);
+  }
+  return roots;
 }
 
 /** Rooms grouped town → type → rooms, for the editor navigator. */

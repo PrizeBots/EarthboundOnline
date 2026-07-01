@@ -47,6 +47,11 @@ export function getPsiAnim(id: string): PsiAnimEntry | null {
   return anims[id] ?? null;
 }
 
+/** All authored PSI anim ids (sorted) — for editor pickers (e.g. enemy abilities). */
+export function psiAnimIds(): string[] {
+  return Object.keys(anims).sort();
+}
+
 /** True if `id` has any authored frames (for the editor's "has art" markers). */
 export function hasPsiAnim(id: string): boolean {
   return (anims[id]?.frames.length ?? 0) > 0;

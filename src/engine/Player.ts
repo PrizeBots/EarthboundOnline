@@ -107,6 +107,9 @@ export class Player extends Entity {
   // `expiresAt` is a LOCAL epoch-ms deadline so the HUD counts down every frame
   // without per-second server traffic (server resends only on change).
   buffs: { stat: string; amount: number; expiresAt: number }[] = [];
+  // Active block/reflect shields (owner-only, server-synced) — drives the shield
+  // chips in the buff HUD + the local shield aura. See server/shields.js.
+  shields: { kind: string; mode: string; hits: number }[] = [];
   // KO/downed state (server-synced). While downed the player lays rotated 90°,
   // can't act, sees a countdown + closing vignette, and can "give up the ghost"
   // by holding (giveUpProgress 0..1). downedTotalMs drives the vignette ramp.

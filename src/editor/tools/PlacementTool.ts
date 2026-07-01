@@ -1234,6 +1234,10 @@ class PlacementTool implements EditorTool {
         ctx.moveTo(dx, dy - 4);
         ctx.lineTo(dx, dy + 4);
         ctx.stroke();
+        // Purple frame around the destination marker (so it reads distinct from
+        // the green trigger→dest link + crosshair).
+        ctx.strokeStyle = '#b06bff';
+        ctx.strokeRect(dx - 8.5, dy - 8.5, 17, 17);
       }
     }
     if (this.placingDoor) this.drawPlaceCursor(ctx, camX, camY);

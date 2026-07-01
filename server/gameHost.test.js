@@ -940,6 +940,80 @@ check('poison ticks HP down over time (DoT)', () => {
   assert(alice.ofType('player_hp').length > 0, 'a DoT tick broadcasts player_hp');
 });
 
+const shieldsMod = require('./shields');
+
+check('a Power Shield soaks a physical hit (no HP loss) then breaks', () => {
+  const p = host.players.get(aliceId);
+  p.hp = p.maxHp;
+  p.warping = false;
+  p.editor = false;
+  p.dying = false;
+  p.statuses = {};
+  shieldsMod.clearShields(p);
+  shieldsMod.applyShield(p, 'physical', 'block', 1); // one charge
+  alice.clear();
+  const before = p.hp;
+  host.damagePlayer(aliceId, 40, null, null, null, { kind: 'physical' });
+  assert.strictEqual(p.hp, before, 'a blocked hit costs no HP');
+  assert(alice.last('shield_block'), 'broadcasts a shield_block');
+  assert.strictEqual(shieldsMod.activeShields(p).length, 0, 'the charge was spent');
+  // Shield gone — the next physical hit lands normally.
+  host.damagePlayer(aliceId, 40, null, null, null, { kind: 'physical' });
+  assert(p.hp < before, 'once the shield breaks, damage lands again');
+});
+
+check('a reflect shield bounces damage back at the attacking enemy', () => {
+  const p = host.players.get(aliceId);
+  p.hp = p.maxHp;
+  p.dying = false;
+  p.statuses = {};
+  shieldsMod.clearShields(p);
+  shieldsMod.applyShield(p, 'physical', 'reflect', 1);
+  let reflected = null;
+  const orig = host.npcSim.hurtEnemyById;
+  host.npcSim.hurtEnemyById = (id, dmg) => {
+    reflected = { id, dmg };
+    return true;
+  };
+  const before = p.hp;
+  host.damagePlayer(aliceId, 25, null, null, 77, { kind: 'physical', attacker: { npc: 77 } });
+  host.npcSim.hurtEnemyById = orig;
+  assert.strictEqual(p.hp, before, 'the reflected hit still costs the victim no HP');
+  assert(
+    reflected && reflected.id === 77 && reflected.dmg === 25,
+    'damage bounced to the attacker'
+  );
+});
+
+check('DoT bleeds THROUGH a shield (poison carries no kind)', () => {
+  const p = host.players.get(aliceId);
+  p.hp = p.maxHp;
+  p.dying = false;
+  p.statuses = {};
+  shieldsMod.clearShields(p);
+  shieldsMod.applyShield(p, 'physical', 'block', 3);
+  const before = p.hp;
+  host.damagePlayer(aliceId, 10, null, null); // DoT-style call: no kind
+  assert(p.hp < before, 'unkinded (DoT) damage is not shielded');
+  assert.strictEqual(shieldsMod.activeShields(p).length, 1, 'shield charge NOT spent by DoT');
+});
+
+check('diamondize blocks healing until cured (persist-until-cure, no failsafe)', () => {
+  const p = host.players.get(aliceId);
+  p.hp = 10;
+  p.dying = false;
+  p.downed = false;
+  p.statuses = {};
+  statusMod.applyStatus(p, statusMod.STATUS.DIAMOND, Date.now());
+  // Permanent: it never auto-expires, even far in the future.
+  assert(statusMod.hasStatus(p, statusMod.STATUS.DIAMOND, Date.now() + 1e9), 'diamond persists');
+  assert.strictEqual(host.healPlayer(p, 50), 0, 'a heal is refused while diamondized');
+  assert.strictEqual(p.hp, 10, 'HP unchanged by the blocked heal');
+  // The cure (Healing PSI clears all statuses) lets healing work again.
+  statusMod.clearAll(p);
+  assert(host.healPlayer(p, 50) > 0, 'after the cure, healing works');
+});
+
 check('a lethal hit starts the mortal roll; the roll-out DOWNS the player (KO)', () => {
   // A lethal blow no longer KOs instantly — it begins the EB rolling-HP "Mortal
   // Damage" window (player stays UP and can heal to survive). Only when the roll

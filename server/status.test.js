@@ -72,6 +72,30 @@ test('tickStatuses fires DoT at the catalog cadence and reports expiry once', ()
   assert.deepStrictEqual(S.tickStatuses(h, 8100).expired, []);
 });
 
+test('per-source DoT overrides bite at the authored dmg + rate', () => {
+  const h = {};
+  // Author a poison that ticks a FLAT 7 HP every 500ms (vs the 3%/1000ms default).
+  S.applyStatus(h, S.STATUS.POISON, 0, { dotMs: 500, dotDmg: 7 });
+  assert.strictEqual(S.tickStatuses(h, 400).dot.length, 0); // before the faster tick
+  const t = S.tickStatuses(h, 500).dot;
+  assert.strictEqual(t.length, 1);
+  assert.strictEqual(t[0].dmg, 7); // flat per-source damage, not a % of max HP
+  assert.strictEqual(S.tickStatuses(h, 900).dot.length, 0); // 500ms cadence, not 1000
+  assert.strictEqual(S.tickStatuses(h, 1000).dot.length, 1);
+});
+
+test('normalizeInflict keeps + clamps authored DoT overrides', () => {
+  const clean = S.normalizeInflict([
+    { type: 'burn', chance: 40, dotDmg: 5, dotMs: 800 },
+    { type: 'poison', chance: 150, dotMs: 10 }, // chance clamps to 100; dotMs floors to 100
+    { type: 'bogus', chance: 50 }, // dropped: unknown status
+  ]);
+  assert.strictEqual(clean.length, 2);
+  assert.deepStrictEqual(clean[0], { type: 'burn', chance: 40, dotDmg: 5, dotMs: 800 });
+  assert.strictEqual(clean[1].chance, 100);
+  assert.strictEqual(clean[1].dotMs, 100);
+});
+
 test('breakOnHit clears Sleep but not Paralysis', () => {
   const h = {};
   S.applyStatus(h, S.STATUS.SLEEP, 0);

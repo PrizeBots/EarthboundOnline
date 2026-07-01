@@ -324,6 +324,15 @@
       "worldX": 2416,
       "worldY": 1112
     },
+    "7128,1260": {
+      "destX": 2440,
+      "destY": 1608,
+      "destDir": 0,
+      "style": 10,
+      "sfx": "door-open",
+      "worldX": 7120,
+      "worldY": 1264
+    },
     "7256,1100": {
       "destX": 8072,
       "destY": 1472,
@@ -861,6 +870,15 @@
       "worldX": 6768,
       "worldY": 5968
     },
+    "1744,6236": {
+      "destX": 6848,
+      "destY": 8168,
+      "destDir": 3,
+      "style": 4,
+      "sfx": "door-open",
+      "worldX": 1744,
+      "worldY": 6224
+    },
     "6136,6380": {
       "destX": 5672,
       "destY": 6496,
@@ -941,6 +959,15 @@
       "sfx": "door-open",
       "worldX": 8152,
       "worldY": 7112
+    },
+    "1984,7284": {
+      "destX": 7872,
+      "destY": 7656,
+      "destDir": 3,
+      "style": 4,
+      "sfx": "door-open",
+      "worldX": 1984,
+      "worldY": 7280
     },
     "1920,7348": {
       "destX": 7872,
@@ -1169,6 +1196,15 @@
       "worldX": 6576,
       "worldY": 8144
     },
+    "6872,8172": {
+      "destX": 1736,
+      "destY": 6240,
+      "destDir": 0,
+      "style": 10,
+      "sfx": "door-open",
+      "worldX": 6864,
+      "worldY": 8176
+    },
     "7160,8172": {
       "destX": 2280,
       "destY": 7352,
@@ -1281,6 +1317,15 @@
       "worldY": 8712
     },
     "1296,8724": null,
+    "6904,9196": {
+      "destX": 5304,
+      "destY": 2720,
+      "destDir": 0,
+      "style": 10,
+      "sfx": "door-open",
+      "worldX": 6896,
+      "worldY": 9200
+    },
     "5632,9316": {
       "destX": 6880,
       "destY": 9960,
@@ -1468,6 +1513,60 @@
       "worldY": 1288,
       "destX": 984,
       "destY": 1424,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open"
+    },
+    {
+      "worldX": 2704,
+      "worldY": 1272,
+      "destX": 3264,
+      "destY": 1136,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open"
+    },
+    {
+      "worldX": 3280,
+      "worldY": 1136,
+      "destX": 2696,
+      "destY": 1288,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open"
+    },
+    {
+      "worldX": 2320,
+      "worldY": 1720,
+      "destX": 3296,
+      "destY": 1264,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open"
+    },
+    {
+      "worldX": 3312,
+      "worldY": 1264,
+      "destX": 2312,
+      "destY": 1744,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open"
+    },
+    {
+      "worldX": 2392,
+      "worldY": 6704,
+      "destX": 2976,
+      "destY": 6128,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open"
+    },
+    {
+      "worldX": 2992,
+      "worldY": 6128,
+      "destX": 2992,
+      "destY": 6160,
       "destDir": 0,
       "style": 1,
       "sfx": "door-open"

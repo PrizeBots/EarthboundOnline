@@ -71,7 +71,7 @@ import {
 } from './psiEditor';
 import { PSI_DELIVERIES, PsiDelivery } from '../PsiAnim';
 import { onTestDown, onTestMove } from './testWalker';
-import { setEditMode, selectEntity, setMirrorLR } from './index';
+import { setEditMode, selectEntity, setMirrorLR, cancelEditor } from './index';
 
 export function buildDom(): void {
   S.overlay = document.createElement('div');
@@ -84,11 +84,26 @@ export function buildDom(): void {
     'font:12px monospace;display:flex;flex-direction:column;align-items:center;' +
     'overflow:auto;user-select:none;';
 
+  // Title bar: help blurb on the left, a ✕ close button pinned right. The ✕
+  // returns to the previous tool (e.g. the Entity Manager we were handed off
+  // from), same as Esc — a windowed close, NOT a full editor exit (that's F2).
+  const titleBar = document.createElement('div');
+  titleBar.style.cssText =
+    'display:flex;align-items:flex-start;gap:10px;width:100%;box-sizing:border-box;padding:10px;';
   const title = document.createElement('div');
   title.textContent =
     'SPRITE EDITOR — attack/hurt frames + held items   (pick a character · Character/Item modes · WASD: test walk · F attack · H hurt · tools 1-8: pencil/eraser/eyedrop/select/move/fill/rotate/skew · marquee a region then ⇄⇅ mirror, ⟲⟳ 90°, or DRAG to free-rotate (Shift=15° snap) / skew · Alt+click: eyedrop · G: cycle item · Ctrl+C/V: copy/paste selection or frame · Ctrl+Z: undo · Esc: deselect/back · edits save automatically · Export/Import PNG · drag a panel header to move it, the corner grip to resize — your layout is saved)';
-  title.style.cssText = 'padding:10px;color:#fff;letter-spacing:1px;';
-  S.overlay.appendChild(title);
+  title.style.cssText = 'flex:1;min-width:0;color:#fff;letter-spacing:1px;';
+  titleBar.appendChild(title);
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '✕';
+  closeBtn.title = 'Close the Sprite Editor (return to the previous tool) · Esc';
+  closeBtn.style.cssText =
+    'flex:none;font:14px monospace;padding:2px 10px;cursor:pointer;border-radius:3px;' +
+    'background:#1d2530;color:#cde;border:1px solid #3a4a5a;';
+  closeBtn.onclick = () => cancelEditor();
+  titleBar.appendChild(closeBtn);
+  S.overlay.appendChild(titleBar);
 
   loadPanelLayout();
 

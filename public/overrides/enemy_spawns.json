@@ -1560,6 +1560,33 @@
       "spawnIntervalMs": 35000,
       "respawnDelayMs": 35000,
       "enabled": true
+    },
+    {
+      "name": "spawner-114",
+      "sprite": 305,
+      "x": 6302,
+      "y": 81,
+      "wanderRadius": 150,
+      "detectRange": 100,
+      "giveUpRange": 500,
+      "poolSize": 7,
+      "maxActive": 4,
+      "spawnIntervalMs": 60000,
+      "respawnDelayMs": 60000,
+      "enabled": true
+    },
+    {
+      "name": "spawner-115",
+      "sprite": 361,
+      "x": 3214,
+      "y": 1238,
+      "wanderRadius": 100,
+      "detectRange": 100,
+      "poolSize": 8,
+      "maxActive": 5,
+      "spawnIntervalMs": 60000,
+      "respawnDelayMs": 60000,
+      "enabled": true
     }
   ]
 }

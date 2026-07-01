@@ -29,6 +29,7 @@ const STATUS = {
   NO_PSI: 'noPsi', // PSI disabled (can't concentrate)
   CRYING: 'crying', // accuracy down
   POISON: 'poison', // HP damage-over-time
+  BURN: 'burn', // fire DoT (not canon EB — our addition; see STATUS_EFFECTS.md)
   NAUSEOUS: 'nauseous', // DoT + chance to fumble an action
   SUNSTROKE: 'sunstroke', // heat DoT
   COLD: 'cold', // cold DoT (sniffling)
@@ -55,9 +56,11 @@ const DEFS = {
   },
   [STATUS.DIAMOND]: {
     blocksAction: true,
+    blocksHealing: true, // can't be healed while solid — must be cured first (canon)
+    permanent: true, // NO auto-timeout: holds until an ally cures it (Healing Ω-tier)
     element: 'flash',
-    durationMs: 4000,
-    immuneMs: 6000,
+    durationMs: 4000, // unused while permanent; kept for reference/fallback
+    immuneMs: 0,
     text: 'solidified!',
   },
   [STATUS.SLEEP]: {
@@ -89,6 +92,14 @@ const DEFS = {
     durationMs: 8000,
     immuneMs: 0,
     text: 'got poisoned!',
+  },
+  [STATUS.BURN]: {
+    element: 'fire',
+    dotMs: 800,
+    dotPct: 0.04,
+    durationMs: 6000,
+    immuneMs: 0,
+    text: 'is burning!',
   },
   [STATUS.NAUSEOUS]: {
     dotMs: 1500,
@@ -123,12 +134,19 @@ function defOf(type) {
 const STATUS_TYPES = new Set(Object.values(STATUS));
 
 /**
- * Sanitize an authored inflict spec into a clean `[{type, chance}]` list: drop
- * entries with an unknown status or a non-positive chance, clamp chance to 100.
- * The shared gate every damage source (weapon, enemy, PSI) runs its authored
+ * Sanitize an authored inflict spec into a clean `[{type, chance, ...dot}]` list:
+ * drop entries with an unknown status or a non-positive chance, clamp chance to
+ * 100. The shared gate every damage source (weapon, enemy, PSI) runs its authored
  * data through, so malformed `equip_stats.json` / entity data can't crash combat
  * or inject a bogus status. `element` is intrinsic to the status (see elementOf),
- * not part of the spec. Returns [] for anything malformed.
+ * not part of the spec.
+ *
+ * PER-ENTITY DoT tuning: a DoT status (poison/burn/cold/…) may carry optional
+ * overrides so each source sets its own bite — `dotDmg` (flat HP per tick),
+ * `dotPct` (fraction of the victim's max HP per tick), and `dotMs` (tick period).
+ * Any omitted field falls back to the status catalog default in DEFS. Clamped so
+ * authored data can't melt a target instantly or stall the tick. Returns [] for
+ * anything malformed.
  */
 function normalizeInflict(raw) {
   if (!Array.isArray(raw)) return [];
@@ -138,7 +156,14 @@ function normalizeInflict(raw) {
     if (!STATUS_TYPES.has(e.type)) continue;
     const chance = Number(e.chance);
     if (!(chance > 0)) continue;
-    out.push({ type: e.type, chance: Math.min(100, chance) });
+    const entry = { type: e.type, chance: Math.min(100, chance) };
+    const dotMs = Number(e.dotMs);
+    if (dotMs > 0) entry.dotMs = Math.min(60000, Math.max(100, dotMs));
+    const dotDmg = Number(e.dotDmg);
+    if (dotDmg > 0) entry.dotDmg = Math.min(9999, Math.floor(dotDmg));
+    const dotPct = Number(e.dotPct);
+    if (dotPct > 0) entry.dotPct = Math.min(1, dotPct);
+    out.push(entry);
   }
   return out;
 }
@@ -191,6 +216,11 @@ function isPsiBlocked(holder, now) {
   return hasFlag(holder, now, 'blocksPsi');
 }
 
+/** Healing is refused (diamondized) — the holder must be cured before HP restores. */
+function blocksHealing(holder, now) {
+  return hasFlag(holder, now, 'blocksHealing');
+}
+
 /** The attacker's accuracy is impaired (crying). */
 function isCrying(holder, now) {
   return hasFlag(holder, now, 'accuracyDown');
@@ -209,7 +239,10 @@ function activeStatuses(holder, now) {
  * Apply `type` to the holder for its catalog duration. No-op (returns false) if
  * the holder is still inside that status' post-effect immunity window — this is
  * the diminishing rule that caps perma-lock. `opts.durationMs` overrides the
- * default (e.g. a stronger source). Returns true if it actually landed.
+ * default (e.g. a stronger source); `opts.dotMs`/`opts.dotDmg`/`opts.dotPct` are
+ * the per-source DoT overrides (see normalizeInflict) stored on the instance so
+ * this holder's poison bites at the inflicting source's rate. Returns true if it
+ * actually landed.
  */
 function applyStatus(holder, type, now, opts) {
   const def = defOf(type);
@@ -218,24 +251,34 @@ function applyStatus(holder, type, now, opts) {
   const prev = holder.statuses[type];
   if (prev && now < (prev.immuneUntil || 0) && now >= prev.until) return false; // in immunity window
   const durationMs = (opts && opts.durationMs) || def.durationMs;
-  const until = now + durationMs;
-  holder.statuses[type] = {
+  const dotMs = (opts && opts.dotMs > 0 ? opts.dotMs : def.dotMs) || 0;
+  // Permanent statuses (diamond) never auto-expire — they hold until a cure
+  // clears them (clearStatus/clearAll). No failsafe by design (see STATUS_EFFECTS.md).
+  const until = def.permanent ? Infinity : now + durationMs;
+  const inst = {
     until,
-    immuneUntil: until + (def.immuneMs || 0),
-    nextDotAt: def.dotMs ? now + def.dotMs : 0,
+    immuneUntil: def.permanent ? Infinity : until + (def.immuneMs || 0),
+    nextDotAt: dotMs ? now + dotMs : 0,
   };
+  // Persist per-source DoT overrides so tickStatuses bites at this source's rate.
+  if (opts && opts.dotMs > 0) inst.dotMs = opts.dotMs;
+  if (opts && opts.dotDmg > 0) inst.dotDmg = opts.dotDmg;
+  if (opts && opts.dotPct > 0) inst.dotPct = opts.dotPct;
+  holder.statuses[type] = inst;
   return true;
 }
 
 /**
  * Roll a `chance`% proc of `type` and apply it (immunity-gated). The proc is the
  * inflict odds (later: attack chance × the target's per-element vulnerability);
- * kept here so the roll + immunity check live together. Returns true if applied.
+ * kept here so the roll + immunity check live together. `opts` carries the
+ * source's per-entity overrides (durationMs / DoT rate) through to applyStatus.
+ * Returns true if applied.
  */
-function tryInflict(holder, type, chance, now, rng) {
+function tryInflict(holder, type, chance, now, rng, opts) {
   if (!(chance > 0)) return false;
   if (rng() * 100 >= chance) return false;
-  return applyStatus(holder, type, now, null);
+  return applyStatus(holder, type, now, opts || null);
 }
 
 /** Clear one status outright (a cure). */
@@ -259,12 +302,14 @@ function breakOnHit(holder, now) {
 
 /**
  * Advance the holder's statuses by one tick. Returns:
- *   { dot: [{type, pct}], expired: [type], changed: bool }
+ *   { dot: [{type, pct, dmg}], expired: [type], changed: bool }
  * `dot` = statuses that owe a damage tick this instant (caller applies HP, since
- * HP lives on the actor vs the host differently). `expired` = statuses whose
- * duration just ended (for a "wore off" cue). `changed` = the active set changed
- * (a tick expired one) so the caller can re-broadcast. Fully drops an entry once
- * its immunity window has also passed, so the map can't grow without bound.
+ * HP lives on the actor vs the host differently). Each carries `dmg` (flat HP,
+ * from a per-source override) OR `pct` (fraction of max HP) — caller uses `dmg`
+ * when > 0, else `pct`. `expired` = statuses whose duration just ended (for a
+ * "wore off" cue). `changed` = the active set changed (a tick expired one) so the
+ * caller can re-broadcast. Fully drops an entry once its immunity window has also
+ * passed, so the map can't grow without bound.
  */
 function tickStatuses(holder, now) {
   const m = holder.statuses;
@@ -274,9 +319,11 @@ function tickStatuses(holder, now) {
     const s = m[type];
     const def = defOf(type);
     const active = now < s.until;
-    if (active && def && def.dotMs && now >= s.nextDotAt) {
-      res.dot.push({ type, pct: def.dotPct || 0 });
-      s.nextDotAt = now + def.dotMs;
+    const dotMs = s.dotMs || (def && def.dotMs) || 0;
+    if (active && dotMs && now >= s.nextDotAt) {
+      const pct = s.dotPct != null ? s.dotPct : (def && def.dotPct) || 0;
+      res.dot.push({ type, pct, dmg: s.dotDmg || 0 });
+      s.nextDotAt = now + dotMs;
     }
     if (!active && !s.expiredFired) {
       s.expiredFired = true;
@@ -298,6 +345,7 @@ module.exports = {
   isActionBlocked,
   isScrambled,
   isPsiBlocked,
+  blocksHealing,
   isCrying,
   hasFlag,
   activeStatuses,

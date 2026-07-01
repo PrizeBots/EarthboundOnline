@@ -22,6 +22,8 @@
 const fs = require('fs');
 const path = require('path');
 const status = require('./status'); // EB status-condition engine (catalog + timer/DoT math)
+const buffs = require('./buffs'); // timed stat buffs (enemy self-cast Offense up, etc.)
+const shields = require('./shields'); // block-N-hits shields (enemy self-cast Shield/PSI Shield)
 const { loadShops } = require('./shops'); // item catalog (heal + equip data) so NPCs can USE loot
 const prof = require('./simProfile'); // per-phase tick profiler (PROFILE_SIM=1; no-op when off)
 // Pure combat math + the tuning constants it owns (single source of truth — the
@@ -500,6 +502,150 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     if (authored.length) return authored;
     const pc = entityStat(n.sprite, 'paralysisChance', ENEMY_PARALYZE_CHANCE);
     return pc > 0 ? [{ type: status.STATUS.PARALYSIS, chance: pc }] : [];
+  }
+
+  // --- Enemy PSI / ranged abilities -----------------------------------------
+  // An enemy's authored `abilities` moveset (entity data, sprite-keyed) is the
+  // canon "enemy uses PSI" beat, fired at an aggro'd player on a per-ability
+  // cooldown. A `mode` selects the effect (default 'offense'):
+  //   offense — damage + status on the target player (Fire/Freeze/…, status PSI)
+  //   heal    — the caster restores `heal` HP (Lifeup/Healing); only when hurt
+  //   buff    — the caster gains a timed `buffStat`+`buffAmt` (Offense up)
+  //   shield  — the caster raises a block-N-hits shield (Shield/PSI Shield)
+  //   debuff  — the target player's `debuffStat` drops for `debuffMs` (Defense down)
+  //   magnet  — drains `drainPp` PP from the target (PSI Magnet)
+  // Sanitized/clamped so authored data can't break the sim; an ability must DO
+  // something or it's dropped.
+  const ABILITY_MODES = new Set(['offense', 'heal', 'buff', 'shield', 'debuff', 'magnet']);
+  function sanitizeAbilities(raw) {
+    if (!Array.isArray(raw)) return [];
+    const out = [];
+    for (const a of raw) {
+      if (!a || typeof a !== 'object') continue;
+      const mode = ABILITY_MODES.has(a.mode) ? a.mode : 'offense';
+      const range = Math.min(600, Math.max(16, Number(a.range) || 240));
+      const cooldownMs = Math.min(30000, Math.max(300, Number(a.cooldownMs) || 3000));
+      const damage = Math.max(0, Math.floor(Number(a.damage) || 0));
+      const inflict = status.normalizeInflict(a.inflict);
+      const anim = typeof a.anim === 'string' && a.anim ? a.anim : 'psi_fire_alpha';
+      const e = { mode, range, cooldownMs, damage, inflict, anim };
+      // Value fields use max(0,…) so a zero drops the ability via `doesSomething`.
+      if (mode === 'heal') e.heal = Math.max(0, Math.floor(Number(a.heal) || 0));
+      if (mode === 'buff') {
+        e.buffStat = typeof a.buffStat === 'string' ? a.buffStat : 'offense';
+        e.buffAmt = Math.max(0, Math.floor(Number(a.buffAmt) || 0));
+        e.buffMs = Math.min(120000, Math.max(1000, Number(a.buffMs) || 20000));
+      }
+      if (mode === 'shield') {
+        e.shieldKind = a.shieldKind === 'psi' ? 'psi' : 'physical';
+        e.shieldHits = Math.min(20, Math.max(1, Math.floor(Number(a.shieldHits) || 3)));
+      }
+      if (mode === 'debuff') {
+        e.debuffStat = typeof a.debuffStat === 'string' ? a.debuffStat : 'defense';
+        e.debuffAmt = Math.max(0, Math.floor(Number(a.debuffAmt) || 0));
+        e.debuffMs = Math.min(120000, Math.max(1000, Number(a.debuffMs) || 15000));
+      }
+      if (mode === 'magnet') e.drainPp = Math.max(0, Math.floor(Number(a.drainPp) || 0));
+      // An ability must actually do something for its mode.
+      const doesSomething =
+        damage > 0 ||
+        inflict.length ||
+        (mode === 'heal' && e.heal) ||
+        (mode === 'buff' && e.buffAmt) ||
+        mode === 'shield' ||
+        (mode === 'debuff' && e.debuffAmt) ||
+        (mode === 'magnet' && e.drainPp);
+      if (!doesSomething) continue;
+      out.push(e);
+    }
+    return out;
+  }
+
+  // Cache the parsed moveset on the actor (entity data doesn't change at runtime).
+  function enemyAbilities(n) {
+    if (n._abilities) return n._abilities;
+    n._abilities = sanitizeAbilities(entityStat(n.sprite, 'abilities', null));
+    return n._abilities;
+  }
+
+  // The first ready ability whose range covers `dist` (per-ability cooldown on
+  // n._abCd), or null. Order in the authored list is priority.
+  function pickEnemyAbility(n, dist, now) {
+    const list = enemyAbilities(n);
+    if (!list.length) return null;
+    if (!n._abCd) n._abCd = [];
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+      if (dist > a.range) continue;
+      if (now < (n._abCd[i] || 0)) continue;
+      // Don't waste a heal at high HP, or a self-shield that's already up.
+      if (a.mode === 'heal' && n.hp > n.maxHp * 0.6) continue;
+      if (a.mode === 'shield' && shields.activeShields(n).some((s) => s.kind === a.shieldKind))
+        continue;
+      return { spec: a, idx: i };
+    }
+    return null;
+  }
+
+  // Fire a ranged ability at the target player: telegraph (attack pose), broadcast
+  // the PSI flipbook flying enemy→target (position-based on the client, so an npc
+  // caster is fine), then land damage + status on the player, tagged 'psi' so a
+  // PSI Shield blocks/reflects it. Shares the melee swing gate so it never also
+  // swings the same tick.
+  function castEnemyAbility(n, target, ab, now, onEnemyHit) {
+    const a = ab.spec;
+    if (!n._abCd) n._abCd = [];
+    n._abCd[ab.idx] = now + a.cooldownMs;
+    n.lastSwing = now;
+    n.pose = 'attack';
+    n.poseStart = now;
+    n.poseUntil = now + ENEMY_ATTACK_POSE_MS;
+    n.frame = 0;
+    n.dir = faceDir(target.x - n.x, target.y - n.y);
+    n.dirty = true;
+    // Self-casts (heal/buff/shield) play the flipbook ON the caster; offense/
+    // debuff/magnet fly it to the target (position-based client, npc caster fine).
+    const selfCast = a.mode === 'heal' || a.mode === 'buff' || a.mode === 'shield';
+    if (broadcastCb)
+      broadcastCb({
+        type: 'psi_cast',
+        id: a.anim,
+        caster: null,
+        x: Math.round(n.x),
+        y: Math.round(n.y),
+        tx: Math.round(selfCast ? n.x : target.x),
+        ty: Math.round(selfCast ? n.y : target.y),
+      });
+
+    // --- self-target effects: apply to the caster, no player hit ---
+    if (a.mode === 'heal') {
+      n.hp = Math.min(n.maxHp, n.hp + a.heal);
+      n.hpDirty = true;
+      return;
+    }
+    if (a.mode === 'buff') {
+      buffs.applyBuff(n, a.buffStat, a.buffAmt, a.buffMs, now);
+      return;
+    }
+    if (a.mode === 'shield') {
+      shields.applyShield(n, a.shieldKind, 'block', a.shieldHits);
+      return;
+    }
+
+    // --- target-player effects: routed through the host via onEnemyHit ---
+    if (!onEnemyHit) return;
+    let effect = null;
+    if (a.mode === 'debuff')
+      effect = { debuff: { stat: a.debuffStat, amount: a.debuffAmt, ms: a.debuffMs } };
+    else if (a.mode === 'magnet') effect = { drainPp: a.drainPp };
+    const knock =
+      a.damage > 0
+        ? knockbackPlayerSpot(target.x, target.y, n.x, n.y, a.damage, {
+            amass: massOf(n),
+            vmass: massOf(target),
+          })
+        : null;
+    onEnemyHit(target.id, a.damage, n, knock, a.inflict, 'psi', effect);
   }
 
   // Roll an enemy's loot on death from the merged catalog: money is always
@@ -2535,6 +2681,17 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       // in your room — instead of hitting across the seam (an invisible attacker).
       const reachBlocked =
         wallBetween(n.x, n.y, target.x, target.y) || doorBetween(n.x, n.y, target.x, target.y);
+      // Ranged ability (enemy PSI): a target PLAYER within an authored ability's
+      // range and a clear line gets cast at (telegraph + FX + effect) instead of
+      // closing to melee. Skipped mid-flinch. Falls through to melee/chase when no
+      // ability is ready. PSI reaches further than melee, so this gates first.
+      if (isPlayer && !reachBlocked && n.pose !== 'hurt') {
+        const ab = pickEnemyAbility(n, dist, now);
+        if (ab) {
+          castEnemyAbility(n, target, ab, now, onEnemyHit);
+          return;
+        }
+      }
       if (dist <= (n.attackRange || ATTACK_RANGE) && !reachBlocked) {
         if (now - n.lastSwing >= n.attackCooldown && n.pose !== 'hurt') {
           n.lastSwing = now;
@@ -2548,7 +2705,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
             // The player's Speed can dodge the swing (broadcast a MISS, no
             // damage). Enemies don't crit yet (n.crit defaults 0) but the hook is
             // here for per-enemy crit tuning later.
-            const res = resolveMelee(n.crit || 0, target.dodge || 0, n.damage, rng);
+            // Enemy self-cast Offense up (buffs.js) raises its swing damage.
+            const swingDmg = n.damage + buffs.buffBonus(n, 'offense', now);
+            const res = resolveMelee(n.crit || 0, target.dodge || 0, swingDmg, rng);
             if (res.miss) {
               if (broadcastCb)
                 broadcastCb({
@@ -2920,11 +3079,11 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // status.js. The proc is scaled by the target's ROM vulnerability for the
   // status' element (paralysis/hypnosis/flash; canon resist — 0% = immune).
   // A successful action-blocking proc holds the flinch pose for the freeze.
-  function tryStatus(target, type, chance, now) {
+  function tryStatus(target, type, chance, now, opts) {
     if (!target || target.dead) return;
     const el = status.elementOf(type);
     const eff = el ? chance * (entityVuln(target.sprite, el, 100) / 100) : chance;
-    if (!status.tryInflict(target, type, eff, now, rng)) return;
+    if (!status.tryInflict(target, type, eff, now, rng, opts)) return;
     if (status.defOf(type) && status.defOf(type).blocksAction) {
       target.pose = 'hurt';
       target.poseStart = now;
@@ -2940,10 +3099,34 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // legacy/test callers, which just apply HP + the flinch with no hit-reaction.
   function applyDamage(target, dmg, now, killerPlayerId, atk) {
     if (!target || target.dead || target.hp <= 0) return;
+    // Enemy self-cast shields (Shield / PSI Shield) soak whole matching ATTACKS
+    // (block-only — no reflect). A DoT tick (no `atk`) bleeds through. Absorbed
+    // hits deal no damage and don't wake a sleeper.
+    if (atk && target.shields && target.shields.length) {
+      const r = shields.absorbHit(target, atk.kind || 'physical');
+      if (r.absorbed) {
+        target.dirty = true;
+        if (broadcastCb)
+          broadcastCb({
+            type: 'shield_block',
+            id: target.id,
+            x: Math.round(target.x),
+            y: Math.round(target.y),
+            kind: atk.kind || 'physical',
+            reflect: false,
+          });
+        return;
+      }
+    }
     status.breakOnHit(target, now); // a hit wakes a sleeping actor
     // Equipped armor (townsfolk who grabbed gear) soaks flat damage; a hit always
     // lands for at least 1 so armor can't make an actor unkillable.
     if (target.armorBonus) dmg = Math.max(1, dmg - target.armorBonus);
+    // Cracked guard (Defense down PSI): a real ATTACK lands harder for the debuff's
+    // duration (DoT ticks pass no `atk`, so poison isn't amplified).
+    if (atk && target.defBreakUntil && now < target.defBreakUntil) {
+      dmg = Math.max(1, Math.round(dmg * (1 + (target.defBreakAmt || 0))));
+    }
     target.hp -= dmg;
     target.hpDirty = true;
     target.pose = 'hurt';
@@ -2954,6 +3137,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     if (target.hp <= 0) {
       target.hp = 0;
       target.dead = true;
+      // Drop any self-cast buffs/shields so a respawn doesn't inherit them.
+      buffs.clearBuffs(target);
+      shields.clearShields(target);
       // Death throw: tell clients which way the corpse should tumble + how hard.
       // The body flies AWAY from the attacker (unit vector atk->target); `force`
       // is the killing blow's damage (drives the rotate-and-bounce distance in
@@ -3018,7 +3204,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       const kbOpts = atk.kb ? Object.assign({}, atk.kb) : {};
       if (atk.amass != null) kbOpts.amass = atk.amass;
       pushActor(target, atk.x, atk.y, dmg, kbOpts);
-      for (const inf of atk.inflict || []) tryStatus(target, inf.type, inf.chance, now);
+      for (const inf of atk.inflict || []) tryStatus(target, inf.type, inf.chance, now, inf);
     }
   }
 
@@ -3659,11 +3845,12 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
           // O(1) coarse-grid proximity (was O(players) per actor — see activeCells).
           const near = anyPlayerNear(n.x, n.y);
           // Tick status conditions: expire ended ones, apply any DoT (no attacker
-          // context — DoT never re-knocks or re-paralyzes). No actor inflicts DoT
-          // yet, so this is dormant until poison-on-enemies lands.
+          // context — DoT never re-knocks or re-paralyzes). Per-source flat `dmg`
+          // wins; else a fraction of the actor's max HP.
           const st = status.tickStatuses(n, now);
           for (const d of st.dot) {
-            applyDamage(n, Math.max(1, Math.floor(n.maxHp * d.pct)), now, null);
+            const amt = d.dmg > 0 ? d.dmg : Math.floor(n.maxHp * d.pct);
+            applyDamage(n, Math.max(1, amt), now, null);
             if (n.dead) break;
           }
           if (st.changed) n.statusDirty = true; // a status expired — refresh client pips
@@ -4081,6 +4268,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       townsfolk: () => actors.filter((n) => n.kind === 'person'),
       useCarried: (n) => npcUseCarried(n),
       damage: (n, dmg, now) => applyDamage(n, dmg, now == null ? Date.now() : now, null),
+      parseAbilities: (raw) => sanitizeAbilities(raw),
     },
 
     /** Resolve a player's melee swing (server-authoritative). */
@@ -4115,8 +4303,58 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
       if (!best) return null;
       // Damage (may be 0 for a pure-ailment PSI) + the PSI's status inflict, each
       // element-scaled by the enemy's ROM resist inside applyDamage's atk path.
-      applyDamage(best, dmg || 0, Date.now(), killerPlayerId, { x, y, inflict: inflict || [] });
+      applyDamage(best, dmg || 0, Date.now(), killerPlayerId, {
+        x,
+        y,
+        kind: 'psi',
+        inflict: inflict || [],
+      });
       return { x: Math.round(best.x), y: Math.round(best.y) };
+    },
+
+    /** Deal `dmg` to the live enemy with this id (no attacker/knock context) —
+     *  used by shield REFLECT to bounce a blow back at the enemy that threw it.
+     *  Returns true if an enemy took it. */
+    hurtEnemyById(id, dmg) {
+      if (!(dmg > 0)) return false;
+      for (const n of enemies) {
+        if (n.id === id && !n.dead) {
+          applyDamage(n, dmg, Date.now(), null, null);
+          return true;
+        }
+      }
+      return false;
+    },
+
+    /**
+     * Defense-down PSI: crack the guard of the nearest live enemy within `range`
+     * (or EVERY one if `multi`) in the SAME room, setting a timed `defBreak` that
+     * makes attacks against it land `amount` (0..1) harder for `durMs`. Returns the
+     * nearest struck enemy's {x,y} for the cast animation, or null if none.
+     */
+    psiDebuff(x, y, range, multi, amount, durMs) {
+      const now = Date.now();
+      const until = now + (durMs || 0);
+      let near = null;
+      let nearD = Infinity;
+      for (const n of enemies) {
+        if (n.dead) continue;
+        const d = hyp(n.x - x, n.y - y);
+        if (d > range || wallBetween(x, y, n.x, n.y) || doorBetween(x, y, n.x, n.y)) continue;
+        if (multi) {
+          n.defBreakUntil = until;
+          n.defBreakAmt = amount;
+        }
+        if (d < nearD) {
+          nearD = d;
+          near = n;
+        }
+      }
+      if (!multi && near) {
+        near.defBreakUntil = until;
+        near.defBreakAmt = amount;
+      }
+      return near ? { x: Math.round(near.x), y: Math.round(near.y) } : null;
     },
 
     /**
@@ -4136,7 +4374,12 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         if (n.dead) continue;
         const d = hyp(n.x - x, n.y - y);
         if (d <= range && !wallBetween(x, y, n.x, n.y) && !doorBetween(x, y, n.x, n.y)) {
-          applyDamage(n, dmg || 0, now, killerPlayerId, { x, y, inflict: inflict || [] });
+          applyDamage(n, dmg || 0, now, killerPlayerId, {
+            x,
+            y,
+            kind: 'psi',
+            inflict: inflict || [],
+          });
           if (d < nearD) {
             nearD = d;
             near = n;
@@ -4171,7 +4414,12 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         const perp = Math.abs(ex * -fy + ey * fx); // perpendicular offset
         if (perp > halfWidth + (spread || 0) * along) continue; // cone widens forward
         if (wallBetween(x, y, n.x, n.y) || doorBetween(x, y, n.x, n.y)) continue;
-        applyDamage(n, dmg || 0, now, killerPlayerId, { x, y, inflict: inflict || [] });
+        applyDamage(n, dmg || 0, now, killerPlayerId, {
+          x,
+          y,
+          kind: 'psi',
+          inflict: inflict || [],
+        });
         struck.push({ x: Math.round(n.x), y: Math.round(n.y) });
       }
       return struck;
@@ -4192,7 +4440,12 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         if (n.dead) continue;
         if (Math.abs(n.x - x) > halfW || Math.abs(n.y - y) > halfH) continue;
         if (wallBetween(x, y, n.x, n.y) || doorBetween(x, y, n.x, n.y)) continue;
-        applyDamage(n, dmg || 0, now, killerPlayerId, { x, y, inflict: inflict || [] });
+        applyDamage(n, dmg || 0, now, killerPlayerId, {
+          x,
+          y,
+          kind: 'psi',
+          inflict: inflict || [],
+        });
         struck.push({ x: Math.round(n.x), y: Math.round(n.y) });
       }
       return struck;

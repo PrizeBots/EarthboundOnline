@@ -13,12 +13,13 @@ import { soundTool } from './tools/SoundTool';
 import { combatTool } from './tools/CombatTool';
 import { roomBuilderTool } from './tools/RoomBuilderTool';
 import { roomManagerTool } from './tools/RoomManagerTool';
+import { tileInspectorTool } from './tools/TileInspectorTool';
 import { eventManagerTool } from './tools/EventManagerTool';
 import { registerEditorTool, registerSaveHandler } from './registry';
 import { saveOverride } from './saveOverride';
 import { getNameOverrides } from '../engine/SpriteNames';
 import { getSongNameOverrides } from '../engine/SongNames';
-import { openSpriteEditor } from '../engine/spriteEditor';
+import { openSpriteEditor, closeSpriteEditor } from '../engine/spriteEditor';
 
 // Entry point for the dev-only editor layer. Game loads this module via a
 // dev-gated dynamic import (`if (import.meta.env.DEV) import('../editor')`),
@@ -50,23 +51,24 @@ export function initEditorTools(context: EditorContext): EditorHooks {
   registerEditorTool(combatTool);
   registerEditorTool(roomBuilderTool);
   registerEditorTool(roomManagerTool);
+  registerEditorTool(tileInspectorTool);
   registerEditorTool(eventManagerTool);
   for (const t of PLANNED) registerEditorTool({ ...t, status: 'wip' });
 
-  // Sprite Editor (engine/SpriteEditor.ts): a self-contained overlay that owns
-  // overrides/sprites.json. Its dock tab opens it docked to the LEFT of the tool
-  // column (the shell stays up, yielding the keyboard while it's open); Esc — or
-  // clicking another tab — closes it.
+  // Sprite Editor (engine/spriteEditor): a normal shell tool whose panel is a
+  // full overlay docked to the LEFT of the tool column (the shell stays up,
+  // yielding the keyboard while it's open — see isSpriteEditorOpen). Routing it
+  // through activate()/deactivate() lets the shell treat it like every other
+  // tool: its tab highlights when active, the Exit button closes it, and clicking
+  // another tab swaps cleanly. onCancel keeps the tab in sync when the overlay
+  // closes ITSELF (Esc), which doesn't go through the shell.
   registerEditorTool({
     id: 'cast-sprites',
     name: 'Sprite Editor',
     description: 'Fix attack/hurt frames + held items for any cast character.',
     status: 'ready',
-    launch: () => {
-      // Dock it to the left of the tool column (the shell stays up); the shell
-      // yields the keyboard to it while it's open (see isSpriteEditorOpen).
-      void openSpriteEditor();
-    },
+    activate: () => void openSpriteEditor({ onCancel: () => shell.setTool(null) }),
+    deactivate: () => closeSpriteEditor(),
   });
 
   // Admin sprite renames (✎ in placement panel) persist here.

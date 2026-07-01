@@ -34,6 +34,7 @@ import { EntityCol, EntityPropsOverride } from '../../engine/EntityStats';
 import { openSpriteEditor } from '../../engine/spriteEditor';
 import { placementTool } from './PlacementTool';
 import { collisionPaint, CollisionOp } from './collisionPaint';
+import { FloatingPanel } from '../FloatingPanel';
 
 // Room Builder — author CUSTOM rooms that don't exist in the ROM, stamped into an
 // "interiors band" below the overworld (overrides/rooms.json; the ROM tiles.json
@@ -106,6 +107,7 @@ class RoomBuilderTool implements EditorTool {
 
   private shell: EditorShellApi | null = null;
   private panel: HTMLDivElement | null = null;
+  private floatPanel: FloatingPanel | null = null;
 
   // rooms / data
   private rooms: CustomRoom[] = [];
@@ -140,6 +142,12 @@ class RoomBuilderTool implements EditorTool {
   private sel: TileRect | null = null;
   private selUnit = TILE_SIZE; // 32 for tile sampling, 8 for minitile sampling
   private sampleMini = false; // the Sample button captures 8x8 minitiles
+
+  // Copy area → paste: drag-select sector(s) to capture as tileset-independent
+  // minitile refs, then click a destination sector to stamp them into the map
+  // override (works on ANY room — no stamp saved to the library).
+  private copyPhase: 'off' | 'select' | 'paste' = 'off';
+  private copyBuf: { mw: number; mh: number; refs: number[] } | null = null;
 
   // "Edit map" mode — paint/erase/stamp directly onto ANY room's tiles (not just
   // the custom band), persisted to overrides/map_tiles.json. Off by default so a
@@ -228,6 +236,8 @@ class RoomBuilderTool implements EditorTool {
 
   deactivate(): void {
     window.removeEventListener('contextmenu', this.onContextMenu);
+    this.floatPanel?.destroy();
+    this.floatPanel = null;
     this.panel?.remove();
     this.panel = null;
     this.selecting = false;
@@ -238,9 +248,16 @@ class RoomBuilderTool implements EditorTool {
     this.hoverTile = null;
     this.resizing = null;
     this.mapOvBefore = null;
+    this.copyPhase = 'off';
+    this.copyBuf = null;
   }
 
   private onContextMenu = (e: MouseEvent): void => {
+    if (this.copyPhase !== 'off') {
+      e.preventDefault();
+      this.cancelCopy();
+      return;
+    }
     if (!this.painting) return;
     e.preventDefault();
     this.setPainting(false);
@@ -248,6 +265,10 @@ class RoomBuilderTool implements EditorTool {
   };
 
   onKey(key: string): boolean {
+    if (key === 'escape' && this.copyPhase !== 'off') {
+      this.cancelCopy();
+      return true;
+    }
     if (key === 'escape' && this.painting) {
       this.setPainting(false);
       this.shell?.toast('Paint off');
@@ -362,6 +383,11 @@ class RoomBuilderTool implements EditorTool {
       // Collision/layer paint: a left-drag paints cells via the shared core.
       return collisionPaint.beginStroke(p, this.paintMode);
     }
+    // Copy-area paste: a click drops the captured region at the clicked sector.
+    if (this.copyPhase === 'paste' && this.copyBuf) {
+      this.pasteCopyAt(p);
+      return true;
+    }
     if (this.painting) {
       this.lastPaintedKey = '';
       this.strokeDirty = false;
@@ -475,11 +501,15 @@ class RoomBuilderTool implements EditorTool {
     if (!this.selecting) return;
     this.dragStart = null;
     if (this.pendingBlank && this.sel && this.sel.w >= 1 && this.sel.h >= 1) {
-      const { w, h } = this.sel;
+      const { tx, ty, w, h } = this.sel;
       this.pendingBlank = false;
       this.selecting = false;
       this.sel = null;
-      void this.createBlankRoom(w, h);
+      void this.createBlankRoom(tx, ty, w, h);
+      return;
+    }
+    if (this.copyPhase === 'select' && this.sel && this.sel.w >= 1 && this.sel.h >= 1) {
+      this.captureCopy();
       return;
     }
     this.updateStatus();
@@ -589,9 +619,12 @@ class RoomBuilderTool implements EditorTool {
     room.w = rz.w;
     room.h = rz.h;
     room.tiles = tiles;
+    // Pin the fixed (opposite) corner so the room grows/shrinks where it sits —
+    // free placement, no band re-stacking.
+    room.bandX = Math.max(0, anchorRight ? rz.fx - rz.w : rz.fx);
+    room.bandY = Math.max(0, anchorBottom ? rz.fy - rz.h : rz.fy);
     room.spawnDX = Math.min(room.spawnDX, rz.w * 32 - 16);
     room.spawnDY = Math.min(room.spawnDY, rz.h * 32 - 16);
-    this.restackBand(); // keep the band non-overlapping after a size change
 
     if (this.strokeBefore) {
       const before = this.strokeBefore;
@@ -604,16 +637,6 @@ class RoomBuilderTool implements EditorTool {
     }
     this.strokeBefore = null;
     this.refreshList();
-  }
-
-  /** Re-stack all rooms in a single left-aligned column (no overlaps). */
-  private restackBand(): void {
-    let bottom = getOverworldHeightTiles();
-    for (const r of [...this.rooms].sort((a, b) => a.bandY - b.bandY)) {
-      r.bandX = 0;
-      r.bandY = bottom + BAND_GAP_TILES;
-      bottom = r.bandY + Math.ceil(r.h / SECTOR_TILES_Y) * SECTOR_TILES_Y;
-    }
   }
 
   /** Paint the brush (or erase) with its top-left at tile (tx,ty), clipped to the room. */
@@ -636,25 +659,21 @@ class RoomBuilderTool implements EditorTool {
       return;
     }
 
+    let mix = false;
     if (
       foot &&
       (room.sector.tilesetId !== foot.tilesetId || room.sector.paletteId !== foot.paletteId)
     ) {
-      // A still-blank room has no style to protect yet, so it ADOPTS the brush's
-      // tileset/palette. Once it holds content, a mismatched brush is rejected
-      // (one tileset's arrangements render as garbage under another's atlas).
+      // A still-blank room ADOPTS the brush's tileset/palette (its cells stay
+      // compact ROM-arrangement indices). A room that already holds a DIFFERENT
+      // style paints the stamp as self-describing COMPOSITE cells instead — each
+      // minitile carries its own tileset/palette, so tilesets mix freely (make
+      // crazy new stuff), exactly like sub-tile (minitile) stamps already do.
       const roomEmpty = room.tiles.every((t) => (t ?? 0) === 0);
       if (roomEmpty) {
         room.sector = { ...room.sector, tilesetId: foot.tilesetId, paletteId: foot.paletteId };
       } else {
-        if (!this.warnedStyle) {
-          this.shell!.toast(
-            `Room is ts${room.sector.tilesetId}/pal${room.sector.paletteId}; brush is ts${foot.tilesetId}/pal${foot.paletteId}. Match it or use a blank room.`,
-            true
-          );
-          this.warnedStyle = true;
-        }
-        return;
+        mix = true;
       }
     }
 
@@ -666,7 +685,13 @@ class RoomBuilderTool implements EditorTool {
         const rx = tx + lx - room.bandX;
         const ry = ty + ly - room.bandY;
         if (rx < 0 || rx >= room.w || ry < 0 || ry >= room.h) continue;
-        room.tiles[ry * room.w + rx] = this.erasing ? 0 : (foot!.tiles[ly * w + lx] ?? 0);
+        const cellIdx = ry * room.w + rx;
+        if (this.erasing) {
+          room.tiles[cellIdx] = 0;
+        } else {
+          const arr = foot!.tiles[ly * w + lx] ?? 0;
+          room.tiles[cellIdx] = mix ? this.mixCell(room, foot!, arr) : arr;
+        }
         changed = true;
       }
     }
@@ -676,18 +701,31 @@ class RoomBuilderTool implements EditorTool {
     void buildCustomRoomBand();
   }
 
+  /** Store a full-tile stamp cell as a self-describing COMPOSITE under the STAMP's
+   *  own tileset/palette, so it renders + collides correctly inside a room of a
+   *  different style (this is what lets a stamp mix tilesets). arr 0 stays empty;
+   *  an already-composite arr keeps its refs. Returns the cell id for room.tiles. */
+  private mixCell(room: CustomRoom, foot: Footprint, arr: number): number {
+    if (arr === 0) return 0;
+    room.composites = room.composites ?? {};
+    const comp = new Array<number>(16);
+    if (isComposite(arr)) {
+      const src = this.lookupComposite(arr);
+      for (let mi = 0; mi < 16; mi++) comp[mi] = src?.[mi] ?? -1;
+    } else {
+      for (let mi = 0; mi < 16; mi++) comp[mi] = packRef(foot.tilesetId, foot.paletteId, arr, mi);
+    }
+    const id = this.nextCompositeId();
+    room.composites[String(id)] = comp;
+    return id;
+  }
+
   // ── minitile (sub-tile) painting ───────────────────────────────────────────
 
   private paintHere(p: WorldPoint): void {
     if (this.editMap) {
       if (this.isMiniBrush()) {
-        if (!this.warnedStyle) {
-          this.shell!.toast(
-            'Minitile stamps only paint into custom rooms — use a 32px tile/stamp',
-            true
-          );
-          this.warnedStyle = true;
-        }
+        this.paintMapMinis(Math.floor(p.x / MINITILE_SIZE), Math.floor(p.y / MINITILE_SIZE));
         return;
       }
       this.paintMapCell(Math.floor(p.x / TILE_SIZE), Math.floor(p.y / TILE_SIZE));
@@ -772,7 +810,81 @@ class RoomBuilderTool implements EditorTool {
     for (const r of this.rooms) {
       for (const k of Object.keys(r.composites ?? {})) max = Math.max(max, Number(k));
     }
+    // Map-edit composites share the same id space (both feed setComposites), so
+    // account for them too or a new custom cell could reuse a map cell's id.
+    for (const k of Object.keys(this.mapTilesOv.composites ?? {})) max = Math.max(max, Number(k));
     return max + 1;
+  }
+
+  /** Find a composite's 16 refs by id across both sources (custom rooms + the map
+   *  override), so converting a cell that's already a composite keeps its pixels. */
+  private lookupComposite(id: number): number[] | undefined {
+    for (const r of this.rooms) {
+      const c = r.composites?.[String(id)];
+      if (c) return c;
+    }
+    return this.mapTilesOv.composites?.[String(id)];
+  }
+
+  /** Minitile painting onto ANY room (Edit-map mode): the composite goes into the
+   *  map_tiles override's global composite map instead of a custom room's — same
+   *  mechanism buildCustomRoomBand already consumes for non-band cells. */
+  private paintMapMinis(mx: number, my: number): void {
+    if (this.brush?.kind !== 'stamp' || !this.brush.stamp.mini) return;
+    const s = this.brush.stamp;
+    const mw = s.mw ?? 1;
+    const mh = s.mh ?? 1;
+    const refs = s.refs ?? [];
+    const key = `mm${mx},${my}`;
+    if (key === this.lastPaintedKey) return;
+    this.lastPaintedKey = key;
+    let changed = false;
+    for (let ly = 0; ly < mh; ly++) {
+      for (let lx = 0; lx < mw; lx++) {
+        const n = refs[ly * mw + lx] ?? -1;
+        if (n < 0) continue; // transparent part of the stamp — don't erase
+        const comp = this.ensureMapCompositeCell((mx + lx) >> 2, (my + ly) >> 2);
+        if (!comp) continue; // off-map
+        comp[((my + ly) & 3) * 4 + ((mx + lx) & 3)] = n;
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    this.strokeDirty = true;
+    primeJSONCache('/overrides/map_tiles.json', this.mapTilesOv);
+    void buildCustomRoomBand();
+  }
+
+  /** Ensure the map cell at tile (tx,ty) is a composite in the map override,
+   *  converting its current arrangement (ROM or existing composite) in place. */
+  private ensureMapCompositeCell(tx: number, ty: number): number[] | null {
+    const sec = getSectorForTile(tx, ty);
+    if (!sec) return null; // off the map
+    this.mapTilesOv.composites = this.mapTilesOv.composites ?? {};
+    this.mapTilesOv.cells = this.mapTilesOv.cells ?? {};
+    // Prefer this stroke's pending override for the cell (buildCustomRoomBand
+    // hasn't re-run yet, so getTileAt still reports the pre-stroke arrangement) —
+    // otherwise a second minitile in the same cell would orphan the first.
+    const pending = this.mapTilesOv.cells[`${tx},${ty}`];
+    const cur = pending !== undefined ? pending : getTileAt(tx, ty);
+    if (isComposite(cur)) {
+      let comp = this.mapTilesOv.composites[String(cur)];
+      if (!comp) {
+        comp = this.lookupComposite(cur)?.slice() ?? new Array(16).fill(-1);
+        this.mapTilesOv.composites[String(cur)] = comp;
+      }
+      this.mapTilesOv.cells[`${tx},${ty}`] = cur;
+      return comp;
+    }
+    const comp: number[] = new Array(16).fill(-1);
+    if (cur > 0 && cur < COMPOSITE_BASE) {
+      // Explode the existing ROM arrangement into its 16 source minitiles.
+      for (let mi = 0; mi < 16; mi++) comp[mi] = packRef(sec.tilesetId, sec.paletteId, cur, mi);
+    }
+    const id = this.nextCompositeId();
+    this.mapTilesOv.composites[String(id)] = comp;
+    this.mapTilesOv.cells[`${tx},${ty}`] = id;
+    return comp;
   }
 
   /** Source minitile ref at world-minitile (mx,my) — for sampling. */
@@ -1037,6 +1149,29 @@ class RoomBuilderTool implements EditorTool {
       ctx.fillText(label, x + 3, y - 4);
     }
 
+    // Copy/paste ghost: outline where the captured region would land, snapped to
+    // the sector under the cursor.
+    if (this.copyPhase === 'paste' && this.copyBuf && this.hoverTile) {
+      const secTX = SECTOR_TILES_X;
+      const secTY = SECTOR_TILES_Y;
+      const dtx = Math.floor(this.hoverTile.tx / secTX) * secTX;
+      const dty = Math.floor(this.hoverTile.ty / secTY) * secTY;
+      const x = dtx * TILE_SIZE - Math.round(camera.x);
+      const y = dty * TILE_SIZE - Math.round(camera.y);
+      const w = (this.copyBuf.mw / 4) * TILE_SIZE;
+      const h = (this.copyBuf.mh / 4) * TILE_SIZE;
+      ctx.fillStyle = 'rgba(124,252,106,0.14)';
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = '#7CFC6A';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([5, 3]);
+      ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#d4ffcb';
+      ctx.font = '11px monospace';
+      ctx.fillText('paste here', x + 3, y - 4);
+    }
+
     // Minitile paint ghost (8px granularity).
     if (this.painting && this.isMiniBrush() && this.hoverMini && this.brush?.kind === 'stamp') {
       const s = this.brush.stamp;
@@ -1082,12 +1217,9 @@ class RoomBuilderTool implements EditorTool {
             !!editSec &&
             editSec.tilesetId === foot.tilesetId &&
             editSec.paletteId === foot.paletteId
-        : !!room &&
-          (this.erasing ||
-            (!!foot &&
-              (room.tiles.every((t) => !t) ||
-                (room.sector.tilesetId === foot.tilesetId &&
-                  room.sector.paletteId === foot.paletteId))));
+        : // Any stamp now paints into any room (mismatched styles become
+          // composite cells), so a room + a brush is always paintable.
+          !!room && (this.erasing || !!foot);
       if (foot) {
         ctx.save();
         ctx.globalAlpha = 0.6;
@@ -1227,54 +1359,92 @@ class RoomBuilderTool implements EditorTool {
     this.shell!.toast(`Saved furniture "${name}" — click the map to place it`);
   }
 
-  private async copySelection(): Promise<void> {
-    if (!this.sel || this.sel.w < 1 || this.sel.h < 1) {
-      this.shell!.toast('Drag a box on the map first', true);
-      return;
-    }
-    if (this.selUnit !== TILE_SIZE) {
-      this.shell!.toast('Copy→Room needs a tile selection — use "Sample area"', true);
-      return;
-    }
+  // ── copy area → paste (on-map sector copy/paste; no library stamp) ──────────
+
+  /** Arm the copy: drag-select the source sector(s), then click to paste. */
+  private copyArea(): void {
+    this.setTool('select'); // tiles-mode, non-painting context for the marquee
+    this.selecting = true;
+    this.pendingBlank = false;
+    this.sampleMini = false;
+    this.selUnit = TILE_SIZE;
+    this.sel = null;
+    this.dragStart = null;
+    this.copyBuf = null;
+    this.copyPhase = 'select';
+    this.updateStatus();
+    this.shell!.toast(
+      'Drag to select sector(s) to copy — then click a sector to paste. Esc cancels.'
+    );
+  }
+
+  /** End of the source drag: capture the sector-aligned region as minitile refs. */
+  private captureCopy(): void {
+    if (!this.sel) return;
     const tx = Math.floor(this.sel.tx / SECTOR_TILES_X) * SECTOR_TILES_X;
     const ty = Math.floor(this.sel.ty / SECTOR_TILES_Y) * SECTOR_TILES_Y;
     const w = Math.ceil((this.sel.tx + this.sel.w) / SECTOR_TILES_X) * SECTOR_TILES_X - tx;
     const h = Math.ceil((this.sel.ty + this.sel.h) / SECTOR_TILES_Y) * SECTOR_TILES_Y - ty;
-    const grid = this.readRegion(tx, ty, w, h);
-    const sector = this.sampleStyle(tx, ty, w, h, true);
-
-    const doc = (await loadOverride<CustomRoomsDoc>('rooms.json')) ?? { version: 1, rooms: [] };
-    const bandY = this.nextBandY(doc.rooms);
-    const room: CustomRoom = {
-      id: `custom_${Date.now().toString(36)}`,
-      label: `Room ${doc.rooms.length + 1}`,
-      town: 'custom',
-      type: 'custom',
-      bandX: 0,
-      bandY,
-      w,
-      h,
-      sector,
-      tiles: grid,
-      spawnDX: (w >> 1) * 32 + 16,
-      spawnDY: (h >> 1) * 32 + 16,
-      spawnDir: 0,
-    };
-    doc.rooms.push(room);
-    try {
-      await saveOverride('rooms.json', doc);
-      await buildCustomRoomBand();
-    } catch (e) {
-      this.shell!.toast(`Save failed: ${e}`, true);
-      return;
+    // Capture as packed minitile refs (each carries its own tileset/palette), so a
+    // paste renders correctly regardless of the destination sector's style.
+    const mw = w * 4;
+    const mh = h * 4;
+    const refs = new Array<number>(mw * mh);
+    for (let ly = 0; ly < mh; ly++) {
+      for (let lx = 0; lx < mw; lx++) {
+        refs[ly * mw + lx] = this.srcMinitileRef(tx * 4 + lx, ty * 4 + ly);
+      }
     }
-    this.rooms = doc.rooms;
+    this.copyBuf = { mw, mh, refs };
     this.selecting = false;
     this.sel = null;
-    this.refreshList();
+    this.dragStart = null;
+    this.copyPhase = 'paste';
     this.updateStatus();
-    this.shell!.goTo(room.bandX * 32 + room.spawnDX, bandY * 32 + room.spawnDY);
-    this.shell!.toast(`Copied ${w}x${h} → "${room.label}"`);
+    const secs = (w / SECTOR_TILES_X) * (h / SECTOR_TILES_Y);
+    this.shell!.toast(`Copied ${secs} sector(s) — click a sector to paste (Esc when done)`);
+  }
+
+  /** Stamp the captured region into the map override, sector-aligned to the click. */
+  private pasteCopyAt(p: WorldPoint): void {
+    if (!this.copyBuf) return;
+    const secW = SECTOR_TILES_X * TILE_SIZE;
+    const secH = SECTOR_TILES_Y * TILE_SIZE;
+    const destTx0 = Math.floor(p.x / secW) * SECTOR_TILES_X;
+    const destTy0 = Math.floor(p.y / secH) * SECTOR_TILES_Y;
+    if (!getSectorForTile(destTx0, destTy0)) {
+      this.shell!.toast('Off the map', true);
+      return;
+    }
+    const before = this.cloneMapOv();
+    const { mw, mh, refs } = this.copyBuf;
+    for (let ly = 0; ly < mh; ly++) {
+      for (let lx = 0; lx < mw; lx++) {
+        const comp = this.ensureMapCompositeCell(destTx0 + (lx >> 2), destTy0 + (ly >> 2));
+        if (!comp) continue; // off-map cell — skip
+        comp[(ly & 3) * 4 + (lx & 3)] = refs[ly * mw + lx];
+      }
+    }
+    primeJSONCache('/overrides/map_tiles.json', this.mapTilesOv);
+    const after = this.cloneMapOv();
+    this.shell!.run({
+      label: 'Paste tiles',
+      do: () => void this.applyMapOvState(after),
+      undo: () => void this.applyMapOvState(before),
+    });
+    this.shell!.toast('Pasted — click another sector or Esc to finish');
+  }
+
+  /** Leave copy/paste mode (Esc / tool change / right-click). */
+  private cancelCopy(): void {
+    if (this.copyPhase === 'off') return;
+    this.copyPhase = 'off';
+    this.copyBuf = null;
+    this.selecting = false;
+    this.sel = null;
+    this.dragStart = null;
+    this.updateStatus();
+    this.shell?.toast('Copy/paste off');
   }
 
   private async deleteStamp(id: string): Promise<void> {
@@ -1383,7 +1553,12 @@ class RoomBuilderTool implements EditorTool {
     );
   }
 
-  private async createBlankRoom(wTiles: number, hTiles: number): Promise<void> {
+  private async createBlankRoom(
+    tx: number,
+    ty: number,
+    wTiles: number,
+    hTiles: number
+  ): Promise<void> {
     const a = this.sectorAlign(Math.min(64, wTiles), Math.min(64, hTiles));
     const foot = this.brushFoot();
     const sector: SectorMeta = {
@@ -1394,14 +1569,19 @@ class RoomBuilderTool implements EditorTool {
       dungeon: false,
     } as SectorMeta;
 
+    // Place the room where the user picked (sector-aligned), NOT in the band.
+    // buildCustomRoomBand stamps a room's tiles at any bandX/bandY, so a room can
+    // sit on top of an overworld sector — the ROM file is never touched, only the
+    // runtime map (same override mechanism as Edit-map / map_tiles.json).
+    const bandX = Math.floor(tx / SECTOR_TILES_X) * SECTOR_TILES_X;
+    const bandY = Math.floor(ty / SECTOR_TILES_Y) * SECTOR_TILES_Y;
     const doc = (await loadOverride<CustomRoomsDoc>('rooms.json')) ?? { version: 1, rooms: [] };
-    const bandY = this.nextBandY(doc.rooms);
     const room: CustomRoom = {
       id: `custom_${Date.now().toString(36)}`,
       label: `Room ${doc.rooms.length + 1}`,
       town: 'custom',
       type: 'custom',
-      bandX: 0,
+      bandX,
       bandY,
       w: a.w,
       h: a.h,
@@ -1422,10 +1602,10 @@ class RoomBuilderTool implements EditorTool {
     this.rooms = doc.rooms;
     this.refreshList();
     this.updateStatus();
-    this.shell!.goTo(room.bandX * 32 + room.spawnDX, bandY * 32 + room.spawnDY);
+    this.shell!.goTo(bandX * 32 + room.spawnDX, bandY * 32 + room.spawnDY);
     const secs = (a.w / SECTOR_TILES_X) * (a.h / SECTOR_TILES_Y);
     this.shell!.toast(
-      `New ${secs}-sector room in the interiors band — pick a brush and paint (double-click its name to rename)`
+      `New ${secs}-sector room placed here — pick a brush and paint (double-click its name to rename)`
     );
     if (this.brush) this.setPainting(true);
   }
@@ -1677,9 +1857,13 @@ class RoomBuilderTool implements EditorTool {
     this.colControls.appendChild(this.advEl);
     this.panel.appendChild(this.colControls);
 
-    // ── BRUSH section (Paint tool only) ──
-    this.brushHeader = this.mkSection('BRUSH');
-    this.panel.appendChild(this.brushHeader);
+    // ── BRUSH section (Paint tool only) ── lives in its OWN floating window so the
+    // palette can sit next to the room you're painting. brushBox is that window's
+    // content; the docked panel keeps LAYERS / TOOL / ROOMS.
+    this.brushHeader = this.mkSection('BRUSH'); // kept for syncTool; the float titles itself
+    const brushBox = document.createElement('div');
+    brushBox.style.cssText =
+      'width:100%;box-sizing:border-box;display:flex;flex-direction:column;gap:8px;';
 
     // tab row + brush swatch + erase
     const top = document.createElement('div');
@@ -1700,7 +1884,7 @@ class RoomBuilderTool implements EditorTool {
     top.appendChild(this.swatch);
     this.eraseBtn = this.mkBtn('⌫', () => this.toggleErase(), top);
     this.eraseBtn.title = 'Eraser (paint empty)';
-    this.panel.appendChild(top);
+    brushBox.appendChild(top);
 
     // Tiles pane: palette steppers + atlas grid
     this.tilesPane = document.createElement('div');
@@ -1735,7 +1919,7 @@ class RoomBuilderTool implements EditorTool {
     palWrap.appendChild(this.paletteHi);
     palScroll.appendChild(palWrap);
     this.tilesPane.appendChild(palScroll);
-    this.panel.appendChild(this.tilesPane);
+    brushBox.appendChild(this.tilesPane);
 
     // Stamps pane: capture buttons + library
     this.stampsPane = document.createElement('div');
@@ -1758,9 +1942,9 @@ class RoomBuilderTool implements EditorTool {
     this.libraryEl.style.cssText =
       'display:flex;flex-direction:column;gap:4px;max-height:220px;overflow:auto;padding:2px;';
     this.stampsPane.appendChild(this.libraryEl);
-    this.panel.appendChild(this.stampsPane);
+    brushBox.appendChild(this.stampsPane);
 
-    this.paintBtn = this.mkBtn('Paint: off', () => this.setPainting(!this.painting), this.panel);
+    this.paintBtn = this.mkBtn('Paint: off', () => this.setPainting(!this.painting), brushBox);
     this.paintBtn.style.width = '100%';
     this.paintBtn.title =
       'Toggle paint mode — click/drag in a room to lay down the current brush (right-click/Esc stops).';
@@ -1768,11 +1952,27 @@ class RoomBuilderTool implements EditorTool {
     // Edit-map toggle: when ON, the brush/erase/stamp paints onto ANY room's
     // tiles (overrides/map_tiles.json) instead of a custom band room — for
     // rearranging baked furniture & redecorating existing rooms.
-    this.editMapBtn = this.mkBtn('Edit map: off', () => this.toggleEditMap(), this.panel);
+    this.editMapBtn = this.mkBtn('Edit map: off', () => this.toggleEditMap(), brushBox);
     this.editMapBtn.style.width = '100%';
     this.editMapBtn.title =
       'Paint/erase/stamp directly onto ANY room (saves to map_tiles.json). Match the room tileset.';
     this.syncEditMapBtn();
+
+    // The brush section is its own draggable/resizable window (shown only for the
+    // Paint tool — see syncTool). Everything else stays in the docked panel.
+    this.floatPanel = new FloatingPanel({
+      id: 'room-builder-brush',
+      title: 'BRUSH',
+      initial: {
+        x: Math.max(20, window.innerWidth - 380),
+        y: 90,
+        w: 340,
+        h: Math.min(560, Math.round(window.innerHeight * 0.7)),
+      },
+      minW: 260,
+      minH: 160,
+    });
+    this.floatPanel.body.appendChild(brushBox);
 
     // ── ROOMS section ──
     this.panel.appendChild(this.mkSection('ROOMS'));
@@ -1781,8 +1981,9 @@ class RoomBuilderTool implements EditorTool {
     this.mkBtn('+ New Room', () => this.startBlankRoom(), roomRow, true).title =
       'Click a sector to create a new room (drag across sectors for a bigger one). ' +
       'The room is built in the interiors band below the map.';
-    this.mkBtn('Copy area', () => void this.copySelection(), roomRow).title =
-      'Copy the sampled map region into a new custom room.';
+    this.mkBtn('Copy area', () => this.copyArea(), roomRow).title =
+      'Copy sector(s) and paste them elsewhere: click, drag-select the source sector(s), ' +
+      'then click a destination sector to stamp them down (repeat; Esc when done).';
     this.panel.appendChild(roomRow);
 
     const listTitle = document.createElement('div');
@@ -1843,6 +2044,8 @@ class RoomBuilderTool implements EditorTool {
     this.selecting = false;
     this.pendingBlank = false;
     this.sel = null;
+    this.copyPhase = 'off'; // leaving/entering any tool cancels an in-flight copy
+    this.copyBuf = null;
     if (tool !== 'walls' && tool !== 'front' && tool !== 'back') this.advOpen = false;
     if (tool === 'select') {
       this.paintMode = 'tiles';
@@ -1925,6 +2128,8 @@ class RoomBuilderTool implements EditorTool {
   private syncTool(): void {
     const showBrush = this.tool === 'paint';
     const showCol = this.tool === 'walls' || this.tool === 'front' || this.tool === 'back';
+    // The brush window only appears for the Paint tool.
+    if (this.floatPanel) this.floatPanel.el.style.display = showBrush ? 'flex' : 'none';
     if (this.brushHeader) this.brushHeader.style.display = showBrush ? 'block' : 'none';
     if (this.brushTop) this.brushTop.style.display = showBrush ? 'flex' : 'none';
     if (this.paintBtn) this.paintBtn.style.display = showBrush ? 'block' : 'none';
@@ -2142,7 +2347,14 @@ class RoomBuilderTool implements EditorTool {
                 : `Advanced (${m}) — click/drag to paint.`;
       return;
     }
-    if (this.pendingBlank) {
+    if (this.copyPhase === 'select') {
+      this.statusEl.textContent = this.sel
+        ? `Copy: ${this.sel.w}x${this.sel.h} tiles — release to capture (snaps to sectors)`
+        : 'Copy: drag to select the sector(s) to copy';
+    } else if (this.copyPhase === 'paste') {
+      const secs = this.copyBuf ? (this.copyBuf.mw / 32) * (this.copyBuf.mh / 16) : 0;
+      this.statusEl.textContent = `Copied ${secs} sector(s) — click a sector to paste (Esc when done)`;
+    } else if (this.pendingBlank) {
       if (this.sel) {
         const secs = (this.sel.w / SECTOR_TILES_X) * (this.sel.h / SECTOR_TILES_Y);
         this.statusEl.textContent = `New room — ${secs} sector${secs === 1 ? '' : 's'}, release to create`;
@@ -2152,7 +2364,7 @@ class RoomBuilderTool implements EditorTool {
       }
     } else if (this.selecting) {
       this.statusEl.textContent = this.sel
-        ? `Selected ${this.sel.w}x${this.sel.h} — Sample→Stamp or Copy→Room`
+        ? `Selected ${this.sel.w}x${this.sel.h} — Sample→Stamp`
         : 'Drag a box on the map…';
     } else if (this.painting) {
       const where = this.editMap ? 'ANY room (map edit)' : 'a custom room';
@@ -2164,7 +2376,7 @@ class RoomBuilderTool implements EditorTool {
     } else if (this.selectedRoom()) {
       this.statusEl.textContent = `Selected "${this.selectedRoom()!.label}" — drag a corner handle to resize`;
     } else if (this.rooms.length === 0) {
-      this.statusEl.textContent = 'Start with + New Room (or Copy area), then paint a brush in.';
+      this.statusEl.textContent = 'Start with + New Room, then paint a brush in.';
     } else {
       this.statusEl.textContent = 'Click a room to select it, or pick a brush and paint.';
     }

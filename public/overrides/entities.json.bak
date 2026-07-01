@@ -1,12 +1,124 @@
 {
   "version": 1,
   "entities": {
+    "1": {
+      "abilities": [
+        {
+          "anim": "brainshock_alpha",
+          "range": 240,
+          "cooldownMs": 3000,
+          "mode": "offense",
+          "damage": 20,
+          "inflict": [
+            {
+              "type": "paralysis",
+              "chance": 60
+            }
+          ]
+        }
+      ]
+    },
+    "44": {
+      "abilities": [
+        {
+          "anim": "psi_fire_beta",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "offense",
+          "damage": 30,
+          "inflict": []
+        }
+      ]
+    },
     "153": {
       "combat": "brave",
       "crit": 25,
       "dodge": 20,
       "speed": 1.5,
-      "attackCooldownMs": 100
+      "attackCooldownMs": 100,
+      "inflict": [
+        {
+          "type": "crying",
+          "chance": 25
+        }
+      ]
+    },
+    "159": {
+      "abilities": [
+        {
+          "anim": "lifeup_alpha",
+          "range": 400,
+          "cooldownMs": 5500,
+          "mode": "heal",
+          "damage": 0,
+          "heal": 40
+        }
+      ]
+    },
+    "277": {
+      "abilities": [
+        {
+          "anim": "psi_fire_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "offense",
+          "damage": 14,
+          "inflict": []
+        },
+        {
+          "anim": "psi_freeze_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "offense",
+          "damage": 12,
+          "inflict": []
+        },
+        {
+          "anim": "psi_thunder_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "offense",
+          "damage": 16,
+          "inflict": []
+        },
+        {
+          "anim": "psi_flash_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "offense",
+          "damage": 10,
+          "inflict": []
+        }
+      ]
+    },
+    "278": {
+      "abilities": [
+        {
+          "anim": "psi_magnet_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "magnet",
+          "damage": 0,
+          "drainPp": 10
+        },
+        {
+          "anim": "brainshock_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "offense",
+          "damage": 0,
+          "inflict": [
+            {
+              "type": "strange",
+              "chance": 75
+            },
+            {
+              "type": "noPsi",
+              "chance": 75
+            }
+          ]
+        }
+      ]
     },
     "282": {
       "level": 2
@@ -25,6 +137,438 @@
       "giveUpRange": 560,
       "wanderRadius": 200
     },
+    "285": {
+      "inflict": [
+        {
+          "type": "nauseous",
+          "chance": 25
+        }
+      ],
+      "abilities": [
+        {
+          "anim": "lifeup_alpha",
+          "range": 400,
+          "cooldownMs": 5500,
+          "mode": "heal",
+          "damage": 0,
+          "heal": 40
+        }
+      ]
+    },
+    "286": {
+      "abilities": [
+        {
+          "anim": "hypnosis_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "offense",
+          "damage": 0,
+          "inflict": [
+            {
+              "type": "sleep",
+              "chance": 85
+            }
+          ]
+        },
+        {
+          "anim": "brainshock_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "offense",
+          "damage": 0,
+          "inflict": [
+            {
+              "type": "strange",
+              "chance": 75
+            },
+            {
+              "type": "noPsi",
+              "chance": 75
+            }
+          ]
+        }
+      ]
+    },
+    "291": {
+      "inflict": [
+        {
+          "type": "strange",
+          "chance": 25
+        }
+      ]
+    },
+    "292": {
+      "inflict": [
+        {
+          "type": "sleep",
+          "chance": 25
+        }
+      ],
+      "abilities": [
+        {
+          "anim": "shield_alpha",
+          "range": 400,
+          "cooldownMs": 5500,
+          "mode": "shield",
+          "damage": 0,
+          "shieldKind": "physical",
+          "shieldHits": 3
+        }
+      ]
+    },
+    "293": {
+      "abilities": [
+        {
+          "anim": "psi_magnet_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "magnet",
+          "damage": 0,
+          "drainPp": 10
+        },
+        {
+          "anim": "paralysis_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "offense",
+          "damage": 0,
+          "inflict": [
+            {
+              "type": "paralysis",
+              "chance": 80
+            }
+          ]
+        }
+      ]
+    },
+    "297": {
+      "abilities": [
+        {
+          "anim": "brainshock_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "offense",
+          "damage": 0,
+          "inflict": [
+            {
+              "type": "strange",
+              "chance": 75
+            },
+            {
+              "type": "noPsi",
+              "chance": 75
+            }
+          ]
+        }
+      ]
+    },
+    "300": {
+      "abilities": [
+        {
+          "anim": "hypnosis_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "offense",
+          "damage": 0,
+          "inflict": [
+            {
+              "type": "sleep",
+              "chance": 85
+            }
+          ]
+        }
+      ]
+    },
+    "302": {
+      "abilities": [
+        {
+          "anim": "psi_fire_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "offense",
+          "damage": 14,
+          "inflict": []
+        }
+      ]
+    },
+    "303": {
+      "abilities": [
+        {
+          "anim": "psi_fire_beta",
+          "range": 240,
+          "cooldownMs": 4500,
+          "mode": "offense",
+          "damage": 30,
+          "inflict": []
+        },
+        {
+          "anim": "psi_freeze_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "offense",
+          "damage": 12,
+          "inflict": []
+        }
+      ]
+    },
+    "304": {
+      "inflict": [
+        {
+          "type": "cold",
+          "chance": 25
+        }
+      ]
+    },
+    "305": {
+      "inflict": [
+        {
+          "type": "possessed",
+          "chance": 25
+        }
+      ]
+    },
+    "306": {
+      "inflict": [
+        {
+          "type": "cold",
+          "chance": 25
+        }
+      ],
+      "abilities": [
+        {
+          "anim": "shield_alpha",
+          "range": 400,
+          "cooldownMs": 5500,
+          "mode": "shield",
+          "damage": 0,
+          "shieldKind": "physical",
+          "shieldHits": 3
+        }
+      ]
+    },
+    "308": {
+      "inflict": [
+        {
+          "type": "cold",
+          "chance": 25
+        }
+      ]
+    },
+    "309": {
+      "abilities": [
+        {
+          "anim": "hypnosis_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "offense",
+          "damage": 0,
+          "inflict": [
+            {
+              "type": "sleep",
+              "chance": 85
+            }
+          ]
+        },
+        {
+          "anim": "paralysis_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "offense",
+          "damage": 0,
+          "inflict": [
+            {
+              "type": "paralysis",
+              "chance": 80
+            }
+          ]
+        }
+      ]
+    },
+    "312": {
+      "abilities": [
+        {
+          "anim": "psi_fire_beta",
+          "range": 240,
+          "cooldownMs": 4500,
+          "mode": "offense",
+          "damage": 30,
+          "inflict": []
+        }
+      ]
+    },
+    "313": {
+      "inflict": [
+        {
+          "type": "poison",
+          "chance": 25
+        }
+      ],
+      "abilities": [
+        {
+          "anim": "psi_magnet_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "magnet",
+          "damage": 0,
+          "drainPp": 10
+        }
+      ]
+    },
+    "314": {
+      "inflict": [
+        {
+          "type": "nauseous",
+          "chance": 25
+        }
+      ]
+    },
+    "315": {
+      "inflict": [
+        {
+          "type": "nauseous",
+          "chance": 25
+        }
+      ]
+    },
+    "316": {
+      "abilities": [
+        {
+          "anim": "hypnosis_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "offense",
+          "damage": 0,
+          "inflict": [
+            {
+              "type": "sleep",
+              "chance": 85
+            }
+          ]
+        }
+      ]
+    },
+    "317": {
+      "abilities": [
+        {
+          "anim": "lifeup_alpha",
+          "range": 400,
+          "cooldownMs": 5500,
+          "mode": "heal",
+          "damage": 0,
+          "heal": 40
+        },
+        {
+          "anim": "psi_magnet_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "magnet",
+          "damage": 0,
+          "drainPp": 10
+        }
+      ]
+    },
+    "318": {
+      "inflict": [
+        {
+          "type": "crying",
+          "chance": 25
+        }
+      ]
+    },
+    "319": {
+      "inflict": [
+        {
+          "type": "poison",
+          "chance": 25
+        }
+      ],
+      "abilities": [
+        {
+          "anim": "psi_thunder_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "offense",
+          "damage": 16,
+          "inflict": []
+        }
+      ]
+    },
+    "324": {
+      "abilities": [
+        {
+          "anim": "psi_thunder_beta",
+          "range": 240,
+          "cooldownMs": 2500,
+          "mode": "offense",
+          "damage": 34,
+          "inflict": []
+        }
+      ]
+    },
+    "325": {
+      "inflict": [
+        {
+          "type": "cold",
+          "chance": 25
+        }
+      ],
+      "abilities": [
+        {
+          "anim": "psi_thunder_beta",
+          "range": 240,
+          "cooldownMs": 4500,
+          "mode": "offense",
+          "damage": 34,
+          "inflict": []
+        },
+        {
+          "anim": "psi_flash_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "offense",
+          "damage": 10,
+          "inflict": []
+        }
+      ]
+    },
+    "328": {
+      "inflict": [
+        {
+          "type": "nauseous",
+          "chance": 50
+        }
+      ]
+    },
+    "333": {
+      "abilities": [
+        {
+          "anim": "defense_down_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "debuff",
+          "damage": 0,
+          "debuffStat": "defense",
+          "debuffAmt": 15,
+          "debuffMs": 15000
+        },
+        {
+          "anim": "psi_magnet_alpha",
+          "range": 240,
+          "cooldownMs": 5500,
+          "mode": "magnet",
+          "damage": 0,
+          "drainPp": 10
+        }
+      ]
+    },
+    "364": {
+      "inflict": [
+        {
+          "type": "poison",
+          "chance": 25
+        }
+      ]
+    },
     "388": {
       "hp": 50,
       "level": 3,
@@ -40,10 +584,51 @@
       "wanderRadius": 100,
       "combat": "nervous"
     },
+    "391": {
+      "inflict": [
+        {
+          "type": "crying",
+          "chance": 25
+        }
+      ]
+    },
+    "392": {
+      "inflict": [
+        {
+          "type": "crying",
+          "chance": 25
+        }
+      ]
+    },
+    "417": {
+      "abilities": [
+        {
+          "anim": "psi_fire_alpha",
+          "range": 240,
+          "cooldownMs": 2500,
+          "mode": "offense",
+          "damage": 14,
+          "inflict": []
+        }
+      ]
+    },
     "419": {
       "hp": 500,
       "level": 12,
-      "xp": 200
+      "xp": 200,
+      "damage": 20
+    },
+    "461": {
+      "abilities": [
+        {
+          "anim": "psi_fire_beta",
+          "range": 240,
+          "cooldownMs": 2500,
+          "mode": "offense",
+          "damage": 30,
+          "inflict": []
+        }
+      ]
     }
   }
 }

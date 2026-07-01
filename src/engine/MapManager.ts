@@ -33,6 +33,17 @@ interface CustomRoom {
   id: string;
   label: string;
   town?: string | null;
+  // Nesting + properties authored in the Room Manager / Builder (see Rooms.RoomDef).
+  // Carried through to the registry so a custom room's bgm/type behave like a
+  // region room's. Geometry stays band-based (bandX/Y/w/h); these are pure props.
+  parent?: string | null;
+  bgm?: number | null;
+  storeId?: number;
+  healCost?: number;
+  cost?: number;
+  wakeBgm?: number;
+  bedroomWarp?: { x: number; y: number; dir: number };
+  isSaveRoom?: boolean;
   type?: string | null;
   bandX: number; // top-left TILE position in the band (sector-aligned; bandY >= base height)
   bandY: number;
@@ -157,7 +168,15 @@ export async function buildCustomRoomBand(): Promise<void> {
       id: r.id,
       label: r.label,
       town: r.town,
+      parent: r.parent,
       type: r.type,
+      bgm: r.bgm,
+      storeId: r.storeId,
+      healCost: r.healCost,
+      cost: r.cost,
+      wakeBgm: r.wakeBgm,
+      bedroomWarp: r.bedroomWarp,
+      isSaveRoom: r.isSaveRoom,
       rect: { x: r.bandX * 32, y: r.bandY * 32, w: r.w * 32, h: r.h * 32 },
       spawn: { x: r.bandX * 32 + r.spawnDX, y: r.bandY * 32 + r.spawnDY, dir: r.spawnDir },
     });

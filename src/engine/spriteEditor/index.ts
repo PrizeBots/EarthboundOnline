@@ -67,16 +67,6 @@ import { buildDom } from './dom';
 
 export type { SpriteEditorCallbacks };
 
-// When the dev editor SHELL owns this overlay it registers a "return to game"
-// hook here. F2 then exits all the way to the game (close overlay + exit shell)
-// instead of just closing the overlay back to the shell — independent of which
-// window keydown listener (shell's or ours) happens to fire first. Null when the
-// editor is opened standalone (e.g. from character select), where F2 just closes.
-let shellExit: (() => void) | null = null;
-export function setSpriteEditorShellExit(fn: (() => void) | null): void {
-  shellExit = fn;
-}
-
 export function isSpriteEditorOpen(): boolean {
   return S.open;
 }
@@ -193,7 +183,12 @@ export function closeSpriteEditor(): void {
   S.editMode = 'char';
 }
 
-function cancelEditor(): void {
+/** Close the editor overlay and return to wherever we came from. Fires the
+ *  onCancel callback so the shell resyncs (deselects the Sprite Editor tab when
+ *  opened as a dock tool; a no-op when opened as a handoff, leaving the calling
+ *  tool — e.g. the Entity Manager — active underneath). Wired to Esc, and the
+ *  overlay's ✕ button (see dom.ts). */
+export function cancelEditor(): void {
   if (!S.open) return;
   const cb = S.editorCallbacks.onCancel;
   closeSpriteEditor();
@@ -408,9 +403,10 @@ function persistGroup(quiet: boolean): void {
 function onKeyDown(e: KeyboardEvent): void {
   // F2 closes the editor from ANYWHERE — even with a field focused. It's a
   // function key (never a text character), so we don't let the typing bail
-  // below swallow it; blur the field first so its keystrokes stop. When the
-  // shell owns this editor it intercepts F2 before us and tears us down too;
-  // this branch only matters when the editor is opened standalone (char select).
+  // below swallow it; blur the field first so its keystrokes stop. When the dev
+  // editor shell owns this overlay, ITS F2 handler is registered first and
+  // pre-empts this one (it tears us down via the tool's deactivate), so this
+  // branch only runs when the editor is opened standalone (e.g. char select).
   const tag = document.activeElement?.tagName;
   const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
   if (e.key === 'F2') {
@@ -419,15 +415,7 @@ function onKeyDown(e: KeyboardEvent): void {
     // shell inactive and open the editor shell right as we close.
     e.stopImmediatePropagation();
     if (typing) (document.activeElement as HTMLElement | null)?.blur();
-    // Shell-owned: F2 means "back to the game", so close the overlay AND exit the
-    // shell. Standalone: just close the overlay (cancelEditor → onCancel).
-    if (shellExit) {
-      const exit = shellExit;
-      closeSpriteEditor();
-      exit();
-    } else {
-      cancelEditor();
-    }
+    cancelEditor();
     return;
   }
   // While typing in a field (the sprite picker's search, the rename box), let
