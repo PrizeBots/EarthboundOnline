@@ -1,6 +1,7 @@
 // DOM construction for the editor overlay: the tool/character/item panel, the
 // FRAMES strip, the EDIT canvas, the LIVE TEST pane, and the full-width SHEET
 // panel. Wires each control to the handlers in the concern modules.
+import { FloatingPanel } from '../../editor/FloatingPanel';
 import { createSpritePicker, drawSpriteGroupThumb } from '../SpritePicker';
 import { getSpriteName } from '../SpriteNames';
 import { CUSTOM_GROUP_BASE } from '../SpriteManager';
@@ -105,12 +106,14 @@ export function buildDom(): void {
   titleBar.appendChild(closeBtn);
   S.overlay.appendChild(titleBar);
 
-  loadPanelLayout();
+  migratePanelLayout();
 
   // Build every panel, then lay them out in a row (+ the sheet below) ONCE so we
   // can read each one's natural flow position as its first-run default. After
-  // that they all become free-floating windows (drag header / resize corner),
-  // their position+size restored from the saved layout.
+  // that each panel is wrapped in a shared FloatingPanel window (drag header /
+  // resize corner / z-raise / layout persistence all live there), positioned
+  // `absolute` inside the overlay. Layout is a pure per-browser UI preference —
+  // not game content, so it never touches the overrides save channel.
   const row = document.createElement('div');
   row.style.cssText = 'display:flex;gap:16px;align-items:flex-start;';
   S.overlay.appendChild(row);
@@ -127,163 +130,63 @@ export function buildDom(): void {
 
   document.body.appendChild(S.overlay);
 
-  // Measure ALL defaults before detaching any (each absolute-ize shifts the rest).
+  // Measure ALL defaults before detaching any (each float-wrap shifts the rest).
   const defs = panels.map((p) => ({
     id: p.id,
     el: p.el,
     x: p.el.offsetLeft,
     y: p.el.offsetTop,
   }));
+  const overlay = S.overlay;
   for (const d of defs) {
-    S.overlay.appendChild(d.el); // reparent to the overlay (its positioning parent)
-    makeFloating(d.el, d.id, { x: d.x, y: d.y });
+    const fp = new FloatingPanel({
+      id: `spriteEditor.${d.id}`,
+      title: d.el.dataset.title ?? d.id.toUpperCase(),
+      initial: { x: d.x, y: d.y },
+      minW: 120,
+      minH: 64,
+      container: overlay,
+      autoSize: true, // panels track their content size until resized by hand
+    });
+    fp.body.appendChild(d.el);
   }
   row.remove();
 }
 
-// ---------------------------------------------------------------------------
-// Floating panels: drag by header, resize from the bottom-right corner, layout
-// persisted to localStorage so an admin's arrangement is there next session.
-// (Pure UI preference per browser — not game content, so it never touches the
-// overrides save channel.)
-// ---------------------------------------------------------------------------
+// One-time migration of the sprite editor's old private panel-layout store to
+// FloatingPanel's per-panel keys (eb.floatpanel.spriteEditor.<id>), so saved
+// arrangements survive the makeFloating → FloatingPanel consolidation.
+const OLD_PANEL_LAYOUT_KEY = 'eb.spriteEditor.panels.v1';
 
-const PANEL_LAYOUT_KEY = 'eb.spriteEditor.panels.v1';
-const PANEL_MIN_W = 120;
-const PANEL_MIN_H = 64;
-interface PanelRect {
-  x: number;
-  y: number;
-  w?: number;
-  h?: number;
-}
-let panelLayout: Record<string, PanelRect> = {};
-let panelZ = 100; // bumped each interaction so the active panel comes to front
-
-function loadPanelLayout(): void {
+function migratePanelLayout(): void {
   try {
-    panelLayout = JSON.parse(localStorage.getItem(PANEL_LAYOUT_KEY) || '{}') || {};
+    const raw = localStorage.getItem(OLD_PANEL_LAYOUT_KEY);
+    if (!raw) return;
+    const old = JSON.parse(raw) as Record<
+      string,
+      { x: number; y: number; w?: number; h?: number }
+    > | null;
+    for (const [id, r] of Object.entries(old ?? {})) {
+      const key = `eb.floatpanel.spriteEditor.${id}`;
+      if (localStorage.getItem(key) || typeof r?.x !== 'number') continue;
+      // Only migrate a size when the admin had set BOTH — FloatingPanel sizes
+      // whole-window, and a lone w/h would freeze the other axis at minimum.
+      const sized = r.w != null && r.h != null;
+      const rect = sized ? { x: r.x, y: r.y, w: r.w, h: r.h } : { x: r.x, y: r.y };
+      localStorage.setItem(key, JSON.stringify({ rect, collapsed: false }));
+    }
+    localStorage.removeItem(OLD_PANEL_LAYOUT_KEY);
   } catch {
-    panelLayout = {};
+    /* unreadable old layout — panels just start from their defaults */
   }
 }
-function savePanelLayout(): void {
-  try {
-    localStorage.setItem(PANEL_LAYOUT_KEY, JSON.stringify(panelLayout));
-  } catch {
-    /* private mode / quota — layout just won't persist */
-  }
-}
-/** Snapshot a panel's current rect into the layout store + persist immediately. */
-function persistPanel(div: HTMLDivElement, id: string): void {
-  const prev = panelLayout[id] || ({} as PanelRect);
-  panelLayout[id] = {
-    x: Math.round(parseFloat(div.style.left) || 0),
-    y: Math.round(parseFloat(div.style.top) || 0),
-    w: div.style.width ? Math.round(parseFloat(div.style.width)) : prev.w,
-    h: div.style.height ? Math.round(parseFloat(div.style.height)) : prev.h,
-  };
-  savePanelLayout();
-}
 
-/** Turn a built panel into a draggable + resizable floating window. `def` is the
- *  measured flow position used until the admin moves it (then the save wins). */
-function makeFloating(div: HTMLDivElement, id: string, def: PanelRect): void {
-  const head = div.firstElementChild as HTMLElement | null;
-  if (!head) return;
-
-  // Move everything after the header into a scrollable body, so the header stays
-  // put (and grabbable) and content scrolls when the panel is shrunk.
-  const body = document.createElement('div');
-  body.style.cssText =
-    'display:flex;flex-direction:column;gap:6px;overflow:auto;min-height:0;flex:1;';
-  while (head.nextSibling) body.appendChild(head.nextSibling);
-  div.appendChild(body);
-
-  div.style.position = 'absolute';
-  div.style.margin = '0';
-  div.dataset.panelId = id;
-  const r = panelLayout[id] || ({} as PanelRect);
-  div.style.left = `${r.x ?? def.x}px`;
-  div.style.top = `${r.y ?? def.y}px`;
-  if (r.w != null) div.style.width = `${r.w}px`;
-  if (r.h != null) div.style.height = `${r.h}px`; // height set => body scrolls
-
-  // Header = drag handle.
-  head.style.cursor = 'move';
-  head.title = 'Drag to move';
-  head.addEventListener('mousedown', (e) => startPanelDrag(e, div, id));
-
-  // Bottom-right resize grip (the corner marker).
-  const grip = document.createElement('div');
-  grip.title = 'Drag to resize';
-  grip.style.cssText =
-    'position:absolute;right:1px;bottom:1px;width:16px;height:16px;cursor:nwse-resize;z-index:1;' +
-    'background:repeating-linear-gradient(135deg,#557 0 2px,transparent 2px 4px);';
-  grip.addEventListener('mousedown', (e) => startPanelResize(e, div, id));
-  div.appendChild(grip);
-
-  // Any click on the panel raises it above the others.
-  div.addEventListener('mousedown', () => {
-    div.style.zIndex = String(++panelZ);
-  });
-}
-
-function startPanelDrag(e: MouseEvent, div: HTMLDivElement, id: string): void {
-  e.preventDefault();
-  div.style.zIndex = String(++panelZ);
-  const sx = e.clientX;
-  const sy = e.clientY;
-  const ox = parseFloat(div.style.left) || 0;
-  const oy = parseFloat(div.style.top) || 0;
-  const move = (ev: MouseEvent) => {
-    const ow = S.overlay?.clientWidth ?? window.innerWidth;
-    const oh = S.overlay?.clientHeight ?? window.innerHeight;
-    // Keep at least a corner of the header on-screen so a panel is never lost.
-    const nx = Math.max(-(div.offsetWidth - 48), Math.min(ow - 48, ox + ev.clientX - sx));
-    const ny = Math.max(0, Math.min(oh - 20, oy + ev.clientY - sy));
-    div.style.left = `${nx}px`;
-    div.style.top = `${ny}px`;
-  };
-  const up = () => {
-    document.removeEventListener('mousemove', move);
-    document.removeEventListener('mouseup', up);
-    persistPanel(div, id);
-  };
-  document.addEventListener('mousemove', move);
-  document.addEventListener('mouseup', up);
-}
-
-function startPanelResize(e: MouseEvent, div: HTMLDivElement, id: string): void {
-  e.preventDefault();
-  e.stopPropagation(); // not a drag
-  div.style.zIndex = String(++panelZ);
-  const sx = e.clientX;
-  const sy = e.clientY;
-  const ow = div.offsetWidth;
-  const oh = div.offsetHeight;
-  const move = (ev: MouseEvent) => {
-    div.style.width = `${Math.max(PANEL_MIN_W, ow + ev.clientX - sx)}px`;
-    div.style.height = `${Math.max(PANEL_MIN_H, oh + ev.clientY - sy)}px`;
-  };
-  const up = () => {
-    document.removeEventListener('mousemove', move);
-    document.removeEventListener('mouseup', up);
-    persistPanel(div, id);
-  };
-  document.addEventListener('mousemove', move);
-  document.addEventListener('mouseup', up);
-}
-
+/** A panel's content column. The label becomes the FloatingPanel window title
+ *  (via dataset.title) when buildDom wraps the panels at the end. */
 function panel(label: string): HTMLDivElement {
   const div = document.createElement('div');
-  div.style.cssText =
-    'display:flex;flex-direction:column;gap:6px;background:#1f1f2a;' +
-    'border:1px solid #333;border-radius:4px;padding:10px;';
-  const head = document.createElement('div');
-  head.textContent = label;
-  head.style.cssText = 'color:#9af;font-size:11px;letter-spacing:1px;';
-  div.appendChild(head);
+  div.dataset.title = label;
+  div.style.cssText = 'display:flex;flex-direction:column;gap:6px;';
   return div;
 }
 

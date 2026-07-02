@@ -584,7 +584,21 @@ crowd (e.g. a 400-bot fleet) and the tick rate slips, which clients see as a
 _server_ slip (the reported `server: NN Hz` in `?netdebug`), not network lag.
 Cold callers that run OFF the tick (e.g. the exported door-landing resolver
 `findPlayerLanding`) rebuild the grids first, since the per-tick grids are stale
-there. Wire:
+there.
+
+**npcSim module layout.** `npcSim.js` is the tick coordinator + AI; cohesive
+subsystems live in `server/npc/` as factories taking a deps object (accessor
+fns for anything reassigned on override reloads or wired in `start()`):
+`combatMath.js` (pure geometry/mass/PK rules/melee resolution), `world.js` (map
+tiles/sectors/collision/doors/stairs + reload hooks), `loaders.js` (enemy/entity
+config + ROM-catalog merge), `grids.js` (the broad-phase buckets above),
+`projectiles.js` (ranged shots + traveling PSI cones/bolts: spawn, per-tick
+sub-stepped flight, hit resolution), and `loot.js` (death-drop rolls, the
+ground-drop list + eject/throw/settle physics, player-then-actor pickup,
+townsfolk item use). Still inline in npcSim (extraction TODO): vehicle/traffic
+sim and the wander/combat AI itself.
+
+Wire:
 `move` carries `pose` (whitelisted to walk/climb/attack/hurt); `equip` sets the
 player's held item id (string ≤ 24 chars, stored on the player record so late
 joiners see it; clients ignore unknown ids); `use_item` consumes a Goods slot

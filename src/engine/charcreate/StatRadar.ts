@@ -26,7 +26,12 @@ export const ALLOC_POINTS = 10;
 export type Alloc = Record<StatKey, number>;
 
 const SVG = 'http://www.w3.org/2000/svg';
-const SIZE = 300; // viewBox px
+const SIZE = 300; // viewBox px (the pentagon's square box)
+// The side stat labels (MENTAL to the right, KNOWLEDGE to the left) start/end
+// anchored at the axis tips and overrun the square box — extend the viewBox
+// horizontally by this much on each side so they render inside the SVG instead
+// of spilling off the modal edge. Kept symmetric so the pentagon stays centered.
+const PAD_X = 64;
 const C = SIZE / 2;
 const R = 108; // axis length (value displayMax sits here)
 const LABEL_GAP = 22; // distance from axis tip to the stat name
@@ -70,10 +75,10 @@ export function createStatRadar(
   const valTexts: SVGTextElement[] = []; // per-axis value labels, filled below
 
   const svg = document.createElementNS(SVG, 'svg');
-  svg.setAttribute('viewBox', `0 0 ${SIZE} ${SIZE}`);
+  svg.setAttribute('viewBox', `${-PAD_X} 0 ${SIZE + 2 * PAD_X} ${SIZE}`);
   // Explicit intrinsic size so the SVG can't collapse to 0 height in the flex
-  // column (CSS below scales it down responsively).
-  svg.setAttribute('width', String(SIZE));
+  // column (CSS below scales it down responsively). Width includes the label pad.
+  svg.setAttribute('width', String(SIZE + 2 * PAD_X));
   svg.setAttribute('height', String(SIZE));
   svg.setAttribute('class', 'eb-radar');
 
@@ -206,8 +211,10 @@ export function createStatRadar(
   // limits, applied in setValue).
   function valueFromPointer(i: number, clientX: number, clientY: number): number {
     const rect = svg.getBoundingClientRect();
-    const scale = SIZE / rect.width;
-    const px = (clientX - rect.left) * scale - C;
+    // rect spans the full padded viewBox (width SIZE+2*PAD_X). Convert client px
+    // to viewBox coords, accounting for the -PAD_X min-x, then offset to center.
+    const scale = (SIZE + 2 * PAD_X) / rect.width;
+    const px = (clientX - rect.left) * scale - PAD_X - C;
     const py = (clientY - rect.top) * scale - C;
     const proj = px * axis[i].dx + py * axis[i].dy; // distance along the axis
     return (proj / R) * displayMax;

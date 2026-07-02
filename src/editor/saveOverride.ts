@@ -6,8 +6,30 @@
 // pipeline never clobbers authoring.
 
 import { primeJSONCache } from '../engine/AssetLoader';
+import type { ZodType } from 'zod';
+import { NpcOverridesSchema, EnemySpawnsSchema, EntitiesFileSchema } from '../data/overrideSchemas';
+
+// Validate BEFORE writing: a tool bug must throw here (surfaced to the tool's
+// save UI), not corrupt the authored file on disk. Files without a schema yet
+// pass through — add entries as schemas land (TODO.md "Zod schemas for the
+// other hand-edited overrides").
+const OVERRIDE_SCHEMAS: Record<string, ZodType> = {
+  'npcs.json': NpcOverridesSchema,
+  'enemy_spawns.json': EnemySpawnsSchema,
+  'entities.json': EntitiesFileSchema,
+};
 
 export async function saveOverride(name: string, data: unknown): Promise<void> {
+  const schema = OVERRIDE_SCHEMAS[name];
+  if (schema) {
+    const parsed = schema.safeParse(data);
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      throw new Error(
+        `saveOverride(${name}): invalid data at ${first.path.join('.') || '(root)'} — ${first.message}`
+      );
+    }
+  }
   const res = await fetch('/__editor/save', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

@@ -18,20 +18,9 @@ import { Camera } from './Camera';
 import { Direction } from '../types';
 import { getPointer, isMouseAimActive } from './Input';
 import { getCrosshairColor, getCrosshairType, getCursorScale } from './Settings';
-
-// Facing unit vectors indexed by Direction. MIRRORS server npcSim DIR_VEC and the
-// src/types Direction order (S,N,W,E,NW,SW,SE,NE) so the snapped index IS the enum.
-const DIAG = Math.SQRT1_2;
-const DIR_VEC: [number, number][] = [
-  [0, 1], // S
-  [0, -1], // N
-  [-1, 0], // W
-  [1, 0], // E
-  [-DIAG, -DIAG], // NW
-  [-DIAG, DIAG], // SW
-  [DIAG, DIAG], // SE
-  [DIAG, -DIAG], // NE
-];
+// Facing unit vectors indexed by Direction (canonical table — the snapped index
+// IS the enum; the server mirrors it in npcSim).
+import { DIR_VEC } from './directions';
 
 // The attack origin is the chest (feet y - 10), matching where the server anchors
 // the hitbox/muzzle — used to build the aim vector.

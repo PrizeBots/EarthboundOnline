@@ -138,6 +138,7 @@ export async function mountCreateFlow(
   // level-up modal shows (createDerivedAttrs), so you see what the pentagon does
   // to HP / Offense / Defense / … live as you allocate. ---
   const statPane = ebWindow('eb-cc-pane');
+  statPane.classList.add('eb-cc-statwin'); // wider than the other panes (see injectStyles)
   panes.appendChild(statPane);
   statPane.appendChild(sectionTitle('ALLOCATE STATS'));
   // Declared BEFORE the radar: createStatRadar fires onChange during its initial
@@ -184,7 +185,7 @@ export async function mountCreateFlow(
   create.style.justifyContent = 'center';
   actions.appendChild(create);
   const back = ebButton(
-    '< Back',
+    'Back',
     () => {
       teardown();
       opts.onCancel();
@@ -502,7 +503,21 @@ function injectStyles(): void {
      of the height budget. fitToViewport's transform scale is only a last resort
      for screens too small even after this. Roomy desktop look is left untouched;
      these only kick in on short/narrow viewports. --- */
-  .eb-cc-pane .eb-radar { width: 300px; }   /* explicit cap (intrinsic SVG is 300) */
+  .eb-cc-pane .eb-radar { width: 300px; }   /* explicit cap (intrinsic SVG is 428 wide incl. label pad) */
+
+  /* The ALLOCATE STATS pane is wider than the others: the radar's viewBox now
+     includes the MENTAL (right) / KNOWLEDGE (left) side labels, so it needs a
+     wider slot to render at full pentagon size without the labels overrunning the
+     modal. Combined-class selectors (.eb-cc-pane.eb-cc-statwin) outrank the
+     generic .eb-cc-pane radar rules regardless of source order. */
+  .eb-cc-pane.eb-cc-statwin { width: 452px; }
+  .eb-cc-pane.eb-cc-statwin .eb-radar { width: 428px; }
+  @media (max-height: 860px) { .eb-cc-pane.eb-cc-statwin .eb-radar { width: 344px; } }
+  @media (max-height: 700px) { .eb-cc-pane.eb-cc-statwin .eb-radar { width: 300px; } }
+  @media (max-width: 760px) {
+    .eb-cc-pane.eb-cc-statwin { width: min(452px, 100%); }
+    .eb-cc-pane.eb-cc-statwin .eb-radar { width: 100%; }
+  }
 
   /* Shorter viewports (laptops, the original cut-off case): tighten + shrink the
      pentagon so the whole creator clears the fold without scaling. */

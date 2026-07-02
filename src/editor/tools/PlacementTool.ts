@@ -33,7 +33,7 @@ import { Direction } from '../../types';
 import { saveOverride } from '../saveOverride';
 import { registerSaveHandler } from '../EditorHub';
 import { EditorShellApi, EditorTool, WorldPoint } from '../types';
-import { mkButton, mkRow as uiRow, mkTextInput, mkSelect as uiSelect } from '../ui';
+import { mkBtn, mkRow as uiRow, mkTextInput, mkSelect as uiSelect } from '../ui';
 import { dialogueTool } from './DialogueTool';
 import { trafficEditorTool } from './TrafficEditorTool';
 import { entityManagerTool } from './EntityManagerTool';
@@ -1315,17 +1315,7 @@ class PlacementTool implements EditorTool {
 
   // Thin wrappers over the shared editor UI kit (src/editor/ui.ts) — kept so the
   // tool's many call sites stay unchanged while the duplicated DOM/CSS lives in
-  // one place. `accent` = the primary (gold) variant this tool uses.
-  private mkBtn(
-    label: string,
-    fn: () => void,
-    parent: HTMLElement,
-    accent = false,
-    tip?: string
-  ): HTMLButtonElement {
-    return mkButton(label, fn, { parent, variant: accent ? 'gold' : 'default', tip });
-  }
-
+  // one place.
   private mkRow(parent: HTMLElement, label: string, tip?: string): HTMLDivElement {
     return uiRow(parent, label, { tip });
   }
@@ -1385,7 +1375,7 @@ class PlacementTool implements EditorTool {
     const btns = document.createElement('div');
     btns.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
     form.appendChild(btns);
-    this.mkBtn(
+    mkBtn(
       '+ person',
       () => {
         this.placingKind = 'person';
@@ -1395,7 +1385,7 @@ class PlacementTool implements EditorTool {
       false,
       'Place a townsperson (walks/talks, can be made to fight). Click here, then click the map.'
     );
-    this.mkBtn(
+    mkBtn(
       '+ prop',
       () => {
         this.placingKind = 'prop';
@@ -1405,7 +1395,7 @@ class PlacementTool implements EditorTool {
       false,
       'Place a static prop/object (no AI). Click here, then click the map.'
     );
-    this.mkBtn(
+    mkBtn(
       '+ vehicle',
       () => {
         this.placingKind = null;
@@ -1416,7 +1406,7 @@ class PlacementTool implements EditorTool {
       false,
       'Drop a parked car into the traffic system. Give it a driving route later in the Traffic Editor.'
     );
-    this.mkBtn(
+    mkBtn(
       'snap (G)',
       () => this.onKey('g'),
       btns,
@@ -1503,7 +1493,7 @@ class PlacementTool implements EditorTool {
     nameEl.dataset.role = 'sprite-name';
     nameEl.style.cssText = 'text-align:center;color:#7fd0ff;font-size:11px;min-height:13px;';
     nameRow.appendChild(nameEl);
-    this.mkBtn(
+    mkBtn(
       '✎',
       () => {
         const sp = selSprite();
@@ -1595,7 +1585,7 @@ class PlacementTool implements EditorTool {
     actions.style.cssText =
       'display:flex;gap:6px;border-top:1px solid #243;padding-top:7px;flex-wrap:wrap;';
     form.appendChild(actions);
-    this.mkBtn(
+    mkBtn(
       'Dialogue ✎',
       () => {
         if (this.selVehicle) void this.authorVehicleDialogue(this.selVehicle);
@@ -1608,7 +1598,7 @@ class PlacementTool implements EditorTool {
     // Cross-tool handoff to the Entity Manager (same as the Enemy Spawner's
     // "Edit entity →") — tune this enemy's combat stats by sprite group. Only
     // meaningful for enemies, so refreshPanel hides it for people/props/cars.
-    const editEntityBtn = this.mkBtn(
+    const editEntityBtn = mkBtn(
       'Edit entity →',
       () => {
         const e = this.selNpc;
@@ -1623,7 +1613,7 @@ class PlacementTool implements EditorTool {
     editEntityBtn.dataset.role = 'edit-entity';
     // A car carries the SAME form as any NPC, plus this one extra: jump to the
     // Traffic Editor to draw/edit its waypoint route. Hidden for non-vehicles.
-    const editRouteBtn = this.mkBtn(
+    const editRouteBtn = mkBtn(
       '🚗 Edit route in Traffic →',
       () => {
         if (this.selVehicle) {
@@ -1636,7 +1626,7 @@ class PlacementTool implements EditorTool {
       'Open the Traffic Editor to draw/edit this car’s waypoint driving route.'
     );
     editRouteBtn.dataset.role = 'edit-route';
-    this.mkBtn(
+    mkBtn(
       'Delete (Del)',
       () => this.deleteSelected(),
       actions,
@@ -1723,7 +1713,7 @@ class PlacementTool implements EditorTool {
     actions.style.cssText =
       'display:flex;gap:6px;border-top:1px solid #243;padding-top:7px;flex-wrap:wrap;';
     form.appendChild(actions);
-    this.mkBtn(
+    mkBtn(
       'Center view',
       () => {
         const cam = this.shell!.context.camera;
@@ -1734,7 +1724,7 @@ class PlacementTool implements EditorTool {
       false,
       'Pan the editor camera to center on the spawn marker.'
     );
-    this.mkBtn(
+    mkBtn(
       'Test spawn',
       () => {
         this.shell!.context.teleport(this.spawn.x, this.spawn.y);
@@ -1752,7 +1742,7 @@ class PlacementTool implements EditorTool {
     const btns = document.createElement('div');
     btns.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
     form.appendChild(btns);
-    this.mkBtn(
+    mkBtn(
       '+ door',
       () => {
         this.placingDoor = true;
@@ -1762,7 +1752,7 @@ class PlacementTool implements EditorTool {
       false,
       'Place a new door trigger. Click here, then click the map; set its destination below.'
     );
-    this.mkBtn(
+    mkBtn(
       'snap (G)',
       () => this.onKey('g'),
       btns,
@@ -1861,7 +1851,7 @@ class PlacementTool implements EditorTool {
     actions.style.cssText =
       'display:flex;gap:6px;border-top:1px solid #243;padding-top:7px;flex-wrap:wrap;';
     form.appendChild(actions);
-    this.mkBtn(
+    mkBtn(
       'Go to dest',
       sel((e) => {
         const cam = this.shell!.context.camera;
@@ -1872,7 +1862,7 @@ class PlacementTool implements EditorTool {
       false,
       'Pan the editor camera to this door’s destination.'
     );
-    this.mkBtn(
+    mkBtn(
       'Walk-test',
       sel((e) => {
         this.shell!.context.teleport(e.destX, e.destY);
@@ -1882,7 +1872,7 @@ class PlacementTool implements EditorTool {
       false,
       'Teleport your character to this door’s destination to check the landing spot in-game.'
     );
-    this.mkBtn(
+    mkBtn(
       'Delete (Del)',
       () => this.deleteSelected(),
       actions,

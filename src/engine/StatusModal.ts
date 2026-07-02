@@ -81,15 +81,15 @@ export function getStatus(): Readonly<PlayerStats> {
 // --- Local stamina prediction --------------------------------------------
 // Stamina is server-authoritative, but it changes every frame (run drain /
 // regen), so the client predicts it for a smooth yellow bar and the server
-// corrects via throttled `player_stamina` syncs (reconcileStamina). KEEP the
-// drain/cost constants in sync with server/gameHost.js + Player.ts.
-export const STAMINA_ATTACK_COST = 8;
-export const RUN_DRAIN_PER_SEC = 24;
-const RUN_RECOVER_FRAC = 0.2; // winded → can run again once recharged to this (KEEP IN SYNC)
+// corrects via throttled `player_stamina` syncs (reconcileStamina).
+// Values live in moveConstants.ts (the server-mirrored set, drift-guarded by
+// constantsSync.test.ts); re-exported here for the existing consumers.
+import { STAMINA_ATTACK_COST, RUN_DRAIN_PER_SEC, RUN_RECOVER_FRAC } from './moveConstants';
+export { STAMINA_ATTACK_COST, RUN_DRAIN_PER_SEC };
 
-// "Winded" latch (mirror server/gameHost.js): hitting 0 stamina while running
-// locks running OUT until stamina recharges to RUN_RECOVER_FRAC. Without it,
-// per-frame regen tops stamina just above 0 and you'd sprint forever.
+// "Winded" latch: hitting 0 stamina while running locks running OUT until
+// stamina recharges to RUN_RECOVER_FRAC. Without it, per-frame regen tops
+// stamina just above 0 and you'd sprint forever.
 let winded = false;
 
 /** Per-frame regen toward max (dtMs since last frame). Call from the game loop. */

@@ -1,5 +1,5 @@
 import { EditorTool, EditorShellApi } from '../types';
-import { mkButton } from '../ui';
+import { mkBtn } from '../ui';
 import {
   listSpriteGroupIds,
   loadSpriteGroup,
@@ -478,28 +478,28 @@ class EntityManagerTool implements EditorTool {
     this.toolbarEl = document.createElement('div');
     this.toolbarEl.style.cssText =
       'display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid #2a2438;flex-wrap:wrap;';
-    this.mkBtn(
+    mkBtn(
       '+ New Folder',
       () => this.newFolder(),
       this.toolbarEl,
       false,
       'Create a new folder inside the current location.'
     );
-    this.mkBtn(
+    mkBtn(
       '✎ Rename',
       () => this.renameFolder(),
       this.toolbarEl,
       false,
       'Rename the selected folder (click a folder tile first).'
     );
-    this.mkBtn(
+    mkBtn(
       '🗑 Delete',
       () => this.deleteFolder(),
       this.toolbarEl,
       false,
       'Delete the selected folder; its contents move up to the parent.'
     );
-    this.mkBtn(
+    mkBtn(
       '⚙ Auto-organize',
       () => {
         this.autoOrganize();
@@ -918,7 +918,7 @@ class EntityManagerTool implements EditorTool {
     this.panel.appendChild(this.picker.el);
 
     // Toggle for the large center-panel entity desktop (folders + drag-organize).
-    this.mkBtn(
+    mkBtn(
       '🖥 Open entity desktop (center)',
       () => this.toggleBrowser(),
       this.panel,
@@ -1131,7 +1131,7 @@ class EntityManagerTool implements EditorTool {
     // Direction stepper (preview which facing's box to show).
     const dirRow = document.createElement('div');
     dirRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
-    this.mkBtn(
+    mkBtn(
       '◀',
       () => this.stepDir(-1),
       dirRow,
@@ -1142,13 +1142,7 @@ class EntityManagerTool implements EditorTool {
     dirLbl.dataset.role = 'col-dir';
     dirLbl.style.cssText = 'flex:1;text-align:center;color:#cde;';
     dirRow.appendChild(dirLbl);
-    this.mkBtn(
-      '▶',
-      () => this.stepDir(1),
-      dirRow,
-      false,
-      'Preview the next facing’s collision box.'
-    );
+    mkBtn('▶', () => this.stepDir(1), dirRow, false, 'Preview the next facing’s collision box.');
     this.colSection.appendChild(dirRow);
 
     // Preview canvas (sprite + box overlay; drag to edit when overriding).
@@ -1200,7 +1194,7 @@ class EntityManagerTool implements EditorTool {
 
     const btnRow = document.createElement('div');
     btnRow.style.cssText = 'display:flex;gap:6px;';
-    this.mkBtn(
+    mkBtn(
       'Reset to art (exact)',
       () => {
         this.setCol(this.sprite, null);
@@ -1336,23 +1330,6 @@ class EntityManagerTool implements EditorTool {
     }
     this.setCol(this.sprite, box);
     this.refreshColSection();
-  }
-
-  // --- small DOM helpers ---------------------------------------------------------------
-
-  private mkBtn(
-    label: string,
-    fn: () => void,
-    parent: HTMLElement,
-    accent = false,
-    tip?: string
-  ): HTMLButtonElement {
-    return mkButton(label, fn, {
-      parent,
-      variant: accent ? 'gold' : 'default',
-      tip,
-      pad: '2px 7px',
-    });
   }
 }
 

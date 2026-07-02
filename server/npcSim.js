@@ -42,6 +42,9 @@ const {
   resolveMelee,
 } = require('./npc/combatMath');
 const { createWorld } = require('./npc/world'); // map tiles/sectors/collision/doors/stairs
+const { createProjectiles, PROJ_MUZZLE_RISE } = require('./npc/projectiles'); // ranged shots
+const { createLoot } = require('./npc/loot'); // ground drops + actor carry/use
+const { createGrids } = require('./npc/grids'); // broad-phase spatial buckets
 const { createLoaders } = require('./npc/loaders'); // enemy/entity config + catalog merge
 
 // --- Map constants (mirror src/types.ts) ---
@@ -652,25 +655,6 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     onEnemyHit(target.id, a.damage, n, knock, a.inflict, 'psi', effect);
   }
 
-  // Roll an enemy's loot on death from the merged catalog: money is always
-  // granted; the item drops with probability `drop.rate` (ROM "Item Rarity",
-  // e.g. 1/128). Returns {money, item:{item,itemName}|null} or null if neither.
-  // gameHost decides whether the item is grantable (must be a known good).
-  function rollLoot(sprite) {
-    const e = entityDefs[String(sprite)] || {};
-    const money = (e.money | 0) > 0 ? e.money | 0 : 0;
-    // Drop table: prefer the authored `drops` list; fall back to the catalog's
-    // single `drop`. Every entry rolls independently against its own `rate`.
-    const table = Array.isArray(e.drops) && e.drops.length ? e.drops : e.drop ? [e.drop] : [];
-    const items = [];
-    for (const d of table) {
-      if (!d || !d.item) continue;
-      const rate = typeof d.rate === 'number' ? d.rate : 0;
-      if (Math.random() < rate) items.push({ item: d.item, itemName: d.itemName || '' });
-    }
-    return money || items.length ? { money, items } : null;
-  }
-
   // --- Traffic config (our own content — public/.../car_traffic.json) ---
   // The Traffic Editor writes the WHOLE file to the overrides layer; it wins
   // over the committed default. KEEP IN SYNC with NPCManager.activeVehicles —
@@ -740,220 +724,51 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
   // tick (in-sim actors carry their own `lastVehicleHit`; players don't).
   const vehiclePlayerHitAt = Object.create(null);
 
-  // --- Ground loot drops (first-touch FFA pickup; never despawn) -------------
-  // A drop is a world entity at a fixed spot. The tick finds the first player
-  // within DROP_PICKUP_RADIUS and offers it to the host (onPickupCb), which owns
-  // inventory/cash and decides if the player can take it (bag room for items).
-  // Accepted -> removed + broadcast; refused (bag full) -> stays for next time.
-  const groundDrops = []; // {id, kind, x, y, item?, name?, amount?, fromX?, fromY?, pickableAt?}
-  let nextDropId = 1;
-  const DROP_PICKUP_RADIUS = 18; // px (anchor distance) to claim a drop
-  // Loot ejection: a drop flies out of the corpse at a random angle and lands
-  // EJECT_MIN..EJECT_MAX px away, so it never spawns under the killer's feet (no
-  // instant grab) and reads as a physical pop-out. It's unclaimable until it lands.
-  const EJECT_MIN = 14;
-  const EJECT_MAX = 40;
-  const EJECT_MS = 450; // flight time; pickup is locked until now + EJECT_MS
-  const FALL_PX_PER_MS = 0.18; // speed a wall-landed drop falls to the ground (mirrored: DropManager.ts)
-  // Player-aimed toss: cap how far a player can throw a dropped item from their
-  // own position. Covers ~the visible on-screen area (256x224, player ~centered)
-  // so a forged drop_item can't fling loot across the map. Anti-cheat clamp.
-  const THROW_MAX_DIST = 150;
+  // Broad-phase spatial grids → npc/grids.js (per-tick actor/player buckets +
+  // the coarse ACTIVE_RADIUS player/foe occupancy cells that gate actor AI).
+  // Rebuilt at tick start; queried all over the hot path. Accessor deps: the
+  // actors/enemies arrays are reassigned on override reloads.
+  const {
+    rebuildActorGrid,
+    nearActors,
+    rebuildPlayerGrid,
+    nearPlayers,
+    rebuildActiveCells,
+    anyPlayerNear,
+    rebuildFoeCells,
+    anyFoeNear,
+  } = createGrids({
+    actors: () => actors,
+    enemies: () => enemies,
+    ACTIVE_RADIUS,
+  });
 
-  // Pick a non-solid landing spot a random angle+distance from (ox,oy). Tries a
-  // few angles so loot doesn't settle inside a wall; falls back to the origin.
-  function ejectLanding(ox, oy) {
-    for (let tries = 0; tries < 6; tries++) {
-      const ang = Math.random() * Math.PI * 2;
-      const dist = EJECT_MIN + Math.random() * (EJECT_MAX - EJECT_MIN);
-      const x = ox + Math.cos(ang) * dist;
-      const y = oy + Math.sin(ang) * dist;
-      if (!blocked(x - 4, y - 4, 8, 8)) return { x, y };
-    }
-    return { x: ox, y: oy };
-  }
-
-  // A player tossed an item toward (tx,ty). Clamp only the DISTANCE to
-  // THROW_MAX_DIST of the player (anti-cheat: can't fling loot across the map) —
-  // otherwise the item lands exactly where aimed, walls included. If that spot is
-  // solid, spawnDrop's settleLanding slides it down to the nearest reachable tile,
-  // so a throw at a building just drops the loot at its base instead of being
-  // refused.
-  function throwLanding(px, py, tx, ty) {
-    let dx = tx - px;
-    let dy = ty - py;
-    const dist = hyp(dx, dy);
-    if (dist > THROW_MAX_DIST) {
-      const k = THROW_MAX_DIST / dist;
-      dx *= k;
-      dy *= k;
-    }
-    return { x: px + dx, y: py + dy };
-  }
-
-  // An item is allowed to land anywhere the player/corpse aimed — walls included.
-  // If that spot is solid (building, furniture, map edge), it FALLS straight DOWN
-  // until it reaches the first reachable tile, so loot never comes to rest where no
-  // one can grab it and the drop reads as physically falling to the ground. Returns
-  // the resting spot; the caller diffs Y against the contact spot to drive the fall
-  // animation. Tests the same 8x8 foot box the landing pickers use. Caps the slide
-  // so a deep wall just keeps the contact spot.
-  const SETTLE_STEP = MINITILE; // px per downward probe
-  const SETTLE_MAX = 256; // px to search down before giving up
-  function settleLanding(x, y) {
-    if (!blocked(x - 4, y - 4, 8, 8)) return { x, y };
-    for (let dy = SETTLE_STEP; dy <= SETTLE_MAX; dy += SETTLE_STEP) {
-      if (!blocked(x - 4, y + dy - 4, 8, 8)) return { x, y: y + dy };
-    }
-    return { x, y };
-  }
-
-  // Wire shape for a drop. Items carry their id (client renders the held sprite);
-  // money carries an amount (client renders a coin). While a freshly ejected drop
-  // is still in flight we include its origin + flight time so the client animates
-  // the arc; once landed those are omitted (a late joiner just sees it at rest).
-  function dropWire(d) {
-    const base =
-      d.kind === 'money'
-        ? {
-            id: d.id,
-            kind: 'money',
-            x: d.x,
-            y: d.y,
-            amount: d.amount | 0,
-            // Death cash renders as the c001 "cash" item art; absent → coin glyph.
-            ...(d.sprite ? { sprite: d.sprite } : {}),
-          }
-        : { id: d.id, kind: 'item', x: d.x, y: d.y, item: d.item, name: d.name || '' };
-    const animating = d.pickableAt && Date.now() < d.pickableAt;
-    if (d.fromX != null && animating) {
-      base.fromX = d.fromX;
-      base.fromY = d.fromY;
-      base.ejectMs = EJECT_MS;
-    }
-    // Wall landing: tell the client the contact height so it animates the fall
-    // (arc/snap to fallFromY, then drop straight down to the resting y).
-    if (d.fallFromY != null && animating) base.fallFromY = d.fallFromY;
-    return base;
-  }
-
-  // Spawn a drop. `landX/landY` is where it comes to rest; pass `origin` (the
-  // corpse spot) to make it eject — it arcs out from there and can't be claimed
-  // until it lands (now + EJECT_MS). `data` = {item,name} or {amount}.
-  function spawnDrop(kind, landX, landY, data, origin) {
-    // Land where aimed; if that's a wall, settleLanding gives the spot it falls to.
-    const settled = settleLanding(landX, landY);
-    const restY = Math.round(settled.y);
-    const contactY = Math.round(landY);
-    const fell = restY > contactY; // it landed on a wall and dropped down
-    const fallMs = fell ? (restY - contactY) / FALL_PX_PER_MS : 0;
-    const d = { id: `d${nextDropId++}`, kind, x: Math.round(settled.x), y: restY, ...data };
-    if (fell) d.fallFromY = contactY; // first-contact height the client falls from
-    if (origin) {
-      d.fromX = Math.round(origin.x);
-      d.fromY = Math.round(origin.y);
-      d.pickableAt = Date.now() + EJECT_MS + fallMs; // locked through the arc AND the fall
-    } else if (fell) {
-      d.pickableAt = Date.now() + fallMs; // no eject, but still unclaimable mid-fall
-    }
-    groundDrops.push(d);
-    if (broadcastCb) broadcastCb({ type: 'drop_spawn', drop: dropWire(d) });
-    return d;
-  }
-
-  // --- Actor loot carrying ---------------------------------------------------
-  // Enemies and townsfolk grab item drops they walk over (first-touch, same as
-  // players) and hold up to ACTOR_CARRY_CAP. On death they eject their whole
-  // haul back onto the ground, so a hoarder you kill gives the loot back. Carry
-  // is purely positional — actors don't path toward loot, they just pick up
-  // what lands near them. Vehicles/cars never carry (special behaviour).
-  const ACTOR_CARRY_CAP = 2; // max ground items an enemy/townsperson holds at once
-  function canCarry(n) {
-    return !n.dead && (n.isEnemy || n.kind === 'person');
-  }
-
-  // Offer each unclaimed item drop to the first eligible actor within reach.
-  // Runs AFTER the player pickup pass each tick, so players win contested drops.
-  function pickupByActors(now) {
-    if (!groundDrops.length) return;
-    for (let i = groundDrops.length - 1; i >= 0; i--) {
-      const d = groundDrops[i];
-      if (d.kind !== 'item') continue; // actors grab items, not money
-      if (d.pickableAt && now < d.pickableAt) continue; // still mid-flight
-      const a = actors.find(
-        (n) =>
-          canCarry(n) &&
-          n.carried.length < ACTOR_CARRY_CAP &&
-          Math.abs(n.x - d.x) <= DROP_PICKUP_RADIUS &&
-          Math.abs(n.y - d.y) <= DROP_PICKUP_RADIUS
-      );
-      if (a) {
-        a.carried.push({ item: d.item, name: d.name || '' });
-        groundDrops.splice(i, 1);
-        if (broadcastCb) broadcastCb({ type: 'drop_remove', id: d.id });
-      }
-    }
-  }
-
-  // Eject everything an actor was holding — both its loose carry AND anything a
-  // townsperson equipped off the ground — onto the ground at its death spot
-  // (independent of its own drop table), then reset so a respawn comes back
-  // clean. Applies to ANY death — killed by a player, an NPC, or poison.
-  function ejectCarried(actor) {
-    const haul = [...(actor.carried || []), ...(actor.equipped || [])];
-    for (const c of haul) {
-      const land = ejectLanding(actor.x, actor.y);
-      spawnDrop(
-        'item',
-        land.x,
-        land.y,
-        { item: c.item, name: c.name || '' },
-        { x: actor.x, y: actor.y }
-      );
-    }
-    actor.carried = [];
-    actor.equipped = [];
-    actor.weaponBonus = 0;
-    actor.armorBonus = 0;
-    if (actor.itemId !== null) {
-      actor.itemId = null;
-      actor.equipDirty = true; // broadcast the cleared held item (so a respawn shows unarmed)
-    }
-  }
-
-  // A townsperson USES the loot it's carrying (enemies never call this — see the
-  // tickNpc caller). One action per call: heal first if hurt, otherwise equip a
-  // weapon (more swing damage + held sprite) or armor (damage soak). Healing is
-  // consumed; gear moves carried -> equipped (still drops on death). No-op when
-  // there's no catalog (GOODS empty) — the actor just keeps hoarding.
-  function npcUseCarried(n) {
-    if (!n.carried.length) return;
-    // 1) Heal when actually hurt and holding a heal item.
-    if (n.hp < n.maxHp) {
-      const i = n.carried.findIndex((c) => (goodFor(c.item)?.heal | 0) > 0);
-      if (i >= 0) {
-        n.hp = Math.min(n.maxHp, n.hp + goodFor(n.carried[i].item).heal);
-        n.hpDirty = true;
-        n.carried.splice(i, 1); // consumed
-        return; // one action per call
-      }
-    }
-    // 2) Otherwise equip a weapon or armor we can put to use.
-    const ei = n.carried.findIndex((c) => goodFor(c.item)?.equip);
-    if (ei < 0) return;
-    const c = n.carried[ei];
-    const eq = goodFor(c.item).equip;
-    if (eq.slot === 'weapon') {
-      if ((eq.offense | 0) <= n.weaponBonus) return; // only ever swap UP to a better weapon
-      n.weaponBonus = eq.offense | 0;
-      n.itemId = String(c.item); // held weapon sprite
-      n.equipDirty = true; // broadcast the held-item change (npc_equip)
-    } else {
-      n.armorBonus += eq.defense | 0; // body/arms/other stack as flat damage soak
-    }
-    n.equipped.push(c);
-    n.carried.splice(ei, 1);
-  }
+  // Ground-loot subsystem → npc/loot.js: death drops (rollLoot), the ground-
+  // drop list + eject/throw/settle landing physics, first-touch pickup (players
+  // first, then carry-capped actors), and townsfolk item use. Deps are ACCESSORS
+  // where the binding changes later: actors/entityDefs are reassigned on
+  // override reloads, and onPickupCb/broadcastCb are wired in start().
+  const loot = createLoot({
+    consts: { MINITILE },
+    blocked,
+    goodFor,
+    entityDefs: () => entityDefs,
+    actors: () => actors,
+    nearPlayers,
+    onPickup: () => onPickupCb,
+    broadcast: (m) => broadcastCb && broadcastCb(m),
+  });
+  const {
+    rollLoot,
+    ejectLanding,
+    throwLanding,
+    spawnDrop,
+    dropWire,
+    pickupByPlayers,
+    pickupByActors,
+    ejectCarried,
+    npcUseCarried,
+  } = loot;
 
   function readOverrides() {
     try {
@@ -2250,132 +2065,6 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     return true;
   }
 
-  // --- Broad-phase actor grid: kill the O(N^2) per-tick scans -----------------
-  // Several hot functions (unstack, separation, enemy targeting, vehicle shove)
-  // used to scan ALL ~1364 actors for EACH near actor EVERY tick — millions of
-  // iterations/sec → 150-230ms event-loop stalls with just 2 players. Instead we
-  // bucket the live actors into a coarse grid ONCE per tick (rebuildActorGrid)
-  // and query only the local cells (nearActors), turning O(near × allActors) into
-  // O(near × localActors). The grid is over-inclusive at cell granularity, so
-  // callers keep their exact box/distance test — same results, a fraction of the
-  // work. Built from tick-start positions (actors move ≤ a few px/tick, well
-  // under the cell margin), so broad-phase never misses a real neighbour.
-  const GRID_CELL = 64;
-  const actorGrid = new Map(); // "cx,cy" -> actor[]
-  function rebuildActorGrid() {
-    actorGrid.clear();
-    for (const o of actors) {
-      if (o.dead || o.kind === 'deleted') continue;
-      const key = Math.floor(o.x / GRID_CELL) + ',' + Math.floor(o.y / GRID_CELL);
-      let arr = actorGrid.get(key);
-      if (!arr) actorGrid.set(key, (arr = []));
-      arr.push(o);
-    }
-  }
-  function* nearActors(x, y, radius) {
-    const r = Math.max(1, Math.ceil(radius / GRID_CELL));
-    const cx = Math.floor(x / GRID_CELL);
-    const cy = Math.floor(y / GRID_CELL);
-    for (let dx = -r; dx <= r; dx++) {
-      for (let dy = -r; dy <= r; dy++) {
-        const arr = actorGrid.get(cx + dx + ',' + (cy + dy));
-        if (arr) for (const o of arr) yield o;
-      }
-    }
-  }
-
-  // Player broad-phase grid — same scheme as actorGrid, rebuilt once per tick from
-  // the live players list (rebuildPlayerGrid, called right after rebuildActorGrid).
-  // Lets NPC-vs-player collision (hitsPlayer) and player targeting (nearestFoeTo)
-  // query only LOCAL players instead of scanning the whole roster every tick — the
-  // O(movers × allPlayers) scan that stalled the sim once a bot fleet pushed the
-  // player count into the hundreds/thousands. Editors are excluded at build time
-  // (non-solid avatars), so the per-query editor check is no longer needed.
-  const playerGrid = new Map(); // "cx,cy" -> player[]
-  function rebuildPlayerGrid(players) {
-    playerGrid.clear();
-    for (const p of players) {
-      if (p.editor) continue; // editor avatar is non-solid — actors walk through it
-      const key = Math.floor(p.x / GRID_CELL) + ',' + Math.floor(p.y / GRID_CELL);
-      let arr = playerGrid.get(key);
-      if (!arr) playerGrid.set(key, (arr = []));
-      arr.push(p);
-    }
-  }
-  function* nearPlayers(x, y, radius) {
-    const r = Math.max(1, Math.ceil(radius / GRID_CELL));
-    const cx = Math.floor(x / GRID_CELL);
-    const cy = Math.floor(y / GRID_CELL);
-    for (let dx = -r; dx <= r; dx++) {
-      for (let dy = -r; dy <= r; dy++) {
-        const arr = playerGrid.get(cx + dx + ',' + (cy + dy));
-        if (arr) for (const p of arr) yield p;
-      }
-    }
-  }
-  // Coarse player-occupancy grid for the ACTIVE_RADIUS "is any player near this
-  // actor?" test (gates per-actor AI + the resync re-flag). The old test scanned
-  // ALL players per actor — O(actors × players), which at 1000 players is ~1.4M
-  // checks/tick and dominates the `ai` phase. A fine 64px grid would instead scan
-  // ~289 cells/actor at radius 512 (string-key Map lookups, also too many). This
-  // grid uses ACTIVE_RADIUS-sized cells: an actor is "near" if its own cell or any
-  // of the 8 neighbours holds a player — O(1) per actor (9 lookups), O(players) to
-  // build. Over-inclusive by up to ~one cell (an actor up to ~2×ACTIVE_RADIUS out
-  // may wake early), which only adds a little cheap wander AI and never false
-  // combat (foe ranges are « ACTIVE_RADIUS). When players blanket the map (the
-  // heavy case) the awake set is identical to the old exact test — just O(1) to find.
-  const ACTIVE_CELL = ACTIVE_RADIUS;
-  const activeCells = new Set();
-  function rebuildActiveCells(players) {
-    activeCells.clear();
-    for (const p of players) {
-      if (p.editor) continue;
-      activeCells.add(Math.floor(p.x / ACTIVE_CELL) + ',' + Math.floor(p.y / ACTIVE_CELL));
-    }
-  }
-  function anyPlayerNear(x, y) {
-    const cx = Math.floor(x / ACTIVE_CELL);
-    const cy = Math.floor(y / ACTIVE_CELL);
-    for (let dx = -1; dx <= 1; dx++) {
-      for (let dy = -1; dy <= 1; dy++) {
-        if (activeCells.has(cx + dx + ',' + (cy + dy))) return true;
-      }
-    }
-    return false;
-  }
-
-  // Coarse FOE-occupancy grid: which ACTIVE_CELL cells hold a living enemy or a PK
-  // player. Townsfolk defend on sight via nearestFoeTo (a grid scan + line-of-sight
-  // raycasts) EVERY turn — but enemies are few and clustered, so the vast majority
-  // of the ~1376 actors have no foe within range and that whole scan is wasted. This
-  // gates it: an actor only runs nearestFoeTo if a foe is in its 3×3 coarse
-  // neighbourhood (a superset of detectRange, so a real foe is never missed). At
-  // 1000 dispersed players this is the single biggest `ai` cut.
-  const foeCells = new Set();
-  function rebuildFoeCells(players) {
-    foeCells.clear();
-    for (const e of enemies) {
-      if (e.dead || e.hp <= 0) continue;
-      foeCells.add(Math.floor(e.x / ACTIVE_CELL) + ',' + Math.floor(e.y / ACTIVE_CELL));
-    }
-    for (const p of players) {
-      if (p.editor || p.pk !== true) continue;
-      if (p.hp !== undefined && p.hp <= 0) continue;
-      foeCells.add(Math.floor(p.x / ACTIVE_CELL) + ',' + Math.floor(p.y / ACTIVE_CELL));
-    }
-  }
-  function anyFoeNear(x, y) {
-    if (foeCells.size === 0) return false;
-    const cx = Math.floor(x / ACTIVE_CELL);
-    const cy = Math.floor(y / ACTIVE_CELL);
-    for (let dx = -1; dx <= 1; dx++) {
-      for (let dy = -1; dy <= 1; dy++) {
-        if (foeCells.has(cx + dx + ',' + (cy + dy))) return true;
-      }
-    }
-    return false;
-  }
-
   // Broad-phase query radius for the box collision predicates (hitsActor /
   // hitsPlayer / playerBlocked). Covers the largest actor box — a car, ~40×28
   // anchored at its centre — plus a small mover, so the coarse grid is
@@ -3523,23 +3212,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     return true; // swing fired (passed cooldown) — caller charges stamina
   }
 
-  // --- Ranged-weapon projectiles -----------------------------------------
-  // A ranged weapon (handleAttack with range > 0) launches a projectile that
-  // marches forward a few px each tick. It damages the first target its small
-  // hitbox overlaps — or EVERY new target, if the weapon pierces — through the
-  // same resolveMelee / applyDamage path a melee swing uses, then is spent (or
-  // flies on, piercing) until it hits a wall or reaches its max range.
-  // Server-authoritative: clients only render the shot from the `projectile`
-  // broadcast and clear it on `proj_end`. See src/engine/Projectiles.ts.
-  const PROJ_HALF = 5; // shot hitbox half-size (px)
-  const PROJ_DEFAULT_SPEED = 6; // px/tick when a weapon authors no projSpeed
-  const PROJ_KNOCK_BEHIND = 20; // knockback source sits this far behind the shot
-  const PROJ_MUZZLE_RISE = 10; // shot flies at chest height (feet - this); see the muzzle in handleAttack
   const PSI_CONE_SPEED = 4; // px/tick for a directional-PSI cone pellet (slow, readable fire)
   const PSI_BOLT_SPEED = 10; // px/tick a Thunder bolt falls (fast — lightning, minimal drift)
   const PSI_BOLT_DROP = 140; // px above the target a Thunder bolt spawns (matches client FX)
-  let projectiles = [];
-  let projSeq = 0;
 
   // Same shape as handleAttack's inline combat events; factored out so the
   // projectile path and (future callers) emit hit/miss/crit identically.
@@ -3557,202 +3232,26 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
     broadcastCb(m);
   }
 
-  function spawnProjectile(o) {
-    const len = hyp(o.vx, o.vy) || 1;
-    const p = {
-      id: ++projSeq,
-      x: o.x,
-      y: o.y,
-      vx: o.vx / len, // unit direction
-      vy: o.vy / len,
-      speed: o.speed > 0 ? o.speed : PROJ_DEFAULT_SPEED,
-      traveled: 0,
-      maxDist: o.maxDist,
-      base: o.base,
-      critChance: o.critChance,
-      attacker: o.attacker,
-      attackerId: o.attackerId,
-      attackerMass: o.attackerMass,
-      inflict: o.inflict,
-      pierce: !!o.pierce,
-      // Flat damage (no dodge/crit roll), e.g. a PSI cone — matches the old instant
-      // psiStrikeLine which applied `dmg` directly.
-      flat: !!o.flat,
-      // Hit-tracking sets. A fan of pellets (a PSI cone) shares ONE set so the whole
-      // cast damages each target once, no matter how many pellets overlap it.
-      hit: o.sharedHit || new Set(), // actors already damaged (piercing never double-hits)
-      hitPlayers: o.sharedHitPlayers || new Set(),
-    };
-    projectiles.push(p);
-    if (broadcastCb)
-      broadcastCb({
-        type: 'projectile',
-        id: p.id,
-        byPlayer: p.attackerId,
-        x: Math.round(p.x),
-        y: Math.round(p.y),
-        vx: p.vx,
-        vy: p.vy,
-        speed: p.speed,
-        dist: p.maxDist,
-        sprite: o.sprite || null,
-        pierce: p.pierce,
-      });
-    return p;
-  }
-
-  function endProjectile(p, hit) {
-    if (broadcastCb)
-      broadcastCb({
-        type: 'proj_end',
-        id: p.id,
-        x: Math.round(p.x),
-        y: Math.round(p.y),
-        hit: !!hit,
-      });
-  }
-
-  // Resolve overlaps at the shot's current position. Damages each NEW target
-  // (tracked per-shot, so a piercing shot never hits the same body twice) using
-  // the swing resolution. Returns true if a NON-piercing shot connected and
-  // should now be consumed.
-  function projectileHits(p, players, now) {
-    const bx = p.x - PROJ_HALF;
-    const by = p.y - PROJ_HALF;
-    const bw = PROJ_HALF * 2;
-    const bh = PROJ_HALF * 2;
-    // Knock targets along the shot's travel direction: place the knockback source
-    // just BEHIND the projectile (pushActor / knockbackPlayerSpot shove away from it).
-    const kx = p.x - p.vx * PROJ_KNOCK_BEHIND;
-    const ky = p.y - p.vy * PROJ_KNOCK_BEHIND;
-    for (const n of enemies) {
-      if (n.dead || p.hit.has(n)) continue;
-      if (!canHurt(p.attacker, n)) continue;
-      if (!aabb(bx, by, bw, bh, n.x - HURT_W / 2, n.y + HURT_OY, HURT_W, HURT_H)) continue;
-      p.hit.add(n);
-      const res = resolveMelee(p.critChance, p.flat ? 0 : n.dodge || 0, p.base, rng);
-      if (res.miss) {
-        emitCombat('miss', n.x, n.y, p.attackerId, null);
-        if (!p.pierce) return true;
-        continue;
-      }
-      applyDamage(n, res.dmg, now, p.attackerId, {
-        x: kx,
-        y: ky,
-        amass: p.attackerMass,
-        inflict: p.inflict,
-      });
-      emitCombat('hit', p.x, p.y, p.attackerId, null, res.dmg);
-      if (res.crit) emitCombat('crit', n.x, n.y, p.attackerId, null);
-      if (!p.pierce) return true;
-    }
-    // Vehicles (traffic cars + Entity Manager vehicles): no dodge, no status proc.
-    for (const n of vehicles) {
-      if (n.dead || n.hp <= 0 || p.hit.has(n)) continue;
-      if (!canHurt(p.attacker, n)) continue;
-      const [vbx, vby, vbw, vbh] = actorBox(n, n.x, n.y);
-      if (!aabb(bx, by, bw, bh, vbx, vby, vbw, vbh)) continue;
-      p.hit.add(n);
-      const res = resolveMelee(p.critChance, 0, p.base, rng);
-      if (res.miss) {
-        emitCombat('miss', n.x, n.y, p.attackerId, null);
-        if (!p.pierce) return true;
-        continue;
-      }
-      applyDamage(n, res.dmg, now, p.attackerId, { x: kx, y: ky, inflict: [] });
-      emitCombat('hit', p.x, p.y, p.attackerId, null, res.dmg);
-      if (res.crit) emitCombat('crit', n.x, n.y, p.attackerId, null);
-      if (!p.pierce) return true;
-    }
-    // PvP: a shot lands on other players the PK rules allow (host owns their HP).
-    if (getPlayersCb && onPlayerHitCb) {
-      for (const t of players) {
-        if (t.id === p.attackerId || t.editor) continue;
-        if (t.hp !== undefined && t.hp <= 0) continue;
-        if (p.hitPlayers.has(t.id)) continue;
-        if (!canHurt(p.attacker, { isEnemy: false, pk: t.pk })) continue;
-        if (!aabb(bx, by, bw, bh, t.x - HURT_W / 2, t.y + HURT_OY, HURT_W, HURT_H)) continue;
-        p.hitPlayers.add(t.id);
-        const res = resolveMelee(p.critChance, p.flat ? 0 : t.dodge || 0, p.base, rng);
-        if (res.miss) {
-          emitCombat('miss', t.x, t.y, p.attackerId, t.id);
-          if (!p.pierce) return true;
-          continue;
-        }
-        onPlayerHitCb(
-          t.id,
-          res.dmg,
-          p.attackerId,
-          knockbackPlayerSpot(t.x, t.y, kx, ky, res.dmg, {
-            amass: p.attackerMass,
-            vmass: massOf(t),
-          }),
-          p.inflict
-        );
-        emitCombat('hit', p.x, p.y, p.attackerId, t.id, res.dmg);
-        if (res.crit) emitCombat('crit', t.x, t.y, p.attackerId, t.id);
-        if (!p.pierce) return true;
-      }
-    }
-    return false;
-  }
-
-  // True if the shot at (x,y) is inside a solid collision tile. The shot flies at
-  // chest height, but WALLS are solid on the ground plane — so we test the SAME
-  // foot-line band a walking body collides against (blocked / COL_*), shifting the
-  // sample down by the muzzle rise. A small box (PROJ_HALF wide, COL_H tall) means
-  // even a one-minitile-thick wall stops the bullet. This is why a shot collides
-  // with exactly the walls a player can't walk through. (wallBetween samples at
-  // foot height too, but offset for actor-to-actor LoS — wrong for a chest-high shot.)
-  function projBlocked(x, y) {
-    const footY = y + PROJ_MUZZLE_RISE;
-    return blocked(x - PROJ_HALF, footY - COL_H, PROJ_HALF * 2, COL_H);
-  }
-
-  // Advance every projectile one tick. Each marches forward in sub-steps no larger
-  // than its hitbox, so a fast shot can't tunnel past a thin target or wall between
-  // ticks; it ends on a wall, on its first hit (unless piercing), or at max range.
-  function stepProjectiles(now) {
-    if (!projectiles.length) return;
-    const players = getPlayersCb ? getPlayersCb() : [];
-    for (let i = projectiles.length - 1; i >= 0; i--) {
-      const p = projectiles[i];
-      const steps = Math.max(1, Math.ceil(p.speed / PROJ_HALF));
-      const sx = (p.vx * p.speed) / steps;
-      const sy = (p.vy * p.speed) / steps;
-      const stepLen = hyp(sx, sy);
-      let done = false;
-      let connected = false;
-      for (let s = 0; s < steps; s++) {
-        const px0 = p.x;
-        const py0 = p.y;
-        p.x += sx;
-        p.y += sy;
-        p.traveled += stepLen;
-        if (projBlocked(p.x, p.y)) {
-          // Stop at the first solid collision tile; back out to the last clear spot
-          // so the impact spark lands on the wall face, not buried inside it.
-          p.x = px0;
-          p.y = py0;
-          done = true;
-          break;
-        }
-        if (projectileHits(p, players, now)) {
-          connected = true;
-          done = true; // non-piercing shot spent on its first target
-          break;
-        }
-        if (p.traveled >= p.maxDist) {
-          done = true; // flew its full range without connecting
-          break;
-        }
-      }
-      if (done) {
-        endProjectile(p, connected);
-        projectiles.splice(i, 1);
-      }
-    }
-  }
+  // Ranged-shot subsystem → npc/projectiles.js (spawn + per-tick advance for
+  // weapon bullets and traveling PSI cones/bolts). Deps are ACCESSORS where the
+  // underlying binding changes after this point: enemies/vehicles are reassigned
+  // on override reloads, and the host callbacks (broadcast/PvP) arrive in start().
+  const { spawnProjectile, stepProjectiles } = createProjectiles({
+    rng,
+    consts: { COL_H, HURT_W, HURT_H, HURT_OY },
+    blocked,
+    actorBox,
+    massOf,
+    applyDamage,
+    knockbackPlayerSpot,
+    emitCombat,
+    broadcast: (m) => broadcastCb && broadcastCb(m),
+    enemies: () => enemies,
+    vehicles: () => vehicles,
+    players: () => (getPlayersCb ? getPlayersCb() : []),
+    onPlayerHit: (...a) => onPlayerHitCb(...a),
+    pvpReady: () => !!(getPlayersCb && onPlayerHitCb),
+  });
 
   let tickInterval = null;
   let sendInterval = null;
@@ -3961,34 +3460,9 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         // Fly + resolve ranged-weapon shots after actors have moved this tick, so
         // a projectile collides against fresh enemy/player positions.
         stepProjectiles(now);
-        // Ground-drop pickup: first player within reach claims each drop. The
-        // host owns inventory/cash and decides if it can be taken (bag room);
-        // accepted -> remove + broadcast, refused (bag full) -> leave it.
-        if (groundDrops.length && onPickupCb) {
-          for (let i = groundDrops.length - 1; i >= 0; i--) {
-            const d = groundDrops[i];
-            if (d.pickableAt && now < d.pickableAt) continue; // still mid-flight
-            // Grid-local scan (was players.find over ALL players — O(drops × players),
-            // and a death cash-fountain spawns many drops at once).
-            let p = null;
-            for (const q of nearPlayers(d.x, d.y, DROP_PICKUP_RADIUS)) {
-              if (
-                !q.editor &&
-                !(q.hp !== undefined && q.hp <= 0) &&
-                Math.abs(q.x - d.x) <= DROP_PICKUP_RADIUS &&
-                Math.abs(q.y - d.y) <= DROP_PICKUP_RADIUS
-              ) {
-                p = q;
-                break;
-              }
-            }
-            if (p && onPickupCb(p.id, dropWire(d))) {
-              groundDrops.splice(i, 1);
-              broadcast({ type: 'drop_remove', id: d.id });
-            }
-          }
-        }
-        // Then enemies/townsfolk grab what players left behind (carry-capped).
+        // Ground-drop pickup: players claim first (host owns inventory/cash),
+        // then enemies/townsfolk grab what players left behind (carry-capped).
+        pickupByPlayers(now);
         pickupByActors(now);
         prof.lap('post');
         prof.setContext(players.length, actors.length, 1000 / (_tickEma || NOMINAL_TICK_MS));
@@ -4142,7 +3616,10 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
         else if ((n.kind === 'person' || n.kind === 'car') && n.hp < n.maxHp)
           npcHps.push([n.id, n.hp, n.maxHp]);
       }
-      const drops = groundDrops.filter((d) => inRange(d.x, d.y)).map(dropWire);
+      const drops = loot
+        .drops()
+        .filter((d) => inRange(d.x, d.y))
+        .map(dropWire);
       return { npcs, npcHps, npcEquips, drops };
     },
 
@@ -4255,7 +3732,7 @@ function createNpcSim(assetsDir, rngFn = Math.random) {
 
     /** Every live ground drop (wire shape), for a newly joining client. */
     dropsSnapshot() {
-      return groundDrops.map(dropWire);
+      return loot.drops().map(dropWire);
     },
 
     /** Spawn a money ground drop (Phase F: player death drops on-hand cash). */

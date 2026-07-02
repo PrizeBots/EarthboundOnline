@@ -206,10 +206,16 @@ real players join:
 
 ## Dev Tooling & Quality Gates
 
+- [~] **npcSim.js split (Phase 2 modularization)** — DONE: `npc/projectiles.js`,
+  `npc/loot.js`, `npc/grids.js` extracted (2026-07-01; pattern: factory +
+  accessor deps, see ARCHITECTURE.md "npcSim module layout"), joining
+  `combatMath`/`world`/`loaders`. REMAINING: `npc/vehicles.js` (loadCarCfg/
+  buildCarPool/tickCar/plow/reviveCars — entangled with pool build +
+  pushActor) and the wander/combat AI cluster (tickNpc/tickEnemy/steering).
 - [ ] **Drop `--no-stash` from `.husky/pre-commit`** once git is upgraded. Current git is 2.31.1 (2021); its lint-staged backup-stash is broken ("Needed a single revision"), so the hook runs `lint-staged --no-stash`. After upgrading to git ≥2.35 (run `winget install --id Git.Git -e` in a normal terminal, NOT inside Claude Code — the installer needs admin + to close Git Bash), remove `--no-stash` to regain the auto-backup safety net.
 - [ ] Add Zod schemas for the other hand-edited overrides (doors, collision, npcs, dialogue, item_sprites…) — only `enemy_spawns.json` is validated so far
 - [ ] `idb`/Dexie for IndexedDB asset caching — feature-driven; pick up when the client-side ROM-extraction Web Worker starts (see Pre-Launch section)
-- [ ] **Reuse UI components across the codebase — don't re-implement.** Standing rule: before building a panel/widget, check for an existing one. Known duplication to consolidate: **floating draggable/resizable windows** — `src/editor/FloatingPanel.ts` (new, viewport-`fixed`, exported/decoupled) vs the Sprite Editor's private `makeFloating` (`src/engine/spriteEditor/dom.ts`, `absolute` within `S.overlay`, own layout store). Migrate `makeFloating` onto `FloatingPanel` so there's ONE implementation. Also audit other repeated widgets (FolderDesktop galleries, `createSpritePicker`, mkBtn/mkRow helpers duplicated per tool) and hoist shared ones.
+- [ ] **Reuse UI components across the codebase — don't re-implement.** Standing rule: before building a panel/widget, check for an existing one. DONE so far: **floating draggable/resizable windows** — the Sprite Editor's private `makeFloating` was migrated onto `src/editor/FloatingPanel.ts` (grew `container`/`autoSize` opts; old layouts auto-migrate to the `eb.floatpanel.spriteEditor.*` keys); the common per-tool `mkBtn` wrapper is hoisted to `mkBtn` in `src/editor/ui.ts` (Sound/Placement/EntityManager/GiftManager migrated — the rest genuinely differ in pad/variant); direction unit vectors live in `src/engine/directions.ts` (server mirror: `npcSim.js` `DIR_VEC`). Still to audit: FolderDesktop galleries, `createSpritePicker`, the remaining per-tool mkBtn/mkRow variants, and the leftover `DIR_VEC` copies (`NPCManager.ts`, `EventManagerTool.ts`).
 
 ## Backlog: Hardware Track (out of scope for now)
 

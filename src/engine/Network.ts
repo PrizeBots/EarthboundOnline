@@ -702,267 +702,283 @@ function openSocket() {
       handleBinaryFrame(ev.data as ArrayBuffer);
       return;
     }
-    const msg = JSON.parse(ev.data);
-    switch (msg.type) {
-      case 'pong':
-        recordPong(msg.t, msg.srv, msg.srvHz, msg.srvJit);
-        break;
-      case 'bot_stats':
-        // Dev-only bot-fleet readout for the ?netdebug BOTS tab (getBotStats()).
-        latestBotStats = {
-          count: msg.count | 0,
-          behavior: String(msg.behavior || 'wander'),
-          players: msg.players | 0,
-          egressMbPerSec: +msg.egressMbPerSec || 0,
-          maxBots: msg.maxBots | 0,
-        };
-        break;
-      case 'rtc_answer':
-      case 'rtc_ice':
-        void onRtcSignal(msg);
-        break;
-      case 'welcome':
-        callbacks?.onWelcome(msg.playerId, msg.players);
-        if (msg.npcs) callbacks?.onNpcUpdate(msg.npcs);
-        if (msg.npcHps) callbacks?.onNpcHp(msg.npcHps);
-        if (msg.npcEquips) callbacks?.onNpcEquip?.(msg.npcEquips);
-        if (msg.inventory) callbacks?.onInventory(msg.inventory);
-        if (typeof msg.money === 'number') callbacks?.onMoney(msg.money);
-        if (typeof msg.bank === 'number') callbacks?.onBank?.(msg.bank);
-        // Signed-in characters restore saved stats + gear right away (reusing the
-        // live progression/equip handlers). Anonymous joins omit these.
-        if (msg.stats) callbacks?.onPlayerStats(msg.playerId, msg.stats, false, 0);
-        if (msg.equipped)
-          callbacks?.onEquipped(msg.equipped, msg.attackSpeed, msg.weaponRange ?? 0);
-        // Restore the saved quick-select hotbar (incl. an assigned PSI, which —
-        // unlike the weapon — can't be re-derived from the equip set). After
-        // onEquipped so the saved layout wins over the weapon auto-placement.
-        if (Array.isArray(msg.hotbar)) callbacks?.onHotbar?.(msg.hotbar);
-        // EB naming flavor — names the "PSI ????" special (anonymous joins omit it).
-        if (typeof msg.favoriteThing === 'string') callbacks?.onFavoriteThing?.(msg.favoriteThing);
-        // Account role — dev/admin unlock the whole PSI menu for testing.
-        if (typeof msg.role === 'string') callbacks?.onRole?.(msg.role);
-        // Restore saved player flags (empty for anonymous joins).
-        callbacks?.onFlags?.(Array.isArray(msg.flags) ? msg.flags : []);
-        // Restore PK state + remaining lock (a player who logged out PK stays PK).
-        callbacks?.onPlayerPk?.(msg.playerId, !!msg.pk, msg.lockMs ?? 0);
-        if (Array.isArray(msg.drops)) callbacks?.onDrops?.(msg.drops);
-        break;
-      case 'join_error':
-        console.error('Join rejected:', msg.error);
-        break;
-      case 'points_update':
-        callbacks?.onPoints?.(msg.points ?? 0, msg.alloc ?? {});
-        break;
-      case 'inventory':
-        callbacks?.onInventory(msg.items ?? []);
-        break;
-      case 'money':
-        // Server sends { type:'money', money } (same field as welcome) — NOT
-        // `amount`. Reading the wrong field zeroed the balance on every buy/sell.
-        callbacks?.onMoney(typeof msg.money === 'number' ? msg.money : 0);
-        break;
-      case 'npc_update':
-        callbacks?.onNpcUpdate(msg.npcs, frameClientTime(msg.ts));
-        break;
-      case 'npc_leave':
-        if (Array.isArray(msg.ids)) callbacks?.onNpcLeave?.(msg.ids);
-        break;
-      case 'npc_status':
-        if (msg.statuses) callbacks?.onNpcStatus?.(msg.statuses);
-        break;
-      case 'npc_equip':
-        if (msg.equips) callbacks?.onNpcEquip?.(msg.equips);
-        break;
-      case 'npc_hp':
-        callbacks?.onNpcHp(msg.hps);
-        break;
-      case 'npc_death':
-        callbacks?.onNpcDeath?.(msg.id, msg.dx ?? 0, msg.dy ?? 0, msg.force ?? 0);
-        break;
-      case 'player_join':
-        callbacks?.onPlayerJoin(msg.player);
-        break;
-      case 'player_move':
-        callbacks?.onPlayerMove(
-          msg.id,
-          msg.x,
-          msg.y,
-          msg.direction,
-          msg.frame,
-          msg.pose ?? 'walk',
-          frameClientTime(msg.ts)
-        );
-        break;
-      case 'player_leave':
-        callbacks?.onPlayerLeave(msg.id);
-        break;
-      case 'chat':
-        callbacks?.onChat(msg.id, msg.text);
-        break;
-      case 'crowd':
-        callbacks?.onCrowd?.(msg.players ?? 0);
-        break;
-      case 'equip':
-        callbacks?.onEquip(msg.id, msg.itemId ?? null);
-        break;
-      case 'player_attack':
-        callbacks?.onPlayerAttack?.(msg.id, msg.attackSpeed ?? 1, msg.dir ?? 0);
-        break;
-      case 'equipped':
-        callbacks?.onEquipped(msg.slots ?? {}, msg.attackSpeed, msg.range ?? 0);
-        break;
-      case 'player_hp':
-        callbacks?.onPlayerHp(msg.id, msg.hp, msg.maxHp, msg.dmg ?? 0, msg.heal ?? 0, msg.byNpc);
-        break;
-      case 'player_mortal':
-        callbacks?.onPlayerMortal?.(
-          msg.id,
-          msg.fromHp,
-          msg.maxHp,
-          typeof msg.ms === 'number' ? msg.ms : 0,
-          !!msg.banner,
-          msg.dmg ?? 0
-        );
-        break;
-      case 'combat':
-        callbacks?.onCombat(
-          msg.evt,
-          msg.x,
-          msg.y,
-          msg.byPlayer ?? null,
-          msg.targetPlayer ?? null,
-          msg.dmg ?? 0
-        );
-        break;
-      case 'player_push':
-        callbacks?.onPlayerPush?.(msg.id, msg.x, msg.y);
-        break;
-      case 'pos':
-        callbacks?.onPos?.(msg.x, msg.y, msg.direction, msg.frame, msg.seq ?? 0);
-        break;
-      case 'warp':
-        callbacks?.onWarp?.(msg.x, msg.y);
-        break;
-      case 'player_status':
-        callbacks?.onPlayerStatus?.(msg.id, Array.isArray(msg.statuses) ? msg.statuses : []);
-        break;
-      case 'psi_cast':
-        callbacks?.onPsiCast?.(
-          msg.id,
-          msg.caster,
-          msg.x,
-          msg.y,
-          typeof msg.tx === 'number' ? msg.tx : msg.x,
-          typeof msg.ty === 'number' ? msg.ty : msg.y,
-          Array.isArray(msg.hits) ? msg.hits : undefined,
-          Array.isArray(msg.beams) ? msg.beams : undefined
-        );
-        break;
-      case 'item_use':
-        callbacks?.onItemUse?.(msg.id, msg.item, msg.x, msg.y);
-        break;
-      case 'glitter':
-        callbacks?.onGlitter?.(msg.id, msg.x, msg.y);
-        break;
-      case 'projectile':
-        callbacks?.onProjectile?.(
-          msg.id,
-          msg.x,
-          msg.y,
-          msg.vx,
-          msg.vy,
-          msg.speed,
-          msg.dist,
-          typeof msg.sprite === 'string' ? msg.sprite : null
-        );
-        break;
-      case 'proj_end':
-        callbacks?.onProjEnd?.(msg.id, msg.x, msg.y, !!msg.hit);
-        break;
-      case 'status_applied':
-        callbacks?.onStatusApplied?.(
-          msg.id,
-          msg.x,
-          msg.y,
-          msg.status,
-          msg.text ?? '',
-          typeof msg.ms === 'number' ? msg.ms : 0,
-          !!msg.blocks
-        );
-        break;
-      case 'player_respawn':
-        callbacks?.onPlayerRespawn(msg.id, msg.x, msg.y, (msg.dir ?? 0) as Direction);
-        break;
-      case 'event_state':
-        callbacks?.onEventState?.(Array.isArray(msg.events) ? msg.events : []);
-        break;
-      case 'event_warp':
-        callbacks?.onEventWarp?.(msg.x, msg.y, (msg.dir ?? 0) as Direction, msg.eventId ?? null);
-        break;
-      case 'player_stats':
-        callbacks?.onPlayerStats(msg.id, msg.stats, !!msg.leveled, msg.gained ?? 0);
-        break;
-      case 'player_stamina':
-        callbacks?.onPlayerStamina(msg.s ?? 0, msg.m ?? 0, !!msg.w);
-        break;
-      case 'player_pp':
-        callbacks?.onPlayerPp?.(msg.pp ?? 0, msg.max ?? 0);
-        break;
-      case 'player_pk':
-        callbacks?.onPlayerPk?.(msg.id, !!msg.pk, msg.lockMs ?? 0);
-        break;
-      case 'player_buffs':
-        callbacks?.onPlayerBuffs?.(
-          Array.isArray(msg.buffs) ? msg.buffs : [],
-          Array.isArray(msg.shields) ? msg.shields : []
-        );
-        break;
-      case 'shield_block':
-        callbacks?.onShieldBlock?.(msg.id, msg.x ?? 0, msg.y ?? 0, msg.kind ?? '', !!msg.reflect);
-        break;
-      case 'player_downed':
-        callbacks?.onPlayerDowned?.(
-          msg.id,
-          typeof msg.ms === 'number' ? msg.ms : 0,
-          msg.dx ?? 0,
-          msg.dy ?? 0,
-          msg.force ?? 0
-        );
-        break;
-      case 'player_revived':
-        callbacks?.onPlayerRevived?.(msg.id);
-        break;
-      case 'drop_spawn':
-        if (msg.drop) callbacks?.onDropSpawn?.(msg.drop);
-        break;
-      case 'drop_remove':
-        callbacks?.onDropRemove?.(msg.id);
-        break;
-      case 'loot':
-        callbacks?.onLoot?.(msg);
-        break;
-      case 'gift_opened':
-        // Server confirmed a one-time present open: play the open→fade. The item
-        // (if any) arrives separately via 'inventory' + 'loot'.
-        if (typeof msg.k === 'string') callbacks?.onGiftOpened?.(msg.k);
-        break;
-      case 'mom_food':
-        callbacks?.onMomFood?.(msg.healed ?? 0, msg.readyInMs ?? 0, msg.food ?? '');
-        break;
-      case 'notice':
-        callbacks?.onNotice?.(msg.text ?? '', msg.code);
-        break;
-      case 'bank':
-        callbacks?.onBank?.(typeof msg.bank === 'number' ? msg.bank : 0);
-        break;
-      case 'dad_report':
-        callbacks?.onDadReport?.(
-          typeof msg.earned === 'number' ? msg.earned : 0,
-          typeof msg.spent === 'number' ? msg.spent : 0,
-          typeof msg.bank === 'number' ? msg.bank : 0
-        );
-        break;
+    // Defensive parse: one malformed/unexpected server frame must not throw from
+    // inside onmessage — drop it (with a log) instead of aborting the handler.
+    let msg;
+    try {
+      msg = JSON.parse(ev.data);
+    } catch {
+      console.error('[net] dropped unparseable server message');
+      return;
+    }
+    if (!msg || typeof msg.type !== 'string') return;
+    try {
+      switch (msg.type) {
+        case 'pong':
+          recordPong(msg.t, msg.srv, msg.srvHz, msg.srvJit);
+          break;
+        case 'bot_stats':
+          // Dev-only bot-fleet readout for the ?netdebug BOTS tab (getBotStats()).
+          latestBotStats = {
+            count: msg.count | 0,
+            behavior: String(msg.behavior || 'wander'),
+            players: msg.players | 0,
+            egressMbPerSec: +msg.egressMbPerSec || 0,
+            maxBots: msg.maxBots | 0,
+          };
+          break;
+        case 'rtc_answer':
+        case 'rtc_ice':
+          void onRtcSignal(msg);
+          break;
+        case 'welcome':
+          callbacks?.onWelcome(msg.playerId, msg.players);
+          if (msg.npcs) callbacks?.onNpcUpdate(msg.npcs);
+          if (msg.npcHps) callbacks?.onNpcHp(msg.npcHps);
+          if (msg.npcEquips) callbacks?.onNpcEquip?.(msg.npcEquips);
+          if (msg.inventory) callbacks?.onInventory(msg.inventory);
+          if (typeof msg.money === 'number') callbacks?.onMoney(msg.money);
+          if (typeof msg.bank === 'number') callbacks?.onBank?.(msg.bank);
+          // Signed-in characters restore saved stats + gear right away (reusing the
+          // live progression/equip handlers). Anonymous joins omit these.
+          if (msg.stats) callbacks?.onPlayerStats(msg.playerId, msg.stats, false, 0);
+          if (msg.equipped)
+            callbacks?.onEquipped(msg.equipped, msg.attackSpeed, msg.weaponRange ?? 0);
+          // Restore the saved quick-select hotbar (incl. an assigned PSI, which —
+          // unlike the weapon — can't be re-derived from the equip set). After
+          // onEquipped so the saved layout wins over the weapon auto-placement.
+          if (Array.isArray(msg.hotbar)) callbacks?.onHotbar?.(msg.hotbar);
+          // EB naming flavor — names the "PSI ????" special (anonymous joins omit it).
+          if (typeof msg.favoriteThing === 'string')
+            callbacks?.onFavoriteThing?.(msg.favoriteThing);
+          // Account role — dev/admin unlock the whole PSI menu for testing.
+          if (typeof msg.role === 'string') callbacks?.onRole?.(msg.role);
+          // Restore saved player flags (empty for anonymous joins).
+          callbacks?.onFlags?.(Array.isArray(msg.flags) ? msg.flags : []);
+          // Restore PK state + remaining lock (a player who logged out PK stays PK).
+          callbacks?.onPlayerPk?.(msg.playerId, !!msg.pk, msg.lockMs ?? 0);
+          if (Array.isArray(msg.drops)) callbacks?.onDrops?.(msg.drops);
+          break;
+        case 'join_error':
+          console.error('Join rejected:', msg.error);
+          break;
+        case 'points_update':
+          callbacks?.onPoints?.(msg.points ?? 0, msg.alloc ?? {});
+          break;
+        case 'inventory':
+          callbacks?.onInventory(msg.items ?? []);
+          break;
+        case 'money':
+          // Server sends { type:'money', money } (same field as welcome) — NOT
+          // `amount`. Reading the wrong field zeroed the balance on every buy/sell.
+          callbacks?.onMoney(typeof msg.money === 'number' ? msg.money : 0);
+          break;
+        case 'npc_update':
+          callbacks?.onNpcUpdate(msg.npcs, frameClientTime(msg.ts));
+          break;
+        case 'npc_leave':
+          if (Array.isArray(msg.ids)) callbacks?.onNpcLeave?.(msg.ids);
+          break;
+        case 'npc_status':
+          if (msg.statuses) callbacks?.onNpcStatus?.(msg.statuses);
+          break;
+        case 'npc_equip':
+          if (msg.equips) callbacks?.onNpcEquip?.(msg.equips);
+          break;
+        case 'npc_hp':
+          callbacks?.onNpcHp(msg.hps);
+          break;
+        case 'npc_death':
+          callbacks?.onNpcDeath?.(msg.id, msg.dx ?? 0, msg.dy ?? 0, msg.force ?? 0);
+          break;
+        case 'player_join':
+          callbacks?.onPlayerJoin(msg.player);
+          break;
+        case 'player_move':
+          callbacks?.onPlayerMove(
+            msg.id,
+            msg.x,
+            msg.y,
+            msg.direction,
+            msg.frame,
+            msg.pose ?? 'walk',
+            frameClientTime(msg.ts)
+          );
+          break;
+        case 'player_leave':
+          callbacks?.onPlayerLeave(msg.id);
+          break;
+        case 'chat':
+          callbacks?.onChat(msg.id, msg.text);
+          break;
+        case 'crowd':
+          callbacks?.onCrowd?.(msg.players ?? 0);
+          break;
+        case 'equip':
+          callbacks?.onEquip(msg.id, msg.itemId ?? null);
+          break;
+        case 'player_attack':
+          callbacks?.onPlayerAttack?.(msg.id, msg.attackSpeed ?? 1, msg.dir ?? 0);
+          break;
+        case 'equipped':
+          callbacks?.onEquipped(msg.slots ?? {}, msg.attackSpeed, msg.range ?? 0);
+          break;
+        case 'player_hp':
+          callbacks?.onPlayerHp(msg.id, msg.hp, msg.maxHp, msg.dmg ?? 0, msg.heal ?? 0, msg.byNpc);
+          break;
+        case 'player_mortal':
+          callbacks?.onPlayerMortal?.(
+            msg.id,
+            msg.fromHp,
+            msg.maxHp,
+            typeof msg.ms === 'number' ? msg.ms : 0,
+            !!msg.banner,
+            msg.dmg ?? 0
+          );
+          break;
+        case 'combat':
+          callbacks?.onCombat(
+            msg.evt,
+            msg.x,
+            msg.y,
+            msg.byPlayer ?? null,
+            msg.targetPlayer ?? null,
+            msg.dmg ?? 0
+          );
+          break;
+        case 'player_push':
+          callbacks?.onPlayerPush?.(msg.id, msg.x, msg.y);
+          break;
+        case 'pos':
+          callbacks?.onPos?.(msg.x, msg.y, msg.direction, msg.frame, msg.seq ?? 0);
+          break;
+        case 'warp':
+          callbacks?.onWarp?.(msg.x, msg.y);
+          break;
+        case 'player_status':
+          callbacks?.onPlayerStatus?.(msg.id, Array.isArray(msg.statuses) ? msg.statuses : []);
+          break;
+        case 'psi_cast':
+          callbacks?.onPsiCast?.(
+            msg.id,
+            msg.caster,
+            msg.x,
+            msg.y,
+            typeof msg.tx === 'number' ? msg.tx : msg.x,
+            typeof msg.ty === 'number' ? msg.ty : msg.y,
+            Array.isArray(msg.hits) ? msg.hits : undefined,
+            Array.isArray(msg.beams) ? msg.beams : undefined
+          );
+          break;
+        case 'item_use':
+          callbacks?.onItemUse?.(msg.id, msg.item, msg.x, msg.y);
+          break;
+        case 'glitter':
+          callbacks?.onGlitter?.(msg.id, msg.x, msg.y);
+          break;
+        case 'projectile':
+          callbacks?.onProjectile?.(
+            msg.id,
+            msg.x,
+            msg.y,
+            msg.vx,
+            msg.vy,
+            msg.speed,
+            msg.dist,
+            typeof msg.sprite === 'string' ? msg.sprite : null
+          );
+          break;
+        case 'proj_end':
+          callbacks?.onProjEnd?.(msg.id, msg.x, msg.y, !!msg.hit);
+          break;
+        case 'status_applied':
+          callbacks?.onStatusApplied?.(
+            msg.id,
+            msg.x,
+            msg.y,
+            msg.status,
+            msg.text ?? '',
+            typeof msg.ms === 'number' ? msg.ms : 0,
+            !!msg.blocks
+          );
+          break;
+        case 'player_respawn':
+          callbacks?.onPlayerRespawn(msg.id, msg.x, msg.y, (msg.dir ?? 0) as Direction);
+          break;
+        case 'event_state':
+          callbacks?.onEventState?.(Array.isArray(msg.events) ? msg.events : []);
+          break;
+        case 'event_warp':
+          callbacks?.onEventWarp?.(msg.x, msg.y, (msg.dir ?? 0) as Direction, msg.eventId ?? null);
+          break;
+        case 'player_stats':
+          callbacks?.onPlayerStats(msg.id, msg.stats, !!msg.leveled, msg.gained ?? 0);
+          break;
+        case 'player_stamina':
+          callbacks?.onPlayerStamina(msg.s ?? 0, msg.m ?? 0, !!msg.w);
+          break;
+        case 'player_pp':
+          callbacks?.onPlayerPp?.(msg.pp ?? 0, msg.max ?? 0);
+          break;
+        case 'player_pk':
+          callbacks?.onPlayerPk?.(msg.id, !!msg.pk, msg.lockMs ?? 0);
+          break;
+        case 'player_buffs':
+          callbacks?.onPlayerBuffs?.(
+            Array.isArray(msg.buffs) ? msg.buffs : [],
+            Array.isArray(msg.shields) ? msg.shields : []
+          );
+          break;
+        case 'shield_block':
+          callbacks?.onShieldBlock?.(msg.id, msg.x ?? 0, msg.y ?? 0, msg.kind ?? '', !!msg.reflect);
+          break;
+        case 'player_downed':
+          callbacks?.onPlayerDowned?.(
+            msg.id,
+            typeof msg.ms === 'number' ? msg.ms : 0,
+            msg.dx ?? 0,
+            msg.dy ?? 0,
+            msg.force ?? 0
+          );
+          break;
+        case 'player_revived':
+          callbacks?.onPlayerRevived?.(msg.id);
+          break;
+        case 'drop_spawn':
+          if (msg.drop) callbacks?.onDropSpawn?.(msg.drop);
+          break;
+        case 'drop_remove':
+          callbacks?.onDropRemove?.(msg.id);
+          break;
+        case 'loot':
+          callbacks?.onLoot?.(msg);
+          break;
+        case 'gift_opened':
+          // Server confirmed a one-time present open: play the open→fade. The item
+          // (if any) arrives separately via 'inventory' + 'loot'.
+          if (typeof msg.k === 'string') callbacks?.onGiftOpened?.(msg.k);
+          break;
+        case 'mom_food':
+          callbacks?.onMomFood?.(msg.healed ?? 0, msg.readyInMs ?? 0, msg.food ?? '');
+          break;
+        case 'notice':
+          callbacks?.onNotice?.(msg.text ?? '', msg.code);
+          break;
+        case 'bank':
+          callbacks?.onBank?.(typeof msg.bank === 'number' ? msg.bank : 0);
+          break;
+        case 'dad_report':
+          callbacks?.onDadReport?.(
+            typeof msg.earned === 'number' ? msg.earned : 0,
+            typeof msg.spent === 'number' ? msg.spent : 0,
+            typeof msg.bank === 'number' ? msg.bank : 0
+          );
+          break;
+      }
+    } catch (e) {
+      // A bug (or bad payload) in ONE message handler shouldn't be fatal to the
+      // session — log it and keep the socket alive for the messages after it.
+      console.error(`[net] handler for '${msg.type}' failed`, e);
     }
   };
 

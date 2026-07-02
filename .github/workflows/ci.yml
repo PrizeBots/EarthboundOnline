@@ -28,3 +28,11 @@ jobs:
 
       - name: Verify (typecheck + server syntax + tests)
         run: npm run verify
+
+      # The ROM-parity extraction suite (test/extract/*) is skipIf-guarded on
+      # EarthBound.sfc + dumped fixtures, both gitignored — so in CI it ALWAYS
+      # skips. Surface that loudly instead of letting a green check imply the
+      # extraction pipeline was validated: run `npm test` locally (with the ROM)
+      # before shipping extraction-touching changes.
+      - name: Warn that the ROM-parity suite did not run
+        run: echo "::warning title=Extraction parity suite SKIPPED::test/extract/* needs EarthBound.sfc + local fixtures (gitignored), so CI cannot validate the extraction pipeline. Run 'npm test' locally with the ROM before shipping extraction changes."

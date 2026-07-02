@@ -1,6 +1,9 @@
 {
   "version": 1,
   "edits": {
+    "3176,140": null,
+    "3656,172": null,
+    "3864,140": null,
     "4416,12": {
       "destX": 296,
       "destY": 576,
@@ -27,6 +30,15 @@
       "sfx": "door-open",
       "worldX": 4464,
       "worldY": 24
+    },
+    "6072,140": {
+      "destX": 1976,
+      "destY": 2632,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 6064,
+      "worldY": 144
     },
     "7224,140": {
       "destX": 7816,
@@ -72,6 +84,16 @@
       "sfx": "door-open",
       "worldX": 2400,
       "worldY": 352
+    },
+    "3176,396": null,
+    "5336,420": {
+      "destX": 2872,
+      "destY": 8608,
+      "destDir": 2,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 5328,
+      "worldY": 424
     },
     "7224,396": {
       "destX": 2016,
@@ -169,6 +191,10 @@
       "worldX": 1456,
       "worldY": 568
     },
+    "3192,620": null,
+    "3368,524": null,
+    "3400,748": null,
+    "3880,556": null,
     "7640,620": {
       "destX": 1096,
       "destY": 1376,
@@ -242,6 +268,35 @@
       "worldY": 944
     },
     "504,940": null,
+    "3192,844": null,
+    "3720,940": null,
+    "4024,916": {
+      "destX": 1080,
+      "destY": 2696,
+      "destDir": 2,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 4016,
+      "worldY": 912
+    },
+    "7072,980": {
+      "destX": 2312,
+      "destY": 1120,
+      "destDir": 0,
+      "style": 10,
+      "sfx": "door-open",
+      "worldX": 7064,
+      "worldY": 984
+    },
+    "7320,956": {
+      "destX": 7360,
+      "destY": 1256,
+      "destDir": 3,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 7312,
+      "worldY": 952
+    },
     "7416,1004": {
       "destX": 1144,
       "destY": 1688,
@@ -323,6 +378,24 @@
       "sfx": "door-open",
       "worldX": 2416,
       "worldY": 1112
+    },
+    "5824,1228": {
+      "destX": 7072,
+      "destY": 9832,
+      "destDir": 3,
+      "style": 4,
+      "sfx": "door-open",
+      "worldX": 5824,
+      "worldY": 1224
+    },
+    "7160,1132": {
+      "destX": 7784,
+      "destY": 448,
+      "destDir": 0,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 7152,
+      "worldY": 1136
     },
     "7128,1260": {
       "destX": 2440,
@@ -432,6 +505,15 @@
       "worldX": 2576,
       "worldY": 1400
     },
+    "7160,1388": {
+      "destX": 7880,
+      "destY": 448,
+      "destDir": 0,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 7152,
+      "worldY": 1392
+    },
     "7104,1492": {
       "destX": 1448,
       "destY": 576,
@@ -467,6 +549,15 @@
       "sfx": "door-open",
       "worldX": 7312,
       "worldY": 1496
+    },
+    "7608,1388": {
+      "destX": 1576,
+      "destY": 2272,
+      "destDir": 0,
+      "style": 10,
+      "sfx": "door-open",
+      "worldX": 7600,
+      "worldY": 1392
     },
     "7648,1492": {
       "destX": 456,
@@ -621,6 +712,15 @@
       "worldX": 8176,
       "worldY": 1648
     },
+    "8160,1748": {
+      "destX": 7536,
+      "destY": 2320,
+      "destDir": 2,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 8152,
+      "worldY": 1752
+    },
     "7384,1900": {
       "destX": 7888,
       "destY": 3040,
@@ -711,6 +811,24 @@
       "worldX": 5616,
       "worldY": 2512
     },
+    "6672,2516": {
+      "destX": 3168,
+      "destY": 6544,
+      "destDir": 3,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 6672,
+      "worldY": 2512
+    },
+    "6968,2516": {
+      "destX": 3480,
+      "destY": 6512,
+      "destDir": 2,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 6960,
+      "worldY": 2512
+    },
     "8096,2324": {
       "destX": 3832,
       "destY": 7904,
@@ -720,6 +838,51 @@
       "worldX": 8088,
       "worldY": 2328
     },
+    "1984,2628": {
+      "destX": 6048,
+      "destY": 136,
+      "destDir": 3,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 1984,
+      "worldY": 2632
+    },
+    "5656,2724": {
+      "destX": 7880,
+      "destY": 9168,
+      "destDir": 3,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 5648,
+      "worldY": 2720
+    },
+    "5664,2724": {
+      "destX": 7880,
+      "destY": 9168,
+      "destDir": 3,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 5664,
+      "worldY": 2720
+    },
+    "6512,2740": {
+      "destX": 6880,
+      "destY": 9704,
+      "destDir": 3,
+      "style": 4,
+      "sfx": "door-open",
+      "worldX": 6504,
+      "worldY": 2736
+    },
+    "6520,2740": {
+      "destX": 6880,
+      "destY": 9704,
+      "destDir": 3,
+      "style": 4,
+      "sfx": "door-open",
+      "worldX": 6520,
+      "worldY": 2736
+    },
     "8024,2572": {
       "destX": 496,
       "destY": 2192,
@@ -728,6 +891,24 @@
       "sfx": "door-open",
       "worldX": 8016,
       "worldY": 2576
+    },
+    "7824,3036": {
+      "destX": 7872,
+      "destY": 1896,
+      "destDir": 3,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 7824,
+      "worldY": 3032
+    },
+    "7896,3036": {
+      "destX": 7360,
+      "destY": 1896,
+      "destDir": 3,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 7896,
+      "worldY": 3032
     },
     "8152,2892": {
       "destX": 320,
@@ -765,6 +946,24 @@
       "worldX": 1224,
       "worldY": 3184
     },
+    "1880,3092": {
+      "destX": 2872,
+      "destY": 6792,
+      "destDir": 2,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 1880,
+      "worldY": 3096
+    },
+    "7680,3276": {
+      "destX": 6680,
+      "destY": 3272,
+      "destDir": 2,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 7672,
+      "worldY": 3280
+    },
     "2008,3524": {
       "destX": 776,
       "destY": 4648,
@@ -783,6 +982,33 @@
       "worldX": 4336,
       "worldY": 3408
     },
+    "6648,3404": {
+      "destX": 1720,
+      "destY": 5472,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 6640,
+      "worldY": 3400
+    },
+    "6808,3404": {
+      "destX": 360,
+      "destY": 7504,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 6800,
+      "worldY": 3400
+    },
+    "6904,3532": {
+      "destX": 200,
+      "destY": 7952,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 6896,
+      "worldY": 3528
+    },
     "984,3692": {
       "destX": 4376,
       "destY": 9672,
@@ -791,6 +1017,15 @@
       "sfx": "door-open",
       "worldX": 976,
       "worldY": 3688
+    },
+    "7128,3748": {
+      "destX": 6416,
+      "destY": 5928,
+      "destDir": 2,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 7120,
+      "worldY": 3744
     },
     "208,3844": {
       "destX": 5120,
@@ -879,6 +1114,96 @@
       "worldX": 4024,
       "worldY": 5072
     },
+    "4336,4964": {
+      "destX": 3400,
+      "destY": 3232,
+      "destDir": 0,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 4328,
+      "worldY": 4968
+    },
+    "4600,4972": {
+      "destX": 4712,
+      "destY": 5464,
+      "destDir": 2,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 4592,
+      "worldY": 4976
+    },
+    "4568,5100": {
+      "destX": 5520,
+      "destY": 6208,
+      "destDir": 0,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 4560,
+      "worldY": 5104
+    },
+    "5336,4972": {
+      "destX": 5768,
+      "destY": 5848,
+      "destDir": 0,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 5328,
+      "worldY": 4976
+    },
+    "5752,4972": {
+      "destX": 5992,
+      "destY": 6456,
+      "destDir": 0,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 5744,
+      "worldY": 4976
+    },
+    "6136,5100": {
+      "destX": 4384,
+      "destY": 6240,
+      "destDir": 2,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 6128,
+      "worldY": 5104
+    },
+    "6904,4964": {
+      "destX": 648,
+      "destY": 4872,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 6896,
+      "worldY": 4960
+    },
+    "7640,4972": {
+      "destX": 8016,
+      "destY": 3896,
+      "destDir": 0,
+      "style": 10,
+      "sfx": "door-open",
+      "worldX": 7632,
+      "worldY": 4976
+    },
+    "7648,5068": {
+      "destX": 240,
+      "destY": 5288,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 7640,
+      "worldY": 5064
+    },
+    "8184,4908": {
+      "destX": 6416,
+      "destY": 6376,
+      "destDir": 2,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 8176,
+      "worldY": 4904
+    },
     "632,5284": {
       "destX": 7336,
       "destY": 2296,
@@ -896,6 +1221,33 @@
       "sfx": "door-open",
       "worldX": 640,
       "worldY": 5288
+    },
+    "4088,5148": {
+      "destX": 3856,
+      "destY": 5480,
+      "destDir": 2,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 4080,
+      "worldY": 5144
+    },
+    "4248,5172": {
+      "destX": 3576,
+      "destY": 6672,
+      "destDir": 2,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 4240,
+      "worldY": 5168
+    },
+    "5656,5132": {
+      "destX": 5488,
+      "destY": 4952,
+      "destDir": 0,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 5648,
+      "worldY": 5136
     },
     "824,5604": {
       "destX": 7000,
@@ -915,6 +1267,24 @@
       "worldX": 832,
       "worldY": 5608
     },
+    "2872,5516": {
+      "destX": 3864,
+      "destY": 5832,
+      "destDir": 2,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 2864,
+      "worldY": 5512
+    },
+    "3544,5452": {
+      "destX": 3864,
+      "destY": 5320,
+      "destDir": 2,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 3536,
+      "worldY": 5456
+    },
     "5112,5548": {
       "destX": 3016,
       "destY": 4592,
@@ -933,6 +1303,51 @@
       "worldX": 5712,
       "worldY": 5424
     },
+    "4984,5868": {
+      "destX": 4808,
+      "destY": 5440,
+      "destDir": 0,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 4976,
+      "worldY": 5872
+    },
+    "5880,5868": {
+      "destX": 5912,
+      "destY": 6248,
+      "destDir": 2,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 5872,
+      "worldY": 5872
+    },
+    "5976,5836": {
+      "destX": 6024,
+      "destY": 6080,
+      "destDir": 0,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 5968,
+      "worldY": 5840
+    },
+    "6392,5836": {
+      "destX": 6184,
+      "destY": 5440,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 6384,
+      "worldY": 5840
+    },
+    "6648,5868": {
+      "destX": 7904,
+      "destY": 3808,
+      "destDir": 0,
+      "style": 10,
+      "sfx": "door-open",
+      "worldX": 6640,
+      "worldY": 5872
+    },
     "6872,5868": {
       "destX": 6424,
       "destY": 4552,
@@ -941,6 +1356,16 @@
       "sfx": "door-open",
       "worldX": 6864,
       "worldY": 5864
+    },
+    "7864,5708": null,
+    "8152,5868": {
+      "destX": 7400,
+      "destY": 4960,
+      "destDir": 0,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 8144,
+      "worldY": 5872
     },
     "1120,5932": {
       "destX": 1216,
@@ -951,6 +1376,51 @@
       "worldX": 1120,
       "worldY": 5936
     },
+    "5656,5980": {
+      "destX": 5912,
+      "destY": 5992,
+      "destDir": 2,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 5656,
+      "worldY": 5976
+    },
+    "6104,5996": {
+      "destX": 5144,
+      "destY": 5736,
+      "destDir": 2,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 6096,
+      "worldY": 6000
+    },
+    "6264,5964": {
+      "destX": 6168,
+      "destY": 6088,
+      "destDir": 2,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 6256,
+      "worldY": 5960
+    },
+    "6160,6092": {
+      "destX": 6240,
+      "destY": 5960,
+      "destDir": 3,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 6160,
+      "worldY": 6088
+    },
+    "6392,6092": {
+      "destX": 6184,
+      "destY": 5696,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 6384,
+      "worldY": 6096
+    },
     "6776,5964": {
       "destX": 6696,
       "destY": 5696,
@@ -960,6 +1430,35 @@
       "worldX": 6768,
       "worldY": 5968
     },
+    "6904,6092": {
+      "destX": 6440,
+      "destY": 5184,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 6896,
+      "worldY": 6096
+    },
+    "7608,5964": null,
+    "7832,5964": {
+      "destX": 6680,
+      "destY": 6088,
+      "destDir": 2,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 7824,
+      "worldY": 5960
+    },
+    "7928,6124": {
+      "destX": 7960,
+      "destY": 4744,
+      "destDir": 2,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 7920,
+      "worldY": 6128
+    },
+    "8056,5996": null,
     "1744,6236": {
       "destX": 6848,
       "destY": 8168,
@@ -987,6 +1486,16 @@
       "worldX": 3632,
       "worldY": 6184
     },
+    "3888,6284": {
+      "destX": 168,
+      "destY": 792,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 3888,
+      "worldY": 6288
+    },
+    "3896,6284": null,
     "6136,6380": {
       "destX": 5672,
       "destY": 6496,
@@ -996,6 +1505,7 @@
       "worldX": 6128,
       "worldY": 6384
     },
+    "7128,6188": null,
     "7160,6348": {
       "destX": 7784,
       "destY": 5952,
@@ -1005,6 +1515,44 @@
       "worldX": 7152,
       "worldY": 6352
     },
+    "7800,6220": {
+      "destX": 7720,
+      "destY": 5952,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 7792,
+      "worldY": 6224
+    },
+    "1512,6516": {
+      "destX": 7104,
+      "destY": 7656,
+      "destDir": 3,
+      "style": 6,
+      "sfx": "door-open",
+      "worldX": 1512,
+      "worldY": 6512
+    },
+    "4080,6412": {
+      "destX": 352,
+      "destY": 936,
+      "destDir": 0,
+      "style": 5,
+      "sfx": "door-open",
+      "worldX": 4080,
+      "worldY": 6416
+    },
+    "4088,6412": null,
+    "4240,6412": {
+      "destX": 520,
+      "destY": 936,
+      "destDir": 0,
+      "style": 5,
+      "sfx": "door-open",
+      "worldX": 4240,
+      "worldY": 6416
+    },
+    "4248,6412": null,
     "5680,6492": {
       "destX": 6112,
       "destY": 6376,
@@ -1068,6 +1616,15 @@
       "worldX": 7600,
       "worldY": 6800
     },
+    "8152,6868": {
+      "destX": 3680,
+      "destY": 9632,
+      "destDir": 2,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 8144,
+      "worldY": 6872
+    },
     "2128,7060": {
       "destX": 7712,
       "destY": 7528,
@@ -1076,6 +1633,15 @@
       "sfx": "door-open",
       "worldX": 2128,
       "worldY": 7056
+    },
+    "2304,7092": {
+      "destX": 6560,
+      "destY": 7784,
+      "destDir": 3,
+      "style": 6,
+      "sfx": "door-open",
+      "worldX": 2304,
+      "worldY": 7088
     },
     "8008,7004": {
       "destX": 1224,
@@ -1131,6 +1697,15 @@
       "worldX": 7664,
       "worldY": 7408
     },
+    "7736,7276": {
+      "destX": 1368,
+      "destY": 6520,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 7728,
+      "worldY": 7280
+    },
     "7896,7404": {
       "destX": 7816,
       "destY": 8768,
@@ -1165,6 +1740,15 @@
       "style": 12,
       "sfx": "door-open",
       "worldX": 7120,
+      "worldY": 7664
+    },
+    "7416,7660": {
+      "destX": 7048,
+      "destY": 7904,
+      "destDir": 0,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 7408,
       "worldY": 7664
     },
     "7672,7660": {
@@ -1220,6 +1804,15 @@
       "sfx": "door-open",
       "worldX": 6576,
       "worldY": 7888
+    },
+    "7416,7788": {
+      "destX": 7336,
+      "destY": 8288,
+      "destDir": 0,
+      "style": 7,
+      "sfx": "door-open",
+      "worldX": 7408,
+      "worldY": 7792
     },
     "7648,7764": {
       "destX": 6120,
@@ -1339,6 +1932,15 @@
       "sfx": "door-open",
       "worldX": 6864,
       "worldY": 8176
+    },
+    "7064,8012": {
+      "destX": 4416,
+      "destY": 4000,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open",
+      "worldX": 7056,
+      "worldY": 8016
     },
     "7160,8172": {
       "destX": 2280,
@@ -1711,6 +2313,24 @@
       "worldY": 7920,
       "destX": 1920,
       "destY": 7360,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open"
+    },
+    {
+      "worldX": 2160,
+      "worldY": 7440,
+      "destX": 984,
+      "destY": 6896,
+      "destDir": 0,
+      "style": 1,
+      "sfx": "door-open"
+    },
+    {
+      "worldX": 1008,
+      "worldY": 6896,
+      "destX": 2160,
+      "destY": 7456,
       "destDir": 0,
       "style": 1,
       "sfx": "door-open"

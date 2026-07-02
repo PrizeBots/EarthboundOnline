@@ -1,7 +1,7 @@
 import { EditorTool, EditorShellApi, WorldPoint } from '../types';
 import { Camera } from '../../engine/Camera';
 import { SECTOR_TILES_X, SECTOR_TILES_Y, TILE_SIZE } from '../../types';
-import { mkButton, mkRow as uiRow, mkTextInput } from '../ui';
+import { mkBtn, mkRow as uiRow, mkTextInput } from '../ui';
 import {
   MusicArea,
   setMusicAreas,
@@ -511,7 +511,7 @@ class SoundTool implements EditorTool {
     title.textContent = 'SOUND MANAGER';
     title.style.cssText = 'color:#5ad0e8;font-weight:bold;letter-spacing:1px;flex:1;';
     header.appendChild(title);
-    this.mkBtn(
+    mkBtn(
       '■ Stop all',
       () => stopAllSounds(),
       header,
@@ -523,14 +523,14 @@ class SoundTool implements EditorTool {
     // Music | SFX tab switch.
     const tabs = document.createElement('div');
     tabs.style.cssText = 'display:flex;gap:4px;';
-    this.tabBtns.music = this.mkBtn(
+    this.tabBtns.music = mkBtn(
       'Music',
       () => this.switchMode('music'),
       tabs,
       false,
       'Edit map music trigger areas (which song plays where).'
     );
-    this.tabBtns.sfx = this.mkBtn(
+    this.tabBtns.sfx = mkBtn(
       'SFX',
       () => this.switchMode('sfx'),
       tabs,
@@ -544,7 +544,7 @@ class SoundTool implements EditorTool {
     this.musicBody.style.cssText = 'display:flex;flex-direction:column;gap:7px;';
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
-    this.mkBtn(
+    mkBtn(
       '+ New area (N)',
       () => this.startPlacing(),
       actions,
@@ -637,7 +637,7 @@ class SoundTool implements EditorTool {
     libPicker.el.style.flex = '1';
     libPicker.el.style.minWidth = '0';
     libRow.appendChild(libPicker.el);
-    this.mkBtn('▶', () => playSfx(libSel), libRow, false, 'Play the selected sound.');
+    mkBtn('▶', () => playSfx(libSel), libRow, false, 'Play the selected sound.');
 
     const sub = document.createElement('div');
     sub.textContent =
@@ -698,7 +698,7 @@ class SoundTool implements EditorTool {
       picker.el.style.minWidth = '0';
       picker.el.title = `Sound played for "${evt.label}"; pick to reassign.`;
       top.appendChild(picker.el);
-      this.mkBtn('▶', audition, top, false, "Play this event's sound at its current volume.");
+      mkBtn('▶', audition, top, false, "Play this event's sound at its current volume.");
       card.appendChild(top);
 
       // Line 2: volume slider (0–100%) + live readout.
@@ -878,8 +878,8 @@ class SoundTool implements EditorTool {
     this.songPicker = picker;
 
     const audRow = this.mkRow(form, '');
-    this.mkBtn('▶ Test', () => previewSong(a.song), audRow, false, "Audition this area's song.");
-    this.mkBtn('■ Stop', () => stopMusic(), audRow, false, 'Stop the music preview.');
+    mkBtn('▶ Test', () => previewSong(a.song), audRow, false, "Audition this area's song.");
+    mkBtn('■ Stop', () => stopMusic(), audRow, false, 'Stop the music preview.');
 
     // Rename the SONG itself (global — like renaming an entity). Writes the
     // song-name override, which the dropdown/overlay/list all read back.
@@ -906,7 +906,7 @@ class SoundTool implements EditorTool {
     this.songNameInput = renameIn;
     this.syncSongName();
 
-    this.mkBtn(
+    mkBtn(
       'Delete area',
       () => this.deleteSelected(),
       form,
@@ -939,18 +939,7 @@ class SoundTool implements EditorTool {
 
   // --- small DOM helpers -----------------------------------------------------
 
-  // Thin wrappers over the shared editor UI kit (src/editor/ui.ts). `accent` =
-  // the primary (gold) highlight variant.
-  private mkBtn(
-    label: string,
-    fn: () => void,
-    parent: HTMLElement,
-    accent = false,
-    tip?: string
-  ): HTMLButtonElement {
-    return mkButton(label, fn, { parent, variant: accent ? 'gold' : 'default', tip });
-  }
-
+  // Thin wrappers over the shared editor UI kit (src/editor/ui.ts).
   private mkRow(parent: HTMLElement, label: string, tip?: string): HTMLDivElement {
     return uiRow(parent, label, { tip });
   }

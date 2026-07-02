@@ -15,6 +15,10 @@
  */
 const assert = require('assert');
 const path = require('path');
+// Tests fire action messages faster than real time — disable the per-type
+// anti-flood throttle for the suite. The throttle itself is exercised by the
+// dedicated rate-limit test at the bottom (which flips this back on).
+process.env.MSG_RATE_LIMIT = '0';
 const { GameHost } = require('./gameHost');
 const { loadShops } = require('./shops');
 
@@ -1368,6 +1372,27 @@ async function asyncCheck(name, fn) {
       h.stop();
     }
   );
+
+  // ============== 7. Anti-flood: per-type action-message throttle ==============
+  await asyncCheck('action-message flood is throttled (token bucket)', async () => {
+    process.env.MSG_RATE_LIMIT = '1'; // re-enable just for this test
+    try {
+      const h = new GameHost(ASSETS);
+      const s = new FakeSocket();
+      h.handleConnection(s);
+      s.recv({ type: 'join', name: 'Flooder', spriteGroupId: 1 });
+      const id = s.last('welcome').playerId;
+      // 30 same-instant set_flag sends: only the burst allowance may land (the
+      // bucket can't refill in ~0ms), the rest must be dropped.
+      for (let i = 0; i < 30; i++) s.recv({ type: 'set_flag', id: 1000 + i });
+      const landed = h.flags.get(id).size;
+      assert(landed >= 5, `an honest burst should pass (landed ${landed})`);
+      assert(landed <= 7, `a flood should be throttled (landed ${landed} of 30)`);
+      h.stop();
+    } finally {
+      process.env.MSG_RATE_LIMIT = '0';
+    }
+  });
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

@@ -1,5 +1,5 @@
 import { EditorTool, EditorShellApi, WorldPoint } from '../types';
-import { mkButton } from '../ui';
+import { mkBtn } from '../ui';
 import { saveOverride, loadOverride } from '../saveOverride';
 import { registerSaveHandler } from '../registry';
 import {
@@ -187,10 +187,11 @@ class GiftManagerTool implements EditorTool {
     this.panel.appendChild(this.tabsEl);
 
     // Place a brand-new container (of the active tab's type) by clicking the map.
-    this.placeBtn = this.mkBtn(
+    this.placeBtn = mkBtn(
       '📍 Place new',
       () => this.togglePlacing(),
       this.panel,
+      false,
       'Arm placement, then click the map to drop a new container of the active tab type.'
     );
 
@@ -363,24 +364,27 @@ class GiftManagerTool implements EditorTool {
 
     const goRow = document.createElement('div');
     goRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
-    this.mkBtn(
+    mkBtn(
       '📍 Go to box',
       () => this.shell?.goTo(g.x, g.y),
       goRow,
+      false,
       'Jump the camera to this container in the world.'
     );
     if (g.added) {
-      this.mkBtn(
+      mkBtn(
         '🗑 Delete box',
         () => void this.deleteGift(g.k),
         goRow,
+        false,
         'Remove this player-placed container.'
       );
     } else if (this.edits[g.k]?.item !== undefined) {
-      this.mkBtn(
+      mkBtn(
         '↺ Reset to ROM',
         () => this.resetContents(g.k),
         goRow,
+        false,
         'Discard your contents edit and restore the original ROM item.'
       );
     }
@@ -398,16 +402,6 @@ class GiftManagerTool implements EditorTool {
     });
     this.picker.el.title = 'Pick the item this container gives when opened.';
     this.detailEl.appendChild(this.picker.el);
-  }
-
-  // Thin wrapper over the shared editor UI kit (src/editor/ui.ts).
-  private mkBtn(
-    label: string,
-    fn: () => void,
-    parent: HTMLElement,
-    tip?: string
-  ): HTMLButtonElement {
-    return mkButton(label, fn, { parent, tip });
   }
 }
 

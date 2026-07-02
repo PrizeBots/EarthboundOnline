@@ -52,3 +52,6 @@ tools/_*
 # OS files
 .DS_Store
 Thumbs.db
+
+# Editor save-channel backups (vite.config.ts writes <file>.bak beside every override save)
+public/overrides/*.bak

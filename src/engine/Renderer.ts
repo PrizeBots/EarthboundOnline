@@ -20,6 +20,7 @@ import {
   FG_PROMOTE_BIT,
   FORCE_BG_BIT,
 } from './Collision';
+import { DIR_VEC as DBG_DIR_VEC } from './directions';
 import { syncMuteButtonPosition } from './MuteButton';
 import { getStatus } from './StatusModal';
 import { rollHealth, pendFlash, HpHolder } from './HealthRoll';
@@ -88,18 +89,6 @@ const HURT_H = 18;
 const HURT_OY = -18;
 const ATTACK_REACH = 14;
 const ATTACK_HALF = 8;
-const DBG_DIAG = Math.SQRT1_2;
-// Indexed by Direction: S,N,W,E,NW,SW,SE,NE.
-const DBG_DIR_VEC: [number, number][] = [
-  [0, 1],
-  [0, -1],
-  [-1, 0],
-  [1, 0],
-  [-DBG_DIAG, -DBG_DIAG],
-  [-DBG_DIAG, DBG_DIAG],
-  [DBG_DIAG, DBG_DIAG],
-  [DBG_DIAG, -DBG_DIAG],
-];
 
 // --- Health / PSI bars ------------------------------------------------------
 // Drawn above an entity's head, half-pixel black outline (crisp at the gameplay

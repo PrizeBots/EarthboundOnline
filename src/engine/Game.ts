@@ -45,6 +45,7 @@ import {
   markNpcsGone,
 } from './NPCManager';
 import { NPC } from './NPC';
+import { DIR_VEC as DIR_VECTORS } from './directions';
 import { beginGiftOpen, giftOpened } from './Gifts';
 import { loadAtlas } from './TilesetManager';
 import { loadCollision, checkPlayerCollision, computeRoomBounds, setActiveRoom } from './Collision';
@@ -250,19 +251,6 @@ function fmtDuration(ms: number): string {
   const s = total % 60;
   return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
-
-// Unit facing vectors, indexed by Direction, for the talk/check probe.
-const DIAG = Math.SQRT1_2;
-const DIR_VECTORS: Record<Direction, [number, number]> = {
-  [Direction.S]: [0, 1],
-  [Direction.N]: [0, -1],
-  [Direction.W]: [-1, 0],
-  [Direction.E]: [1, 0],
-  [Direction.NW]: [-DIAG, -DIAG],
-  [Direction.SW]: [-DIAG, DIAG],
-  [Direction.SE]: [DIAG, DIAG],
-  [Direction.NE]: [DIAG, -DIAG],
-};
 
 export class Game {
   private camera = new Camera();
@@ -1244,17 +1232,9 @@ export class Game {
   private static readonly PRED_HIT_MAX_LEAD = 26;
   private static readonly ATTACK_REACH = 14;
   private static readonly ATTACK_HALF = 8;
-  // Unit dir per Direction enum — MIRROR of server/npcSim.js DIR_VEC.
-  private static readonly DIR_VEC: ReadonlyArray<readonly [number, number]> = [
-    [0, 1],
-    [0, -1],
-    [-1, 0],
-    [1, 0],
-    [-Math.SQRT1_2, -Math.SQRT1_2],
-    [-Math.SQRT1_2, Math.SQRT1_2],
-    [Math.SQRT1_2, Math.SQRT1_2],
-    [Math.SQRT1_2, -Math.SQRT1_2],
-  ];
+  // Unit dir per Direction enum — the canonical table from ./directions
+  // (server mirror lives in server/npcSim.js).
+  private static readonly DIR_VEC = DIR_VECTORS;
 
   // Weight-class recoil scale (mirrors server massKnockScale).
   private massScale(attLevel: number, vicLevel: number): number {

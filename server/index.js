@@ -138,7 +138,14 @@ const shutdown = async (sig) => {
   shuttingDown = true;
   console.log(`[shutdown] ${sig} — flushing saves`);
   try {
-    await host.flushSaves();
+    // Watchdog: a hung store (dead Postgres connection) must not stall shutdown
+    // forever — give the flush (which includes one retry per failed save) 10s,
+    // then proceed to exit rather than hang until the platform SIGKILLs us.
+    let timer;
+    const watchdog = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('flushSaves timed out after 10s')), 10000);
+    });
+    await Promise.race([host.flushSaves(), watchdog]).finally(() => clearTimeout(timer));
     if (store.close) await store.close();
   } catch (e) {
     console.error('[shutdown] flush failed', e);

@@ -50,7 +50,7 @@ const ATM_SPRITE_GROUPS = new Set([259, 447]);
 const PLAYER_COL_W = 14;
 const PLAYER_COL_H = 8;
 const PLAYER_COL_OY = -8;
-const SPEED_BASE = 0.8; // KEEP IN SYNC with src/engine/Player.ts
+const SPEED_BASE = 0.8; // mirrored in src/engine/moveConstants.ts (drift-guarded by constantsSync.test.ts)
 const SPEED_PER_STAT = 0.085;
 const SPEED_MIN = 0.75;
 const SPEED_MAX = 2.6;
@@ -65,6 +65,25 @@ const SIM_TICK_MS = 33; // ~30Hz player-movement sim. Briefly ran at 16ms/60Hz t
 // 30Hz: the player step budget is wall-clock based either way, so this only changes
 // CPU load, not travel speed or fairness.
 const MAX_INPUT_QUEUE = 240; // ~4s of 60fps inputs — drop overflow (anti-flood)
+// Per-type ACTION-message rate limit (anti-flood). Movement has its own cap
+// (MAX_INPUT_QUEUE above); these cover the messages a hostile client could spam
+// to burn tick time or amplify broadcasts (e.g. 'attack' publishes
+// player_attack to the area BEFORE the swing cooldown is checked). Token
+// bucket: a short burst (quick equip-swap, hotbar double-tap) always goes
+// through; a sustained flood is throttled to 1000/gap msg/s per type (=10/s for
+// attack — still above any legit rate, e.g. attack's resolved cooldown floor is
+// 120ms).
+const MSG_RATE_BURST = 6; // instant allowance per type before throttling kicks in
+const MSG_MIN_GAP_MS = {
+  attack: 100,
+  use_item: 100,
+  use_psi: 100,
+  buy: 150,
+  sell: 150,
+  equip: 100,
+  set_flag: 50,
+  clear_flag: 50,
+};
 // Speed authority (anti-speedhack / frame-rate fairness): one movement STEP is
 // one 60Hz frame of motion, so the sim applies at most this many steps per tick
 // regardless of how many inputs a client sends. A 120Hz display, or a client
@@ -81,7 +100,8 @@ const NOMINAL_STEPS_PER_TICK = SIM_TICK_MS / SIM_FRAME_MS; // ≈ 2.0
 // can't out-run the wall clock. 3x a nominal tick (~100ms of motion) is enough to
 // absorb timer jitter while bounding a single catch-up burst.
 const MAX_STEPS_BURST = Math.max(2, Math.round(NOMINAL_STEPS_PER_TICK * 3)); // = 6 @ 33ms
-// Run (hold-Shift) + stamina economy. KEEP IN SYNC with src/engine/Player.ts.
+// Run (hold-Shift) + stamina economy. Mirrored in src/engine/moveConstants.ts
+// (drift-guarded by test/constantsSync.test.ts).
 // Running multiplies the Speed-derived walk speed and burns stamina; an attack
 // costs a fixed chunk (gated like PP). Stamina pool/regen come from stats
 // (deriveCombatStats: Spirit→max, Muscle→regen).
@@ -1785,8 +1805,11 @@ class GameHost {
     const alloc = sanitizeBuild(save.alloc, level);
     const exp = Number.isInteger(save.exp) && save.exp >= 0 ? save.exp : 0;
 
+    // Duplicates are legal (three burgers = three entries) but the bag can never
+    // legitimately exceed MAX_SLOTS — cap on load so a corrupted save can't
+    // smuggle in an oversized inventory.
     const inventory = Array.isArray(save.inventory)
-      ? save.inventory.filter((id) => this.GOODS[id])
+      ? save.inventory.filter((id) => this.GOODS[id]).slice(0, MAX_SLOTS)
       : [...this.STARTING_INVENTORY];
     const money = Number.isInteger(save.money) ? save.money : STARTING_MONEY;
     const bank = Number.isInteger(save.bank) && save.bank >= 0 ? save.bank : 0;
@@ -1931,7 +1954,14 @@ class GameHost {
     const next = prev
       .catch(() => {}) // a prior failure must not poison later saves
       .then(() => this.store.updateCharacterSave(characterId, save, Date.now()))
-      .catch((e) => console.error('[save] failed for character', characterId, e));
+      // One retry after a short beat: a transient store hiccup (dropped Postgres
+      // connection, busy SQLite) shouldn't silently cost a player their progress.
+      .catch(() =>
+        new Promise((r) => setTimeout(r, 250)).then(() =>
+          this.store.updateCharacterSave(characterId, save, Date.now())
+        )
+      )
+      .catch((e) => console.error('[save] FAILED (after retry) for character', characterId, e));
     this._saveChains.set(characterId, next);
     // Drop the chain entry once it's the settled tail, so the map doesn't grow.
     next.finally(() => {
@@ -2788,6 +2818,21 @@ class GameHost {
 
   async _handleMessage(playerId, ws, msg) {
     const { GOODS } = this;
+    // MSG_RATE_LIMIT=0 disables the throttle (tests drive the message switch
+    // faster than real time; same idiom as AOI_ENABLED / BINARY_WIRE).
+    const minGap = process.env.MSG_RATE_LIMIT === '0' ? 0 : MSG_MIN_GAP_MS[msg.type];
+    if (minGap) {
+      const entry = this.players.get(playerId);
+      if (entry) {
+        const buckets = entry._msgRate || (entry._msgRate = Object.create(null));
+        const nowRate = Date.now();
+        const b = buckets[msg.type] || (buckets[msg.type] = { tokens: MSG_RATE_BURST, last: 0 });
+        b.tokens = Math.min(MSG_RATE_BURST, b.tokens + (nowRate - b.last) / minGap);
+        b.last = nowRate;
+        if (b.tokens < 1) return; // flood — drop; honest clients never get here
+        b.tokens -= 1;
+      }
+    }
     switch (msg.type) {
       case 'ping': {
         // App-level heartbeat: echo the client's timestamp so it can measure RTT
@@ -4467,4 +4512,21 @@ class GameHost {
   }
 }
 
-module.exports = { GameHost };
+// Client-mirrored movement/stamina constants, exported ONLY so
+// test/constantsSync.test.ts can assert the client copies (src/engine/Player.ts,
+// StatusModal.ts) haven't drifted. Gameplay code should keep using the consts.
+const MIRRORED_CONSTANTS = {
+  SPEED_BASE,
+  SPEED_PER_STAT,
+  SPEED_MIN,
+  SPEED_MAX,
+  RUN_MULT,
+  RUN_DRAIN_PER_STEP,
+  STAMINA_ATTACK_COST,
+  RUN_RECOVER_FRAC,
+  PLAYER_COL_W,
+  PLAYER_COL_H,
+  PLAYER_COL_OY,
+};
+
+module.exports = { GameHost, MIRRORED_CONSTANTS };

@@ -91,8 +91,11 @@ function loadShops(assetsDir) {
         // first thing it hits. `projSprite` is the on-screen look ('bullet' default,
         // 'pellet' for slings, 'beam' for energy weapons). See npcSim.stepProjectiles.
         ranged: !!ov.ranged && slot === 'weapon',
-        range: num(ov.range, 0),
-        projSpeed: num(ov.projSpeed, 0),
+        // Clamp authored values to sane bounds: a fat-fingered range/projSpeed in
+        // this hot-reloaded, hand-editable file must not mint a map-crossing
+        // weapon. Real data tops out around range 300 / projSpeed 13.
+        range: Math.max(0, Math.min(600, num(ov.range, 0))),
+        projSpeed: Math.max(0, Math.min(24, num(ov.projSpeed, 0))),
         pierce: !!ov.pierce,
         projSprite: typeof ov.projSprite === 'string' ? ov.projSprite : null,
       };

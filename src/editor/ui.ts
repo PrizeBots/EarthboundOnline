@@ -53,6 +53,21 @@ export function mkButton(
   return b;
 }
 
+/**
+ * The common per-tool button wrapper: positional args, `accent = true` for the
+ * gold primary look, default padding. Tools whose buttons need a different
+ * pad/variant keep a local wrapper over `mkButton` instead.
+ */
+export function mkBtn(
+  label: string,
+  fn: () => void,
+  parent: HTMLElement,
+  accent = false,
+  tip?: string
+): HTMLButtonElement {
+  return mkButton(label, fn, { parent, variant: accent ? 'gold' : 'default', tip });
+}
+
 export interface RowOpts {
   tip?: string;
   /** Label column width in px (compact tools use 46, stat managers use 56). */
